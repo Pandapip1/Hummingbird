@@ -113,8 +113,26 @@ test("details preparation retains request modifiers and getters via handles", ()
   assert.strictEqual(comments.results[0].message, "hi");
   const replies = JSON.parse(run(c, `__jb.subComments(${comments.results[0].__handle})`)).value;
   assert.strictEqual(replies.results[0].message, "reply");
-  const tracker = JSON.parse(run(c, `__jb.callHandle(${d.__handle},'getPlaybackTracker','[]')`));
-  assert.strictEqual(tracker.ok, true);
+  const tracker = JSON.parse(run(c, `__jb.callHandleForHandle(${d.__handle},'getPlaybackTracker','[]')`)).value;
+  assert.strictEqual(tracker.nextRequest, 500);
+  assert.strictEqual(run(c, `__jb.hasMember(${tracker.handle},'onProgress')`), true);
+  assert.strictEqual(run(c, `__jb.hasMember(${tracker.handle},'onInit')`), false);
+  run(c, `__jb.callHandle(${tracker.handle},'onProgress',JSON.stringify([12,true]))`);
+});
+
+test("playlist kind retains the contents pager", () => {
+  const c = makeContext();
+  run(c, `
+    source.getPlaylist = function(url) {
+      return new PlatformPlaylistDetails({ id: new PlatformID('T','pl','p'), name: 'List', url: url, videoCount: 2,
+        contents: new VideoPager([new PlatformVideo({ id: new PlatformID('T','a','p'), name: 'a', url: 'https://t/a' })], true, {}) });
+    };
+  `);
+  const pl = JSON.parse(run(c, "__jb.invoke('getPlaylist','[\"https://t/pl\"]','playlist')")).value;
+  assert.strictEqual(pl.name, "List");
+  assert.strictEqual(pl.contents.results[0].name, "a");
+  assert.ok(pl.contents.pager > 0);
+  assert.strictEqual(pl.contents.hasMore, true);
 });
 
 test("http: single, batch with DUMMY, bytes, and errors", () => {
@@ -125,6 +143,7 @@ test("http: single, batch with DUMMY, bytes, and errors", () => {
     return JSON.stringify(list.map((r, i) => {
       if (r.control) return { code: 200 };
       if (r.url.includes("fail")) return { error: "boom" };
+      if (r.url.includes("blocked")) return { error: "Attempted to access non-whitelisted url", errorType: "ScriptImplementationException" };
       if (r.bytes) return { code: 200, url: r.url, bodyBase64: "AQID", headers: {} };
       return { code: r.url.includes("404") ? 404 : 200, url: r.url, body: "b" + i, headers: { "content-type": ["x"] } };
     }));
@@ -146,6 +165,8 @@ test("http: single, batch with DUMMY, bytes, and errors", () => {
   const bytes = JSON.parse(run(c, "JSON.stringify(http.GET('https://a/b', {}, false, true).body)"));
   assert.deepStrictEqual(bytes, [1, 2, 3]);
   assert.throws(() => run(c, "http.GET('https://a/fail', {}, false)"), /boom/);
+  const blocked = run(c, "try { http.GET('https://a/blocked', {}, false); 'no' } catch (e) { e.plugin_type }");
+  assert.strictEqual(blocked, "ScriptImplementationException");
   const clientSetup = run(c, "var cl = http.newClient(false); cl.setDefaultHeaders({U:'1'}); cl.GET('https://a/1', {}).code");
   assert.strictEqual(clientSetup, 200);
   const lastReq = seen[seen.length - 1].list[0];

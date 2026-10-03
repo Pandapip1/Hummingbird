@@ -607,9 +607,14 @@
     return { text: String(body) };
   }
 
+  function throwHttpError(raw) {
+    if (raw.errorType === "ScriptImplementationException") throw new global.ScriptImplementationException(raw.error);
+    throw new Error(raw.error);
+  }
+
   function convertResponse(raw, bytes) {
     if (raw === null) return null;
-    if (raw.error) throw new Error(raw.error);
+    if (raw.error) throwHttpError(raw);
     var body = raw.body;
     if (bytes && raw.bodyBase64 !== undefined && raw.bodyBase64 !== null) body = global.__b64decode(raw.bodyBase64);
     return { url: raw.url || "", code: raw.code, body: body === undefined ? null : body, headers: raw.headers || {}, isOk: raw.code >= 200 && raw.code < 300 };
@@ -681,10 +686,10 @@
     for (var i = 0; i < out.length; i++) out[i] = null;
     var firstError = null;
     raw.forEach(function (r, i) {
-      if (r && r.error) { if (!firstError) firstError = r.error; }
+      if (r && r.error) { if (!firstError) firstError = r; }
       else out[index[i]] = convertResponse(r, live[i].bytes);
     });
-    if (firstError) throw new Error(firstError);
+    if (firstError) throwHttpError(firstError);
     return out;
   };
 
@@ -791,6 +796,12 @@
           return JSON.stringify({ ok: true, value: pagerPayload(v, id) });
         }
         if (kind === "details") return JSON.stringify({ ok: true, value: prepareDetails(v) });
+        if (kind === "playlist") {
+          var pl = Object.assign({}, v);
+          if (v && v.contents && isPager(v.contents)) pl.contents = pagerPayload(v.contents, putHandle(v.contents));
+          else pl.contents = { pager: 0, results: Array.isArray(v && v.contents) ? v.contents : [], hasMore: false };
+          return JSON.stringify({ ok: true, value: pl });
+        }
         return JSON.stringify({ ok: true, value: v === undefined ? null : v });
       } catch (e) {
         return JSON.stringify({ ok: false, error: describeError(e) });
@@ -845,6 +856,22 @@
       } catch (e) {
         return JSON.stringify({ ok: false, error: describeError(e) });
       }
+    },
+    // Call a method on a retained object and retain the object it returns (e.g. details.getPlaybackTracker()).
+    callHandleForHandle: function (id, method, argsJson) {
+      try {
+        var o = handles[id];
+        if (!o || typeof o[method] !== "function") return JSON.stringify({ ok: true, value: null });
+        var v = o[method].apply(o, argsJson ? JSON.parse(argsJson) : []);
+        if (!v) return JSON.stringify({ ok: true, value: null });
+        return JSON.stringify({ ok: true, value: { handle: putHandle(v), nextRequest: v.nextRequest } });
+      } catch (e) {
+        return JSON.stringify({ ok: false, error: describeError(e) });
+      }
+    },
+    hasMember: function (id, name) {
+      var o = handles[id];
+      return !!o && typeof o[name] === "function";
     },
     getProperty: function (id, prop) {
       var o = handles[id];

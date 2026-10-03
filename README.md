@@ -29,8 +29,20 @@ Linux (Swift 6.1+, GTK 4 development packages, GStreamer for video):
 git submodule update --init
 swift build -Xlinker --allow-shlib-undefined   # the flag is already set in Package.swift; shown for reference
 swift test
-swift run hummingbird-gtk
+swift run Hummingbird-gtk
 ```
+
+Nix (both Linux and macOS, `flake.nix` + `nix/`):
+```sh
+git submodule update --init
+nix develop              # Swift 6.2 + GTK4/GStreamer on Linux; XcodeGen + your Xcode toolchain on macOS
+hb-build                 # swift build
+hb-test                  # swift test (wrapped in xvfb-run when there is no display)
+hb-run                   # Linux: swift run Hummingbird-gtk
+hb-xcode / hb-build-ios  # macOS: regenerate Hummingbird.xcodeproj, then xcodebuild it
+```
+On macOS the shell does not ship a Swift toolchain on purpose: the iOS and macOS SDKs only come with Xcode,
+and a second `swift` on `PATH` would shadow the one that matches them.
 
 ## SwiftOpenUI fork
 

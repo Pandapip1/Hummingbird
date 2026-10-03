@@ -6,3 +6,8 @@ DerivedData/
 Hummingbird/Info.plist
 .build/
 Package.resolved
+
+# Nix
+result
+result-*
+.direnv/

@@ -1,7 +1,13 @@
+import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#else
+import SwiftOpenUI
+#endif
 
 // MARK: - Source list
 
+@MainActor
 struct SourcesView: View {
     @Environment(AppModel.self) private var app
     @State private var showAdd = false
@@ -44,6 +50,7 @@ struct SourcesView: View {
 
 // MARK: - Add source
 
+@MainActor
 struct AddSourceSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -58,9 +65,7 @@ struct AddSourceSheet: View {
             Group {
                 if let preview { PreviewView(preview: preview, onInstall: install, onCancel: { self.preview = nil }) }
                 else if scanning {
-                    QRScannerView { code in scanning = false; urlText = code; Task { await prepare() } }
-                        .ignoresSafeArea()
-                        .overlay(alignment: .bottom) { Text("Point the camera at a plugin QR code").padding(10).background(.thinMaterial, in: Capsule()).padding() }
+                    ScannerPane(onCode: { code in scanning = false; urlText = code; Task { await prepare() } })
                 } else {
                     Form {
                         Section("Plugin URL") {
@@ -95,6 +100,7 @@ struct AddSourceSheet: View {
     }
 }
 
+@MainActor
 private struct PreviewView: View {
     let preview: InstallPreview
     let onInstall: () -> Void
@@ -137,6 +143,7 @@ private struct PreviewView: View {
 
 // MARK: - Plugin detail
 
+@MainActor
 struct PluginDetailView: View {
     let pluginID: String
     @Environment(AppModel.self) private var app
@@ -252,6 +259,7 @@ struct PluginDetailView: View {
 
 // MARK: - Plugin settings editor
 
+@MainActor
 struct SettingRow: View {
     let plugin: InstalledPlugin
     let setting: PluginSetting
@@ -271,9 +279,9 @@ struct SettingRow: View {
                 label
             }
         case "dropdown", "select", "list":
-            Picker(selection: Binding(get: { Int(stored ?? "0") ?? 0 }, set: { app.plugins.setSetting(pluginID: plugin.id, key: setting.key, value: String($0)) })) {
+            Picker(setting.name, selection: Binding(get: { Int(stored ?? "0") ?? 0 }, set: { app.plugins.setSetting(pluginID: plugin.id, key: setting.key, value: String($0)) })) {
                 ForEach(Array((setting.options ?? []).enumerated()), id: \.offset) { i, o in Text(o).tag(i) }
-            } label: { label }
+            }
         default:
             VStack(alignment: .leading) {
                 label
@@ -303,6 +311,7 @@ struct SettingRow: View {
 
 // MARK: - App settings
 
+@MainActor
 struct AppSettingsView: View {
     @AppStorage("maxVideoHeight") private var maxHeight = 1080
     @AppStorage("preferAdaptive") private var preferAdaptive = true
@@ -327,5 +336,20 @@ struct AppSettingsView: View {
             }
         }
         .navigationTitle("Settings")
+    }
+}
+
+/// Camera QR scanner where the platform has one; otherwise a note (the URL can be typed or pasted instead).
+@MainActor
+private struct ScannerPane: View {
+    let onCode: (String) -> Void
+    var body: some View {
+        #if canImport(AVFoundation) && canImport(UIKit)
+        QRScannerView(onCode: onCode)
+            .ignoresSafeArea()
+            .overlay(alignment: .bottom) { Text("Point the camera at a plugin QR code").padding(10).background(.thinMaterial, in: Capsule()).padding() }
+        #else
+        Text("QR scanning is not available on this platform. Paste the plugin URL instead.")
+        #endif
     }
 }

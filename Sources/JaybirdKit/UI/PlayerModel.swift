@@ -1,11 +1,12 @@
 import Foundation
-import AVFoundation
 import Observation
 
 @MainActor
 @Observable
 final class PlayerModel {
-    private(set) var player: AVPlayer?
+    /// The platform player. The view layer reads it to draw the video surface (see `PlayerSurface`).
+    private(set) var backend: MediaBackend?
+    var hasMedia: Bool { backend != nil && selected != nil }
     private(set) var options: [PlaybackOption] = []
     private(set) var selected: PlaybackOption?
     private(set) var errorMessage: String?
@@ -15,14 +16,12 @@ final class PlayerModel {
     private(set) var subtitleSources: [SubtitleSource] = []
 
     @ObservationIgnored private var cues: [SubtitleCue] = []
-    @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var details: VideoDetails?
     @ObservationIgnored private var runtime: PluginRuntime?
     @ObservationIgnored private var library: LibraryStore?
     @ObservationIgnored private var trackerTask: Task<Void, Never>?
     @ObservationIgnored private var trackerHandle: Int?
     @ObservationIgnored private var lastHistoryWrite = Date.distantPast
-    @ObservationIgnored private var itemObserver: NSObjectProtocol?
 
     // MARK: loading
 
@@ -38,10 +37,15 @@ final class PlayerModel {
 
         let maxHeight = UserDefaults.standard.object(forKey: "maxVideoHeight") as? Int ?? 1080
         let preferAdaptive = UserDefaults.standard.object(forKey: "preferAdaptive") as? Bool ?? true
+        let engine = backend ?? makeMediaBackend()
+        backend = engine
+        engine.onTick = { [weak self] seconds in self?.tick(seconds) }
+        engine.onEnded = { [weak self] in self?.finished() }
         options = PlaybackSelector.options(for: details, preferredLanguage: Locale.current.language.languageCode?.identifier)
+            .filter { engine.canPlay($0) }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
             errorMessage = options.isEmpty
-                ? "This video has no source iOS can play (it offers only WebM, DASH or DRM-protected streams)."
+                ? "This video has no source this device can play (it offers only formats the player does not support, such as WebM, DASH or DRM-protected streams)."
                 : "No playable source found."
             return
         }
@@ -57,85 +61,50 @@ final class PlayerModel {
     }
 
     func select(_ option: PlaybackOption) async {
-        let position = player?.currentTime().seconds
+        let position = backend?.currentTime
         await play(option, resumeAt: position, duration: details?.item.duration)
     }
 
     private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async {
+        guard let backend else { return }
         isPreparing = true
         defer { isPreparing = false }
         do {
-            let item = try await makeItem(for: option)
-            attach(item: item, resumeAt: resumeAt, duration: duration, autoplay: true)
+            let request = PlayRequest(video: try await resolve(option.video),
+                                      audio: try await option.audio.asyncMap { try await resolve($0) },
+                                      isLive: option.kind == .live)
+            var start = resumeAt
+            if let r = resumeAt {
+                // Restart from the beginning if the viewer was already near the end, or has barely started.
+                if r <= 5 || option.kind == .live { start = nil }
+                else if let duration, Double(duration) - r < 15 { start = nil }
+            }
+            try await backend.load(request, resumeAt: start, autoplay: true)
             selected = option
         } catch {
             errorMessage = (error as? PluginError)?.localizedDescription ?? error.localizedDescription
         }
     }
 
-    // MARK: building items
+    // MARK: resolving sources
 
     private struct ModifiedRequest: Decodable {
         var url: String?
         var headers: [String: String]?
     }
 
-    private func asset(for source: MediaSource) async throws -> AVURLAsset {
+    private func resolve(_ source: MediaSource) async throws -> ResolvedMedia {
         guard var url = URL(string: source.url) else { throw PluginError.execution("Invalid media URL") }
         var headers: [String: String] = [:]
         if let ref = source.requestModifier, let runtime {
-            // The modifier runs once, for the initial request. AVPlayer then reuses its headers for later range requests.
+            // The modifier runs once, for the initial request. The player then reuses its headers for later range requests.
             let data = try await runtime.callHandle(ref.handle, "modifyRequest", [source.url, [String: String]()])
             if let mod = try? JSONDecoder().decode(ModifiedRequest.self, from: data) {
                 if let u = mod.url, let nu = URL(string: u) { url = nu }
                 headers = mod.headers ?? [:]
             }
         }
-        // This option key is not exposed in the public headers but is the long-standing way to set request headers.
-        let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
-        return AVURLAsset(url: url, options: options)
-    }
-
-    private func makeItem(for option: PlaybackOption) async throws -> AVPlayerItem {
-        let videoAsset = try await asset(for: option.video)
-        guard let audioSource = option.audio else { return AVPlayerItem(asset: videoAsset) }
-
-        // Separate video and audio files are combined into one composition so AVPlayer plays them in sync.
-        let audioAsset = try await asset(for: audioSource)
-        let composition = AVMutableComposition()
-        let vDuration = try await videoAsset.load(.duration)
-        let aDuration = try await audioAsset.load(.duration)
-        let duration = CMTimeMinimum(vDuration, aDuration)
-        guard let vTrack = try await videoAsset.loadTracks(withMediaType: .video).first,
-              let aTrack = try await audioAsset.loadTracks(withMediaType: .audio).first,
-              let vOut = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
-              let aOut = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-        else { throw PluginError.execution("Could not combine the video and audio streams") }
-        let range = CMTimeRange(start: .zero, duration: duration)
-        try vOut.insertTimeRange(range, of: vTrack, at: .zero)
-        try aOut.insertTimeRange(range, of: aTrack, at: .zero)
-        vOut.preferredTransform = (try? await vTrack.load(.preferredTransform)) ?? .identity
-        return AVPlayerItem(asset: composition)
-    }
-
-    private func attach(item: AVPlayerItem, resumeAt: Double?, duration: Int?, autoplay: Bool) {
-        removeObservers()
-        let p = player ?? AVPlayer()
-        p.replaceCurrentItem(with: item)
-        player = p
-        if let resumeAt, resumeAt > 5, selected?.kind != .live {
-            // Restart from the beginning if the viewer was already near the end.
-            if let duration, Double(duration) - resumeAt < 15 {} else {
-                p.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-            }
-        }
-        timeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
-            Task { @MainActor in self?.tick(time.seconds) }
-        }
-        itemObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.finished() }
-        }
-        if autoplay { p.play() }
+        return ResolvedMedia(url: url, headers: headers)
     }
 
     // MARK: ticking
@@ -186,7 +155,7 @@ final class PlayerModel {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000)
                 guard !Task.isCancelled, let self else { return }
-                let (seconds, playing) = await MainActor.run { (self.player?.currentTime().seconds ?? 0, (self.player?.rate ?? 0) > 0) }
+                let (seconds, playing) = await MainActor.run { (self.backend?.currentTime ?? 0, self.backend?.isPlaying ?? false) }
                 guard seconds.isFinite else { continue }
                 if first && hasInit { _ = try? await runtime.callHandle(handle, "onInit", [seconds]) }
                 else { _ = try? await runtime.callHandle(handle, "onProgress", [Int(seconds), playing]) }
@@ -198,25 +167,26 @@ final class PlayerModel {
 
     // MARK: teardown
 
-    private func removeObservers() {
-        if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
-        if let o = itemObserver { NotificationCenter.default.removeObserver(o); itemObserver = nil }
-    }
-
     func teardown() {
         trackerTask?.cancel(); trackerTask = nil
         if let h = trackerHandle, let rt = runtime {
             Task { if await rt.hasMember(handle: h, "onConcluded") { _ = try? await rt.callHandle(h, "onConcluded", [-1]) } }
         }
         trackerHandle = nil
-        if let seconds = player?.currentTime().seconds, seconds.isFinite, seconds > 1, let details, let library {
+        if let seconds = backend?.currentTime, seconds.isFinite, seconds > 1, let details, let library {
             library.recordProgress(SavedVideo(details.item), seconds: seconds)
         }
         library?.flushHistory()
-        removeObservers()
-        player?.pause()
-        player?.replaceCurrentItem(with: nil)
-        player = nil
+        backend?.stop()
+        backend = nil
+        selected = nil
         cues = []; subtitleText = nil; subtitleChoice = nil
+    }
+}
+
+private extension Optional {
+    func asyncMap<T>(_ transform: (Wrapped) async throws -> T) async rethrows -> T? {
+        guard let self else { return nil }
+        return try await transform(self)
     }
 }

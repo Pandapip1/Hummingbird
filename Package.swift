@@ -32,7 +32,6 @@ var targets: [Target] = [
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
         ],
         path: "Sources/JaybirdKit",
-        exclude: ["UI"],
         resources: [.copy("Core/Plugin/Resources/prelude.js")],
         linkerSettings: [
             // The Swift 6.1 Linux toolchain's libswiftObservation.so references a runtime symbol that libswiftCore.so

@@ -1,38 +1,66 @@
 # Jaybird
 
-A SwiftUI iOS app that loads and runs [Grayjay](https://grayjay.app)-style plugins: JavaScript sources that expose
-home feeds, search, channels, video details and playback streams.
+A [Grayjay](https://grayjay.app)-style plugin host: it loads JavaScript sources that expose home feeds, search,
+channels, video details and playback streams. One Swift codebase builds as a SwiftUI iOS app and as a Linux (GTK4)
+desktop app through [SwiftOpenUI](https://github.com/codelynx/SwiftOpenUI).
 
-> **Status: written without a compiler.** The development environment had no Swift toolchain or Xcode, so the Swift code
-> has never been built or run. The JavaScript plugin runtime (`prelude.js`) is tested under Node (`node Tests/prelude.test.js`,
-> and `node Tests/load-real-plugin.test.js <plugin-dir>`). The XCTest suites in `JaybirdTests/` are also unrun.
-> Expect to fix some compile errors on first build.
+## Platform status
+
+| Platform | UI | JS engine | Status |
+|---|---|---|---|
+| iOS 17+ | SwiftUI | JavaScriptCore | Written, **never built or run** (no Xcode here) |
+| Linux | SwiftOpenUI GTK4 | QuickJS | Builds, 20 tests pass, launches and renders (smoke-tested under Xvfb) |
+| Android | SwiftOpenUI Compose backend | QuickJS | **Not attempted or verified.** `JaybirdKit` avoids Apple-only APIs, but there is no Android entry point and no NDK/SDK was available |
+
+The Linux smoke test only confirmed that the window opens and the empty-state Home screen renders. No real plugin
+was loaded through the GTK UI, and video playback in GTK is untested.
 
 ## Build
 
+iOS:
 ```sh
 brew install xcodegen
-xcodegen generate        # creates Jaybird.xcodeproj from project.yml
-open Jaybird.xcodeproj   # iOS 17+, SwiftSoup is fetched through Swift Package Manager
+xcodegen generate        # creates Jaybird.xcodeproj from project.yml; it consumes this package's JaybirdKit
+open Jaybird.xcodeproj
 ```
+
+Linux (Swift 6.1+, GTK 4 development packages, GStreamer for video):
+```sh
+git submodule update --init
+swift build -Xlinker --allow-shlib-undefined   # the flag is already set in Package.swift; shown for reference
+swift test
+swift run jaybird-gtk
+```
+
+## SwiftOpenUI fork
+
+`Vendor/SwiftOpenUI` is a submodule of a fork (branch `jaybird`) that adds the SwiftUI API Jaybird uses and upstream lacks:
+button roles, alert actions, `ContentUnavailableView`, `LabeledContent`, `ShareLink`, `AsyncImage`, `AppStorage`,
+`TabView(selection:)` with `tabItem`, `.task(id:)`, `fileImporter`, `MediaPlayer`/`VideoPlayer` (GTK4, over GtkVideo),
+no-op desktop modifiers, and `@Environment(Type.self)` reads outside a render pass. Unsupported things are stubs,
+not implementations: `onDelete`, `onMove` and `EditButton` do nothing in GTK. `Scripts/sync-fork.sh` refreshes the
+submodule from the fork. The fork is a local clone and has not been pushed to any remote.
 
 ## How it works
 
 | Piece | Where |
 |---|---|
-| Plugin runtime (globals plugins expect: `Type`, `PlatformVideo`, pagers, exceptions, `http`, ...) | `Jaybird/Plugin/Resources/prelude.js` |
-| One JavaScriptCore context per plugin on a serial queue; HTTP, DOMParser and Utilities packages implemented natively | `Jaybird/Plugin/` |
-| Install flow with RSA-SHA512 script signature check and a validation dry run | `PluginManager.swift`, `ScriptSignature.swift` |
-| `allowUrls` enforcement (including on redirects), per-plugin cookie jars, Keychain-stored login | `HostHTTP.swift`, `SourceAuth.swift` |
-| WKWebView login and captcha capture | `Views/WebAuthView.swift` |
-| AVPlayer playback (HLS and MP4; separate audio joined with `AVMutableComposition`), subtitles, playback trackers | `Jaybird/Player/` |
-| Subscriptions, playlists, watch later, history, JSON export/import, merged subscription feed | `Services/`, `Models/Library.swift` |
+| JS engine protocol; QuickJS (vendored quickjs-ng) and JavaScriptCore implementations | `Sources/JaybirdKit/Core/Engine/`, `Sources/CQuickJS/` |
+| Plugin runtime (`Type`, `PlatformVideo`, pagers, exceptions, `http`, ...) over a single `__hostCall` bridge | `Core/Plugin/Resources/prelude.js`, `Core/Plugin/PluginRuntime.swift` |
+| Install flow with RSA-SHA512 signature check (swift-crypto off Apple) and a validation dry run | `PluginManager.swift`, `ScriptSignature.swift` |
+| `allowUrls` enforcement, per-plugin cookie jars, credential store (Keychain on Apple, 0600 file elsewhere) | `HostHTTP.swift`, `SourceAuth.swift` |
+| Login: WKWebView capture on iOS; manual cookie/header paste form elsewhere | `UI/Views/WebAuthView.swift`, `ManualAuthView.swift` |
+| Playback seam `MediaBackend`: AVPlayer (HLS, MP4, joined audio) or GTK `VideoPlayer` | `UI/Playback/` |
+| Subscriptions, playlists, watch later, history, JSON backup, merged feed | `Core/Services/`, `Core/Models/` |
 
 ## Not supported
 
-WebM/VP9/Opus streams, DASH and Widevine (AVPlayer cannot play them), WebSockets, the JSDOM/Browser packages,
-subscription groups, background refresh and live chat. `HttpImp` is an alias of the normal HTTP client. Whether
-redirect handling matches the Android app exactly is unverified.
+- Everywhere: WebM/VP9/Opus, DASH and Widevine, WebSockets, the JSDOM/Browser packages, subscription groups,
+  background refresh, live chat. `HttpImp` is an alias of the normal HTTP client.
+- Linux/GTK: GtkVideo cannot send custom HTTP headers or join separate audio and video files, so only muxed, HLS and
+  live sources without a `requestModifier` are offered. QR scanning and in-app web login are absent. No lazy list
+  realisation (`LazyVStack` becomes `VStack`). Swipe-to-delete and drag-to-reorder do nothing.
+- Whether redirect handling matches the Android Grayjay app exactly is unverified.
 
 ## Clean-room note
 
@@ -47,3 +75,5 @@ the host's behaviour. Nothing was copied from it.
 - Example plugin: Odysee (`grayjay-plugin-odysee`), loaded successfully by `Tests/load-real-plugin.test.js`
 - [Apple: JavaScriptCore](https://developer.apple.com/documentation/javascriptcore), [AVFoundation](https://developer.apple.com/documentation/avfoundation), [WKWebView](https://developer.apple.com/documentation/webkit/wkwebview), [SecKeyVerifySignature](https://developer.apple.com/documentation/security/1643715-seckeyverifysignature)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen), [SwiftSoup](https://github.com/scinfu/SwiftSoup)
+- [SwiftOpenUI](https://github.com/codelynx/SwiftOpenUI) (read from a local clone; GTK4 renderer in `Sources/Backend/GTK4/Rendering/GTKRenderer.swift`)
+- [quickjs-ng](https://github.com/quickjs-ng/quickjs) (vendored, see `Sources/CQuickJS/LICENSE`), [swift-crypto](https://github.com/apple/swift-crypto)

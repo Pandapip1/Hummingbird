@@ -1,8 +1,16 @@
+import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#else
+import SwiftOpenUI
+#endif
+#if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
+#endif
 
 // MARK: - Home
 
+@MainActor
 struct HomeView: View {
     @Environment(AppModel.self) private var app
     @State private var feed: FeedModel?
@@ -32,6 +40,7 @@ struct HomeView: View {
 
 // MARK: - Search
 
+@MainActor
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @State private var path = NavigationPath()
@@ -104,6 +113,7 @@ struct SearchView: View {
 
 // MARK: - Subscriptions
 
+@MainActor
 struct SubscriptionsView: View {
     @Environment(AppModel.self) private var app
 
@@ -148,6 +158,7 @@ struct SubscriptionsView: View {
     }
 }
 
+@MainActor
 struct ManageSubscriptionsView: View {
     @Environment(AppModel.self) private var app
 
@@ -173,6 +184,7 @@ struct ManageSubscriptionsView: View {
 
 // MARK: - Library
 
+@MainActor
 struct LibraryView: View {
     @Environment(AppModel.self) private var app
     @State private var newPlaylistName = ""
@@ -238,6 +250,7 @@ struct LibraryView: View {
     }
 }
 
+@MainActor
 struct WatchLaterView: View {
     @Environment(AppModel.self) private var app
     var body: some View {
@@ -253,6 +266,7 @@ struct WatchLaterView: View {
     }
 }
 
+@MainActor
 struct HistoryView: View {
     @Environment(AppModel.self) private var app
     var body: some View {
@@ -273,6 +287,7 @@ struct HistoryView: View {
     }
 }
 
+@MainActor
 struct LocalPlaylistView: View {
     @Environment(AppModel.self) private var app
     let playlistID: UUID

@@ -1,7 +1,13 @@
+import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#else
+import SwiftOpenUI
+#endif
 
 // MARK: - Channel
 
+@MainActor
 struct ChannelView: View {
     let url: String
     @Environment(AppModel.self) private var app
@@ -146,6 +152,7 @@ struct ChannelView: View {
 
 // MARK: - Remote playlist
 
+@MainActor
 struct PlaylistView: View {
     let url: String
     @Environment(AppModel.self) private var app

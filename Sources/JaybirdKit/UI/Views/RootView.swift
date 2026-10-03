@@ -1,5 +1,11 @@
+import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#else
+import SwiftOpenUI
+#endif
 
+@MainActor
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var loginTarget: LoginTarget?
@@ -36,6 +42,7 @@ struct LoginTarget: Identifiable, Hashable {
     var id: String { value }
 }
 
+@MainActor
 struct ToastBanner: View {
     @Environment(AppModel.self) private var app
     var body: some View {
@@ -54,6 +61,7 @@ struct ToastBanner: View {
     }
 }
 
+@MainActor
 struct CaptchaSheet: View {
     @Environment(AppModel.self) private var app
     let request: PluginManager.CaptchaRequest
@@ -72,6 +80,7 @@ struct CaptchaSheet: View {
     }
 }
 
+@MainActor
 struct LoginSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss

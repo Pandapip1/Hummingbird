@@ -1,6 +1,11 @@
+import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
-import AVKit
+#else
+import SwiftOpenUI
+#endif
 
+@MainActor
 struct VideoDetailView: View {
     let url: String
     let preview: ContentItem?
@@ -61,6 +66,7 @@ struct VideoDetailView: View {
 
 // MARK: - Video body
 
+@MainActor
 private struct VideoBody: View {
     let runtime: PluginRuntime
     let details: VideoDetails
@@ -148,6 +154,7 @@ private struct VideoBody: View {
 
 // MARK: - Player
 
+@MainActor
 private struct PlayerSection: View {
     let model: PlayerModel
 
@@ -155,7 +162,7 @@ private struct PlayerSection: View {
         VStack(spacing: 6) {
             ZStack {
                 Color.black
-                if let p = model.player { VideoPlayer(player: p) }
+                if model.hasMedia { PlayerSurface(model: model) }
                 if model.isPreparing { ProgressView().tint(.white) }
                 if let err = model.errorMessage {
                     Text(err).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.white).padding()
@@ -190,6 +197,7 @@ private struct PlayerSection: View {
     }
 }
 
+@MainActor
 private struct SubtitleMenu: View {
     let model: PlayerModel
     var body: some View {
@@ -210,6 +218,7 @@ private struct SubtitleMenu: View {
 
 // MARK: - Comments
 
+@MainActor
 private struct CommentsSection: View {
     let runtime: PluginRuntime
     let details: VideoDetails
@@ -220,7 +229,7 @@ private struct CommentsSection: View {
     @State private var message: String?
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 14) {
+        PortableLazyVStack(alignment: .leading, spacing: 14) {
             ForEach(comments) { c in
                 CommentRow(runtime: runtime, comment: c)
                     .onAppear { if c.id == comments.last?.id { Task { await more() } } }
@@ -246,6 +255,7 @@ private struct CommentsSection: View {
     }
 }
 
+@MainActor
 private struct CommentRow: View {
     let runtime: PluginRuntime
     let comment: PluginComment
@@ -282,6 +292,7 @@ private struct CommentRow: View {
 
 // MARK: - Related
 
+@MainActor
 private struct RelatedSection: View {
     let runtime: PluginRuntime
     let details: VideoDetails
@@ -290,7 +301,7 @@ private struct RelatedSection: View {
     @State private var loading = true
 
     var body: some View {
-        LazyVStack(alignment: .leading) {
+        PortableLazyVStack(alignment: .leading) {
             ForEach(items) { ContentRow(item: $0).padding(.horizontal) }
             if loading { ProgressView().frame(maxWidth: .infinity) }
             if !loading && items.isEmpty { Text("No related videos").foregroundStyle(.secondary).padding(.horizontal) }
@@ -304,6 +315,7 @@ private struct RelatedSection: View {
 
 // MARK: - Posts
 
+@MainActor
 private struct PostBody: View {
     let post: PostDetails
     var body: some View {
@@ -327,6 +339,7 @@ private struct PostBody: View {
 
 // MARK: - Add to playlist
 
+@MainActor
 struct PlaylistPicker: View {
     let video: SavedVideo
     @Environment(AppModel.self) private var app

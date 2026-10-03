@@ -1,5 +1,11 @@
+import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#else
+import SwiftOpenUI
+#endif
 
+@MainActor
 struct RemoteImage: View {
     let url: URL?
     var contentMode: ContentMode = .fill
@@ -16,6 +22,7 @@ struct RemoteImage: View {
 }
 
 /// A feed entry. Opens the right screen for the kind of content.
+@MainActor
 struct ContentRow: View {
     let item: ContentItem
 
@@ -23,7 +30,7 @@ struct ContentRow: View {
         Group {
             switch item.kind {
             case .locked:
-                if let u = item.unlockUrl.flatMap(URL.init(string:)) { Link(destination: u) { card } } else { card }
+                if let u = item.unlockUrl.flatMap(URL.init(string:)) { PortableLink(destination: u) { card } } else { card }
             case .channel: NavigationLink(value: Route.channel(item.url)) { channelCard }
             case .playlist: NavigationLink(value: Route.playlist(item.url)) { card }
             default: NavigationLink(value: Route.item(item)) { card }
@@ -83,6 +90,7 @@ struct ContentRow: View {
     }
 }
 
+@MainActor
 struct FeedList: View {
     let feed: FeedModel
     var emptyTitle = "Nothing here yet"
@@ -109,6 +117,7 @@ struct FeedList: View {
     }
 }
 
+@MainActor
 struct NoSourcesView: View {
     @Environment(AppModel.self) private var app
     var body: some View {
@@ -142,6 +151,7 @@ extension View {
     }
 }
 
+@MainActor
 struct LoadingErrorView: View {
     let message: String
     var retry: (() -> Void)?
@@ -151,5 +161,38 @@ struct LoadingErrorView: View {
         } description: { Text(message) } actions: {
             if let retry { Button("Try again", action: retry) }
         }
+    }
+}
+
+
+/// `Link` with an arbitrary label. SwiftOpenUI's `Link` only takes a title, so there it is a button that opens the URL.
+@MainActor
+struct PortableLink<Label: View>: View {
+    let destination: URL
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        #if canImport(SwiftUI)
+        Link(destination: destination, label: label)
+        #else
+        Button { SystemServices.openURL(destination) } label: { label() }
+        #endif
+    }
+}
+
+/// `LazyVStack` taking arbitrary content. SwiftOpenUI's is data-driven, so there the content is a plain `VStack`
+/// (the parent `ScrollView` still scrolls; only lazy realisation is lost).
+@MainActor
+struct PortableLazyVStack<Content: View>: View {
+    var alignment: HorizontalAlignment = .center
+    var spacing: CGFloat? = nil
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        #if canImport(SwiftUI)
+        LazyVStack(alignment: alignment, spacing: spacing.map { Int($0) } ?? 8, content: content)
+        #else
+        VStack(alignment: alignment, spacing: spacing.map { Int($0) } ?? 8, content: content)
+        #endif
     }
 }

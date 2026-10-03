@@ -1,6 +1,13 @@
+import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#else
+import SwiftOpenUI
+#endif
 import Observation
+#if os(iOS)
 import AVFoundation
+#endif
 
 enum AppTab: Hashable { case home, subscriptions, search, library, sources }
 
@@ -22,9 +29,11 @@ final class AppModel {
         self.library = library
         self.platform = platform
         self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
+        #if os(iOS)
         // Playback continues with the screen locked and in Picture in Picture.
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
     }
 
     /// Hands a feed model the error reporter it needs.

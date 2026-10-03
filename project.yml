@@ -11,21 +11,19 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
-  SwiftSoup:
-    url: https://github.com/scinfu/SwiftSoup.git
-    from: "2.7.0"
+  Jaybird:
+    path: .
 targets:
   Jaybird:
     type: application
     platform: iOS
     sources:
-      - path: Jaybird
-    resources:
-      - path: Jaybird/Plugin/Resources/prelude.js
+      - path: Apps/iOS
     dependencies:
-      - package: SwiftSoup
+      - package: Jaybird
+        product: JaybirdKit
     info:
-      path: Jaybird/Info.plist
+      path: Apps/iOS/Info.plist
       properties:
         CFBundleDisplayName: Jaybird
         UILaunchScreen: {}
@@ -46,19 +44,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: app.jaybird.Jaybird
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
-  JaybirdTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - path: JaybirdTests
-    dependencies:
-      - target: Jaybird
 schemes:
   Jaybird:
     build:
       targets:
         Jaybird: all
-        JaybirdTests: [test]
-    test:
-      targets:
-        - JaybirdTests

@@ -1,0 +1,109 @@
+// Debug source: one hardcoded video, no network beyond the local server that
+// serves this file. It exists so playback can be exercised against a fixed,
+// offline item instead of whatever a real source happens to return — the video
+// path has bugs that are hard to compare between runs when every run plays
+// different content.
+
+var PLUGIN_ID = "hummingbird-debug";
+var BASE = "http://127.0.0.1:8742";
+var VIDEO_URL = BASE + "/test.mp4";
+var VIDEO_ID = "debug-video-1";
+var VIDEO_PAGE = BASE + "/watch/" + VIDEO_ID;
+
+function platformId(value) {
+    return new PlatformID("HummingbirdDebug", value, PLUGIN_ID);
+}
+
+function author() {
+    return new PlatformAuthorLink(
+        platformId("debug-author"),
+        "Debug Source",
+        BASE + "/author",
+        null
+    );
+}
+
+function video() {
+    return new PlatformVideo({
+        id: platformId(VIDEO_ID),
+        name: "Debug test pattern (10s, 320x240)",
+        thumbnails: new Thumbnails([]),
+        author: author(),
+        datetime: 0,
+        duration: 10,
+        viewCount: 0,
+        url: VIDEO_PAGE,
+        isLive: false
+    });
+}
+
+source.enable = function (conf, settings, savedState) {};
+
+source.disable = function () {};
+
+source.getHome = function () {
+    return new VideoPager([video()], false);
+};
+
+source.search = function (query) {
+    return new VideoPager([video()], false);
+};
+
+source.searchSuggestions = function (query) {
+    return [];
+};
+
+source.getSearchCapabilities = function () {
+    return { types: [], sorts: [], filters: [] };
+};
+
+source.isChannelUrl = function (url) {
+    return url.indexOf(BASE + "/author") === 0;
+};
+
+source.getChannel = function (url) {
+    return new PlatformChannel({
+        id: platformId("debug-author"),
+        name: "Debug Source",
+        thumbnail: "",
+        banner: "",
+        subscribers: 0,
+        description: "Serves one hardcoded video for testing playback.",
+        url: BASE + "/author"
+    });
+};
+
+source.getChannelContents = function (url) {
+    return new VideoPager([video()], false);
+};
+
+source.isContentDetailsUrl = function (url) {
+    return url.indexOf(BASE + "/watch/") === 0;
+};
+
+source.getContentDetails = function (url) {
+    return new PlatformVideoDetails({
+        id: platformId(VIDEO_ID),
+        name: "Debug test pattern (10s, 320x240)",
+        thumbnails: new Thumbnails([]),
+        author: author(),
+        datetime: 0,
+        duration: 10,
+        viewCount: 0,
+        url: VIDEO_PAGE,
+        isLive: false,
+        description: "A locally served 10 second test pattern. Muxed H.264 in MP4,"
+            + " so it needs none of the features GtkVideo lacks.",
+        video: new VideoSourceDescriptor([
+            new VideoUrlSource({
+                name: "320x240",
+                url: VIDEO_URL,
+                width: 320,
+                height: 240,
+                duration: 10,
+                container: "video/mp4",
+                codec: "h264"
+            })
+        ])
+    });
+};

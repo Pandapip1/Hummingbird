@@ -1,0 +1,17 @@
+{
+  "name": "Hummingbird Debug Source",
+  "description": "Serves one hardcoded, locally hosted test video so playback can be tested against a fixed input.",
+  "author": "Hummingbird",
+  "authorUrl": "http://127.0.0.1:8742/author",
+  "platformUrl": "http://127.0.0.1:8742",
+  "sourceUrl": "http://127.0.0.1:8742/DebugPlugin.json",
+  "scriptUrl": "./DebugPlugin.js",
+  "version": 1,
+  "id": "hummingbird-debug",
+  "allowEval": false,
+  "allowUrls": ["127.0.0.1:8742"],
+  "packages": [],
+  "enableInHome": true,
+  "enableInSearch": true,
+  "enableInShorts": false
+}

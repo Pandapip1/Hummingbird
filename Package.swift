@@ -1,16 +1,16 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
-// Jaybird builds in three layers:
+// Hummingbird builds in three layers:
 //   CQuickJS     – vendored QuickJS-NG, the JavaScript engine used wherever JavaScriptCore is not available.
-//   JaybirdKit   – one module with two folders. Core/ is the plugin host, models and services (no UI imports);
+//   HummingbirdKit   – one module with two folders. Core/ is the plugin host, models and services (no UI imports);
 //                  UI/ is the screens: real SwiftUI on Apple platforms, SwiftOpenUI (Vendor/SwiftOpenUI) elsewhere.
 // The iOS app target lives in project.yml (XcodeGen) and consumes this package; the Linux/GTK4 executable is below.
 
 let nonApple: [Platform] = [.linux, .android, .windows]
 
 var products: [Product] = [
-    .library(name: "JaybirdKit", targets: ["JaybirdKit"]),
+    .library(name: "HummingbirdKit", targets: ["HummingbirdKit"]),
 ]
 var targets: [Target] = [
     .target(
@@ -23,7 +23,7 @@ var targets: [Target] = [
         ]
     ),
     .target(
-        name: "JaybirdKit",
+        name: "HummingbirdKit",
         dependencies: [
             "CQuickJS",
             .product(name: "SwiftSoup", package: "SwiftSoup"),
@@ -31,7 +31,7 @@ var targets: [Target] = [
             .product(name: "_CryptoExtras", package: "swift-crypto", condition: .when(platforms: nonApple)),
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
         ],
-        path: "Sources/JaybirdKit",
+        path: "Sources/HummingbirdKit",
         resources: [.copy("Core/Plugin/Resources/prelude.js")],
         linkerSettings: [
             // The Swift 6.1 Linux toolchain's libswiftObservation.so references a runtime symbol that libswiftCore.so
@@ -40,29 +40,29 @@ var targets: [Target] = [
         ]
     ),
     .testTarget(
-        name: "JaybirdKitTests",
-        dependencies: ["JaybirdKit"],
-        path: "Tests/JaybirdKitTests"
+        name: "HummingbirdKitTests",
+        dependencies: ["HummingbirdKit"],
+        path: "Tests/HummingbirdKitTests"
     ),
 ]
 
 #if os(Linux)
-products.append(.executable(name: "jaybird-gtk", targets: ["JaybirdGTK"]))
+products.append(.executable(name: "Hummingbird-gtk", targets: ["HummingbirdGTK"]))
 targets.append(
     .executableTarget(
-        name: "JaybirdGTK",
+        name: "HummingbirdGTK",
         dependencies: [
-            "JaybirdKit",
+            "HummingbirdKit",
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
             .product(name: "BackendGTK4", package: "SwiftOpenUI"),
         ],
-        path: "Sources/JaybirdGTK"
+        path: "Sources/HummingbirdGTK"
     )
 )
 #endif
 
 let package = Package(
-    name: "Jaybird",
+    name: "Hummingbird",
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: products,
     dependencies: [

@@ -1,4 +1,4 @@
-# Jaybird
+# Hummingbird
 
 A [Grayjay](https://grayjay.app)-style plugin host: it loads JavaScript sources that expose home feeds, search,
 channels, video details and playback streams. One Swift codebase builds as a SwiftUI iOS app and as a Linux (GTK4)
@@ -10,7 +10,7 @@ desktop app through [SwiftOpenUI](https://github.com/codelynx/SwiftOpenUI).
 |---|---|---|---|
 | iOS 17+ | SwiftUI | JavaScriptCore | Written, **never built or run** (no Xcode here) |
 | Linux | SwiftOpenUI GTK4 | QuickJS | Builds, 20 tests pass, launches and renders (smoke-tested under Xvfb) |
-| Android | SwiftOpenUI Compose backend | QuickJS | **Not attempted or verified.** `JaybirdKit` avoids Apple-only APIs, but there is no Android entry point and no NDK/SDK was available |
+| Android | SwiftOpenUI Compose backend | QuickJS | **Not attempted or verified.** `HummingbirdKit` avoids Apple-only APIs, but there is no Android entry point and no NDK/SDK was available |
 
 The Linux smoke test only confirmed that the window opens and the empty-state Home screen renders. No real plugin
 was loaded through the GTK UI, and video playback in GTK is untested.
@@ -20,8 +20,8 @@ was loaded through the GTK UI, and video playback in GTK is untested.
 iOS:
 ```sh
 brew install xcodegen
-xcodegen generate        # creates Jaybird.xcodeproj from project.yml; it consumes this package's JaybirdKit
-open Jaybird.xcodeproj
+xcodegen generate        # creates Hummingbird.xcodeproj from project.yml; it consumes this package's HummingbirdKit
+open Hummingbird.xcodeproj
 ```
 
 Linux (Swift 6.1+, GTK 4 development packages, GStreamer for video):
@@ -29,12 +29,12 @@ Linux (Swift 6.1+, GTK 4 development packages, GStreamer for video):
 git submodule update --init
 swift build -Xlinker --allow-shlib-undefined   # the flag is already set in Package.swift; shown for reference
 swift test
-swift run jaybird-gtk
+swift run hummingbird-gtk
 ```
 
 ## SwiftOpenUI fork
 
-`Vendor/SwiftOpenUI` is a submodule of a fork (branch `jaybird`) that adds the SwiftUI API Jaybird uses and upstream lacks:
+`Vendor/SwiftOpenUI` is a submodule of a fork (branch `hummingbird`) that adds the SwiftUI API Hummingbird uses and upstream lacks:
 button roles, alert actions, `ContentUnavailableView`, `LabeledContent`, `ShareLink`, `AsyncImage`, `AppStorage`,
 `TabView(selection:)` with `tabItem`, `.task(id:)`, `fileImporter`, `MediaPlayer`/`VideoPlayer` (GTK4, over GtkVideo),
 no-op desktop modifiers, and `@Environment(Type.self)` reads outside a render pass. Unsupported things are stubs,
@@ -45,7 +45,7 @@ submodule from the fork. The fork is a local clone and has not been pushed to an
 
 | Piece | Where |
 |---|---|
-| JS engine protocol; QuickJS (vendored quickjs-ng) and JavaScriptCore implementations | `Sources/JaybirdKit/Core/Engine/`, `Sources/CQuickJS/` |
+| JS engine protocol; QuickJS (vendored quickjs-ng) and JavaScriptCore implementations | `Sources/HummingbirdKit/Core/Engine/`, `Sources/CQuickJS/` |
 | Plugin runtime (`Type`, `PlatformVideo`, pagers, exceptions, `http`, ...) over a single `__hostCall` bridge | `Core/Plugin/Resources/prelude.js`, `Core/Plugin/PluginRuntime.swift` |
 | Install flow with RSA-SHA512 signature check (swift-crypto off Apple) and a validation dry run | `PluginManager.swift`, `ScriptSignature.swift` |
 | `allowUrls` enforcement, per-plugin cookie jars, credential store (Keychain on Apple, 0600 file elsewhere) | `HostHTTP.swift`, `SourceAuth.swift` |

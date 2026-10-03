@@ -1,6 +1,6 @@
-name: Jaybird
+name: Hummingbird
 options:
-  bundleIdPrefix: app.jaybird
+  bundleIdPrefix: app.hummingbird
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -11,21 +11,21 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
-  Jaybird:
+  Hummingbird:
     path: .
 targets:
-  Jaybird:
+  Hummingbird:
     type: application
     platform: iOS
     sources:
       - path: Apps/iOS
     dependencies:
-      - package: Jaybird
-        product: JaybirdKit
+      - package: Hummingbird
+        product: HummingbirdKit
     info:
       path: Apps/iOS/Info.plist
       properties:
-        CFBundleDisplayName: Jaybird
+        CFBundleDisplayName: Hummingbird
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -41,11 +41,11 @@ targets:
         NSLocalNetworkUsageDescription: Used to load plugins served from your own computer during development.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.jaybird.Jaybird
+        PRODUCT_BUNDLE_IDENTIFIER: app.hummingbird.Hummingbird
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
 schemes:
-  Jaybird:
+  Hummingbird:
     build:
       targets:
-        Jaybird: all
+        Hummingbird: all

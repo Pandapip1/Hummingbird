@@ -6,7 +6,7 @@ if (!pluginDir) { console.log("skip: pass a plugin directory"); process.exit(0);
 const cfgFile = fs.readdirSync(pluginDir).find(f => /Config\.json$/.test(f) && !/dev/.test(f));
 const config = JSON.parse(fs.readFileSync(path.join(pluginDir, cfgFile), "utf8"));
 const script = fs.readFileSync(path.join(pluginDir, config.scriptUrl), "utf8");
-const prelude = fs.readFileSync(path.join(__dirname, "../Sources/JaybirdCore/Plugin/Resources/prelude.js"), "utf8");
+const prelude = fs.readFileSync(path.join(__dirname, "../Sources/HummingbirdCore/Plugin/Resources/prelude.js"), "utf8");
 const logs = [];
 const ctx = vm.createContext({ __hostCall: (name, a) => { if (name === "log") logs.push(a); if (name === "http") return "[]"; if (name === "hasPackage") return "1"; return ""; } });
 vm.runInContext(prelude, ctx);

@@ -5,7 +5,7 @@ const path = require("path");
 const vm = require("vm");
 const assert = require("assert");
 
-const preludeSrc = fs.readFileSync(path.join(__dirname, "../Sources/JaybirdCore/Plugin/Resources/prelude.js"), "utf8");
+const preludeSrc = fs.readFileSync(path.join(__dirname, "../Sources/HummingbirdCore/Plugin/Resources/prelude.js"), "utf8");
 
 function makeContext(httpImpl) {
   const logs = [];

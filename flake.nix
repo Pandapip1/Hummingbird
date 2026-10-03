@@ -30,8 +30,23 @@
           # come from nixpkgs, so on macOS this flake is a dev shell only.
           packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
             let
+              # Only what the SwiftPM build actually reads. Without this, src is the
+              # whole repo and a docs-only commit changes the derivation hash.
+              src = lib.fileset.toSource {
+                root = ./.;
+                fileset = lib.fileset.unions [
+                  ./Package.swift
+                  ./Sources
+                  # The manifest declares a test target, and SwiftPM validates every
+                  # declared path even for a --product build.
+                  ./Tests
+                  # The SwiftOpenUI path dependency, submodule content included.
+                  ./Vendor
+                ];
+              };
+
               hummingbird-gtk = pkgs.callPackage ./nix/package.nix {
-                src = self;
+                inherit src;
                 buildLibs = (import ./nix/deps.nix { inherit pkgs lib; }).linuxBuildLibs;
               };
             in

@@ -89,3 +89,9 @@ the host's behaviour. Nothing was copied from it.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen), [SwiftSoup](https://github.com/scinfu/SwiftSoup)
 - [SwiftOpenUI](https://github.com/codelynx/SwiftOpenUI) (read from a local clone; GTK4 renderer in `Sources/Backend/GTK4/Rendering/GTKRenderer.swift`)
 - [quickjs-ng](https://github.com/quickjs-ng/quickjs) (vendored, see `Sources/CQuickJS/LICENSE`), [swift-crypto](https://github.com/apple/swift-crypto)
+
+## Licence
+
+AGPL-3.0-or-later — see [LICENSE](LICENSE). The AGPL rather than the GPL because SwiftOpenUI
+has a web renderer, so a build of this can be served over a network, which is exactly what
+section 13 covers.

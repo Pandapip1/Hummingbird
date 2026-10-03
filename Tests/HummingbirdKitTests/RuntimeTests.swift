@@ -1,5 +1,5 @@
 import XCTest
-@testable import JaybirdKit
+@testable import HummingbirdKit
 
 /// Runs a small plugin inside a real JavaScriptCore host context (no network involved).
 final class RuntimeTests: XCTestCase {

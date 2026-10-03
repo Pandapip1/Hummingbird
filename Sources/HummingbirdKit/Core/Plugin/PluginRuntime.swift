@@ -40,7 +40,7 @@ final class PluginRuntime: @unchecked Sendable {
         self.auth = auth
         self.captcha = captcha
         self.savedState = savedState
-        self.queue = DispatchQueue(label: "app.jaybird.plugin.\(config.id)", qos: .userInitiated)
+        self.queue = DispatchQueue(label: "app.hummingbird.plugin.\(config.id)", qos: .userInitiated)
     }
 
     // MARK: settings

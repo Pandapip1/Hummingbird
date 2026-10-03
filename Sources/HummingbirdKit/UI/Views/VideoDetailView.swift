@@ -36,7 +36,7 @@ struct VideoDetailView: View {
                 PostBody(post: p)
             case .unsupported(let item):
                 ContentUnavailableView("Can't open this", systemImage: "questionmark.square.dashed",
-                                       description: Text("\"\(item.name)\" is a kind of content Jaybird does not display yet."))
+                                       description: Text("\"\(item.name)\" is a kind of content Hummingbird does not display yet."))
             }
         }
         .navigationBarTitleDisplayMode(.inline)

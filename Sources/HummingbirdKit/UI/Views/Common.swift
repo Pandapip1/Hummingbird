@@ -124,7 +124,7 @@ struct NoSourcesView: View {
         ContentUnavailableView {
             Label("No sources yet", systemImage: "puzzlepiece.extension")
         } description: {
-            Text("Jaybird gets its content from plugins. Add a source by pasting its URL or scanning its QR code.")
+            Text("Hummingbird gets its content from plugins. Add a source by pasting its URL or scanning its QR code.")
         } actions: {
             Button("Add a source") { app.selectedTab = .sources }.buttonStyle(.borderedProminent)
         }

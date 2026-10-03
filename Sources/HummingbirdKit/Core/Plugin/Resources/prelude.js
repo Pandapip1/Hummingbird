@@ -1,4 +1,4 @@
-// Jaybird plugin prelude.
+// Hummingbird plugin prelude.
 // Clean-room implementation of the plugin-facing JavaScript surface, written from the public
 // plugin type definitions, example plugins, and a prose behaviour report.
 // It runs inside the host's JavaScript engine (JavaScriptCore or QuickJS) before the plugin script.

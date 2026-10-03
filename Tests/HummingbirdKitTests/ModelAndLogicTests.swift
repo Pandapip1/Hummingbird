@@ -1,5 +1,5 @@
 import XCTest
-@testable import JaybirdKit
+@testable import HummingbirdKit
 
 final class ModelAndLogicTests: XCTestCase {
     private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {

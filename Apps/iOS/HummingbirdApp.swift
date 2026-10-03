@@ -1,9 +1,9 @@
 import SwiftUI
-import JaybirdKit
+import HummingbirdKit
 
 @main
-struct JaybirdApp: App {
+struct HummingbirdApp: App {
     var body: some Scene {
-        WindowGroup { JaybirdRoot() }
+        WindowGroup { HummingbirdRoot() }
     }
 }

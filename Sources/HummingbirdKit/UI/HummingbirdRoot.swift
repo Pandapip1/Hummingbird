@@ -5,9 +5,9 @@ import SwiftUI
 import SwiftOpenUI
 #endif
 
-/// The app's root view with its model, for platform entry points (`Apps/iOS`, `Sources/JaybirdGTK`).
+/// The app's root view with its model, for platform entry points (`Apps/iOS`, `Sources/HummingbirdGTK`).
 @MainActor
-public struct JaybirdRoot: View {
+public struct HummingbirdRoot: View {
     @State private var model = AppModel()
     #if canImport(SwiftUI)
     @Environment(\.scenePhase) private var scenePhase

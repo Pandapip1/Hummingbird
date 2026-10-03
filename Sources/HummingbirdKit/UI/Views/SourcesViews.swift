@@ -331,7 +331,7 @@ struct AppSettingsView: View {
                 Stepper("Channels per refresh: \(fetchLimit == 0 ? "no limit" : String(fetchLimit))", value: $fetchLimit, in: 0...500, step: 10)
             }
             Section("About") {
-                Text("Jaybird plays content from Grayjay-compatible plugins. It is an independent project and is not affiliated with FUTO.")
+                Text("Hummingbird plays content from Grayjay-compatible plugins. It is an independent project and is not affiliated with FUTO.")
                     .font(.footnote)
             }
         }

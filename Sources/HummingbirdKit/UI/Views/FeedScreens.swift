@@ -233,7 +233,7 @@ struct LibraryView: View {
                 if let data = try? Data(contentsOf: url), let backup = try? JSONDecoder().decode(LibraryBackup.self, from: data) {
                     app.library.merge(backup)
                     importMessage = "Imported \(backup.subscriptions.count) subscriptions, \(backup.playlists.count) playlists. Plugins listed in the backup must be added from Sources."
-                } else { importMessage = "That file is not a Jaybird library export." }
+                } else { importMessage = "That file is not a Hummingbird library export." }
             }
             .routeDestinations()
         }
@@ -244,7 +244,7 @@ struct LibraryView: View {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(backup) else { return nil }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Jaybird Library.json")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Hummingbird Library.json")
         try? data.write(to: url, options: .atomic)
         return url
     }

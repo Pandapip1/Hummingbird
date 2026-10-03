@@ -1,12 +1,12 @@
-import JaybirdKit
+import HummingbirdKit
 import SwiftOpenUI
 import BackendGTK4
 
 @MainActor
-struct JaybirdGTKApp: App {
+struct HummingbirdGTKApp: App {
     var body: some Scene {
-        WindowGroup("Jaybird") { JaybirdRoot() }
+        WindowGroup("Hummingbird") { HummingbirdRoot() }
     }
 }
 
-MainActor.assumeIsolated { GTK4Backend().run(JaybirdGTKApp.self) }
+MainActor.assumeIsolated { GTK4Backend().run(HummingbirdGTKApp.self) }

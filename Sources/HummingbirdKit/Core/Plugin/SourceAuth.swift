@@ -74,7 +74,7 @@ public struct FileCredentialStore: CredentialStore {
 #if canImport(Security)
 /// Keychain items are only readable while the device is unlocked, never leave the device, and are removed with the plugin.
 public struct KeychainCredentialStore: CredentialStore {
-    private let service = "app.jaybird.plugin-auth"
+    private let service = "app.hummingbird.plugin-auth"
     public init() {}
 
     public func load(account: String) -> Data? {

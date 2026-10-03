@@ -245,7 +245,7 @@ final class PluginManager {
 
     private func download(_ url: URL) async throws -> Data {
         var req = URLRequest(url: url)
-        req.setValue("Jaybird/0.1", forHTTPHeaderField: "User-Agent")
+        req.setValue("Hummingbird/0.1", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await urlSession.data(for: req)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw InstallError.download("HTTP \(http.statusCode) from \(url.host ?? url.absoluteString)")

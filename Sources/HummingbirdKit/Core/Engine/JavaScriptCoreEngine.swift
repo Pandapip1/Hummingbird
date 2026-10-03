@@ -19,7 +19,7 @@ final class JavaScriptCoreContextHost: JSContextHost {
 
     func evaluate(_ code: String, name: String) throws -> String? {
         guard let ctx = context else { throw JSEngineError(message: "The JavaScript context is closed") }
-        let value = ctx.evaluateScript(code, withSourceURL: URL(string: "jaybird://plugin/\(name.replacingOccurrences(of: " ", with: "_"))"))
+        let value = ctx.evaluateScript(code, withSourceURL: URL(string: "hummingbird://plugin/\(name.replacingOccurrences(of: " ", with: "_"))"))
         if let ex = ctx.exception {
             ctx.exception = nil
             throw JSEngineError(message: ex.toString() ?? "Script error", line: ex.objectForKeyedSubscript("line")?.toString())

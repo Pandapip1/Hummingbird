@@ -4,7 +4,7 @@ import Foundation
 public enum Storage {
     public static let directory: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = base.appendingPathComponent("Jaybird", isDirectory: true)
+        let dir = base.appendingPathComponent("Hummingbird", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()

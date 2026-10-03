@@ -5,7 +5,7 @@ import Security
 import Crypto
 import _CryptoExtras
 #endif
-@testable import JaybirdKit
+@testable import HummingbirdKit
 
 final class ConfigAndSignatureTests: XCTestCase {
     func testConfigDefaultsAndRelativeURLs() throws {

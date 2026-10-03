@@ -78,7 +78,7 @@ struct HistoryEntry: Codable, Hashable, Identifiable, Sendable {
     var id: String { video.id }
 }
 
-/// Everything the user owns, in one export file. This is Jaybird's own format.
+/// Everything the user owns, in one export file. This is Hummingbird's own format.
 struct LibraryBackup: Codable {
     var version: Int = 1
     var subscriptions: [Subscription]

@@ -1,0 +1,3 @@
+[submodule "Vendor/SwiftOpenUI"]
+	path = Vendor/SwiftOpenUI
+	url = /tmp/claude/repos/SwiftOpenUI

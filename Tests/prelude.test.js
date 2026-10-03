@@ -5,20 +5,20 @@ const path = require("path");
 const vm = require("vm");
 const assert = require("assert");
 
-const preludeSrc = fs.readFileSync(path.join(__dirname, "../Jaybird/Plugin/Resources/prelude.js"), "utf8");
+const preludeSrc = fs.readFileSync(path.join(__dirname, "../Sources/JaybirdCore/Plugin/Resources/prelude.js"), "utf8");
 
 function makeContext(httpImpl) {
   const logs = [];
+  const httpFn = httpImpl || ((reqs) => JSON.stringify(JSON.parse(reqs).map(() => ({ code: 200, url: "u", body: "{}", headers: {} }))));
   const sandbox = {
-    __native: {
-      log: (s) => logs.push(s),
-      toast: () => {},
-      isLoggedIn: () => false,
-      hasPackage: () => true,
-      setTimeout: () => 1,
-      clearTimeout: () => {},
-      sleep: () => {},
-      http: httpImpl || ((reqs) => JSON.stringify(JSON.parse(reqs).map(() => ({ code: 200, url: "u", body: "{}", headers: {} })))),
+    __hostCall: (name, a, b) => {
+      switch (name) {
+        case "log": logs.push(a); return "";
+        case "http": return httpFn(a, b === "1");
+        case "isLoggedIn": return "0";
+        case "hasPackage": return "1";
+        default: return "";
+      }
     },
   };
   const ctx = vm.createContext(sandbox);

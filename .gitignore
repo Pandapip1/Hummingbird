@@ -4,3 +4,5 @@ DerivedData/
 .build/
 .DS_Store
 Jaybird/Info.plist
+.build/
+Package.resolved

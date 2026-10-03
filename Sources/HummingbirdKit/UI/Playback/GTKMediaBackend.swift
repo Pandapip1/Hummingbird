@@ -11,6 +11,7 @@ final class GTKMediaBackend: MediaBackend {
     let player = MediaPlayer()
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (String) -> Void)?
     private var ticker: Task<Void, Never>?
 
     var currentTime: Double { player.currentTime }
@@ -18,6 +19,12 @@ final class GTKMediaBackend: MediaBackend {
 
     init() {
         player.onEnded = { [weak self] in Task { @MainActor in self?.onEnded?() } }
+        player.onFailure = { [weak self] message in
+            Task { @MainActor in
+                self?.ticker?.cancel()
+                self?.onFailure?(message)
+            }
+        }
     }
 
     func canPlay(_ option: PlaybackOption) -> Bool {

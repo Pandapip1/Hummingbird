@@ -13,6 +13,7 @@ final class AVMediaBackend: MediaBackend {
     private(set) var player: AVPlayer?
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
     private var itemObserver: NSObjectProtocol?
 

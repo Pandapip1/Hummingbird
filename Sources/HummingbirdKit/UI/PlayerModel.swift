@@ -41,6 +41,7 @@ final class PlayerModel {
         backend = engine
         engine.onTick = { [weak self] seconds in self?.tick(seconds) }
         engine.onEnded = { [weak self] in self?.finished() }
+        engine.onFailure = { [weak self] message in self?.errorMessage = message }
         options = PlaybackSelector.options(for: details, preferredLanguage: Locale.current.language.languageCode?.identifier)
             .filter { engine.canPlay($0) }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {

@@ -22,6 +22,7 @@ protocol MediaBackend: AnyObject {
     /// Called about every half second while an item is loaded.
     var onTick: (@MainActor (Double) -> Void)? { get set }
     var onEnded: (@MainActor () -> Void)? { get set }
+    var onFailure: (@MainActor (String) -> Void)? { get set }
 
     /// Whether this backend can play the option. Apple's player can join separate audio and video; GTK's cannot.
     func canPlay(_ option: PlaybackOption) -> Bool

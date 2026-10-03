@@ -73,12 +73,15 @@
           # On macOS it deliberately does not. The iOS and macOS SDKs only come
           # with Xcode, and putting a second swift on PATH there shadows the one
           # that matches those SDKs.
-          ++ lib.optionals isLinux (with pkgs; [
-            swift
-            swiftpm
-            swift-format
-            xvfb-run
-          ])
+          ++ lib.optionals isLinux (
+            with pkgs;
+            [
+              swift
+              swiftpm
+              swift-format
+              xvfb-run
+            ]
+          )
           # nixpkgs only builds xcodegen on aarch64-darwin; elsewhere fall back
           # to whatever the user installed themselves.
           ++ lib.optionals (lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.xcodegen) [
@@ -109,9 +112,7 @@
           fi
 
           echo "Hummingbird dev shell (${system}) — swift $(swift --version 2>/dev/null | sed -n 's/.*version \([0-9.]*\).*/\1/p' | head -1)" >&2
-          echo "  hb-build, hb-test${
-            lib.optionalString isLinux ", hb-run (GTK app)"
-          }${lib.optionalString isDarwin ", hb-xcode, hb-build-ios"}" >&2
+          echo "  hb-build, hb-test${lib.optionalString isLinux ", hb-run (GTK app)"}${lib.optionalString isDarwin ", hb-xcode, hb-build-ios"}" >&2
         '';
       };
     };

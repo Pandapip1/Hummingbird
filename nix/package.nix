@@ -21,13 +21,25 @@ let
   pins = pinData.deps;
   # One fetch per pinned dependency. fetchSubmodules matches what SwiftPM does
   # when it clones, so the hashes stay comparable to `nurl --submodules=true`.
-  checkouts = lib.mapAttrs (
-    _: pin:
-    fetchgit {
-      inherit (pin) url rev hash;
-      fetchSubmodules = true;
-    }
-  ) (lib.mapAttrs (_: pin: pin // { url = pin.location; rev = pin.revision; }) pins);
+  checkouts =
+    lib.mapAttrs
+      (
+        _: pin:
+        fetchgit {
+          inherit (pin) url rev hash;
+          fetchSubmodules = true;
+        }
+      )
+      (
+        lib.mapAttrs (
+          _: pin:
+          pin
+          // {
+            url = pin.location;
+            rev = pin.revision;
+          }
+        ) pins
+      );
 
   # The path dependency resolves inside the unpacked source, so it needs no pin
   # and no entry of its own beyond what SwiftPM writes back itself.
@@ -104,9 +116,7 @@ stdenv.mkDerivation {
 
     mkdir -p .build/checkouts
     ${lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (
-        name: pin: "ln -s ${checkouts.${name}} '.build/checkouts/${pin.subpath}'"
-      ) pins
+      lib.mapAttrsToList (name: pin: "ln -s ${checkouts.${name}} '.build/checkouts/${pin.subpath}'") pins
     )}
 
     install -m 0600 ${builtins.toFile "workspace-state.json" (builtins.toJSON workspaceState)} \

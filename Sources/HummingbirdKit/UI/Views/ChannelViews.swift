@@ -60,10 +60,11 @@ struct ChannelView: View {
             if let feed {
                 ForEach(feed.items) { item in
                     ContentRow(item: item).listRowSeparator(.hidden)
-                        .onAppear { if item.id == feed.items.last?.id { Task { await feed.loadMore() } } }
+                        .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
                 }
                 ForEach(feed.messages, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange) }
                 if feed.isLoading { ProgressView().frame(maxWidth: .infinity) }
+                LoadMoreButton(feed: feed)
             }
         }
         .listStyle(.plain)
@@ -181,9 +182,10 @@ struct PlaylistView: View {
                     }
                     ForEach(feed.items) { item in
                         ContentRow(item: item).listRowSeparator(.hidden)
-                            .onAppear { if item.id == feed.items.last?.id { Task { await feed.loadMore() } } }
+                            .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
                     }
                     if feed.isLoading { ProgressView().frame(maxWidth: .infinity) }
+                    LoadMoreButton(feed: feed)
                 }
                 .listStyle(.plain)
             } else { ProgressView() }

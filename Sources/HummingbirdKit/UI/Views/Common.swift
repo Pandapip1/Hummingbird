@@ -101,12 +101,13 @@ struct FeedList: View {
             ForEach(feed.items) { item in
                 ContentRow(item: item)
                     .listRowSeparator(.hidden)
-                    .onAppear { if item.id == feed.items.last?.id { Task { await feed.loadMore() } } }
+                    .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
             }
             ForEach(feed.messages, id: \.self) { m in
                 Label(m, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)
             }
             if feed.isLoading { ProgressView().frame(maxWidth: .infinity).listRowSeparator(.hidden) }
+            LoadMoreButton(feed: feed)
         }
         .listStyle(.plain)
         .overlay {
@@ -193,6 +194,49 @@ struct PortableLazyVStack<Content: View>: View {
         LazyVStack(alignment: alignment, spacing: spacing.map { Int($0) } ?? 8, content: content)
         #else
         VStack(alignment: alignment, spacing: spacing.map { Int($0) } ?? 8, content: content)
+        #endif
+    }
+}
+
+// MARK: - Pagination
+
+extension View {
+    /// Loads the next page when `isLast` is the row at the end of the feed.
+    ///
+    /// SwiftUI's `List` realises rows lazily, so a row's `onAppear` means
+    /// "scrolled into view" and the last row appearing is a genuine signal to
+    /// fetch more. SwiftOpenUI's GTK backend realises every row immediately, so
+    /// the same code fetches a page, the append rebuilds the list, a new last
+    /// row is realised, and it fetches again — with nobody touching the app.
+    /// Measured on Home: 35 items grew to 273 in 75 idle seconds before the app
+    /// stopped responding.
+    ///
+    /// So the automatic trigger is used only where the list is lazy. Elsewhere
+    /// the lists offer `LoadMoreButton` instead.
+    func loadsNextPageWhenLast(_ isLast: Bool, _ load: @escaping () async -> Void) -> some View {
+        #if canImport(SwiftUI)
+        return onAppear { if isLast { Task { await load() } } }
+        #else
+        return self
+        #endif
+    }
+}
+
+/// Explicit "load the next page" control, for backends whose `List` is not
+/// lazy and therefore cannot drive pagination from `onAppear`. Renders nothing
+/// where the automatic trigger works.
+@MainActor
+struct LoadMoreButton: View {
+    let feed: FeedModel
+
+    var body: some View {
+        #if canImport(SwiftUI)
+        EmptyView()
+        #else
+        if feed.hasMore && !feed.isLoading {
+            Button("Load more") { Task { await feed.loadMore() } }
+                .frame(maxWidth: .infinity)
+        }
         #endif
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftOpenUI
 
 @MainActor
 @Observable
@@ -14,6 +15,8 @@ final class PlayerModel {
     private(set) var subtitleText: String?
     private(set) var subtitleChoice: SubtitleSource?
     private(set) var subtitleSources: [SubtitleSource] = []
+    var tracks: [MediaTrack] { backend?.tracks ?? [] }
+    var pictureInPictureSupported: Bool { backend?.pictureInPictureSupported ?? false }
 
     @ObservationIgnored private var cues: [SubtitleCue] = []
     @ObservationIgnored private var details: VideoDetails?
@@ -65,6 +68,10 @@ final class PlayerModel {
         let position = backend?.currentTime
         await play(option, resumeAt: position, duration: details?.item.duration)
     }
+
+    func selectTrack(_ track: MediaTrack?) { backend?.selectTrack(track) }
+    func startPictureInPicture() { backend?.startPictureInPicture() }
+    func stopPictureInPicture() { backend?.stopPictureInPicture() }
 
     private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async {
         guard let backend else { return }

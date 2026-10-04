@@ -1,4 +1,5 @@
 import Foundation
+import SwiftOpenUI
 
 /// A media URL with the request headers the plugin's `requestModifier` asked for.
 struct ResolvedMedia: Sendable {
@@ -23,6 +24,11 @@ protocol MediaBackend: AnyObject {
     var onTick: (@MainActor (Double) -> Void)? { get set }
     var onEnded: (@MainActor () -> Void)? { get set }
     var onFailure: (@MainActor (String) -> Void)? { get set }
+    var tracks: [MediaTrack] { get }
+    func selectTrack(_ track: MediaTrack?)
+    var pictureInPictureSupported: Bool { get }
+    func startPictureInPicture()
+    func stopPictureInPicture()
 
     /// Whether this backend can play the option. Apple's player can join separate audio and video; GTK's cannot.
     func canPlay(_ option: PlaybackOption) -> Bool
@@ -32,4 +38,12 @@ protocol MediaBackend: AnyObject {
     func seek(to seconds: Double)
     /// Stops playback and releases the current item.
     func stop()
+}
+
+extension MediaBackend {
+    var tracks: [MediaTrack] { [] }
+    func selectTrack(_: MediaTrack?) {}
+    var pictureInPictureSupported: Bool { false }
+    func startPictureInPicture() {}
+    func stopPictureInPicture() {}
 }

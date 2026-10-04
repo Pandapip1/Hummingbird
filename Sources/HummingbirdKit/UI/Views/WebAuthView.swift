@@ -21,6 +21,13 @@ struct WebAuthSheet: View {
     var body: some View {
         NavigationStack {
             WebView(session.page)
+                // A web view has no intrinsic content size. Give presented
+                // windows an initial proposal while still allowing them to
+                // fill whatever space the platform provides.
+                .frame(
+                    minWidth: 720, maxWidth: .infinity,
+                    minHeight: 540, maxHeight: .infinity
+                )
                 .ignoresSafeArea(edges: .bottom)
                 .navigationTitle(spec.title)
                 .navigationBarTitleDisplayMode(.inline)
@@ -30,7 +37,8 @@ struct WebAuthSheet: View {
                         ToolbarItem(placement: .confirmationAction) { Button("Done") { session.finish() } }
                     }
                 }
-                .task { await session.run() }
+                .onAppear { session.start() }
+                .onDisappear { session.stop() }
         }
     }
 }
@@ -47,6 +55,7 @@ final class WebAuthSession {
     private var userAgent: String?
     private var finished = false
     private var clickedLoginButton = false
+    private var pollingTask: Task<Void, Never>?
 
     init(spec: WebAuthSpec, onFinish: @escaping (SourceAuth?) -> Void) {
         self.spec = spec
@@ -67,7 +76,19 @@ final class WebAuthSession {
         }
     }
 
-    func run() async {
+    deinit { pollingTask?.cancel() }
+
+    func start() {
+        guard pollingTask == nil else { return }
+        pollingTask = Task { await self.run() }
+    }
+
+    func stop() {
+        pollingTask?.cancel()
+        pollingTask = nil
+    }
+
+    private func run() async {
         while !Task.isCancelled, !finished {
             await inspectPage()
             try? await Task.sleep(for: .milliseconds(250))
@@ -78,6 +99,7 @@ final class WebAuthSession {
         guard !finished else { return }
         finished = true
         page.stopLoading()
+        pollingTask?.cancel()
         onFinish(nil)
     }
 
@@ -85,11 +107,13 @@ final class WebAuthSession {
         guard !finished else { return }
         finished = true
         page.stopLoading()
+        pollingTask?.cancel()
         onFinish(SourceAuth(cookieMap: cookies, headers: headers, userAgent: userAgent ?? spec.userAgent))
     }
 
     private func inspectPage() async {
-        if let url = page.url { checkCompletion(url) }
+        guard let url = page.url else { return }
+        checkCompletion(url)
         if let snapshot = try? await page.callJavaScript(Self.snapshotScript) as? String,
            let data = snapshot.data(using: .utf8),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {

@@ -24,6 +24,10 @@ public protocol JSEngine {
 }
 
 public enum JSEngines {
+    #if canImport(CJavaScriptCoreGTK)
+    private nonisolated(unsafe) static var bootstrapContext: JSContextHost?
+    private static let bootstrapLock = NSLock()
+    #endif
     /// The engine used by new plugin runtimes. Tests and embedders may replace it.
     nonisolated(unsafe) public static var `default`: JSEngine = {
         #if canImport(JavaScriptCore)
@@ -40,7 +44,17 @@ public enum JSEngines {
     /// main-thread registration, so GTK entry points call this before starting
     /// plugin work on background queues.
     public static func initializeDefaultRuntimeOnCurrentThread() throws {
+        #if canImport(CJavaScriptCoreGTK)
+        bootstrapLock.lock()
+        defer { bootstrapLock.unlock() }
+        guard bootstrapContext == nil else { return }
+        // Keep the first context alive. JavaScriptCoreGTK tears down shared WTF
+        // state when its last context disappears; recreating it later on a
+        // plugin worker leaves WebKitGTK's web process unable to navigate.
+        bootstrapContext = try self.default.makeContext { _, _, _ in "" }
+        #else
         let context = try self.default.makeContext { _, _, _ in "" }
         context.close()
+        #endif
     }
 }

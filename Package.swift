@@ -68,6 +68,9 @@ targets.append(
             "HummingbirdKit",
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
             .product(name: "BackendGTK4", package: "SwiftOpenUI"),
+            .product(name: "WebKit", package: "SwiftOpenUI"),
+            .product(name: "CGTK", package: "SwiftOpenUI"),
+            .product(name: "CGTKBridge", package: "SwiftOpenUI"),
         ],
         path: "Sources/HummingbirdGTK"
     )

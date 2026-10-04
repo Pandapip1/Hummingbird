@@ -49,7 +49,12 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "HummingbirdKitTests",
-        dependencies: ["HummingbirdKit"],
+        dependencies: [
+            "HummingbirdKit",
+            .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
+            .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
+            .product(name: "BackendGTK4", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
+        ],
         path: "Tests/HummingbirdKitTests"
     ),
 ]

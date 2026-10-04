@@ -34,4 +34,13 @@ public enum JSEngines {
         return QuickJSEngine()
         #endif
     }()
+
+    /// Initializes process-global engine state on the caller's thread.
+    /// WebKitGTK and its standalone JavaScriptCore API share WTF's one-time
+    /// main-thread registration, so GTK entry points call this before starting
+    /// plugin work on background queues.
+    public static func initializeDefaultRuntimeOnCurrentThread() throws {
+        let context = try self.default.makeContext { _, _, _ in "" }
+        context.close()
+    }
 }

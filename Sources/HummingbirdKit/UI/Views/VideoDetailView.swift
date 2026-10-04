@@ -163,8 +163,9 @@ private struct PlayerSection: View {
         #if canImport(UIKit)
         player
         #else
+        let isFullscreen = model.isFullscreen
         player.fullScreenCover(
-            isPresented: Binding(get: { model.isFullscreen }, set: { if !$0 { model.dismissFullscreen() } })
+            isPresented: Binding(get: { isFullscreen }, set: { if !$0 { model.dismissFullscreen() } })
         ) {
             FullscreenPlayerView(model: model)
         }

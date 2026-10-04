@@ -117,13 +117,40 @@ final class AVMediaBackend: MediaBackend {
     }
 }
 
-#if canImport(AVKit) && canImport(SwiftUI)
-/// The on-screen video surface for the current backend.
+#if canImport(AVKit) && canImport(SwiftUI) && (os(iOS) || os(tvOS))
+/// AVKit's SwiftUI `VideoPlayer` always supplies its own controls. Wrap the
+/// underlying view controller so Hummingbird can provide one shared control
+/// surface on Apple and GTK.
 @MainActor
-struct PlayerSurface: View {
+struct PlayerSurface: UIViewControllerRepresentable {
     let model: PlayerModel
-    var body: some View {
-        if let p = (model.backend as? AVMediaBackend)?.player { VideoPlayer(player: p) } else { Color.black }
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.showsPlaybackControls = false
+        controller.allowsPictureInPicturePlayback = true
+        controller.player = (model.backend as? AVMediaBackend)?.player
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        controller.player = (model.backend as? AVMediaBackend)?.player
+    }
+}
+#elseif canImport(AVKit) && canImport(SwiftUI) && os(macOS)
+@MainActor
+struct PlayerSurface: NSViewRepresentable {
+    let model: PlayerModel
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .none
+        view.player = (model.backend as? AVMediaBackend)?.player
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        view.player = (model.backend as? AVMediaBackend)?.player
     }
 }
 #endif

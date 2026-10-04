@@ -172,47 +172,70 @@ private struct PlayerSection: View {
             .frame(maxWidth: .infinity)
             .aspectRatio(16 / 9, contentMode: .fit)
             .overlay(alignment: .bottom) {
-                VStack(spacing: 6) {
-                    if let t = model.subtitleText {
-                        Text(t).font(.callout.weight(.medium)).multilineTextAlignment(.center).foregroundStyle(.white)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
-                            .padding(.horizontal)
-                    }
-                    HStack(spacing: 14) {
-                        Button { model.backend?.seek(to: max(0, model.backend?.currentTime ?? 0 - 10)) } label: {
-                            Label("Back 10 seconds", systemImage: "gobackward.10")
-                        }
-                        Button { if model.backend?.isPlaying == true { model.backend?.pause() } else { model.backend?.play() } } label: {
-                            Label(model.backend?.isPlaying == true ? "Pause" : "Play", systemImage: model.backend?.isPlaying == true ? "pause.fill" : "play.fill")
-                        }
-                        Button { model.backend?.seek(to: (model.backend?.currentTime ?? 0) + 10) } label: {
-                            Label("Forward 10 seconds", systemImage: "goforward.10")
-                        }
-                    }
-                    .foregroundStyle(Color.white)
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(.black.opacity(0.7), in: Capsule())
-                }
-                .padding(.bottom, 8)
+                PlayerControls(model: model)
             }
+        }
+    }
+}
 
-            HStack {
+@MainActor
+private struct PlayerControls: View {
+    let model: PlayerModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if let text = model.subtitleText {
+                Text(text)
+                    .font(.callout.weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
+                    .padding(.horizontal)
+            }
+            HStack(spacing: 14) {
+                Button { model.skip(by: -10) } label: {
+                    Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds")
+                }
+                Button { model.togglePlayback() } label: {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                        .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
+                }
+                Button { model.skip(by: 10) } label: {
+                    Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds")
+                }
+                Text(playbackTime).font(.caption.monospacedDigit())
+                Spacer()
                 if model.options.count > 1 {
                     Menu {
-                        ForEach(model.options) { o in
-                            Button { Task { await model.select(o) } } label: {
-                                if o.id == model.selected?.id { Label(o.label, systemImage: "checkmark") } else { Text(o.label) }
+                        ForEach(model.options) { option in
+                            Button { Task { await model.select(option) } } label: {
+                                if option.id == model.selected?.id { Label(option.label, systemImage: "checkmark") }
+                                else { Text(option.label) }
                             }
                         }
-                    } label: { Label(model.selected?.label ?? "Quality", systemImage: "slider.horizontal.3") }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3").accessibilityLabel("Quality")
+                    }
                 }
-                Spacer()
                 SubtitleMenu(model: model)
+                if model.pictureInPictureSupported {
+                    Button { model.startPictureInPicture() } label: {
+                        Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
+                    }
+                }
             }
-            .font(.footnote)
-            .padding(.horizontal)
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 8)
         }
+        .padding(.bottom, 8)
+    }
+
+    private var playbackTime: String {
+        let seconds = max(0, Int(model.playbackTime))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }
 
@@ -230,7 +253,7 @@ private struct SubtitleMenu: View {
                         if model.subtitleChoice?.id == s.id { Label(s.name, systemImage: "checkmark") } else { Text(s.name) }
                     }
                 }
-            } label: { Label("Subtitles", systemImage: "captions.bubble") }
+            } label: { Image(systemName: "captions.bubble").accessibilityLabel("Subtitles") }
         }
     }
 }

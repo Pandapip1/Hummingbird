@@ -48,7 +48,8 @@ and a second `swift` on `PATH` would shadow the one that matches them.
 
 `Vendor/SwiftOpenUI` is a submodule of a fork (branch `hummingbird`) that adds the SwiftUI API Hummingbird uses and upstream lacks:
 button roles, alert actions, `ContentUnavailableView`, `LabeledContent`, `ShareLink`, `AsyncImage`, `AppStorage`,
-`TabView(selection:)` with `tabItem`, `.task(id:)`, `fileImporter`, `MediaPlayer`/`VideoPlayer` (GTK4, over GtkVideo),
+`TabView(selection:)` with `tabItem`, `.task(id:)`, `fileImporter`, and AVKit-compatible `AVPlayer`/`VideoPlayer`
+(GTK4, backed by a direct GStreamer appsink pipeline),
 no-op desktop modifiers, and `@Environment(Type.self)` reads outside a render pass. Unsupported things are stubs,
 not implementations: `onDelete`, `onMove` and `EditButton` do nothing in GTK. `Scripts/sync-fork.sh` refreshes the
 submodule from the fork. The fork is a local clone and has not been pushed to any remote.
@@ -62,15 +63,15 @@ submodule from the fork. The fork is a local clone and has not been pushed to an
 | Install flow with RSA-SHA512 signature check (swift-crypto off Apple) and a validation dry run | `PluginManager.swift`, `ScriptSignature.swift` |
 | `allowUrls` enforcement, per-plugin cookie jars, credential store (Keychain on Apple, 0600 file elsewhere) | `HostHTTP.swift`, `SourceAuth.swift` |
 | Login: WKWebView capture on iOS; manual cookie/header paste form elsewhere | `UI/Views/WebAuthView.swift`, `ManualAuthView.swift` |
-| Playback seam `MediaBackend`: AVPlayer (HLS, MP4, joined audio) or GTK `VideoPlayer` | `UI/Playback/` |
+| Playback seam `MediaBackend`: AVPlayer (HLS, MP4, joined audio) or GTK/GStreamer | `UI/Playback/` |
 | Subscriptions, playlists, watch later, history, JSON backup, merged feed | `Core/Services/`, `Core/Models/` |
 
 ## Not supported
 
 - Everywhere: WebM/VP9/Opus, DASH and Widevine, WebSockets, the JSDOM/Browser packages, subscription groups,
   background refresh, live chat. `HttpImp` is an alias of the normal HTTP client.
-- Linux/GTK: GtkVideo cannot send custom HTTP headers or join separate audio and video files, so only muxed, HLS and
-  live sources without a `requestModifier` are offered. QR scanning and in-app web login are absent. No lazy list
+- Linux/GTK: the GStreamer backend cannot send custom HTTP headers yet, so sources with a `requestModifier` are not
+  offered. It supports muxed and independent video/audio streams. QR scanning and in-app web login are absent. No lazy list
   realisation (`LazyVStack` becomes `VStack`). Swipe-to-delete and drag-to-reorder do nothing.
 - Whether redirect handling matches the Android Grayjay app exactly is unverified.
 

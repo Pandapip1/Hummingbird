@@ -4,8 +4,8 @@ import SwiftOpenUI
 
 /// Non-Apple playback through the fork's `MediaPlayer` / `VideoPlayer` (GtkVideo → GStreamer).
 ///
-/// Limits, all imposed by GtkVideo: it cannot send custom HTTP headers and cannot join separate audio and video
-/// files. So only sources that need no `requestModifier` and are a single muxed file, HLS or live stream are offered.
+/// The direct GStreamer pipeline supports muxed/adaptive media and independent
+/// video and audio streams. Sources requiring custom HTTP headers remain unavailable.
 @MainActor
 final class GTKMediaBackend: MediaBackend {
     let player = MediaPlayer()
@@ -28,14 +28,18 @@ final class GTKMediaBackend: MediaBackend {
     }
 
     func canPlay(_ option: PlaybackOption) -> Bool {
-        option.audio == nil && option.video.requestModifier == nil
+        option.video.requestModifier == nil && option.audio?.requestModifier == nil
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
-        guard request.audio == nil, request.video.headers.isEmpty else {
-            throw PluginError.notSupported("This source needs custom request headers or separate audio, which the GTK player cannot do")
+        guard request.video.headers.isEmpty, request.audio?.headers.isEmpty != false else {
+            throw PluginError.notSupported("This source needs custom request headers, which the GTK player cannot use yet")
         }
-        player.open(request.video.url, autoplay: autoplay, startAt: resumeAt ?? 0)
+        let asset = request.audio.map { MediaAsset(videoURL: request.video.url, audioURL: $0.url) }
+            ?? MediaAsset(url: request.video.url)
+        player.replaceCurrentItem(with: MediaPlayerItem(asset: asset))
+        if let resumeAt, resumeAt > 0 { player.seek(to: resumeAt) }
+        if autoplay { player.play() } else { player.pause() }
         ticker?.cancel()
         ticker = Task { @MainActor [weak self] in
             while !Task.isCancelled {

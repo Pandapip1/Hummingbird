@@ -30,8 +30,6 @@ final class PlayerModel {
     @ObservationIgnored private var trackerTask: Task<Void, Never>?
     @ObservationIgnored private var trackerHandle: Int?
     @ObservationIgnored private var lastHistoryWrite = Date.distantPast
-    @ObservationIgnored private var pendingSeek: (target: Double, committed: Bool)?
-    @ObservationIgnored private var scrubSeekTask: Task<Void, Never>?
     @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
 
@@ -110,30 +108,11 @@ final class PlayerModel {
         isPlaying = backend.isPlaying
     }
     func skip(by seconds: Double) {
-        let origin = pendingSeek?.target ?? playbackTime
-        commitSeek(to: origin + seconds)
+        seek(to: playbackTime + seconds)
     }
     func seek(to seconds: Double) {
         guard let backend else { return }
         let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
-        pendingSeek = (target, false)
-        playbackTime = target
-        scrubSeekTask?.cancel()
-        scrubSeekTask = Task { @MainActor [weak self, weak backend] in
-            try? await Task.sleep(nanoseconds: 75_000_000)
-            guard !Task.isCancelled, let self, let backend,
-                  self.pendingSeek?.target == target else { return }
-            self.pendingSeek = (target, true)
-            backend.seek(to: target)
-        }
-    }
-
-    private func commitSeek(to seconds: Double) {
-        guard let backend else { return }
-        let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
-        scrubSeekTask?.cancel(); scrubSeekTask = nil
-        pendingSeek = (target, true)
-        playbackTime = target
         backend.seek(to: target)
     }
 
@@ -188,13 +167,6 @@ final class PlayerModel {
         guard seconds.isFinite else { return }
         duration = backend?.duration ?? 0
         isPlaying = backend?.isPlaying ?? false
-        if let pendingSeek {
-            if pendingSeek.committed && abs(seconds - pendingSeek.target) <= 0.75 {
-                self.pendingSeek = nil
-            } else {
-                return
-            }
-        }
         playbackTime = seconds
         subtitleText = cues.first(where: { seconds >= $0.start && seconds <= $0.end })?.text
         if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, seconds > 1 {
@@ -259,7 +231,6 @@ final class PlayerModel {
 
     func teardown() {
         trackerTask?.cancel(); trackerTask = nil
-        scrubSeekTask?.cancel(); scrubSeekTask = nil
         if let h = trackerHandle, let rt = runtime {
             Task { if await rt.hasMember(handle: h, "onConcluded") { _ = try? await rt.callHandle(h, "onConcluded", [-1]) } }
         }
@@ -274,7 +245,6 @@ final class PlayerModel {
         backend = nil
         selected = nil
         playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
-        pendingSeek = nil
         cues = []; subtitleText = nil; subtitleChoice = nil
     }
 }

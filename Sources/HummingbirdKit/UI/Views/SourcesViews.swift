@@ -84,6 +84,7 @@ struct AddSourceSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         }
+        .frame(minHeight: 320)
     }
 
     private func prepare() async {

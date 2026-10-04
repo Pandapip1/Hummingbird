@@ -35,6 +35,16 @@ final class RuntimeTests: XCTestCase {
         return PluginRuntime(config: config, script: script, settings: settings, auth: nil, captcha: nil)
     }
 
+    func testQuickJSAllowsDeepPluginCallGraphs() throws {
+        let context = try QuickJSEngine().makeContext { _, _, _ in "" }
+        defer { context.close() }
+        let value = try context.evaluate(
+            "function descend(n) { return n === 0 ? 42 : descend(n - 1); } descend(1000)",
+            name: "deep-stack"
+        )
+        XCTAssertEqual(value, "42")
+    }
+
     func testValidateAndCapabilities() async throws {
         let rt = try runtime()
         try await rt.validate()

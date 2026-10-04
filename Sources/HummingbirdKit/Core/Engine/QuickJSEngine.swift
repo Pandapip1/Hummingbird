@@ -11,7 +11,7 @@ public struct QuickJSEngine: JSEngine {
 
 private func hostCallTrampoline(_ ctx: OpaquePointer?, _ this: JSValue, _ argc: Int32, _ argv: UnsafeMutablePointer<JSValue>?) -> JSValue {
     guard let ctx, let opaque = JS_GetContextOpaque(ctx) else { return cq_undefined() }
-    let host = Unmanaged<QuickJSContextHost>.fromOpaque(opaque).takeUnretainedValue()
+    let host = Unmanaged<QuickJSCore>.fromOpaque(opaque).takeUnretainedValue()
     func arg(_ i: Int) -> String {
         guard let argv, Int32(i) < argc else { return "" }
         var len = 0
@@ -23,7 +23,85 @@ private func hostCallTrampoline(_ ctx: OpaquePointer?, _ this: JSValue, _ argc: 
     return result.withCString { JS_NewStringLen(ctx, $0, strlen($0)) }
 }
 
+private final class QuickJSWorker: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var jobs: [() -> Void] = []
+    private var stopping = false
+    private var thread: Thread!
+
+    init() {
+        thread = Thread { [weak self] in self?.run() }
+        thread.name = "app.hummingbird.quickjs"
+        thread.stackSize = 32 * 1024 * 1024
+        thread.start()
+    }
+
+    func sync<T>(_ body: @escaping () throws -> T) throws -> T {
+        let result = ResultBox<T>()
+        let done = DispatchSemaphore(value: 0)
+        condition.lock()
+        jobs.append {
+            result.value = Result { try body() }
+            done.signal()
+        }
+        condition.signal()
+        condition.unlock()
+        done.wait()
+        return try result.value!.get()
+    }
+
+    func stop() {
+        let done = DispatchSemaphore(value: 0)
+        condition.lock()
+        jobs.append { [weak self] in self?.stopping = true; done.signal() }
+        condition.signal()
+        condition.unlock()
+        done.wait()
+    }
+
+    private func run() {
+        while true {
+            condition.lock()
+            while jobs.isEmpty { condition.wait() }
+            let job = jobs.removeFirst()
+            condition.unlock()
+            job()
+            if stopping { return }
+        }
+    }
+}
+
+private final class ResultBox<T>: @unchecked Sendable {
+    var value: Result<T, Error>?
+}
+
 final class QuickJSContextHost: JSContextHost {
+    private let worker: QuickJSWorker
+    private var core: QuickJSCore?
+
+    init(hostCall: @escaping (String, String, String) -> String) throws {
+        let worker = QuickJSWorker()
+        self.worker = worker
+        do { core = try worker.sync { try QuickJSCore(hostCall: hostCall) } }
+        catch { worker.stop(); throw error }
+    }
+
+    deinit { close() }
+
+    func close() {
+        guard let core else { return }
+        try? worker.sync { core.close() }
+        self.core = nil
+        worker.stop()
+    }
+
+    func evaluate(_ code: String, name: String) throws -> String? {
+        guard let core else { throw JSEngineError(message: "The JavaScript context is closed") }
+        return try worker.sync { try core.evaluate(code, name: name) }
+    }
+}
+
+private final class QuickJSCore {
     let hostCall: (String, String, String) -> String
     private var runtime: OpaquePointer?
     private var context: OpaquePointer?
@@ -34,18 +112,15 @@ final class QuickJSContextHost: JSContextHost {
         runtime = rt
         context = ctx
         JS_SetMemoryLimit(rt, 512 * 1024 * 1024)
-        // Plugin bundles routinely add several wrapper layers around host calls. Dispatch
-        // workers have an 8 MiB stack on supported Linux builds, so leave 2 MiB for Swift
-        // and native frames while allowing deeper real-world plugin call graphs.
-        JS_SetMaxStackSize(rt, 6 * 1024 * 1024)
+        // This context lives on its dedicated 32 MiB worker thread. Keep a generous native
+        // reserve while retaining QuickJS's guard against genuine runaway recursion.
+        JS_SetMaxStackSize(rt, 24 * 1024 * 1024)
         JS_SetContextOpaque(ctx, Unmanaged.passUnretained(self).toOpaque())
         let global = JS_GetGlobalObject(ctx)
         let fn = JS_NewCFunction(ctx, hostCallTrampoline, "__hostCall", 3)
         JS_SetPropertyStr(ctx, global, "__hostCall", fn)   // takes ownership of fn
         JS_FreeValue(ctx, global)
     }
-
-    deinit { close() }
 
     func close() {
         if let context { JS_FreeContext(context) }

@@ -35,6 +35,12 @@ final class RuntimeTests: XCTestCase {
         return PluginRuntime(config: config, script: script, settings: settings, auth: nil, captcha: nil)
     }
 
+    #if os(Linux)
+    func testLinuxDefaultsToJavaScriptCoreGTK() {
+        XCTAssertTrue(JSEngines.default is JavaScriptCoreGTKEngine)
+    }
+    #endif
+
     func testQuickJSAllowsDeepPluginCallGraphs() throws {
         let context = try QuickJSEngine().makeContext { _, _, _ in "" }
         defer { context.close() }

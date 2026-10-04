@@ -16,7 +16,7 @@ public protocol JSContextHost: AnyObject {
     func close()
 }
 
-/// A JavaScript engine. JavaScriptCore is used on Apple platforms; QuickJS everywhere else (and for testing on Linux).
+/// A JavaScript engine. JavaScriptCore is preferred where the platform packages it; QuickJS is the portable fallback.
 public protocol JSEngine {
     /// Creates a context whose global scope has `__hostCall(name, a, b) -> string`, the only door from plugin
     /// code into the host. The prelude builds the plugin-facing API on top of it.
@@ -28,6 +28,8 @@ public enum JSEngines {
     nonisolated(unsafe) public static var `default`: JSEngine = {
         #if canImport(JavaScriptCore)
         return JavaScriptCoreEngine()
+        #elseif canImport(CJavaScriptCoreGTK)
+        return JavaScriptCoreGTKEngine()
         #else
         return QuickJSEngine()
         #endif

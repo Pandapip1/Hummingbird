@@ -95,7 +95,10 @@
           # SwiftPM's system-library importer does not consume pkg-config
           # include flags for transitive C headers, so expose GStreamer dev
           # headers explicitly to the GTK backend build.
-          CPATH = lib.makeSearchPath "include/gstreamer-1.0" [ pkgs.gst_all_1.gstreamer.dev pkgs.gst_all_1.gst-plugins-base.dev ];
+          CPATH = lib.makeSearchPath "include/gstreamer-1.0" [
+            pkgs.gst_all_1.gstreamer.dev
+            pkgs.gst_all_1.gst-plugins-base.dev
+          ];
           GDK_PIXBUF_MODULE_FILE = "${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
         };
 
@@ -104,6 +107,7 @@
         shellHook = ''
           # Keep the helper scripts anchored to the checkout even after a cd.
           export HUMMINGBIRD_ROOT="$PWD"
+          export XDG_DATA_DIRS="${deps.iconTheme}/share:''${XDG_DATA_DIRS:-}"
 
           ${lib.optionalString isDarwin ''
             if ! xcrun -f xcodebuild >/dev/null 2>&1; then

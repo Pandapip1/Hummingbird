@@ -414,9 +414,12 @@ Already in the README; listed here so they are tracked rather than rediscovered.
       orphaned `5e1129b`, so a nix build of that specific commit would fail to fetch
       the submodule.
 
-- [ ] `adwaita-icon-theme` is not in the package closure. `nix run .` currently gets its icon
-      theme from the ambient session's `XDG_DATA_DIRS`, so the app is not self-sufficient in a
-      minimal session.
+- [x] `adwaita-icon-theme` is part of the shared GTK runtime inputs, so the wrapped
+      package and development shell find standard icons without borrowing the
+      ambient desktop session's `XDG_DATA_DIRS`.
+- [x] The packaged build exposes GStreamer development headers through `CPATH`,
+      matching the development shell. This keeps the direct appsink backend
+      buildable in the Nix sandbox.
 - [ ] `nix/swiftpm-pins.nix` hardcodes `originHash`. It has to be refreshed whenever a
       dependency changes, or the sandboxed build will quietly go back to trying the network.
 - [ ] The sandboxed build logs `skipping cache due to an error: Failed to clone repository`.

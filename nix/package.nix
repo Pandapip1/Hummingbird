@@ -11,6 +11,7 @@
   wrapGAppsHook4,
   gst_all_1,
   librsvg,
+  adwaita-icon-theme,
   src,
   version ? "0.1.0",
   pinData ? import ./swiftpm-pins.nix,
@@ -111,6 +112,13 @@ stdenv.mkDerivation {
 
   buildInputs = buildLibs;
 
+  # SwiftPM's system-library importer does not consume pkg-config include
+  # flags for transitive C headers. CGStreamer includes these directly.
+  CPATH = lib.makeSearchPath "include/gstreamer-1.0" [
+    gst_all_1.gstreamer.dev
+    gst_all_1.gst-plugins-base.dev
+  ];
+
   # Pre-populate the dependency checkouts so swift-build never reaches the
   # network, which it cannot do inside the sandbox anyway.
   configurePhase = ''
@@ -143,13 +151,14 @@ stdenv.mkDerivation {
     "--skip-update"
   ];
 
-  # GtkVideo loads these at run time, and GSK/GdkPixbuf want their own data.
+  # The media backend loads these at run time, and GSK/GdkPixbuf want their own data.
   preFixup = ''
     gappsWrapperArgs+=(
       --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${
         lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" gstPlugins
       }"
       --set-default GDK_PIXBUF_MODULE_FILE "${librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+      --prefix XDG_DATA_DIRS : "${adwaita-icon-theme}/share"
     )
   '';
 

@@ -2,7 +2,7 @@
 # packaged GTK app so the two cannot drift.
 { pkgs, lib }:
 let
-  # GtkVideo decodes through GStreamer, so these are needed at run time (on
+  # The direct media backend decodes through GStreamer, so these are needed at run time (on
   # GST_PLUGIN_SYSTEM_PATH_1_0), not just at link time.
   gstPlugins = with pkgs.gst_all_1; [
     gstreamer
@@ -17,6 +17,7 @@ let
 in
 rec {
   inherit gstPlugins;
+  iconTheme = pkgs.adwaita-icon-theme;
 
   # Used by HummingbirdKit, CQuickJS and SwiftSoup on every platform.
   baseLibs = with pkgs; [
@@ -59,7 +60,10 @@ rec {
     # Satisfies glib's Requires.private on a .pc file no nixpkgs package ships;
     # see nix/sysprof-capture-stub.nix. It lands on PKG_CONFIG_PATH through the
     # ordinary pkg-config setup hook, like any other input.
-    ++ [ (pkgs.callPackage ./sysprof-capture-stub.nix { }) ];
+    ++ [
+      iconTheme # standard GTK icons in minimal/package-only sessions
+      (pkgs.callPackage ./sysprof-capture-stub.nix { })
+    ];
 
   # Everything the Linux build of the GTK app links against.
   linuxBuildLibs = baseLibs ++ gtkLibs;

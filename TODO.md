@@ -18,10 +18,15 @@ explicitly out of scope.
 - [ ] Finish the custom player: independent video/audio/subtitle selection,
       request headers, quality selection, playback speed, subtitle styling,
       fullscreen and platform-appropriate picture in picture.
+- [ ] Bring the GStreamer player controls to feature and behavior parity with
+      the iOS controls, including every transport, track, subtitle, speed,
+      fullscreen and picture-in-picture action available on Apple platforms.
 - [ ] Add downloads for offline playback, including progress, pause/resume,
       storage limits and cleanup.
 - [ ] Make source installation, login, captcha and failure recovery usable on
       every supported platform, with clear per-source health/status reporting.
+- [ ] Add a manual update button to each plugin detail page, with visible
+      checking, success and failure states.
 
 ### Library and discovery
 
@@ -88,22 +93,16 @@ explicitly out of scope.
       tests pass (11/11).
 
 
-- [x] **NOW BLOCKING. GTK reports a broken measure contract, and content is ~4-5
-      screen widths wide.** Promoted: unreadable titles mean video playback cannot be
-      tested against a known item, so this blocks the GPU investigation too.
-      wide.** The warning:
-      `Widget reports min width of 369 for height of 31, but min height of 31 for
-      width of 15`.
-      GTK requires measure() to be self-consistent across orientations. This one is
-      not, so GTK gets contradictory answers and allocates nonsense — which fits
-      *both* symptoms: some widgets end up ~5 screens wide, others get ~15px and
-      ellipsize, which is the row titles collapsing to "R-" / "K-". Probably also
-      behind the Sources entry resizing when a re-measure is forced.
-      Suspects: the fork's hand-written layouts — the equal-split HStack layout and
-      the frame/fixed placement code.
+- [x] **Feed titles and metadata use the available row width.** Custom GTK
+      `NavigationLink` labels now preserve a child's horizontal expansion, and the
+      feed's text column explicitly fills the remaining width. This prevents titles
+      from collapsing to one-character ellipses. Verified in Hummingbird itself
+      under Xvfb with a two-line-capable title and metadata row.
 
-      Marked as complete by user: was the debug entry for the title causing the
-      window to be exceptionaly wide
+- [x] **Feed thumbnails load and retain a 16:9 card layout.** The debug source now
+      exposes a deterministic SVG thumbnail, with a plugin regression assertion.
+      An isolated Hummingbird run under Xvfb fetched and displayed it at full card
+      width with the duration badge, title and metadata intact.
 
 - [ ] **Log noise: `VK_SUBOPTIMAL_KHR` on every tab/menu transition.** Benign — the
       swapchain is being recreated for a redraw and GTK handles it — but it floods

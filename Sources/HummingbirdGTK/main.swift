@@ -1,6 +1,6 @@
 import HummingbirdKit
 import SwiftOpenUI
-import BackendGTK4
+@_spi(SwiftOpenUIBackend) import BackendGTK4
 import WebKit
 import CGTK
 import CGTKBridge
@@ -14,6 +14,10 @@ struct HummingbirdGTKApp: App {
 }
 
 MainActor.assumeIsolated {
+    // Register backend fonts before the WebKit bootstrap initializes GTK/Pango's
+    // default font map, otherwise symbol labels are permanently resolved through
+    // a fallback font for this process.
+    gtkRegisterBundledIconFont()
     // JavaScriptCoreGTK and WebKitGTK share WTF process-global state. Start a
     // WebKit page on the GTK thread before plugin runtimes create JSC contexts
     // on their serial worker queues.

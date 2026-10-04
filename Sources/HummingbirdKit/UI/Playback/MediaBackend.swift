@@ -27,6 +27,7 @@ struct PlayRequest: Sendable {
 protocol MediaBackend: AnyObject {
     /// Seconds into the current item; NaN or 0 when nothing is loaded.
     var currentTime: Double { get }
+    var duration: Double { get }
     var isPlaying: Bool { get }
     /// Called about every half second while an item is loaded.
     var onTick: (@MainActor (Double) -> Void)? { get set }
@@ -50,6 +51,7 @@ protocol MediaBackend: AnyObject {
 }
 
 extension MediaBackend {
+    var duration: Double { 0 }
     var tracks: [MediaTrack] { [] }
     func selectTrack(_: MediaTrack?) {}
     func setExternalSubtitle(_: URL?) {}

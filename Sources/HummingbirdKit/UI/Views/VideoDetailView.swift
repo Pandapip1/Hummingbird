@@ -229,6 +229,13 @@ private struct PlayerControls: View {
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
             .padding(.horizontal, 8)
+            if model.duration > 0 {
+                Slider(value: Binding(
+                    get: { min(model.playbackTime, model.duration) },
+                    set: { model.seek(to: $0) }
+                ), in: 0...model.duration)
+                .padding(.horizontal, 12)
+            }
         }
         .padding(.bottom, 8)
     }

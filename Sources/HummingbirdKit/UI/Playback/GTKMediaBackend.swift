@@ -16,6 +16,7 @@ final class GTKMediaBackend: MediaBackend {
     private var pictureInPictureController: AVPictureInPictureController?
 
     var currentTime: Double { player.currentTime().seconds }
+    var duration: Double { player._swiftOpenUIDuration.seconds }
     var isPlaying: Bool { player.rate > 0 }
     var pictureInPictureSupported: Bool { true }
 

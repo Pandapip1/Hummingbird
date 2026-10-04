@@ -18,6 +18,10 @@ final class AVMediaBackend: MediaBackend {
     private var itemObserver: NSObjectProtocol?
 
     var currentTime: Double { player?.currentTime().seconds ?? 0 }
+    var duration: Double {
+        guard let seconds = player?.currentItem?.duration.seconds, seconds.isFinite else { return 0 }
+        return seconds
+    }
     var isPlaying: Bool { (player?.rate ?? 0) > 0 }
     var tracks: [MediaTrack] {
         guard let item = player?.currentItem else { return [] }

@@ -18,6 +18,7 @@ final class PlayerModel {
     var tracks: [MediaTrack] { backend?.tracks ?? [] }
     var pictureInPictureSupported: Bool { backend?.pictureInPictureSupported ?? false }
     private(set) var playbackTime: Double = 0
+    private(set) var duration: Double = 0
     private(set) var isPlaying = false
 
     @ObservationIgnored private var cues: [SubtitleCue] = []
@@ -81,7 +82,11 @@ final class PlayerModel {
     }
     func skip(by seconds: Double) {
         guard let backend else { return }
-        let target = max(0, backend.currentTime + seconds)
+        seek(to: backend.currentTime + seconds)
+    }
+    func seek(to seconds: Double) {
+        guard let backend else { return }
+        let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
         backend.seek(to: target)
         playbackTime = target
     }
@@ -103,6 +108,7 @@ final class PlayerModel {
             try await backend.load(request, resumeAt: start, autoplay: true)
             selected = option
             playbackTime = backend.currentTime
+            self.duration = backend.duration
             isPlaying = backend.isPlaying
         } catch {
             errorMessage = (error as? PluginError)?.localizedDescription ?? error.localizedDescription
@@ -135,6 +141,7 @@ final class PlayerModel {
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
         playbackTime = seconds
+        duration = backend?.duration ?? 0
         isPlaying = backend?.isPlaying ?? false
         subtitleText = cues.first(where: { seconds >= $0.start && seconds <= $0.end })?.text
         if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, seconds > 1 {
@@ -210,7 +217,7 @@ final class PlayerModel {
         backend?.stop()
         backend = nil
         selected = nil
-        playbackTime = 0; isPlaying = false
+        playbackTime = 0; duration = 0; isPlaying = false
         cues = []; subtitleText = nil; subtitleChoice = nil
     }
 }

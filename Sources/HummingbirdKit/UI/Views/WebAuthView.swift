@@ -25,8 +25,8 @@ struct WebAuthSheet: View {
                 // windows an initial proposal while still allowing them to
                 // fill whatever space the platform provides.
                 .frame(
-                    minWidth: 720, maxWidth: .infinity,
-                    minHeight: 540, maxHeight: .infinity
+                    minWidth: 320, maxWidth: .infinity,
+                    minHeight: 320, maxHeight: .infinity
                 )
                 .ignoresSafeArea(edges: .bottom)
                 .navigationTitle(spec.title)

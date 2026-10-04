@@ -51,8 +51,8 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
             let widget = widgetFromOpaque(gtkRenderView(
                 WebView(session.page)
                     .frame(
-                        minWidth: 720, maxWidth: .infinity,
-                        minHeight: 540, maxHeight: .infinity
+                        minWidth: 320, maxWidth: .infinity,
+                        minHeight: 320, maxHeight: .infinity
                     )
             ))
             let window = gtk_window_new()!
@@ -64,11 +64,11 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
                 _ = g_main_context_iteration(nil, 0)
             }
             XCTAssertEqual(session.page.title, "Debug authentication rendered")
-            XCTAssertGreaterThanOrEqual(gtk_widget_get_width(widget), 720)
-            XCTAssertGreaterThanOrEqual(gtk_widget_get_height(widget), 540)
-            let webView = try XCTUnwrap(gtk_widget_get_first_child(widget))
-            XCTAssertGreaterThanOrEqual(gtk_widget_get_width(webView), 720)
-            XCTAssertGreaterThanOrEqual(gtk_widget_get_height(webView), 540)
+            XCTAssertGreaterThanOrEqual(gtk_widget_get_width(widget), 320)
+            XCTAssertGreaterThanOrEqual(gtk_widget_get_height(widget), 320)
+            let renderedContent = try XCTUnwrap(gtk_widget_get_first_child(widget))
+            XCTAssertGreaterThanOrEqual(gtk_widget_get_width(renderedContent), 320)
+            XCTAssertGreaterThanOrEqual(gtk_widget_get_height(renderedContent), 320)
             session.cancel()
             gtk_window_destroy(windowPointer(window))
         }

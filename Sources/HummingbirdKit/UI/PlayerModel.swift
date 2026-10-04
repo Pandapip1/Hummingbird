@@ -30,6 +30,7 @@ final class PlayerModel {
     @ObservationIgnored private var trackerTask: Task<Void, Never>?
     @ObservationIgnored private var trackerHandle: Int?
     @ObservationIgnored private var lastHistoryWrite = Date.distantPast
+    @ObservationIgnored private var pendingSeek: (target: Double, deadline: Date)?
     @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
 
@@ -109,13 +110,15 @@ final class PlayerModel {
     }
     func skip(by seconds: Double) {
         guard let backend else { return }
-        seek(to: backend.currentTime + seconds)
+        let origin = pendingSeek?.target ?? playbackTime
+        seek(to: origin + seconds)
     }
     func seek(to seconds: Double) {
         guard let backend else { return }
         let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
-        backend.seek(to: target)
+        pendingSeek = (target, Date().addingTimeInterval(2))
         playbackTime = target
+        backend.seek(to: target)
     }
 
     private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async {
@@ -167,9 +170,16 @@ final class PlayerModel {
 
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        playbackTime = seconds
         duration = backend?.duration ?? 0
         isPlaying = backend?.isPlaying ?? false
+        if let pendingSeek {
+            if abs(seconds - pendingSeek.target) <= 0.75 || Date() >= pendingSeek.deadline {
+                self.pendingSeek = nil
+            } else {
+                return
+            }
+        }
+        playbackTime = seconds
         subtitleText = cues.first(where: { seconds >= $0.start && seconds <= $0.end })?.text
         if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, seconds > 1 {
             lastHistoryWrite = Date()
@@ -247,6 +257,7 @@ final class PlayerModel {
         backend = nil
         selected = nil
         playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
+        pendingSeek = nil
         cues = []; subtitleText = nil; subtitleChoice = nil
     }
 }

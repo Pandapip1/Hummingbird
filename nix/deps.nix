@@ -2,6 +2,7 @@
 # packaged GTK app so the two cannot drift.
 { pkgs, lib }:
 let
+  webkitGTK = pkgs.callPackage ./webkitgtk-swift.nix { };
   # The direct media backend decodes through GStreamer, so these are needed at run time (on
   # GST_PLUGIN_SYSTEM_PATH_1_0), not just at link time.
   gstPlugins = with pkgs.gst_all_1; [
@@ -16,7 +17,7 @@ let
   ];
 in
 rec {
-  inherit gstPlugins;
+  inherit gstPlugins webkitGTK;
   iconTheme = pkgs.adwaita-icon-theme;
 
   # Used by HummingbirdKit, CQuickJS and SwiftSoup on every platform.
@@ -41,6 +42,8 @@ rec {
       freetype
       libepoxy
       librsvg # gdk-pixbuf SVG loader, for icon assets
+      webkitGTK # WebKitGTK 6 with upstream ICU routed to private ELF sonames
+      libsoup_3 # WebKitGTK's public pkg-config dependency
 
       # Not linked against directly: these appear only in the
       # Requires.private chains of glib, gio, pango, fontconfig and libX11.

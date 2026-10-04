@@ -11,8 +11,12 @@ final class PlatformService {
     let plugins: PluginManager
     private var capabilityCache: [String: ResultCapabilities] = [:]
     private var routeCache: [String: String] = [:]
+    private var detailsCache: [String: Data]
 
-    init(plugins: PluginManager) { self.plugins = plugins }
+    init(plugins: PluginManager) {
+        self.plugins = plugins
+        detailsCache = Storage.load([String: Data].self, name: "details_cache") ?? [:]
+    }
 
     // MARK: errors
 
@@ -60,8 +64,27 @@ final class PlatformService {
         guard let rt = await route(url: url, check: "isContentDetailsUrl") else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getContentDetails", [url], kind: "details") }
+            detailsCache[url] = data
+            if detailsCache.count > 250, let oldest = detailsCache.keys.first { detailsCache[oldest] = nil }
+            Storage.save(detailsCache, name: "details_cache")
             return (rt, try PluginRuntime.decode(ContentDetails.self, from: data))
         } catch { _ = surface(error, pluginID: rt.id); throw error }
+    }
+
+    /// Returns display/playback data from the last successful fetch. Runtime-bound
+    /// handles are cleared because they belong to the JavaScript context that created them.
+    func cachedDetails(url: String) async -> (PluginRuntime, ContentDetails)? {
+        guard let data = detailsCache[url],
+              let rt = await route(url: url, check: "isContentDetailsUrl"),
+              var details = try? PluginRuntime.decode(ContentDetails.self, from: data) else { return nil }
+        if case .video(var video) = details {
+            video.handle = 0
+            video.hasComments = false
+            video.hasTracker = false
+            video.hasRecommendations = false
+            details = .video(video)
+        }
+        return (rt, details)
     }
 
     func channel(url: String) async throws -> (PluginRuntime, ChannelInfo) {

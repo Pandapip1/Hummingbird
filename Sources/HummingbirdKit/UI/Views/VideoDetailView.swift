@@ -49,17 +49,26 @@ struct VideoDetailView: View {
 
     private func load() async {
         state = .loading
+        var displayedCache = false
+        if let (runtime, cached) = await app.platform.cachedDetails(url: url) {
+            displayedCache = true
+            await display(cached, runtime: runtime, loadPlayer: true)
+        }
         do {
             let (rt, details) = try await app.platform.details(url: url)
-            switch details {
-            case .video(let d):
-                state = .video(rt, d)
-                await player.load(details: d, runtime: rt, library: app.library)
-            case .post(let p): state = .post(p)
-            case .other(let i): state = .unsupported(i)
-            }
+            await display(details, runtime: rt, loadPlayer: !displayedCache)
         } catch {
-            state = .failed(error.localizedDescription)
+            if !displayedCache { state = .failed(error.localizedDescription) }
+        }
+    }
+
+    private func display(_ details: ContentDetails, runtime: PluginRuntime, loadPlayer: Bool) async {
+        switch details {
+        case .video(let video):
+            state = .video(runtime, video)
+            if loadPlayer { await player.load(details: video, runtime: runtime, library: app.library) }
+        case .post(let post): state = .post(post)
+        case .other(let item): state = .unsupported(item)
         }
     }
 }

@@ -30,7 +30,8 @@ final class PlayerModel {
     @ObservationIgnored private var trackerTask: Task<Void, Never>?
     @ObservationIgnored private var trackerHandle: Int?
     @ObservationIgnored private var lastHistoryWrite = Date.distantPast
-    @ObservationIgnored private var pendingSeek: (target: Double, deadline: Date)?
+    @ObservationIgnored private var pendingSeek: (target: Double, committed: Bool)?
+    @ObservationIgnored private var scrubSeekTask: Task<Void, Never>?
     @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
 
@@ -109,14 +110,29 @@ final class PlayerModel {
         isPlaying = backend.isPlaying
     }
     func skip(by seconds: Double) {
-        guard let backend else { return }
         let origin = pendingSeek?.target ?? playbackTime
-        seek(to: origin + seconds)
+        commitSeek(to: origin + seconds)
     }
     func seek(to seconds: Double) {
         guard let backend else { return }
         let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
-        pendingSeek = (target, Date().addingTimeInterval(2))
+        pendingSeek = (target, false)
+        playbackTime = target
+        scrubSeekTask?.cancel()
+        scrubSeekTask = Task { @MainActor [weak self, weak backend] in
+            try? await Task.sleep(nanoseconds: 75_000_000)
+            guard !Task.isCancelled, let self, let backend,
+                  self.pendingSeek?.target == target else { return }
+            self.pendingSeek = (target, true)
+            backend.seek(to: target)
+        }
+    }
+
+    private func commitSeek(to seconds: Double) {
+        guard let backend else { return }
+        let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
+        scrubSeekTask?.cancel(); scrubSeekTask = nil
+        pendingSeek = (target, true)
         playbackTime = target
         backend.seek(to: target)
     }
@@ -173,7 +189,7 @@ final class PlayerModel {
         duration = backend?.duration ?? 0
         isPlaying = backend?.isPlaying ?? false
         if let pendingSeek {
-            if abs(seconds - pendingSeek.target) <= 0.75 || Date() >= pendingSeek.deadline {
+            if pendingSeek.committed && abs(seconds - pendingSeek.target) <= 0.75 {
                 self.pendingSeek = nil
             } else {
                 return
@@ -243,6 +259,7 @@ final class PlayerModel {
 
     func teardown() {
         trackerTask?.cancel(); trackerTask = nil
+        scrubSeekTask?.cancel(); scrubSeekTask = nil
         if let h = trackerHandle, let rt = runtime {
             Task { if await rt.hasMember(handle: h, "onConcluded") { _ = try? await rt.callHandle(h, "onConcluded", [-1]) } }
         }

@@ -34,7 +34,10 @@ final class QuickJSContextHost: JSContextHost {
         runtime = rt
         context = ctx
         JS_SetMemoryLimit(rt, 512 * 1024 * 1024)
-        JS_SetMaxStackSize(rt, 4 * 1024 * 1024)
+        // Plugin bundles routinely add several wrapper layers around host calls. Dispatch
+        // workers have an 8 MiB stack on supported Linux builds, so leave 2 MiB for Swift
+        // and native frames while allowing deeper real-world plugin call graphs.
+        JS_SetMaxStackSize(rt, 6 * 1024 * 1024)
         JS_SetContextOpaque(ctx, Unmanaged.passUnretained(self).toOpaque())
         let global = JS_GetGlobalObject(ctx)
         let fn = JS_NewCFunction(ctx, hostCallTrampoline, "__hostCall", 3)

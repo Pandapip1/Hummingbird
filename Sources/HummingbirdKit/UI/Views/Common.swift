@@ -54,6 +54,7 @@ struct ContentRow: View {
                     Text(item.name).font(.subheadline.weight(.semibold)).lineLimit(2)
                     Text(meta).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.vertical, 4)

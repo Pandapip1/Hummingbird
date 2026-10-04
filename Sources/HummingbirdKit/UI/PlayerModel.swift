@@ -20,6 +20,7 @@ final class PlayerModel {
     private(set) var playbackTime: Double = 0
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
+    private(set) var isFullscreen = false
 
     @ObservationIgnored private var cues: [SubtitleCue] = []
     @ObservationIgnored private var details: VideoDetails?
@@ -28,6 +29,8 @@ final class PlayerModel {
     @ObservationIgnored private var trackerTask: Task<Void, Never>?
     @ObservationIgnored private var trackerHandle: Int?
     @ObservationIgnored private var lastHistoryWrite = Date.distantPast
+    @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
+    @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
 
     // MARK: loading
 
@@ -75,6 +78,29 @@ final class PlayerModel {
     func selectTrack(_ track: MediaTrack?) { backend?.selectTrack(track) }
     func startPictureInPicture() { backend?.startPictureInPicture() }
     func stopPictureInPicture() { backend?.stopPictureInPicture() }
+    func toggleFullscreen() {
+        if isFullscreen {
+            if let dismissFullscreenAction { dismissFullscreenAction() }
+            else { isFullscreen = false }
+        } else {
+            if let presentFullscreenAction { presentFullscreenAction() }
+            else { isFullscreen = true }
+        }
+    }
+    func dismissFullscreen() {
+        guard isFullscreen else { return }
+        if let dismissFullscreenAction { dismissFullscreenAction() }
+        else { isFullscreen = false }
+    }
+    func installFullscreenPresenter(present: @escaping () -> Void, dismiss: @escaping () -> Void) {
+        presentFullscreenAction = present
+        dismissFullscreenAction = dismiss
+    }
+    func removeFullscreenPresenter() {
+        presentFullscreenAction = nil
+        dismissFullscreenAction = nil
+    }
+    func fullscreenDidChange(_ fullscreen: Bool) { isFullscreen = fullscreen }
     func togglePlayback() {
         guard let backend else { return }
         if backend.isPlaying { backend.pause() } else { backend.play() }
@@ -214,10 +240,12 @@ final class PlayerModel {
             library.recordProgress(SavedVideo(details.item), seconds: seconds)
         }
         library?.flushHistory()
+        dismissFullscreen()
+        removeFullscreenPresenter()
         backend?.stop()
         backend = nil
         selected = nil
-        playbackTime = 0; duration = 0; isPlaying = false
+        playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
         cues = []; subtitleText = nil; subtitleChoice = nil
     }
 }

@@ -129,16 +129,115 @@ final class AVMediaBackend: MediaBackend {
 struct PlayerSurface: UIViewControllerRepresentable {
     let model: PlayerModel
 
+    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.showsPlaybackControls = false
         controller.allowsPictureInPicturePlayback = true
         controller.player = (model.backend as? AVMediaBackend)?.player
+        context.coordinator.inlineController = controller
+        context.coordinator.installPresenter()
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         controller.player = (model.backend as? AVMediaBackend)?.player
+        context.coordinator.inlineController = controller
+        context.coordinator.installPresenter()
+    }
+
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        coordinator.dismissFullscreen(animated: false)
+        coordinator.model?.removeFullscreenPresenter()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
+        weak var model: PlayerModel?
+        weak var inlineController: AVPlayerViewController?
+        private var fullscreenController: AVPlayerViewController?
+        private var overlayController: UIViewController?
+
+        init(model: PlayerModel) { self.model = model }
+
+        func installPresenter() {
+            model?.installFullscreenPresenter(
+                present: { [weak self] in self?.presentFullscreen() },
+                dismiss: { [weak self] in self?.dismissFullscreen(animated: true) }
+            )
+        }
+
+        private func presentFullscreen() {
+            guard fullscreenController == nil,
+                  let model,
+                  let inlineController,
+                  let presenter = presentingController(from: inlineController) else { return }
+
+            let controller = AVPlayerViewController()
+            controller.player = (model.backend as? AVMediaBackend)?.player
+            controller.showsPlaybackControls = false
+            controller.allowsPictureInPicturePlayback = true
+            controller.modalPresentationStyle = .fullScreen
+
+            guard let container = controller.contentOverlayView else { return }
+            let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
+            overlay.view.backgroundColor = .clear
+            controller.addChild(overlay)
+            overlay.view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(overlay.view)
+            NSLayoutConstraint.activate([
+                overlay.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                overlay.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                overlay.view.topAnchor.constraint(equalTo: container.topAnchor),
+                overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+            overlay.didMove(toParent: controller)
+
+            fullscreenController = controller
+            overlayController = overlay
+            inlineController.player = nil
+            model.fullscreenDidChange(true)
+            presenter.present(controller, animated: true)
+            controller.presentationController?.delegate = self
+        }
+
+        func dismissFullscreen(animated: Bool) {
+            guard let controller = fullscreenController else {
+                model?.fullscreenDidChange(false)
+                return
+            }
+            controller.dismiss(animated: animated) { [weak self] in self?.finishDismissal() }
+        }
+
+        func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+            finishDismissal()
+        }
+
+        private func finishDismissal() {
+            overlayController?.willMove(toParent: nil)
+            overlayController?.view.removeFromSuperview()
+            overlayController?.removeFromParent()
+            overlayController = nil
+            fullscreenController = nil
+            inlineController?.player = (model?.backend as? AVMediaBackend)?.player
+            model?.fullscreenDidChange(false)
+        }
+
+        private func presentingController(from controller: UIViewController) -> UIViewController? {
+            var presenter = controller.view.window?.rootViewController
+            while let presented = presenter?.presentedViewController { presenter = presented }
+            return presenter
+        }
+    }
+}
+
+@MainActor
+private struct FullscreenPlayerControls: View {
+    let model: PlayerModel
+    var body: some View {
+        PlayerControls(model: model, isFullscreen: true)
+            .frame(maxHeight: .infinity, alignment: .bottom)
     }
 }
 #elseif canImport(AVKit) && canImport(SwiftUI) && os(macOS)

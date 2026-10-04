@@ -160,6 +160,18 @@ private struct PlayerSection: View {
     let model: PlayerModel
 
     var body: some View {
+        #if canImport(UIKit)
+        player
+        #else
+        player.fullScreenCover(
+            isPresented: Binding(get: { model.isFullscreen }, set: { if !$0 { model.dismissFullscreen() } })
+        ) {
+            FullscreenPlayerView(model: model)
+        }
+        #endif
+    }
+
+    private var player: some View {
         VStack(spacing: 6) {
             ZStack {
                 Color.black
@@ -172,15 +184,30 @@ private struct PlayerSection: View {
             .frame(maxWidth: .infinity)
             .aspectRatio(16 / 9, contentMode: .fit)
             .overlay(alignment: .bottom) {
-                PlayerControls(model: model)
+                PlayerControls(model: model, isFullscreen: false)
             }
         }
     }
 }
 
 @MainActor
-private struct PlayerControls: View {
+struct FullscreenPlayerView: View {
     let model: PlayerModel
+
+    var body: some View {
+        ZStack {
+            Color.black
+            PlayerSurface(model: model)
+            PlayerControls(model: model, isFullscreen: true)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+}
+
+@MainActor
+struct PlayerControls: View {
+    let model: PlayerModel
+    let isFullscreen: Bool
 
     var body: some View {
         VStack(spacing: 6) {
@@ -223,6 +250,12 @@ private struct PlayerControls: View {
                     Button { model.startPictureInPicture() } label: {
                         Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
                     }
+                }
+                Button { model.toggleFullscreen() } label: {
+                    Image(systemName: isFullscreen
+                          ? "arrow.down.right.and.arrow.up.left"
+                          : "arrow.up.left.and.arrow.down.right")
+                        .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
                 }
             }
             .foregroundStyle(Color.white)

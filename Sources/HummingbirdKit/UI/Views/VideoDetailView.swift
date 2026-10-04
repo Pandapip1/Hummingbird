@@ -183,7 +183,7 @@ private struct PlayerSection: View {
             }
             .frame(maxWidth: .infinity)
             .aspectRatio(16 / 9, contentMode: .fit)
-            .overlay(alignment: .bottom) {
+            .overlay {
                 PlayerControls(model: model, isFullscreen: false)
             }
         }
@@ -199,7 +199,6 @@ struct FullscreenPlayerView: View {
             Color.black
             PlayerSurface(model: model)
             PlayerControls(model: model, isFullscreen: true)
-                .frame(maxHeight: .infinity, alignment: .bottom)
         }
     }
 }
@@ -208,9 +207,13 @@ struct FullscreenPlayerView: View {
 struct PlayerControls: View {
     let model: PlayerModel
     let isFullscreen: Bool
+    @State private var controlsVisible = true
+    @State private var hideTask: Task<Void, Never>?
 
     var body: some View {
-        VStack(spacing: 6) {
+        ZStack {
+            Color.clear.onTapGesture { interacted() }
+
             if let text = model.subtitleText {
                 Text(text)
                     .font(.callout.weight(.medium))
@@ -219,81 +222,151 @@ struct PlayerControls: View {
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
                     .padding(.horizontal)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, controlsVisible ? 58 : 16)
             }
-            HStack(spacing: 14) {
-                Button { model.skip(by: -10) } label: {
-                    Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds")
-                }
-                Button { model.togglePlayback() } label: {
-                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                        .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
-                }
-                Button { model.skip(by: 10) } label: {
-                    Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds")
-                }
-                Text(playbackTime).font(.caption.monospacedDigit())
-                Spacer()
-                if model.options.count > 1 {
-                    Menu {
-                        ForEach(model.options) { option in
-                            Button { Task { await model.select(option) } } label: {
-                                if option.id == model.selected?.id { Label(option.label, systemImage: "checkmark") }
-                                else { Text(option.label) }
+
+            if controlsVisible || !model.isPlaying {
+                VStack(spacing: 6) {
+                    if hasTopControls {
+                        HStack(spacing: 12) {
+                            if isFullscreen {
+                                Text(model.title).font(.headline).foregroundStyle(.white)
+                            }
+                            Spacer()
+                            StreamMenu(model: model, interacted: interacted)
+                            QualityMenu(model: model, interacted: interacted)
+                            SubtitleMenu(model: model, interacted: interacted)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal, 8)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 14) {
+                        Button { interacted(); model.skip(by: -10) } label: {
+                            Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds")
+                        }
+                        Button { interacted(); model.togglePlayback() } label: {
+                            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                                .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
+                        }
+                        Button { interacted(); model.skip(by: 10) } label: {
+                            Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds")
+                        }
+                        Text(playbackTime).font(.caption.monospacedDigit())
+                        if model.duration > 0 {
+                            Slider(value: Binding(
+                                get: { min(model.playbackTime, model.duration) },
+                                set: { interacted(); model.seek(to: $0) }
+                            ), in: 0...model.duration)
+                            .frame(minWidth: 80, maxWidth: .infinity)
+                        } else {
+                            Spacer()
+                        }
+                        if model.pictureInPictureSupported {
+                            Button { interacted(); model.startPictureInPicture() } label: {
+                                Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
                             }
                         }
-                    } label: {
-                        Image(systemName: "slider.horizontal.3").accessibilityLabel("Quality")
+                        Button { interacted(); model.toggleFullscreen() } label: {
+                            Image(systemName: isFullscreen
+                                  ? "arrow.down.right.and.arrow.up.left"
+                                  : "arrow.up.left.and.arrow.down.right")
+                                .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
+                        }
                     }
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.horizontal, 8)
                 }
-                SubtitleMenu(model: model)
-                if model.pictureInPictureSupported {
-                    Button { model.startPictureInPicture() } label: {
-                        Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
-                    }
-                }
-                Button { model.toggleFullscreen() } label: {
-                    Image(systemName: isFullscreen
-                          ? "arrow.down.right.and.arrow.up.left"
-                          : "arrow.up.left.and.arrow.down.right")
-                        .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
-                }
-            }
-            .foregroundStyle(Color.white)
-            .padding(.horizontal, 12).padding(.vertical, 9)
-            .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-            .padding(.horizontal, 8)
-            if model.duration > 0 {
-                Slider(value: Binding(
-                    get: { min(model.playbackTime, model.duration) },
-                    set: { model.seek(to: $0) }
-                ), in: 0...model.duration)
-                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
         }
-        .padding(.bottom, 8)
+        .task { interacted() }
+        .onChange(of: model.isPlaying) { playing in
+            if playing { interacted() }
+            else { hideTask?.cancel(); controlsVisible = true }
+        }
+    }
+
+    private func interacted() {
+        controlsVisible = true
+        hideTask?.cancel()
+        guard model.isPlaying else { return }
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled, model.isPlaying else { return }
+            controlsVisible = false
+        }
     }
 
     private var playbackTime: String {
         let seconds = max(0, Int(model.playbackTime))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
+
+    private var hasTopControls: Bool {
+        isFullscreen || !model.tracks.filter { $0.kind != .subtitles }.isEmpty
+            || model.options.count > 1 || !model.subtitleSources.isEmpty
+    }
+}
+
+@MainActor
+private struct StreamMenu: View {
+    let model: PlayerModel
+    let interacted: () -> Void
+    var body: some View {
+        let streams = model.tracks.filter { $0.kind != .subtitles }
+        if !streams.isEmpty {
+            Menu {
+                ForEach(streams, id: \.id) { track in
+                    Button { interacted(); model.selectTrack(track) } label: {
+                        Text(track.label ?? track.language ?? track.kind.rawValue.capitalized)
+                    }
+                }
+            } label: { Text("Stream").foregroundStyle(.white) }
+        }
+    }
+}
+
+@MainActor
+private struct QualityMenu: View {
+    let model: PlayerModel
+    let interacted: () -> Void
+    var body: some View {
+        if model.options.count > 1 {
+            Menu {
+                ForEach(model.options) { option in
+                    Button { interacted(); Task { await model.select(option) } } label: {
+                        if option.id == model.selected?.id { Label(option.label, systemImage: "checkmark") }
+                        else { Text(option.label) }
+                    }
+                }
+            } label: { Text("Quality").foregroundStyle(.white) }
+        }
+    }
 }
 
 @MainActor
 private struct SubtitleMenu: View {
     let model: PlayerModel
+    let interacted: () -> Void
     var body: some View {
         if !model.subtitleSources.isEmpty {
             Menu {
-                Button { Task { await model.chooseSubtitle(nil) } } label: {
+                Button { interacted(); Task { await model.chooseSubtitle(nil) } } label: {
                     if model.subtitleChoice == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
                 }
                 ForEach(model.subtitleSources) { s in
-                    Button { Task { await model.chooseSubtitle(s) } } label: {
+                    Button { interacted(); Task { await model.chooseSubtitle(s) } } label: {
                         if model.subtitleChoice?.id == s.id { Label(s.name, systemImage: "checkmark") } else { Text(s.name) }
                     }
                 }
-            } label: { Image(systemName: "captions.bubble").accessibilityLabel("Subtitles") }
+            } label: { Text("Subtitles").foregroundStyle(.white) }
         }
     }
 }

@@ -21,6 +21,7 @@ final class PlayerModel {
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
     private(set) var isFullscreen = false
+    var title: String { details?.item.name ?? "" }
 
     @ObservationIgnored private var cues: [SubtitleCue] = []
     @ObservationIgnored private var details: VideoDetails?

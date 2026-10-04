@@ -1,6 +1,14 @@
 import Foundation
 import SwiftOpenUI
 
+struct MediaTrack: Hashable, Sendable {
+    enum Kind: String, Sendable { case video, audio, subtitles }
+    let id: String
+    let kind: Kind
+    let language: String?
+    let label: String?
+}
+
 /// A media URL with the request headers the plugin's `requestModifier` asked for.
 struct ResolvedMedia: Sendable {
     var url: URL

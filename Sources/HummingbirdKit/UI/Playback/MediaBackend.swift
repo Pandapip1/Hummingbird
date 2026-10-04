@@ -26,6 +26,7 @@ protocol MediaBackend: AnyObject {
     var onFailure: (@MainActor (String) -> Void)? { get set }
     var tracks: [MediaTrack] { get }
     func selectTrack(_ track: MediaTrack?)
+    func setExternalSubtitle(_ url: URL?)
     var pictureInPictureSupported: Bool { get }
     func startPictureInPicture()
     func stopPictureInPicture()
@@ -43,6 +44,7 @@ protocol MediaBackend: AnyObject {
 extension MediaBackend {
     var tracks: [MediaTrack] { [] }
     func selectTrack(_: MediaTrack?) {}
+    func setExternalSubtitle(_: URL?) {}
     var pictureInPictureSupported: Bool { false }
     func startPictureInPicture() {}
     func stopPictureInPicture() {}

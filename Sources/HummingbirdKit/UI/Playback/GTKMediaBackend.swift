@@ -49,6 +49,7 @@ final class GTKMediaBackend: MediaBackend {
     func play() { player.play() }
     func pause() { player.pause() }
     func seek(to seconds: Double) { player.seek(to: seconds) }
+    func setExternalSubtitle(_ url: URL?) { player.setExternalSubtitle(url) }
     func stop() { ticker?.cancel(); ticker = nil; player.stop() }
 }
 

@@ -170,12 +170,29 @@ private struct PlayerSection: View {
             }
             .aspectRatio(16 / 9, contentMode: .fit)
             .overlay(alignment: .bottom) {
-                if let t = model.subtitleText {
-                    Text(t).font(.callout.weight(.medium)).multilineTextAlignment(.center).foregroundStyle(.white)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
-                        .padding(.bottom, 44).padding(.horizontal)
+                VStack(spacing: 6) {
+                    if let t = model.subtitleText {
+                        Text(t).font(.callout.weight(.medium)).multilineTextAlignment(.center).foregroundStyle(.white)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
+                            .padding(.horizontal)
+                    }
+                    HStack(spacing: 14) {
+                        Button { model.backend?.seek(to: max(0, model.backend?.currentTime ?? 0 - 10)) } label: {
+                            Label("Back 10 seconds", systemImage: "gobackward.10")
+                        }
+                        Button { if model.backend?.isPlaying == true { model.backend?.pause() } else { model.backend?.play() } } label: {
+                            Label(model.backend?.isPlaying == true ? "Pause" : "Play", systemImage: model.backend?.isPlaying == true ? "pause.fill" : "play.fill")
+                        }
+                        Button { model.backend?.seek(to: (model.backend?.currentTime ?? 0) + 10) } label: {
+                            Label("Forward 10 seconds", systemImage: "goforward.10")
+                        }
+                    }
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(.black.opacity(0.7), in: Capsule())
                 }
+                .padding(.bottom, 8)
             }
 
             HStack {

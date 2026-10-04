@@ -136,6 +136,11 @@ final class PlayerModel {
         subtitleChoice = sub
         cues = []
         subtitleText = nil
+        if let url = sub?.url.flatMap(URL.init(string:)) {
+            backend?.setExternalSubtitle(url)
+        } else {
+            backend?.setExternalSubtitle(nil)
+        }
         guard let sub else { return }
         var text: String?
         if let h = sub.getSubtitlesHandle, let runtime {

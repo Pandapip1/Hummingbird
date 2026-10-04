@@ -7,6 +7,7 @@
 var PLUGIN_ID = "hummingbird-debug";
 var BASE = "http://127.0.0.1:8742";
 var VIDEO_URL = BASE + "/test.mp4";
+var NON_RANGE_VIDEO_URL = BASE + "/no-range.mp4";
 var THUMBNAIL_URL = BASE + "/thumbnail.svg";
 var VIDEO_ID = "debug-video-1";
 var VIDEO_PAGE = BASE + "/watch/" + VIDEO_ID;
@@ -38,12 +39,20 @@ function video() {
     });
 }
 
+function nonRangeVideo() {
+    var item = video();
+    item.id = platformId("debug-video-no-range");
+    item.name = "Debug non-range test pattern (10s, 320x240)";
+    item.url = BASE + "/watch/debug-video-no-range";
+    return item;
+}
+
 source.enable = function (conf, settings, savedState) {};
 
 source.disable = function () {};
 
 source.getHome = function () {
-    return new VideoPager([video()], false);
+    return new VideoPager([video(), nonRangeVideo()], false);
 };
 
 source.search = function (query) {
@@ -83,9 +92,10 @@ source.isContentDetailsUrl = function (url) {
 };
 
 source.getContentDetails = function (url) {
+    var noRange = url.indexOf("debug-video-no-range") >= 0;
     return new PlatformVideoDetails({
-        id: platformId(VIDEO_ID),
-        name: "Debug test pattern (10s, 320x240)",
+        id: platformId(noRange ? "debug-video-no-range" : VIDEO_ID),
+        name: noRange ? "Debug non-range test pattern (10s, 320x240)" : "Debug test pattern (10s, 320x240)",
         thumbnails: new Thumbnails([{ url: THUMBNAIL_URL, quality: 100 }]),
         author: author(),
         datetime: 0,
@@ -98,7 +108,7 @@ source.getContentDetails = function (url) {
         video: new VideoSourceDescriptor([
             new VideoUrlSource({
                 name: "320x240",
-                url: VIDEO_URL,
+                url: noRange ? NON_RANGE_VIDEO_URL : VIDEO_URL,
                 width: 320,
                 height: 240,
                 duration: 10,

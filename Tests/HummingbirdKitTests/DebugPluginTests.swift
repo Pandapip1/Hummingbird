@@ -24,17 +24,23 @@ final class DebugPluginTests: XCTestCase {
         await runtime.stop()
     }
 
-    func testDebugPluginHomeReturnsOnePlayableVideo() async throws {
+    func testDebugPluginHomeReturnsRangeAndNonRangeVideos() async throws {
         let (config, script) = try loadDebugPlugin()
         let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
         try await runtime.enable()
         let pager = try await runtime.pager("getHome", as: ContentItem.self)
-        await runtime.stop()
-
-        XCTAssertEqual(pager.initial.count, 1, "the debug source should offer exactly one video")
+        XCTAssertEqual(pager.initial.count, 2, "the debug source should cover range and non-range servers")
         let item = try XCTUnwrap(pager.initial.first)
         XCTAssertFalse(item.url.isEmpty, "the video needs a details URL")
         XCTAssertEqual(item.duration, 10, "the fixed fixture should remain a ten-second video")
         XCTAssertEqual(item.thumbnailURL?.absoluteString, "http://127.0.0.1:8742/thumbnail.svg")
+
+        let nonRange = try XCTUnwrap(pager.initial.last)
+        let data = try await runtime.callRaw("getContentDetails", [nonRange.url], kind: "details")
+        guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
+            return XCTFail("expected non-range video details")
+        }
+        XCTAssertEqual(details.videoSources.first?.url, "http://127.0.0.1:8742/no-range.mp4")
+        await runtime.stop()
     }
 }

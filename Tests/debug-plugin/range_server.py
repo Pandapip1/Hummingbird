@@ -11,6 +11,9 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
 
     def send_head(self):
         path = self.translate_path(self.path)
+        supports_ranges = not self.path.startswith("/no-range.mp4")
+        if not supports_ranges:
+            path = os.path.join(os.path.dirname(path), "test.mp4")
         if os.path.isdir(path):
             return super().send_head()
         try:
@@ -21,7 +24,7 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
 
         size = os.fstat(source.fileno()).st_size
         start, end = 0, size - 1
-        requested = self.headers.get("Range")
+        requested = self.headers.get("Range") if supports_ranges else None
         if requested and requested.startswith("bytes=") and "," not in requested:
             first, last = requested[6:].split("-", 1)
             try:
@@ -50,7 +53,8 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
             self.range_end = None
 
         self.send_header("Content-Type", self.guess_type(path))
-        self.send_header("Accept-Ranges", "bytes")
+        if supports_ranges:
+            self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Last-Modified", self.date_time_string(os.fstat(source.fileno()).st_mtime))
         self.end_headers()

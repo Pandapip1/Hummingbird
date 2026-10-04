@@ -34,6 +34,7 @@ final class DebugPluginTests: XCTestCase {
         XCTAssertEqual(pager.initial.count, 1, "the debug source should offer exactly one video")
         let item = try XCTUnwrap(pager.initial.first)
         XCTAssertFalse(item.url.isEmpty, "the video needs a details URL")
-        XCTAssertEqual(item.duration, 10, "duration identifies the item while titles are unreadable")
+        XCTAssertEqual(item.duration, 10, "the fixed fixture should remain a ten-second video")
+        XCTAssertEqual(item.thumbnailURL?.absoluteString, "http://127.0.0.1:8742/thumbnail.svg")
     }
 }

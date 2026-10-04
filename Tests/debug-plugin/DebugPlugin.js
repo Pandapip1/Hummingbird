@@ -7,6 +7,7 @@
 var PLUGIN_ID = "hummingbird-debug";
 var BASE = "http://127.0.0.1:8742";
 var VIDEO_URL = BASE + "/test.mp4";
+var THUMBNAIL_URL = BASE + "/thumbnail.svg";
 var VIDEO_ID = "debug-video-1";
 var VIDEO_PAGE = BASE + "/watch/" + VIDEO_ID;
 
@@ -27,7 +28,7 @@ function video() {
     return new PlatformVideo({
         id: platformId(VIDEO_ID),
         name: "Debug test pattern (10s, 320x240)",
-        thumbnails: new Thumbnails([]),
+        thumbnails: new Thumbnails([{ url: THUMBNAIL_URL, quality: 100 }]),
         author: author(),
         datetime: 0,
         duration: 10,
@@ -85,7 +86,7 @@ source.getContentDetails = function (url) {
     return new PlatformVideoDetails({
         id: platformId(VIDEO_ID),
         name: "Debug test pattern (10s, 320x240)",
-        thumbnails: new Thumbnails([]),
+        thumbnails: new Thumbnails([{ url: THUMBNAIL_URL, quality: 100 }]),
         author: author(),
         datetime: 0,
         duration: 10,

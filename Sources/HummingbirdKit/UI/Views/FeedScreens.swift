@@ -13,28 +13,20 @@ import UniformTypeIdentifiers
 @MainActor
 struct HomeView: View {
     @Environment(AppModel.self) private var app
-    @State private var feed: FeedModel?
 
     var body: some View {
         NavigationStack {
             Group {
                 if app.plugins.enabledPlugins.isEmpty { NoSourcesView() }
-                else if let feed {
-                    FeedList(feed: feed, emptyTitle: "Nothing to show", emptyMessage: "Your sources returned no home feed.")
-                        .refreshable { await load() }
+                else if app.homeFeed.loadedOnce {
+                    FeedList(feed: app.homeFeed, emptyTitle: "Nothing to show", emptyMessage: "Your sources returned no home feed.")
+                        .refreshable { await app.loadHome(force: true) }
                 } else { ProgressView() }
             }
             .navigationTitle("Home")
             .routeDestinations()
         }
-        .task(id: app.plugins.enabledPlugins.map(\.id)) { await load() }
-    }
-
-    private func load() async {
-        let f = feed ?? app.makeFeed()
-        feed = f
-        guard !app.plugins.enabledPlugins.isEmpty else { return }
-        await f.reload(sources: app.platform.homeSources())
+        .task(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
     }
 }
 

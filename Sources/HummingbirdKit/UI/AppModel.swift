@@ -19,7 +19,9 @@ final class AppModel {
     let library: LibraryStore
     let platform: PlatformService
     let subscriptionFeed: SubscriptionFeed
+    let homeFeed: FeedModel
     var selectedTab: AppTab = .home
+    @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
     init() {
         let plugins = PluginManager()
@@ -29,6 +31,9 @@ final class AppModel {
         self.library = library
         self.platform = platform
         self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
+        self.homeFeed = FeedModel { [platform] error, runtime in
+            platform.surface(error, pluginID: runtime.id)
+        }
         #if os(iOS)
         // Playback continues with the screen locked and in Picture in Picture.
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -39,5 +44,26 @@ final class AppModel {
     /// Hands a feed model the error reporter it needs.
     func makeFeed() -> FeedModel {
         FeedModel { [platform] error, runtime in platform.surface(error, pluginID: runtime.id) }
+    }
+
+    /// Refreshes Home once for each enabled-source configuration. SwiftOpenUI may
+    /// recreate the view hosting `.task(id:)`; keeping this gate in the long-lived
+    /// app model prevents duplicate plugin and network work.
+    func loadHome(force: Bool = false) async {
+        let ids = plugins.enabledPlugins.map(\.id)
+        guard !ids.isEmpty else {
+            homeFeedPluginIDs = []
+            return
+        }
+        guard !homeFeed.isLoading else { return }
+        guard force || ids != homeFeedPluginIDs || !homeFeed.loadedOnce else { return }
+        homeFeedPluginIDs = ids
+        await homeFeed.reload(sources: platform.homeSources())
+        // A source can be enabled or disabled while the previous configuration
+        // is still loading. The task for the new id will observe `isLoading` and
+        // return; finish that requested transition here once the old load settles.
+        if plugins.enabledPlugins.map(\.id) != homeFeedPluginIDs {
+            await loadHome()
+        }
     }
 }

@@ -257,9 +257,11 @@ explicitly out of scope.
       seconds. Making the fork's List lazy would fix it properly and restore
       infinite scroll on GTK — worth doing eventually.
 
-- [ ] **`load()` runs 4 times at startup**, where `.task(id:)` should run once. Seen
-      in the same instrumentation: 4 reload calls before any interaction, still 4
-      after the pagination fix. Four times the startup fetching for nothing.
+- [x] **`load()` ran 4 times at startup**, where `.task(id:)` should run once. Home
+      now owns its feed and reload gate in the long-lived `AppModel`; repeated view
+      tasks for the same enabled-source IDs share the in-flight or loaded result.
+      Pull-to-refresh still forces one new load. This removes duplicate plugin and
+      network work even if a backend recreates the task-hosting view.
 
 
 - [ ] **(Later, architectural.) Cache fetched content in a database.** Everything

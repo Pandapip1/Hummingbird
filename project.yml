@@ -2,7 +2,7 @@ name: Hummingbird
 options:
   bundleIdPrefix: app.hummingbird
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:

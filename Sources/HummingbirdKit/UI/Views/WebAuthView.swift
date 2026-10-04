@@ -1,212 +1,212 @@
 import Foundation
-#if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
+#else
+import SwiftOpenUI
+#endif
 import WebKit
-import AVFoundation
 
 @MainActor
 struct WebAuthSheet: View {
     let spec: WebAuthSpec
     let onFinish: (SourceAuth?) -> Void
-    @State private var coordinatorBox = CoordinatorBox()
+    @State private var session: WebAuthSession
+
+    init(spec: WebAuthSpec, onFinish: @escaping (SourceAuth?) -> Void) {
+        self.spec = spec
+        self.onFinish = onFinish
+        _session = State(wrappedValue: WebAuthSession(spec: spec, onFinish: onFinish))
+    }
 
     var body: some View {
         NavigationStack {
-            WebAuthView(spec: spec, box: coordinatorBox, onFinish: onFinish)
+            WebView(session.page)
                 .ignoresSafeArea(edges: .bottom)
                 .navigationTitle(spec.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { onFinish(nil) } }
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { session.cancel() } }
                     if !spec.hasExplicitCompletion {
-                        // Without completion rules we cannot tell when sign-in is done, so let the person say so.
-                        ToolbarItem(placement: .confirmationAction) { Button("Done") { coordinatorBox.coordinator?.finishNow() } }
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { session.finish() } }
                     }
                 }
+                .task { await session.run() }
         }
     }
 }
 
-final class CoordinatorBox { weak var coordinator: WebAuthView.Coordinator? }
+@MainActor
+private final class WebAuthSession {
+    let page: WebPage
+    private let dataStore: WKWebsiteDataStore
+    private let spec: WebAuthSpec
+    private let onFinish: (SourceAuth?) -> Void
+    private var headers: [String: [String: String]] = [:]
+    private var cookies: [String: [String: String]] = [:]
+    private var completionSeen: Bool
+    private var userAgent: String?
+    private var finished = false
+    private var clickedLoginButton = false
 
-struct WebAuthView: UIViewRepresentable {
-    let spec: WebAuthSpec
-    let box: CoordinatorBox
-    let onFinish: (SourceAuth?) -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(spec: spec, onFinish: onFinish) }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
-        let controller = WKUserContentController()
-        controller.add(context.coordinator, name: "jbHeaders")
-        controller.addUserScript(WKUserScript(source: Self.hookScript, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-        config.userContentController = controller
-        let web = WKWebView(frame: .zero, configuration: config)
-        web.navigationDelegate = context.coordinator
-        if let ua = spec.userAgent { web.customUserAgent = ua }
-        context.coordinator.webView = web
-        box.coordinator = context.coordinator
-        if let html = spec.html { web.loadHTMLString(html, baseURL: spec.startURL) }
-        else if let url = spec.startURL { web.load(URLRequest(url: url)) }
-        return web
+    init(spec: WebAuthSpec, onFinish: @escaping (SourceAuth?) -> Void) {
+        self.spec = spec
+        self.onFinish = onFinish
+        completionSeen = spec.completionURL == nil
+        dataStore = .nonPersistent()
+        var configuration = WebPage.Configuration()
+        configuration.websiteDataStore = dataStore
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.captureScript, injectionTime: .atDocumentStart, forMainFrameOnly: false
+        ))
+        page = WebPage(configuration: configuration)
+        page.customUserAgent = spec.userAgent
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
-
-    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
-        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "jbHeaders")
+    func run() async {
+        if let html = spec.html {
+            page.load(html: html, baseURL: spec.startURL ?? URL(string: "about:blank")!)
+        } else {
+            page.load(spec.startURL)
+        }
+        while !Task.isCancelled, !finished {
+            await inspectPage()
+            try? await Task.sleep(for: .milliseconds(250))
+        }
     }
 
-    // Records the headers of requests the page makes with fetch / XMLHttpRequest. Navigations are covered by the
-    // navigation delegate. Page scripts only; requests made by the browser engine itself cannot be observed.
-    static let hookScript = """
-    (function () {
-      if (window.__jbHooked) return; window.__jbHooked = true;
-      function post(url, headers) {
-        try { window.webkit.messageHandlers.jbHeaders.postMessage({ url: String(url), headers: headers || {} }); } catch (e) {}
-      }
-      function abs(u) { try { return new URL(u, location.href).href; } catch (e) { return String(u); } }
-      var of = window.fetch;
-      if (of) window.fetch = function (input, init) {
-        try {
-          var h = {};
-          var src = (init && init.headers) || (input && input.headers);
-          if (src) {
-            if (typeof src.forEach === 'function' && !Array.isArray(src)) src.forEach(function (v, k) { h[k] = v; });
-            else if (Array.isArray(src)) src.forEach(function (p) { h[p[0]] = p[1]; });
-            else Object.keys(src).forEach(function (k) { h[k] = src[k]; });
-          }
-          post(abs(typeof input === 'string' ? input : input.url), h);
-        } catch (e) {}
-        return of.apply(this, arguments);
+    func cancel() {
+        guard !finished else { return }
+        finished = true
+        page.stopLoading()
+        onFinish(nil)
+    }
+
+    func finish() {
+        guard !finished else { return }
+        finished = true
+        page.stopLoading()
+        onFinish(SourceAuth(cookieMap: cookies, headers: headers, userAgent: userAgent ?? spec.userAgent))
+    }
+
+    private func inspectPage() async {
+        if let url = page.url { checkCompletion(url) }
+        if let snapshot = try? await page.callJavaScript(Self.snapshotScript) as? String,
+           let data = snapshot.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            userAgent = object["userAgent"] as? String ?? userAgent
+            for item in object["requests"] as? [[String: Any]] ?? [] {
+                guard let rawURL = item["url"] as? String, let url = URL(string: rawURL) else { continue }
+                var requestHeaders: [String: String] = [:]
+                for (name, value) in item["headers"] as? [String: Any] ?? [:] {
+                    requestHeaders[name] = String(describing: value)
+                }
+                recordHeaders(requestHeaders, url: url)
+            }
+        }
+
+        if !clickedLoginButton, page.url != nil, let selector = spec.loginButtonSelector,
+           selector.range(of: "^[a-zA-Z\\-\\.#:_ ]*$", options: .regularExpression) != nil {
+            clickedLoginButton = true
+            _ = try? await page.callJavaScript(
+                "const element = document.querySelector(selector); if (element) { element.click(); }",
+                arguments: ["selector": selector]
+            )
+        }
+
+        for cookie in await dataStore.httpCookieStore.allCookies() {
+            let host = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
+            guard spec.hostAllowed(host.lowercased()) else { continue }
+            if spec.cookiesExclOthers && !spec.cookiesToFind.contains(cookie.name) { continue }
+            let domain = cookie.domain.hasPrefix(".") ? cookie.domain : "." + cookie.domain
+            cookies[domain.lowercased(), default: [:]][cookie.name] = cookie.value
+        }
+        if satisfied() { finish() }
+    }
+
+    private func recordHeaders(_ requestHeaders: [String: String], url: URL) {
+        guard let host = url.host?.lowercased() else { return }
+        if let allowed = spec.allowedDomains, !allowed.isEmpty,
+           !allowed.contains(where: { domainMatches(host: host, domain: $0.lowercased()) }) { return }
+        for (rawName, value) in requestHeaders {
+            let name = rawName.lowercased()
+            if name == "authorization", value == "undefined" { continue }
+            if spec.headersToFind.contains(where: { $0.lowercased() == name }) {
+                headers[host, default: [:]][name] = value
+            }
+            for (domain, names) in spec.domainHeadersToFind where domainMatches(host: host, domain: domain) {
+                if names.contains(where: { $0.lowercased() == name }) {
+                    headers[domain, default: [:]][name] = value
+                }
+            }
+        }
+    }
+
+    private func checkCompletion(_ url: URL) {
+        guard let target = spec.completionURL, !completionSeen else { return }
+        if target.hasSuffix("?*") {
+            let base = String(target.dropLast(2))
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            components?.query = nil
+            components?.fragment = nil
+            if components?.string == base || url.absoluteString.hasPrefix(base) { completionSeen = true }
+        } else if url.absoluteString == target {
+            completionSeen = true
+        }
+    }
+
+    private func satisfied() -> Bool {
+        guard completionSeen, spec.hasExplicitCompletion else { return false }
+        let foundHeaderNames = Set(headers.values.flatMap(\.keys))
+        for name in spec.headersToFind where !foundHeaderNames.contains(name.lowercased()) { return false }
+        for (domain, names) in spec.domainHeadersToFind {
+            let found = headers[domain] ?? [:]
+            for name in names where found[name.lowercased()] == nil { return false }
+        }
+        let foundCookieNames = Set(cookies.values.flatMap(\.keys))
+        for name in spec.cookiesToFind where !foundCookieNames.contains(name) { return false }
+        return true
+    }
+
+    private static let captureScript = #"""
+    (() => {
+      if (window.__hummingbirdAuthCapture) return;
+      window.__hummingbirdAuthCapture = [];
+      const record = (url, headers) => {
+        try { window.__hummingbirdAuthCapture.push({url: String(new URL(url, location.href)), headers: headers || {}}); } catch (_) {}
       };
-      var xo = XMLHttpRequest.prototype.open, xs = XMLHttpRequest.prototype.setRequestHeader, xd = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function (m, u) { this.__jb = { url: u, headers: {} }; return xo.apply(this, arguments); };
-      XMLHttpRequest.prototype.setRequestHeader = function (k, v) { if (this.__jb) this.__jb.headers[k] = v; return xs.apply(this, arguments); };
-      XMLHttpRequest.prototype.send = function () { try { if (this.__jb) post(abs(this.__jb.url), this.__jb.headers); } catch (e) {} return xd.apply(this, arguments); };
+      const originalFetch = window.fetch;
+      if (originalFetch) window.fetch = function(input, init) {
+        try {
+          const headers = {};
+          const source = (init && init.headers) || (input && input.headers);
+          if (source && typeof source.forEach === 'function') source.forEach((value, name) => headers[name] = value);
+          else if (Array.isArray(source)) source.forEach(pair => headers[pair[0]] = pair[1]);
+          else if (source) Object.keys(source).forEach(name => headers[name] = source[name]);
+          record(typeof input === 'string' ? input : input.url, headers);
+        } catch (_) {}
+        return originalFetch.apply(this, arguments);
+      };
+      const open = XMLHttpRequest.prototype.open;
+      const setHeader = XMLHttpRequest.prototype.setRequestHeader;
+      const send = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) { this.__hb = {url, headers: {}}; return open.apply(this, arguments); };
+      XMLHttpRequest.prototype.setRequestHeader = function(name, value) { if (this.__hb) this.__hb.headers[name] = value; return setHeader.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function() { if (this.__hb) record(this.__hb.url, this.__hb.headers); return send.apply(this, arguments); };
     })();
-    """
+    """#
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-        let spec: WebAuthSpec
-        let onFinish: (SourceAuth?) -> Void
-        weak var webView: WKWebView?
-        private var headers: [String: [String: String]] = [:]
-        private var cookies: [String: [String: String]] = [:]
-        private var completionSeen: Bool
-        private var userAgent: String?
-        private var finished = false
-        private var clickedLoginButton = false
-
-        init(spec: WebAuthSpec, onFinish: @escaping (SourceAuth?) -> Void) {
-            self.spec = spec
-            self.onFinish = onFinish
-            self.completionSeen = spec.completionURL == nil
-        }
-
-        // MARK: header capture
-
-        private func recordHeaders(_ requestHeaders: [String: String], url: URL) {
-            guard let host = url.host?.lowercased() else { return }
-            if let allowed = spec.allowedDomains, !allowed.isEmpty, !allowed.contains(where: { $0.lowercased() == host }) { return }
-            for (rawName, value) in requestHeaders {
-                let name = rawName.lowercased()
-                if name == "authorization", value == "undefined" { continue }
-                if spec.headersToFind.contains(where: { $0.lowercased() == name }) { headers[host, default: [:]][name] = value }
-                for (domain, names) in spec.domainHeadersToFind where domainMatches(host: host, domain: domain) {
-                    if names.contains(where: { $0.lowercased() == name }) { headers[domain, default: [:]][name] = value }
-                }
-            }
-        }
-
-        func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any], let urlString = body["url"] as? String, let url = URL(string: urlString) else { return }
-            var h: [String: String] = [:]
-            for (k, v) in (body["headers"] as? [String: Any] ?? [:]) { h[k] = "\(v)" }
-            recordHeaders(h, url: url)
-            readCookiesThenEvaluate()
-        }
-
-        // MARK: navigation
-
-        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            if let url = action.request.url {
-                recordHeaders(action.request.allHTTPHeaderFields ?? [:], url: url)
-                checkCompletion(url)
-            }
-            decisionHandler(.allow)
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            if let url = webView.url { checkCompletion(url) }
-            webView.evaluateJavaScript("navigator.userAgent") { [weak self] result, _ in self?.userAgent = result as? String }
-            if !clickedLoginButton, let sel = spec.loginButtonSelector,
-               sel.range(of: "^[a-zA-Z\\-\\.#:_ ]*$", options: .regularExpression) != nil {
-                clickedLoginButton = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                    webView.evaluateJavaScript("var e=document.querySelector(\(jsString(sel))); if(e) e.click();")
-                }
-            }
-            readCookiesThenEvaluate()
-        }
-
-        // MARK: completion
-
-        private func checkCompletion(_ url: URL) {
-            guard let target = spec.completionURL, !completionSeen else { return }
-            if target.hasSuffix("?*") {
-                let base = String(target.dropLast(2))
-                var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
-                c?.query = nil; c?.fragment = nil
-                if c?.string == base || url.absoluteString.hasPrefix(base) { completionSeen = true }
-            } else if url.absoluteString == target { completionSeen = true }
-        }
-
-        private func readCookiesThenEvaluate() {
-            guard let store = webView?.configuration.websiteDataStore.httpCookieStore else { evaluate(); return }
-            store.getAllCookies { [weak self] all in
-                guard let self else { return }
-                for c in all {
-                    let host = c.domain.hasPrefix(".") ? String(c.domain.dropFirst()) : c.domain
-                    guard self.spec.hostAllowed(host.lowercased()) else { continue }
-                    if self.spec.cookiesExclOthers && !self.spec.cookiesToFind.contains(c.name) { continue }
-                    let key = c.domain.hasPrefix(".") ? c.domain : "." + c.domain
-                    self.cookies[key.lowercased(), default: [:]][c.name] = c.value
-                }
-                self.evaluate()
-            }
-        }
-
-        private func satisfied() -> Bool {
-            guard completionSeen else { return false }
-            if !spec.hasExplicitCompletion { return false }
-            let foundHeaderNames = Set(headers.values.flatMap { $0.keys })
-            for n in spec.headersToFind where !foundHeaderNames.contains(n.lowercased()) { return false }
-            for (domain, names) in spec.domainHeadersToFind {
-                let have = headers[domain] ?? [:]
-                for n in names where have[n.lowercased()] == nil { return false }
-            }
-            let foundCookieNames = Set(cookies.values.flatMap { $0.keys })
-            for n in spec.cookiesToFind where !foundCookieNames.contains(n) { return false }
-            return true
-        }
-
-        private func evaluate() {
-            guard !finished, satisfied() else { return }
-            finishNow()
-        }
-
-        func finishNow() {
-            guard !finished else { return }
-            finished = true
-            onFinish(SourceAuth(cookieMap: cookies, headers: headers, userAgent: userAgent))
-        }
-    }
+    private static let snapshotScript = #"""
+    const requests = window.__hummingbirdAuthCapture || [];
+    window.__hummingbirdAuthCapture = [];
+    return JSON.stringify({requests, userAgent: navigator.userAgent});
+    """#
 }
 
 // MARK: - QR scanner
+
+#if canImport(UIKit) && canImport(AVFoundation)
+import UIKit
+import AVFoundation
 
 struct QRScannerView: UIViewControllerRepresentable {
     let onCode: (String) -> Void

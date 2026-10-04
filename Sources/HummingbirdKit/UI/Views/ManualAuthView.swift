@@ -1,5 +1,5 @@
 import Foundation
-#if !(canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit))
+#if !canImport(WebKit)
 #if canImport(SwiftUI)
 import SwiftUI
 #else

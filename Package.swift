@@ -37,6 +37,7 @@ var targets: [Target] = [
             .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: nonApple)),
             .product(name: "_CryptoExtras", package: "swift-crypto", condition: .when(platforms: nonApple)),
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
+            .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
         ],
         path: "Sources/HummingbirdKit",
         resources: [.copy("Core/Plugin/Resources/prelude.js")],
@@ -70,7 +71,7 @@ targets.append(
 
 let package = Package(
     name: "Hummingbird",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS("26.0"), .macOS("26.0")],
     products: products,
     dependencies: [
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),

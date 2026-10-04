@@ -61,9 +61,10 @@ struct PlayerSurface: View {
     let model: PlayerModel
     var body: some View {
         if let p = (model.backend as? GTKMediaBackend)?.player {
-            VideoPlayer(player: p).frame(height: 240)
+            VideoPlayer(player: p)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            Color.black.frame(height: 240)
+            Color.black.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

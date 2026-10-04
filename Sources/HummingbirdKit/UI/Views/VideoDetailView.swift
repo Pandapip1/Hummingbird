@@ -130,6 +130,7 @@ private struct VideoBody: View {
                 RelatedSection(runtime: runtime, details: details)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var hasComments: Bool { details.hasComments || runtime.has("getComments") }
@@ -168,6 +169,7 @@ private struct PlayerSection: View {
                     Text(err).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.white).padding()
                 }
             }
+            .frame(maxWidth: .infinity)
             .aspectRatio(16 / 9, contentMode: .fit)
             .overlay(alignment: .bottom) {
                 VStack(spacing: 6) {

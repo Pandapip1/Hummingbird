@@ -104,8 +104,13 @@ final class PlayerModel {
     func fullscreenDidChange(_ fullscreen: Bool) { isFullscreen = fullscreen }
     func togglePlayback() {
         guard let backend else { return }
-        if backend.isPlaying { backend.pause() } else { backend.play() }
-        isPlaying = backend.isPlaying
+        if isPlaying {
+            backend.pause()
+            isPlaying = false
+        } else {
+            backend.play()
+            isPlaying = true
+        }
     }
     func skip(by seconds: Double) {
         seek(to: playbackTime + seconds)

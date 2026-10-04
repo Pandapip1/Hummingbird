@@ -150,7 +150,8 @@ struct PluginDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showLogin = false
     @State private var working = false
-    @State private var message: String?
+    @State private var updateMessage: String?
+    @State private var libraryMessage: String?
     @State private var confirmRemove = false
 
     var body: some View {
@@ -160,9 +161,14 @@ struct PluginDetailView: View {
                     Toggle("Enabled", isOn: Binding(get: { p.enabled }, set: { app.plugins.setEnabled(pluginID, $0) }))
                     LabeledContent("Version", value: "\(p.config.version)")
                     if !p.config.author.isEmpty { LabeledContent("Author", value: p.config.author) }
+                    Button { Task { await checkForUpdate() } } label: {
+                        if working { ProgressView() } else { Text("Check for updates") }
+                    }
+                    .disabled(working)
                     if let v = p.availableVersion {
                         Button("Update to v\(v)") { Task { await update() } }.disabled(working)
                     }
+                    if let updateMessage { Text(updateMessage).font(.footnote).foregroundStyle(.secondary) }
                 }
                 if !p.config.description.isEmpty { Section { Text(p.config.description).font(.subheadline) } }
 
@@ -186,7 +192,7 @@ struct PluginDetailView: View {
                     Button("Import subscriptions") { Task { await importSubscriptions() } }.disabled(working)
                     Button("Import playlists") { Task { await importPlaylists() } }.disabled(working)
                     if working { ProgressView() }
-                    if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                    if let libraryMessage { Text(libraryMessage).font(.footnote).foregroundStyle(.secondary) }
                 }
 
                 if let changes = p.config.changelog?[String(p.config.version)], !changes.isEmpty {
@@ -212,16 +218,31 @@ struct PluginDetailView: View {
 
     private func update() async {
         working = true; defer { working = false }
-        do { try await app.plugins.update(pluginID); message = "Updated." } catch { message = error.localizedDescription }
+        do { try await app.plugins.update(pluginID); updateMessage = "Updated." }
+        catch { updateMessage = error.localizedDescription }
+    }
+
+    private func checkForUpdate() async {
+        working = true; updateMessage = nil
+        defer { working = false }
+        do {
+            if let version = try await app.plugins.checkForUpdate(pluginID) {
+                updateMessage = "Version \(version) is available."
+            } else {
+                updateMessage = "This source is up to date."
+            }
+        } catch {
+            updateMessage = error.localizedDescription
+        }
     }
 
     private func importSubscriptions() async {
         guard let rt = app.plugins.runtime(for: pluginID) else { return }
-        working = true; message = nil
+        working = true; libraryMessage = nil
         defer { working = false }
         do {
             try await rt.enable()
-            guard rt.has("getUserSubscriptions") else { message = "This source can't list your subscriptions."; return }
+            guard rt.has("getUserSubscriptions") else { libraryMessage = "This source can't list your subscriptions."; return }
             let urls = Array(Set(try await rt.call("getUserSubscriptions", as: [String].self)))
             var added = 0
             for u in urls where !app.library.isSubscribed(u) {
@@ -230,17 +251,17 @@ struct PluginDetailView: View {
                                       name: info?.name ?? u, thumbnail: info?.thumbnail)
                 added += 1
             }
-            message = "Imported \(added) subscription\(added == 1 ? "" : "s")."
-        } catch { message = app.platform.surface(error, pluginID: pluginID) }
+            libraryMessage = "Imported \(added) subscription\(added == 1 ? "" : "s")."
+        } catch { libraryMessage = app.platform.surface(error, pluginID: pluginID) }
     }
 
     private func importPlaylists() async {
         guard let rt = app.plugins.runtime(for: pluginID) else { return }
-        working = true; message = nil
+        working = true; libraryMessage = nil
         defer { working = false }
         do {
             try await rt.enable()
-            guard rt.has("getUserPlaylists") else { message = "This source can't list your playlists."; return }
+            guard rt.has("getUserPlaylists") else { libraryMessage = "This source can't list your playlists."; return }
             let urls = try await rt.call("getUserPlaylists", as: [String].self)
             var count = 0
             for u in urls {
@@ -252,8 +273,8 @@ struct PluginDetailView: View {
                 app.library.createPlaylist(name: payload.header.name, videos: videos)
                 count += 1
             }
-            message = "Imported \(count) playlist\(count == 1 ? "" : "s")."
-        } catch { message = app.platform.surface(error, pluginID: pluginID) }
+            libraryMessage = "Imported \(count) playlist\(count == 1 ? "" : "s")."
+        } catch { libraryMessage = app.platform.surface(error, pluginID: pluginID) }
     }
 }
 

@@ -220,14 +220,25 @@ final class PluginManager {
     /// Re-downloads each plugin's config and records newer versions. The user applies them explicitly.
     func checkForUpdates() async {
         for p in installed {
-            guard let src = p.config.sourceUrl, let url = URL(string: src),
-                  let data = try? await download(url),
-                  let fresh = try? JSONDecoder().decode(PluginConfig.self, from: data) else { continue }
-            if let i = installed.firstIndex(where: { $0.id == p.id }) {
-                installed[i].availableVersion = fresh.version > p.config.version ? fresh.version : nil
-            }
+            _ = try? await checkForUpdate(p.id)
         }
-        persist()
+    }
+
+    /// Checks one plugin immediately and reports whether a newer version exists.
+    @discardableResult
+    func checkForUpdate(_ id: String) async throws -> Int? {
+        guard let p = plugin(id), let src = p.config.sourceUrl,
+              let url = URL(string: src) else { throw InstallError.badURL }
+        let data = try await download(url)
+        let fresh: PluginConfig
+        do { fresh = try JSONDecoder().decode(PluginConfig.self, from: data) }
+        catch { throw InstallError.invalidConfig(error.localizedDescription) }
+        let available = fresh.version > p.config.version ? fresh.version : nil
+        if let i = installed.firstIndex(where: { $0.id == id }) {
+            installed[i].availableVersion = available
+            persist()
+        }
+        return available
     }
 
     func update(_ id: String) async throws {

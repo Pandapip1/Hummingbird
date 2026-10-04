@@ -36,7 +36,7 @@ struct WebAuthSheet: View {
 }
 
 @MainActor
-private final class WebAuthSession {
+final class WebAuthSession {
     let page: WebPage
     private let dataStore: WKWebsiteDataStore
     private let spec: WebAuthSpec
@@ -60,14 +60,14 @@ private final class WebAuthSession {
         ))
         page = WebPage(configuration: configuration)
         page.customUserAgent = spec.userAgent
-    }
-
-    func run() async {
         if let html = spec.html {
             page.load(html: html, baseURL: spec.startURL ?? URL(string: "about:blank")!)
         } else {
             page.load(spec.startURL)
         }
+    }
+
+    func run() async {
         while !Task.isCancelled, !finished {
             await inspectPage()
             try? await Task.sleep(for: .milliseconds(250))

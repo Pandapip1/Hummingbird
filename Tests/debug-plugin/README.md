@@ -23,5 +23,9 @@ Then in the app: **Sources → + →** `http://127.0.0.1:8742/DebugPlugin.json`
 The config carries no signature, which the installer allows; it will warn that
 the plugin is unsigned.
 
+The source detail page also exposes **Sign in**. Its local login page completes
+at `/login-complete`, where the fixture server sets an HTTP-only
+`debug_session` cookie so the embedded WebKit credential flow can be tested.
+
 `test.mp4` is generated on first run rather than committed, so no binary lands
 in the repo. It is gitignored.

@@ -4,12 +4,22 @@
 import argparse
 import os
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 
 
 class RangeRequestHandler(SimpleHTTPRequestHandler):
     range_end = None
 
     def send_head(self):
+        if self.path.split("?", 1)[0] == "/login-complete":
+            body = b"""<!doctype html><html><head><title>Debug sign-in complete</title></head>
+<body><main><h1>Signed in</h1><p>The debug authentication cookie was stored.</p></main></body></html>"""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Set-Cookie", "debug_session=authenticated; Path=/; HttpOnly; SameSite=Lax")
+            self.end_headers()
+            return BytesIO(body)
         path = self.translate_path(self.path)
         supports_ranges = not self.path.startswith("/no-range.mp4")
         if not supports_ranges:

@@ -18,6 +18,9 @@ final class DebugPluginTests: XCTestCase {
 
     func testDebugPluginProvidesEveryRequiredEntryPoint() async throws {
         let (config, script) = try loadDebugPlugin()
+        XCTAssertEqual(config.authentication?.loginUrl, "http://127.0.0.1:8742/login.html")
+        XCTAssertEqual(config.authentication?.completionUrl, "http://127.0.0.1:8742/login-complete")
+        XCTAssertEqual(config.authentication?.cookiesToFind, ["debug_session"])
         let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
         // validate() is what the installer runs; it throws if an entry point is missing.
         try await runtime.validate()

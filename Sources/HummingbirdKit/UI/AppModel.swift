@@ -31,9 +31,13 @@ final class AppModel {
         self.library = library
         self.platform = platform
         self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
-        self.homeFeed = FeedModel { [platform] error, runtime in
-            platform.surface(error, pluginID: runtime.id)
-        }
+        self.homeFeed = FeedModel(
+            initialItems: library.homeCache.map(ContentItem.init(saved:)),
+            report: { [platform] error, runtime in
+                platform.surface(error, pluginID: runtime.id)
+            },
+            didUpdate: { [weak library] items in library?.updateHomeCache(items) }
+        )
         #if os(iOS)
         // Playback continues with the screen locked and in Picture in Picture.
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)

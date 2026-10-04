@@ -190,8 +190,16 @@ final class FeedModel {
     @ObservationIgnored private var pagers: [(FeedSource, PluginPager<ContentItem>)] = []
     @ObservationIgnored private var seen = Set<String>()
     @ObservationIgnored private let report: (Error, PluginRuntime) -> String
+    @ObservationIgnored private let didUpdate: (([ContentItem]) -> Void)?
 
-    init(report: @escaping (Error, PluginRuntime) -> String) { self.report = report }
+    init(initialItems: [ContentItem] = [],
+         report: @escaping (Error, PluginRuntime) -> String,
+         didUpdate: (([ContentItem]) -> Void)? = nil) {
+        self.items = initialItems
+        self.seen = Set(initialItems.map(\.id))
+        self.report = report
+        self.didUpdate = didUpdate
+    }
 
     func reload(sources: [FeedSource]) async {
         self.sources = sources
@@ -206,17 +214,23 @@ final class FeedModel {
         }
         results.sort { $0.0 < $1.0 }
         var columns: [[ContentItem]] = []
+        var refreshed = false
         for (i, r) in results {
             switch r {
             case .success(let p):
+                refreshed = true
                 pagers.append((sources[i], p))
                 columns.append(p.initial)
             case .failure(let e):
                 messages.append("\(sources[i].label): \(report(e, sources[i].runtime))")
             }
         }
-        items = []
-        append(interleave(columns))
+        if refreshed {
+            items = []
+            seen = []
+            append(interleave(columns))
+            didUpdate?(items)
+        }
         hasMore = pagers.contains { $0.1.hasMore }
         isLoading = false
         loadedOnce = true
@@ -242,6 +256,7 @@ final class FeedModel {
             }
         }
         append(interleave(columns))
+        didUpdate?(items)
         hasMore = pagers.contains { $0.1.hasMore }
         isLoading = false
     }

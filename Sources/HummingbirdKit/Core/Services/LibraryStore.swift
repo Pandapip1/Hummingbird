@@ -10,6 +10,7 @@ final class LibraryStore {
     private(set) var history: [HistoryEntry] = []
     /// Most recent first-page results per channel URL, used when a channel is rate-limited or fails.
     private(set) var feedCache: [String: [SavedVideo]] = [:]
+    private(set) var homeCache: [SavedVideo] = []
 
     static let historyLimit = 2000
 
@@ -19,6 +20,7 @@ final class LibraryStore {
         watchLater = Storage.load([SavedVideo].self, name: "watch_later") ?? []
         history = Storage.load([HistoryEntry].self, name: "history") ?? []
         feedCache = Storage.load([String: [SavedVideo]].self, name: "feed_cache") ?? [:]
+        homeCache = Storage.load([SavedVideo].self, name: "home_cache") ?? []
     }
 
     // MARK: subscriptions
@@ -55,6 +57,11 @@ final class LibraryStore {
     func persistSubscriptionState() {
         Storage.save(subscriptions, name: "subscriptions")
         Storage.save(feedCache, name: "feed_cache")
+    }
+
+    func updateHomeCache(_ items: [ContentItem]) {
+        homeCache = Array(items.prefix(250).map(SavedVideo.init))
+        Storage.save(homeCache, name: "home_cache")
     }
 
     // MARK: watch later

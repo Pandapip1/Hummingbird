@@ -92,6 +92,10 @@
 
         env = lib.optionalAttrs isLinux {
           GST_PLUGIN_SYSTEM_PATH_1_0 = lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" deps.gstPlugins;
+          # SwiftPM's system-library importer does not consume pkg-config
+          # include flags for transitive C headers, so expose GStreamer dev
+          # headers explicitly to the GTK backend build.
+          CPATH = lib.makeSearchPath "include/gstreamer-1.0" [ pkgs.gst_all_1.gstreamer.dev pkgs.gst_all_1.gst-plugins-base.dev ];
           GDK_PIXBUF_MODULE_FILE = "${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
         };
 

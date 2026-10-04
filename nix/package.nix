@@ -83,7 +83,9 @@ let
 
   gstPlugins = with gst_all_1; [
     gstreamer
+    gstreamer.dev
     gst-plugins-base
+    gst-plugins-base.dev
     gst-plugins-good
     gst-plugins-bad
     gst-plugins-ugly

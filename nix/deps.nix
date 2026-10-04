@@ -6,7 +6,9 @@ let
   # GST_PLUGIN_SYSTEM_PATH_1_0), not just at link time.
   gstPlugins = with pkgs.gst_all_1; [
     gstreamer
+    gstreamer.dev
     gst-plugins-base
+    gst-plugins-base.dev
     gst-plugins-good
     gst-plugins-bad
     gst-plugins-ugly

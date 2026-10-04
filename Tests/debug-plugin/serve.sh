@@ -23,4 +23,4 @@ fi
 
 echo "Serving $DIR on http://127.0.0.1:$PORT"
 echo "Install in the app with: http://127.0.0.1:$PORT/DebugPlugin.json"
-exec nix shell nixpkgs#python3 --command python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$DIR"
+exec nix shell nixpkgs#python3 --command python3 "$DIR/range_server.py" "$PORT" --bind 127.0.0.1 --directory "$DIR"

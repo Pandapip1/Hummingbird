@@ -254,7 +254,7 @@ struct PlayerControls: View {
     let model: PlayerModel
     let isFullscreen: Bool
     @State private var controlsVisible = true
-    @State private var hideTask: Task<Void, Never>?
+    @State private var autoHide = PlayerControlsAutoHide()
 
     var body: some View {
         ZStack {
@@ -301,24 +301,7 @@ struct PlayerControls: View {
                         Button { interacted(); model.skip(by: 10) } label: {
                             Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds")
                         }
-                        Text(playbackTime).font(.caption.monospacedDigit())
-                        if model.duration > 0 {
-                            #if os(tvOS)
-                            ProgressView(value: min(model.playbackTime, model.duration), total: model.duration)
-                                .frame(minWidth: 80, maxWidth: .infinity)
-                            #else
-                            Slider(value: Binding(
-                                get: { min(model.playbackTime, model.duration) },
-                                set: {
-                                    interacted()
-                                    model.seek(to: $0)
-                                }
-                            ), in: 0...model.duration, onEditingChanged: { _ in interacted() })
-                            .frame(minWidth: 80, maxWidth: .infinity)
-                            #endif
-                        } else {
-                            Spacer()
-                        }
+                        PlayerTimeline(model: model, interacted: interacted)
                         if model.pictureInPictureSupported {
                             Button { interacted(); model.startPictureInPicture() } label: {
                                 Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
@@ -346,18 +329,58 @@ struct PlayerControls: View {
         .task { interacted() }
         .onChange(of: model.isPlaying) { playing in
             if playing { interacted() }
-            else { hideTask?.cancel(); controlsVisible = true }
+            else { autoHide.task?.cancel(); if !controlsVisible { controlsVisible = true } }
         }
     }
 
     private func interacted() {
-        controlsVisible = true
-        hideTask?.cancel()
+        if !controlsVisible { controlsVisible = true }
+        autoHide.task?.cancel()
         guard model.isPlaying else { return }
-        hideTask = Task { @MainActor in
+        autoHide.task = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled, model.isPlaying else { return }
             controlsVisible = false
+        }
+    }
+
+}
+
+/// Resetting the idle timer must not invalidate the controls under the pointer.
+/// Only visibility belongs to view state; the task is an implementation detail.
+@MainActor
+private final class PlayerControlsAutoHide {
+    var task: Task<Void, Never>?
+    deinit { task?.cancel() }
+}
+
+/// Playback ticks update this small subtree without replacing transport buttons
+/// or menus while a pointer press or hover is in progress.
+@MainActor
+private struct PlayerTimeline: View {
+    let model: PlayerModel
+    let interacted: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(playbackTime).font(.caption.monospacedDigit())
+            if model.duration > 0 {
+                #if os(tvOS)
+                ProgressView(value: min(model.playbackTime, model.duration), total: model.duration)
+                    .frame(minWidth: 80, maxWidth: .infinity)
+                #else
+                Slider(value: Binding(
+                    get: { min(model.playbackTime, model.duration) },
+                    set: {
+                        interacted()
+                        model.seek(to: $0)
+                    }
+                ), in: 0...model.duration, onEditingChanged: { _ in interacted() })
+                .frame(minWidth: 80, maxWidth: .infinity)
+                #endif
+            } else {
+                Spacer()
+            }
         }
     }
 

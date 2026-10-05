@@ -175,7 +175,11 @@ struct LoadingErrorView: View {
     var body: some View {
         ContentUnavailableView {
             Label("Something went wrong", systemImage: "exclamationmark.triangle")
-        } description: { Text(message) } actions: {
+                .foregroundStyle(.red)
+        } description: {
+            Text(message)
+                .foregroundStyle(.secondary)
+        } actions: {
             if let retry { Button("Try again", action: retry) }
         }
     }

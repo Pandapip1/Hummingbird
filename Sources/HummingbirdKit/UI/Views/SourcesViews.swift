@@ -149,7 +149,6 @@ struct PluginDetailView: View {
     let pluginID: String
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
-    @State private var showLogin = false
     @State private var working = false
     @State private var updateMessage: String?
     @State private var libraryMessage: String?
@@ -179,7 +178,11 @@ struct PluginDetailView: View {
                             Label("Signed in", systemImage: "checkmark.seal")
                             Button("Sign out", role: .destructive) { app.plugins.logout(pluginID) }
                         } else {
-                            Button("Sign in") { showLogin = true }
+                            NavigationLink {
+                                LoginSheet(pluginID: pluginID)
+                            } label: {
+                                Text("Sign in")
+                            }
                         }
                     }
                 }
@@ -208,7 +211,6 @@ struct PluginDetailView: View {
             }
             .navigationTitle(p.config.name)
             .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showLogin) { LoginSheet(pluginID: pluginID) }
             .confirmationDialog("Remove \(p.config.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) { app.plugins.remove(pluginID); dismiss() }
             } message: { Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.") }

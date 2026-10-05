@@ -20,6 +20,11 @@ struct RootView: View {
             LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(AppTab.library)
             SourcesView().tabItem { Label("Sources", systemImage: "puzzlepiece.extension") }.tag(AppTab.sources)
         }
+        .overlay {
+            if let loginTarget {
+                LoginSheet(pluginID: loginTarget.value) { self.loginTarget = nil }
+            }
+        }
         .overlay(alignment: .top) { ToastBanner() }
         .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request) }
         .alert("Login required", isPresented: loginBinding, presenting: model.plugins.pendingLogin) { id in
@@ -28,7 +33,6 @@ struct RootView: View {
         } message: { id in
             Text("\(model.plugins.plugin(id)?.config.name ?? "This source") needs you to sign in to continue.")
         }
-        .sheet(item: $loginTarget) { target in LoginSheet(pluginID: target.value) }
     }
 
     private var loginBinding: Binding<Bool> {
@@ -85,19 +89,34 @@ struct LoginSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     let pluginID: String
+    var onClose: (() -> Void)?
+
+    init(pluginID: String, onClose: (() -> Void)? = nil) {
+        self.pluginID = pluginID
+        self.onClose = onClose
+    }
 
     var body: some View {
         // Capture the action while this sheet's environment is active. The
         // authentication callback may run later, after an async cookie read.
         let dismissSheet = dismiss
-        if let plugin = app.plugins.plugin(pluginID), let spec = WebAuthSpec.login(for: plugin.config) {
-            WebAuthSheet(spec: spec) { result in
-                if let result { app.plugins.saveAuth(result, pluginID: pluginID) }
-                dismissSheet()
+        Group {
+            if let plugin = app.plugins.plugin(pluginID), let spec = WebAuthSpec.login(for: plugin.config) {
+                WebAuthSheet(spec: spec) { result in
+                    if let result { app.plugins.saveAuth(result, pluginID: pluginID) }
+                    if let onClose { onClose() } else { dismissSheet() }
+                }
+            } else {
+                VStack {
+                    ContentUnavailableView("Login unavailable", systemImage: "person.crop.circle.badge.xmark",
+                                           description: Text("This plugin does not support signing in."))
+                    Button("Close") {
+                        if let onClose { onClose() } else { dismissSheet() }
+                    }
+                }
             }
-        } else {
-            ContentUnavailableView("Login unavailable", systemImage: "person.crop.circle.badge.xmark",
-                                   description: Text("This plugin does not support signing in."))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.white)
     }
 }

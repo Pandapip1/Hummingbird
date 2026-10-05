@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 #if canImport(SwiftUI)
 import SwiftUI
 #else
@@ -25,7 +26,8 @@ struct WebAuthSheet: View {
         // rendered. Completion and cancellation both stop the task.
         let _ = session.start()
         NavigationStack {
-            WebView(session.page)
+            VStack(spacing: 0) {
+                WebView(session.page)
                 // A web view has no intrinsic content size. Give presented
                 // windows an initial proposal while still allowing them to
                 // fill whatever space the platform provides.
@@ -34,12 +36,25 @@ struct WebAuthSheet: View {
                     minHeight: 320, maxHeight: .infinity
                 )
                 .ignoresSafeArea(edges: .bottom)
+                if session.credentialsReady {
+                    HStack {
+                        Text("Credentials ready").font(.headline)
+                        Spacer()
+                        Button("Done") { Task { await session.finish() } }
+                    }
+                    .padding()
+                    .foregroundStyle(.white)
+                    .background(Color.black.opacity(0.85))
+                }
+            }
                 .navigationTitle(spec.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { session.cancel() } }
                     if !spec.hasExplicitCompletion {
-                        ToolbarItem(placement: .confirmationAction) { Button("Done") { session.finish() } }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { Task { await session.finish() } }
+                        }
                     }
                 }
                 .onDisappear { session.stop() }
@@ -48,8 +63,10 @@ struct WebAuthSheet: View {
 }
 
 @MainActor
+@Observable
 final class WebAuthSession {
     let page: WebPage
+    private(set) var credentialsReady = false
     private let dataStore: WKWebsiteDataStore
     private let spec: WebAuthSpec
     private let onFinish: (SourceAuth?) -> Void
@@ -80,8 +97,6 @@ final class WebAuthSession {
         }
     }
 
-    deinit { pollingTask?.cancel() }
-
     func start() {
         guard pollingTask == nil else { return }
         pollingTask = Task { [weak self] in
@@ -111,7 +126,9 @@ final class WebAuthSession {
         onFinish(nil)
     }
 
-    func finish() {
+    func finish() async {
+        guard !finished else { return }
+        await inspectPage()
         guard !finished else { return }
         finished = true
         page.stopLoading()
@@ -152,7 +169,7 @@ final class WebAuthSession {
             let domain = cookie.domain.hasPrefix(".") ? cookie.domain : "." + cookie.domain
             cookies[domain.lowercased(), default: [:]][cookie.name] = cookie.value
         }
-        if satisfied() { finish() }
+        if satisfied() { credentialsReady = true }
     }
 
     private func recordHeaders(_ requestHeaders: [String: String], url: URL) {

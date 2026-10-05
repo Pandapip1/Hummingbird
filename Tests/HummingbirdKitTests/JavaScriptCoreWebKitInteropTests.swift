@@ -127,10 +127,13 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
 
         page.load(baseURL.appendingPathComponent("login-complete"))
         deadline = Date().addingTimeInterval(10)
-        while completedAuth == nil, Date() < deadline {
+        while !session.credentialsReady, Date() < deadline {
             _ = g_main_context_iteration(nil, 0)
             try await Task.sleep(for: .milliseconds(10))
         }
+        XCTAssertTrue(session.credentialsReady)
+        XCTAssertNil(completedAuth, "detecting credentials must wait for explicit confirmation")
+        await session.finish()
         XCTAssertEqual(completedAuth?.cookieMap[".127.0.0.1"]?["debug_session"], "authenticated")
         gtk_window_destroy(windowPointer(window))
     }

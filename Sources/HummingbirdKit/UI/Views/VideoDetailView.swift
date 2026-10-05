@@ -245,8 +245,6 @@ struct PlayerControls: View {
     let isFullscreen: Bool
     @State private var controlsVisible = true
     @State private var hideTask: Task<Void, Never>?
-    @State private var scrubPosition = 0.0
-    @State private var isScrubbing = false
 
     var body: some View {
         ZStack {
@@ -296,21 +294,12 @@ struct PlayerControls: View {
                         Text(playbackTime).font(.caption.monospacedDigit())
                         if model.duration > 0 {
                             Slider(value: Binding(
-                                get: { isScrubbing ? scrubPosition : min(model.playbackTime, model.duration) },
+                                get: { min(model.playbackTime, model.duration) },
                                 set: {
                                     interacted()
-                                    scrubPosition = $0
                                     model.seek(to: $0)
                                 }
-                            ), in: 0...model.duration, onEditingChanged: { editing in
-                                interacted()
-                                if editing {
-                                    scrubPosition = min(model.playbackTime, model.duration)
-                                    isScrubbing = true
-                                } else {
-                                    isScrubbing = false
-                                }
-                            })
+                            ), in: 0...model.duration, onEditingChanged: { _ in interacted() })
                             .frame(minWidth: 80, maxWidth: .infinity)
                         } else {
                             Spacer()

@@ -57,11 +57,19 @@ final class GTKPlaybackTests: XCTestCase {
         }
         XCTAssertGreaterThan(backend!.currentTime, 1.4)
         backend!.seek(to: 4)
+        XCTAssertEqual(backend!.currentTime, 4, accuracy: 0.25)
         for _ in 0..<5 {
             while g_main_context_iteration(nil, 0) != 0 {}
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertGreaterThan(backend!.currentTime, 4.7)
+        backend!.seek(to: 4.6)
+        XCTAssertEqual(backend!.currentTime, 4.6, accuracy: 0.25)
+        for _ in 0..<5 {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertGreaterThan(backend!.currentTime, 5.1)
 
         let nonRangeURL = try XCTUnwrap(URL(string: "http://127.0.0.1:18743/no-range.mp4"))
         try await backend!.load(
@@ -76,6 +84,7 @@ final class GTKPlaybackTests: XCTestCase {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         backend!.seek(to: 4)
+        XCTAssertEqual(backend!.currentTime, 4, accuracy: 0.25)
         for _ in 0..<50 where backend!.currentTime < 4.5 {
             while g_main_context_iteration(nil, 0) != 0 {}
             try await Task.sleep(nanoseconds: 100_000_000)

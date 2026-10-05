@@ -45,6 +45,65 @@ final class PlayerControlsInteractionTests: XCTestCase {
         XCTAssertEqual(backend.pauseCount, 1)
     }
 
+    @MainActor
+    func testStationaryPointerCanPauseAndResumeAfterReplacement() async throws {
+        guard ProcessInfo.processInfo.environment["GDK_BACKEND"] == "x11",
+              let executable = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+                .split(separator: ":")
+                .map({ String($0) + "/xdotool" })
+                .first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            throw XCTSkip("requires GDK_BACKEND=x11 and xdotool on PATH")
+        }
+        if gtk_is_initialized() == 0 { _ = gtk_init_check() }
+        guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
+        let backend = ControlsBackend()
+        let model = PlayerModel(backend: backend)
+        model.togglePlayback()
+        let root = widgetFromOpaque(gtkRenderView(PlayerControls(model: model, isFullscreen: false)))
+        let window = gtk_window_new()!
+        let title = "Hummingbird pointer regression " + UUID().uuidString
+        gtk_window_set_title(windowPointer(window), title)
+        gtk_window_set_default_size(windowPointer(window), 800, 450)
+        gtk_window_set_child(windowPointer(window), root)
+        gtk_widget_set_visible(window, 1)
+        defer { model.teardown(); gtk_window_destroy(windowPointer(window)) }
+        for _ in 0..<10 { pump(); try await Task.sleep(nanoseconds: 10_000_000) }
+
+        func run(_ arguments: [String]) throws -> String {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+            return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let windowID = try run(["search", "--name", title]).split(separator: "\n").last.map(String.init)
+        let pause = try XCTUnwrap(buttons(in: root).dropFirst().first)
+        var x = 0.0, y = 0.0
+        XCTAssertNotEqual(gtk_swift_widget_compute_point(
+            pause, window, Double(gtk_widget_get_width(pause)) / 2,
+            Double(gtk_widget_get_height(pause)) / 2, &x, &y), 0)
+        _ = try run(["mousemove", "--window", try XCTUnwrap(windowID), String(Int(x)), String(Int(y))])
+        for _ in 0..<5 { pump(); try await Task.sleep(nanoseconds: 10_000_000) }
+
+        // No motion between clicks: GTK must repick the replacement on unmap.
+        for expectedPlaying in [false, true, false, true] {
+            _ = try run(["click", "1"])
+            for _ in 0..<30 {
+                pump()
+                if model.isPlaying == expectedPlaying { break }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTAssertEqual(model.isPlaying, expectedPlaying,
+                           "replacing the play/pause subtree must preserve stationary pointer targeting")
+        }
+        XCTAssertEqual(backend.pauseCount, 2)
+    }
+
     private func pump() {
         for _ in 0..<100 where g_main_context_pending(nil) != 0 {
             _ = g_main_context_iteration(nil, 0)

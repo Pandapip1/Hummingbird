@@ -29,23 +29,27 @@ struct VideoDetailView: View {
     enum DetailTab: String, CaseIterable { case about = "About", comments = "Comments", related = "Related" }
 
     var body: some View {
-        ScrollView {
-            switch state {
-            case .loading:
-                VStack(alignment: .leading, spacing: 12) {
-                    Rectangle().fill(.secondary.opacity(0.15)).aspectRatio(16 / 9, contentMode: .fit)
-                    Text(activePreview?.name ?? "Loading…").font(.title3.bold()).padding(.horizontal)
-                    ProgressView().frame(maxWidth: .infinity)
+        GeometryReader { geometry in
+            ScrollView {
+                switch state {
+                case .loading:
+                    VStack(alignment: .leading, spacing: 12) {
+                        Rectangle().fill(.secondary.opacity(0.15)).aspectRatio(16 / 9, contentMode: .fit)
+                        Text(activePreview?.name ?? "Loading…").font(.title3.bold()).padding(.horizontal)
+                        ProgressView().frame(maxWidth: .infinity)
+                    }
+                case .failed(let message):
+                    LoadingErrorView(message: message) { Task { await load() } }.padding(.top, 60)
+                case .video(let rt, let d):
+                    VideoBody(runtime: rt, details: d, player: player, tab: $tab,
+                              showPlaylistPicker: $showPlaylistPicker,
+                              maximumPlayerHeight: geometry.size.height * 0.9)
+                case .post(let p):
+                    PostBody(post: p)
+                case .unsupported(let item):
+                    ContentUnavailableView("Can't open this", systemImage: "questionmark.square.dashed",
+                                           description: Text("\"\(item.name)\" is a kind of content Hummingbird does not display yet."))
                 }
-            case .failed(let message):
-                LoadingErrorView(message: message) { Task { await load() } }.padding(.top, 60)
-            case .video(let rt, let d):
-                VideoBody(runtime: rt, details: d, player: player, tab: $tab, showPlaylistPicker: $showPlaylistPicker)
-            case .post(let p):
-                PostBody(post: p)
-            case .unsupported(let item):
-                ContentUnavailableView("Can't open this", systemImage: "questionmark.square.dashed",
-                                       description: Text("\"\(item.name)\" is a kind of content Hummingbird does not display yet."))
             }
         }
         #if os(iOS)
@@ -110,6 +114,7 @@ private struct VideoBody: View {
     let player: PlayerModel
     @Binding var tab: VideoDetailView.DetailTab
     @Binding var showPlaylistPicker: Bool
+    let maximumPlayerHeight: CGFloat
     @Environment(AppModel.self) private var app
     @State private var descriptionExpanded = false
 
@@ -118,6 +123,7 @@ private struct VideoBody: View {
         let saved = SavedVideo(item)
         VStack(alignment: .leading, spacing: 12) {
             PlayerSection(model: player)
+                .frame(maxHeight: maximumPlayerHeight)
 
             VStack(alignment: .leading, spacing: 10) {
                 Text(item.name).font(.title3.bold())

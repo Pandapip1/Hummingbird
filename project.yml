@@ -1,6 +1,5 @@
 name: Hummingbird
 options:
-  bundleIdPrefix: app.hummingbird
   deploymentTarget:
     iOS: "26.0"
   createIntermediateGroups: true
@@ -41,8 +40,20 @@ targets:
         NSLocalNetworkUsageDescription: Used to load plugins served from your own computer during development.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.hummingbird.Hummingbird
-        TARGETED_DEVICE_FAMILY: "1,2"
+        PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.Hummingbird
+        DEVELOPMENT_TEAM: NMM6M6QVAT
+        TARGETED_DEVICE_FAMILY: "1,2,3,7"
+        SUPPORTED_PLATFORMS: "appletvos appletvsimulator iphoneos iphonesimulator macosx xros xrsimulator"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES
+        ENABLE_RESOURCE_ACCESS_CAMERA: YES
+        REGISTER_APP_GROUPS: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Hummingbird
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.video"
         GENERATE_INFOPLIST_FILE: NO
 schemes:
   Hummingbird:

@@ -15,8 +15,10 @@ final class HostHTTP: NSObject {
     static let defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"
     private static let visibleHeaders: Set<String> = [
         "content-type", "date", "content-length", "last-modified", "etag", "cache-control",
-        "content-encoding", "content-disposition", "connection",
+        "content-encoding", "content-disposition", "connection", "retry-after",
     ]
+    private static let maximumAutomaticRetryDelay: TimeInterval = 30
+    private static let maximumRetryAfter: TimeInterval = 31_536_000
 
     let config: PluginConfig
     private let auth: SourceAuth?
@@ -24,8 +26,19 @@ final class HostHTTP: NSObject {
     private var clients: [String: ClientState] = [:]
     private let lock = NSLock()
     private let session: URLSession
+    private let now: () -> Date
+    private let sleep: (TimeInterval) -> Void
+    private var rateLimits: [String: (until: Date, failures: Int)] = [:]
+    private var rateLimitGenerations: [String: UInt64] = [:]
 
-    init(config: PluginConfig, auth: SourceAuth?, captcha: SourceAuth?) {
+    init(
+        config: PluginConfig,
+        auth: SourceAuth?,
+        captcha: SourceAuth?,
+        session: URLSession? = nil,
+        now: @escaping () -> Date = Date.init,
+        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) {
         self.config = config
         self.auth = auth
         self.captcha = captcha
@@ -35,7 +48,9 @@ final class HostHTTP: NSObject {
         cfg.httpCookieStorage = nil
         cfg.urlCache = nil
         cfg.timeoutIntervalForRequest = 30
-        self.session = URLSession(configuration: cfg)
+        self.session = session ?? URLSession(configuration: cfg)
+        self.now = now
+        self.sleep = sleep
         super.init()
         clients["default-anon"] = makeState(withAuth: false)
         clients["default-auth"] = makeState(withAuth: true)
@@ -130,6 +145,44 @@ final class HostHTTP: NSObject {
             else if let b64 = body["b64"] as? String { request.httpBody = Data(base64Encoded: b64) }
         }
 
+        if let remaining = rateLimitRemaining(for: host), remaining > 0 {
+            guard remaining <= Self.maximumAutomaticRetryDelay else {
+                return rateLimitedResponse(url: urlString, retryAfter: remaining, wantsBytes: wantsBytes)
+            }
+            sleep(remaining)
+        }
+
+        let mayRetry = ["GET", "HEAD", "OPTIONS"].contains(method.uppercased())
+        var retryCount = 0
+        while true {
+            let generation = rateLimitGeneration(for: host)
+            let result = perform(request, originalURL: url, urlString: urlString, clientId: clientId,
+                                 useAuth: useAuth, applyCookies: applyCookies, updateCookies: updateCookies,
+                                 allowNewCookies: allowNewCookies, wantsBytes: wantsBytes)
+            guard result["code"] as? Int == 429 else {
+                clearRateLimit(for: host, ifGenerationIs: generation)
+                return result
+            }
+
+            let delay = recordRateLimit(for: host, headers: result["headers"] as? [String: [String]] ?? [:])
+            guard mayRetry, retryCount == 0, delay <= Self.maximumAutomaticRetryDelay else { return result }
+            retryCount += 1
+            sleep(delay)
+        }
+    }
+
+    private func perform(
+        _ request: URLRequest,
+        originalURL url: URL,
+        urlString: String,
+        clientId: String,
+        useAuth: Bool,
+        applyCookies: Bool,
+        updateCookies: Bool,
+        allowNewCookies: Bool,
+        wantsBytes: Bool
+    ) -> [String: Any] {
+
         let redirectGuard = RedirectGuard(owner: self, clientId: clientId, applyCookies: applyCookies,
                                           updateCookies: updateCookies, allowNewCookies: allowNewCookies, useAuth: useAuth)
         let semaphore = DispatchSemaphore(value: 0)
@@ -181,6 +234,72 @@ final class HostHTTP: NSObject {
         if wantsBytes { out["bodyBase64"] = bytes.base64EncodedString() }
         else { out["body"] = String(data: bytes, encoding: .utf8) ?? String(decoding: bytes, as: UTF8.self) }
         return out
+    }
+
+    // MARK: rate limiting
+
+    private func rateLimitRemaining(for host: String) -> TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        guard let state = rateLimits[host] else { return nil }
+        let remaining = state.until.timeIntervalSince(now())
+        if remaining <= 0 { return nil }
+        return remaining
+    }
+
+    private func recordRateLimit(for host: String, headers: [String: [String]]) -> TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        let failures = (rateLimits[host]?.failures ?? 0) + 1
+        let fallback = min(pow(2, Double(failures - 1)), 60)
+        let delay = Self.retryDelay(from: headers["retry-after"]?.first, now: now()) ?? fallback
+        rateLimitGenerations[host, default: 0] &+= 1
+        rateLimits[host] = (now().addingTimeInterval(delay), failures)
+        return delay
+    }
+
+    private func rateLimitGeneration(for host: String) -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        return rateLimitGenerations[host, default: 0]
+    }
+
+    private func clearRateLimit(for host: String, ifGenerationIs generation: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        guard rateLimitGenerations[host, default: 0] == generation else { return }
+        rateLimits.removeValue(forKey: host)
+    }
+
+    private func rateLimitedResponse(url: String, retryAfter: TimeInterval, wantsBytes: Bool) -> [String: Any] {
+        let rounded = retryAfter.isFinite ? min(max(1, ceil(retryAfter)), Self.maximumRetryAfter) : 1
+        let seconds = Int(rounded)
+        var response: [String: Any] = [
+            "url": url,
+            "code": 429,
+            "headers": ["retry-after": [String(seconds)]],
+        ]
+        if wantsBytes { response["bodyBase64"] = Data("Too Many Requests".utf8).base64EncodedString() }
+        else { response["body"] = "Too Many Requests" }
+        return response
+    }
+
+    static func retryDelay(from value: String?, now: Date) -> TimeInterval? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+           let seconds = TimeInterval(trimmed), seconds.isFinite,
+           seconds >= 0, seconds <= maximumRetryAfter {
+            return seconds
+        }
+        for format in ["EEE',' dd MMM yyyy HH':'mm':'ss z", "EEEE',' dd-MMM-yy HH':'mm':'ss z", "EEE MMM d HH':'mm':'ss yyyy"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                let delay = max(0, date.timeIntervalSince(now))
+                guard delay.isFinite, delay <= maximumRetryAfter else { return nil }
+                return delay
+            }
+        }
+        return nil
     }
 
     // MARK: client controls

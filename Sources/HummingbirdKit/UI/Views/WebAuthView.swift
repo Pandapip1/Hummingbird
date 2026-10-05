@@ -257,7 +257,7 @@ final class WebAuthSession {
 
 // MARK: - QR scanner
 
-#if canImport(UIKit) && canImport(AVFoundation)
+#if os(iOS)
 import UIKit
 import AVFoundation
 

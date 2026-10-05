@@ -58,7 +58,7 @@ struct SearchView: View {
                         }
                         Section(channels.isEmpty ? "" : "Videos") {
                             ForEach(feed.items) { item in
-                                ContentRow(item: item).listRowSeparator(.hidden)
+                                ContentRow(item: item).hiddenListRowSeparator()
                                     .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
                             }
                             ForEach(feed.messages, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange) }
@@ -180,7 +180,7 @@ struct SubscriptionsView: View {
                 } else {
                     List {
                         ForEach(feed.visibleItems) { item in
-                            ContentRow(item: item).listRowSeparator(.hidden)
+                            ContentRow(item: item).hiddenListRowSeparator()
                                 .onAppear { if item.id == feed.visibleItems.last?.id, feed.hasMoreToShow { feed.showMore() } }
                         }
                         if !feed.failures.isEmpty {
@@ -227,7 +227,9 @@ struct ManageSubscriptionsView: View {
                         }
                     }
                 }
+                #if !os(tvOS)
                 .swipeActions { Button("Unsubscribe", role: .destructive) { app.library.unsubscribe(sub.channelURL) } }
+                #endif
             }
         }
         .navigationTitle("Manage")
@@ -264,6 +266,7 @@ struct LibraryView: View {
                     .onDelete { offsets in offsets.map { app.library.playlists[$0].id }.forEach { app.library.deletePlaylist($0) } }
                     Button { showNewPlaylist = true } label: { Label("New playlist", systemImage: "plus") }
                 }
+                #if !os(tvOS)
                 Section("Backup") {
                     if let url = backupFile() {
                         ShareLink(item: url) { Label("Export library", systemImage: "square.and.arrow.up") }
@@ -271,6 +274,7 @@ struct LibraryView: View {
                     Button { showImporter = true } label: { Label("Import library", systemImage: "square.and.arrow.down") }
                     if let importMessage { Text(importMessage).font(.footnote).foregroundStyle(.secondary) }
                 }
+                #endif
             }
             .navigationTitle("Library")
             .alert("New playlist", isPresented: $showNewPlaylist) {
@@ -282,6 +286,7 @@ struct LibraryView: View {
                 }
                 Button("Cancel", role: .cancel) { newPlaylistName = "" }
             }
+            #if !os(tvOS)
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
                 guard case .success(let url) = result else { return }
                 let scoped = url.startAccessingSecurityScopedResource()
@@ -291,6 +296,7 @@ struct LibraryView: View {
                     importMessage = "Imported \(backup.subscriptions.count) subscriptions, \(backup.playlists.count) playlists. Plugins listed in the backup must be added from Sources."
                 } else { importMessage = "That file is not a Hummingbird library export." }
             }
+            #endif
             .routeDestinations()
         }
     }

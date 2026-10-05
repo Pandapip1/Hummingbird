@@ -86,7 +86,7 @@ targets.append(
 
 let package = Package(
     name: "Hummingbird",
-    platforms: [.iOS("26.0"), .macOS("26.0"), .tvOS("26.0"), .visionOS("2.0")],
+    platforms: [.iOS("26.0"), .macOS("26.0"), .tvOS("26.0"), .visionOS("26.0")],
     products: products,
     dependencies: [
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),

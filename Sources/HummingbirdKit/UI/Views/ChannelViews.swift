@@ -37,7 +37,7 @@ struct ChannelView: View {
     @ViewBuilder
     private func content(_ rt: PluginRuntime, _ info: ChannelInfo) -> some View {
         List {
-            Section { header(rt, info) }.listRowSeparator(.hidden).listRowInsets(EdgeInsets())
+            Section { header(rt, info) }.hiddenListRowSeparator().listRowInsets(EdgeInsets())
 
             if caps.types.count > 1 || !caps.sorts.isEmpty {
                 Section {
@@ -61,7 +61,7 @@ struct ChannelView: View {
 
             if let feed {
                 ForEach(feed.items) { item in
-                    ContentRow(item: item).listRowSeparator(.hidden)
+                    ContentRow(item: item).hiddenListRowSeparator()
                         .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
                 }
                 ForEach(feed.messages, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange) }
@@ -180,10 +180,10 @@ struct PlaylistView: View {
                                     Label(saving ? "Saving…" : "Save to library", systemImage: "square.and.arrow.down")
                                 }.buttonStyle(.bordered).disabled(saving)
                             }
-                        }.listRowSeparator(.hidden)
+                        }.hiddenListRowSeparator()
                     }
                     ForEach(feed.items) { item in
-                        ContentRow(item: item).listRowSeparator(.hidden)
+                        ContentRow(item: item).hiddenListRowSeparator()
                             .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
                     }
                     if feed.isLoading { ProgressView().frame(maxWidth: .infinity) }

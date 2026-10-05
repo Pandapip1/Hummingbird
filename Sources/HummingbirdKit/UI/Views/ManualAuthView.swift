@@ -22,7 +22,7 @@ struct WebAuthSheet: View {
         NavigationStack {
             Form {
                 Section("1. Sign in with your browser") {
-                    if let url = spec.startURL { Link(url.absoluteString, destination: url.absoluteString) }
+                    if let url = spec.startURL { Link(url.absoluteString, destination: url) }
                     Text("Open the page above, sign in, then copy the values below from the browser's developer tools (Network tab, any request to the site).")
                 }
                 Section("2. Cookie header") {
@@ -30,7 +30,11 @@ struct WebAuthSheet: View {
                 }
                 if !spec.headersToFind.isEmpty || !spec.domainHeadersToFind.isEmpty {
                     Section("3. Headers the plugin needs (one per line, Name: value)") {
+                        #if os(tvOS)
+                        TextField("Name: value", text: $headerText)
+                        #else
                         TextEditor(text: $headerText)
+                        #endif
                     }
                 }
                 Section {

@@ -24,6 +24,9 @@ final class AVMediaBackend: MediaBackend {
     }
     var isPlaying: Bool { (player?.rate ?? 0) > 0 }
     var tracks: [MediaTrack] {
+        #if os(visionOS)
+        return []
+        #else
         guard let item = player?.currentItem else { return [] }
         return item.asset.availableMediaCharacteristicsWithMediaSelectionOptions.flatMap { (characteristic) -> [MediaTrack] in
             guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return [] }
@@ -39,9 +42,11 @@ final class AVMediaBackend: MediaBackend {
                            language: option.locale?.identifier, label: option.displayName)
             }
         }
+        #endif
     }
 
     func selectTrack(_ track: MediaTrack?) {
+        #if !os(visionOS)
         guard let item = player?.currentItem else { return }
         guard let track else {
             if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: AVMediaCharacteristic.legible) {
@@ -58,9 +63,13 @@ final class AVMediaBackend: MediaBackend {
               let index = Int(track.id.split(separator: "-").last ?? "-1"),
               group.options.indices.contains(index) else { return }
         item.select(group.options[index], in: group)
+        #endif
     }
 
     func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? {
+        #if os(visionOS)
+        return nil
+        #else
         guard let item = player?.currentItem else { return nil }
         let characteristic: AVMediaCharacteristic = switch kind {
         case .video: AVMediaCharacteristic.visual
@@ -71,6 +80,7 @@ final class AVMediaBackend: MediaBackend {
               let selected = item.currentMediaSelection.selectedMediaOption(in: group),
               let index = group.options.firstIndex(where: { $0 === selected }) else { return nil }
         return tracks.first { $0.kind == kind && $0.id == "\(kind.rawValue)-\(index)" }
+        #endif
     }
 
     func canPlay(_ option: PlaybackOption) -> Bool { true }
@@ -141,7 +151,7 @@ final class AVMediaBackend: MediaBackend {
     }
 }
 
-#if canImport(AVKit) && canImport(SwiftUI) && (os(iOS) || os(tvOS))
+#if canImport(AVKit) && canImport(SwiftUI) && (os(iOS) || os(tvOS) || os(visionOS))
 /// AVKit's SwiftUI `VideoPlayer` always supplies its own controls. Wrap the
 /// underlying view controller so Hummingbird can provide one shared control
 /// surface on Apple and GTK.

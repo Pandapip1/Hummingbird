@@ -116,13 +116,13 @@ struct FeedList: View {
         List {
             ForEach(feed.items) { item in
                 ContentRow(item: item)
-                    .listRowSeparator(.hidden)
+                    .hiddenListRowSeparator()
                     .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
             }
             ForEach(feed.messages, id: \.self) { m in
                 Label(m, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)
             }
-            if feed.isLoading { ProgressView().frame(maxWidth: .infinity).listRowSeparator(.hidden) }
+            if feed.isLoading { ProgressView().frame(maxWidth: .infinity).hiddenListRowSeparator() }
             LoadMoreButton(feed: feed)
         }
         .listStyle(.plain)
@@ -214,6 +214,17 @@ struct PortableLazyVStack<Content: View>: View {
         LazyVStack(alignment: alignment, spacing: spacing ?? 8, content: content)
         #else
         VStack(alignment: alignment, spacing: spacing ?? 8, content: content)
+        #endif
+    }
+}
+
+extension View {
+    /// `.listRowSeparator(.hidden)` is unavailable on tvOS; this no-ops there.
+    func hiddenListRowSeparator() -> some View {
+        #if os(tvOS)
+        return self
+        #else
+        return self.listRowSeparator(.hidden)
         #endif
     }
 }

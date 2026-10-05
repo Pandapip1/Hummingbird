@@ -143,9 +143,11 @@ private struct VideoBody: View {
                             Label(app.library.isInWatchLater(saved) ? "Saved" : "Watch later", systemImage: app.library.isInWatchLater(saved) ? "clock.badge.checkmark" : "clock")
                         }
                         Button { showPlaylistPicker = true } label: { Label("Playlist", systemImage: "text.badge.plus") }
+                        #if !os(tvOS)
                         if let share = URL(string: item.shareUrl ?? item.url) {
                             ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
                         }
+                        #endif
                     }.buttonStyle(.bordered)
                 }
 
@@ -295,6 +297,10 @@ struct PlayerControls: View {
                         }
                         Text(playbackTime).font(.caption.monospacedDigit())
                         if model.duration > 0 {
+                            #if os(tvOS)
+                            ProgressView(value: min(model.playbackTime, model.duration), total: model.duration)
+                                .frame(minWidth: 80, maxWidth: .infinity)
+                            #else
                             Slider(value: Binding(
                                 get: { min(model.playbackTime, model.duration) },
                                 set: {
@@ -303,6 +309,7 @@ struct PlayerControls: View {
                                 }
                             ), in: 0...model.duration, onEditingChanged: { _ in interacted() })
                             .frame(minWidth: 80, maxWidth: .infinity)
+                            #endif
                         } else {
                             Spacer()
                         }

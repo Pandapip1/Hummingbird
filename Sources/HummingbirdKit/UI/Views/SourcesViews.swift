@@ -18,7 +18,7 @@ struct SourcesView: View {
                 if app.plugins.installed.isEmpty {
                     ContentUnavailableView("No sources", systemImage: "puzzlepiece.extension",
                                            description: Text("Tap + and paste a plugin URL or scan its QR code."))
-                        .listRowSeparator(.hidden)
+                        .hiddenListRowSeparator()
                 }
                 ForEach(app.plugins.installed) { p in
                     NavigationLink(value: Route.plugin(p.id)) {
@@ -323,7 +323,9 @@ struct SettingRow: View {
             VStack(alignment: .leading) {
                 label
                 TextField(setting.name, text: Binding(get: { Self.decodeText(stored) }, set: { app.plugins.setSetting(pluginID: plugin.id, key: setting.key, value: Self.encodeText($0)) }))
+                    #if !os(tvOS)
                     .textFieldStyle(.roundedBorder)
+                    #endif
             }
         }
     }
@@ -365,7 +367,14 @@ struct AppSettingsView: View {
                 Toggle("Show subtitles by default", isOn: $subtitlesDefault)
             }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
+                #if !os(tvOS)
                 Stepper("Channels per refresh: \(fetchLimit == 0 ? "no limit" : String(fetchLimit))", value: $fetchLimit, in: 0...500, step: 10)
+                #else
+                Picker("Channels per refresh", selection: $fetchLimit) {
+                    Text("No limit").tag(0)
+                    ForEach([10, 25, 50, 100, 200, 500], id: \.self) { Text(String($0)).tag($0) }
+                }
+                #endif
             }
             Section("About") {
                 Text("Hummingbird plays content from Grayjay-compatible plugins. It is an independent project and is not affiliated with FUTO.")
@@ -381,7 +390,7 @@ struct AppSettingsView: View {
 private struct ScannerPane: View {
     let onCode: (String) -> Void
     var body: some View {
-        #if canImport(AVFoundation) && canImport(UIKit)
+        #if os(iOS)
         QRScannerView(onCode: onCode)
             .ignoresSafeArea()
             .overlay(alignment: .bottom) { Text("Point the camera at a plugin QR code").padding(10).background(.thinMaterial, in: Capsule()).padding() }

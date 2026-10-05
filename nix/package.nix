@@ -11,6 +11,7 @@
   wrapGAppsHook4,
   gst_all_1,
   librsvg,
+  glib-networking,
   adwaita-icon-theme,
   src,
   version ? "0.1.0",
@@ -158,6 +159,7 @@ stdenv.mkDerivation {
         lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" gstPlugins
       }"
       --set-default GDK_PIXBUF_MODULE_FILE "${librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+      --prefix GIO_EXTRA_MODULES : "${glib-networking}/lib/gio/modules"
       --prefix XDG_DATA_DIRS : "${adwaita-icon-theme}/share"
     )
   '';

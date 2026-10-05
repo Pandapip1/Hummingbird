@@ -33,6 +33,7 @@ rec {
     (with pkgs; [
       gtk4
       glib
+      glib-networking # GIO TLS backend used by WebKitGTK/libsoup for HTTPS
       cairo
       pango
       gdk-pixbuf

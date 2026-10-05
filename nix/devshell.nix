@@ -108,6 +108,9 @@
           # Keep the helper scripts anchored to the checkout even after a cd.
           export HUMMINGBIRD_ROOT="$PWD"
           export XDG_DATA_DIRS="${deps.iconTheme}/share:''${XDG_DATA_DIRS:-}"
+          ${lib.optionalString isLinux ''
+            export GIO_EXTRA_MODULES="${pkgs.glib-networking}/lib/gio/modules:''${GIO_EXTRA_MODULES:-}"
+          ''}
 
           ${lib.optionalString isDarwin ''
             if ! xcrun -f xcodebuild >/dev/null 2>&1; then

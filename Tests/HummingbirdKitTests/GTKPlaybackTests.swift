@@ -71,6 +71,22 @@ final class GTKPlaybackTests: XCTestCase {
         }
         XCTAssertGreaterThan(backend!.currentTime, 5.1)
 
+        let muxedURL = try XCTUnwrap(URL(string: "http://127.0.0.1:18743/test.mp4"))
+        try await backend!.load(
+            PlayRequest(video: ResolvedMedia(url: muxedURL, headers: [:]), audio: nil, isLive: false),
+            resumeAt: nil,
+            autoplay: true
+        )
+        for _ in 0..<30 where backend!.tracks.isEmpty {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(backend!.tracks.contains { $0.kind == .video })
+        XCTAssertTrue(backend!.tracks.contains { $0.kind == .audio })
+        if let audioTrack = backend!.tracks.first(where: { $0.kind == .audio }) {
+            backend!.selectTrack(audioTrack)
+        }
+
         let nonRangeURL = try XCTUnwrap(URL(string: "http://127.0.0.1:18743/no-range.mp4"))
         try await backend!.load(
             PlayRequest(video: ResolvedMedia(url: nonRangeURL, headers: [:]),

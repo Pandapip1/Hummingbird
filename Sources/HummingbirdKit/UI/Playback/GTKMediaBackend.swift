@@ -19,6 +19,24 @@ final class GTKMediaBackend: MediaBackend {
     var duration: Double { player._swiftOpenUIDuration.seconds }
     var isPlaying: Bool { player.rate > 0 }
     var pictureInPictureSupported: Bool { true }
+    var tracks: [MediaTrack] {
+        guard let item = player.currentItem else { return [] }
+        item.asset._swiftOpenUIRefreshMediaSelectionGroups?()
+        return item.asset.availableMediaCharacteristicsWithMediaSelectionOptions.flatMap { characteristic -> [MediaTrack] in
+            guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return [] }
+            let kind: MediaTrack.Kind
+            switch characteristic {
+            case .visual: kind = .video
+            case .audible: kind = .audio
+            case .legible: kind = .subtitles
+            default: return []
+            }
+            return group.options.enumerated().map { index, option in
+                MediaTrack(id: "\(kind.rawValue)-\(index)", kind: kind,
+                           language: option.locale?.identifier, label: option.displayName)
+            }
+        }
+    }
 
     init() {
         player._swiftOpenUIOnEnded = { [weak self] in Task { @MainActor in self?.onEnded?() } }
@@ -54,6 +72,24 @@ final class GTKMediaBackend: MediaBackend {
     func play() { player.play() }
     func pause() { player.pause() }
     func setPlaybackRate(_ rate: Float) { player.rate = rate }
+    func selectTrack(_ track: MediaTrack?) {
+        guard let item = player.currentItem else { return }
+        let characteristic: AVMediaCharacteristic
+        if let track {
+            characteristic = switch track.kind {
+            case .video: .visual
+            case .audio: .audible
+            case .subtitles: .legible
+            }
+        } else {
+            characteristic = .legible
+        }
+        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return }
+        guard let track else { item.select(nil, in: group); return }
+        guard let index = Int(track.id.split(separator: "-").last ?? "-1"),
+              group.options.indices.contains(index) else { return }
+        item.select(group.options[index], in: group)
+    }
     func seek(to seconds: Double) { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
     func startPictureInPicture() {
         if pictureInPictureController == nil {

@@ -189,6 +189,9 @@ struct LibraryView: View {
         NavigationStack {
             List {
                 Section {
+                    NavigationLink { PlaybackQueueView() } label: {
+                        Label("Queue (\(app.playbackQueue.items.count))", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
                     NavigationLink { WatchLaterView() } label: { Label("Watch later (\(app.library.watchLater.count))", systemImage: "clock") }
                     NavigationLink { HistoryView() } label: { Label("History", systemImage: "clock.arrow.circlepath") }
                 }
@@ -240,6 +243,61 @@ struct LibraryView: View {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Hummingbird Library.json")
         try? data.write(to: url, options: .atomic)
         return url
+    }
+}
+
+@MainActor
+struct PlaybackQueueView: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        List {
+            ForEach(app.playbackQueue.items) { video in
+                HStack(spacing: 8) {
+                    NavigationLink(value: Route.item(ContentItem(saved: video))) {
+                        HStack(spacing: 8) {
+                        if video.id == app.playbackQueue.currentID {
+                            Image(systemName: "play.fill").foregroundStyle(Color.accentColor)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(video.name).lineLimit(2)
+                            if let author = video.authorName { Text(author).font(.caption).foregroundStyle(.secondary) }
+                        }
+                        }
+                    }
+                    Spacer()
+                    Button { app.playbackQueue.moveUp(video) } label: { Image(systemName: "chevron.up") }
+                    Button { app.playbackQueue.moveDown(video) } label: { Image(systemName: "chevron.down") }
+                    Button { app.playbackQueue.remove(video) } label: { Image(systemName: "trash") }
+                }
+                .buttonStyle(.plain)
+            }
+            .onDelete { app.playbackQueue.remove(at: $0) }
+            .onMove { app.playbackQueue.move(from: $0, to: $1) }
+        }
+        .listStyle(.plain)
+        .navigationTitle("Queue")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { app.playbackQueue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
+                    .disabled(app.playbackQueue.items.count < 2)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { app.playbackQueue.cycleRepeatMode() } label: {
+                    Image(systemName: app.playbackQueue.repeatMode.systemImage)
+                }
+                .accessibilityLabel(app.playbackQueue.repeatMode.label)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
+        .overlay {
+            if app.playbackQueue.items.isEmpty {
+                ContentUnavailableView("Queue is empty", systemImage: "text.line.first.and.arrowtriangle.forward",
+                                       description: Text("Add videos with Play next or Queue."))
+            }
+        }
     }
 }
 

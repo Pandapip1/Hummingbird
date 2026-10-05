@@ -20,6 +20,7 @@ final class AppModel {
     let platform: PlatformService
     let subscriptionFeed: SubscriptionFeed
     let homeFeed: FeedModel
+    let playbackQueue: PlaybackQueue
     var selectedTab: AppTab = .home
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
@@ -30,6 +31,7 @@ final class AppModel {
         self.plugins = plugins
         self.library = library
         self.platform = platform
+        self.playbackQueue = PlaybackQueue()
         self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
         self.homeFeed = FeedModel(
             initialItems: library.homeCache.map(ContentItem.init(saved:)),

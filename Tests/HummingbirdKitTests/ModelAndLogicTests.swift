@@ -62,6 +62,68 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("history.json").path))
     }
 
+    @MainActor
+    func testPlaybackQueuePersistsOrderingAndRepeatState() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HummingbirdQueueTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let backend = StorageBackend(directory: directory)
+        func video(_ name: String) throws -> SavedVideo {
+            SavedVideo(try decode(ContentItem.self,
+                #"{"contentType":1,"id":{"pluginId":"test","value":"\#(name)"},"name":"\#(name)","url":"https://test/\#(name)"}"#))
+        }
+        let one = try video("one"), two = try video("two"), three = try video("three")
+
+        let queue = PlaybackQueue(backend: backend)
+        queue.beginPlaying(one)
+        queue.enqueue(three)
+        queue.playNext(two)
+        XCTAssertEqual(queue.items.map(\.name), ["one", "two", "three"])
+        XCTAssertEqual(queue.advanceAfterPlayback()?.name, "two")
+        queue.moveDown(two)
+        queue.cycleRepeatMode()
+
+        let restored = PlaybackQueue(backend: backend)
+        XCTAssertEqual(restored.items.map(\.name), ["one", "three", "two"])
+        XCTAssertEqual(restored.current?.name, "two")
+        XCTAssertEqual(restored.repeatMode, .all)
+        XCTAssertEqual(restored.advanceAfterPlayback()?.name, "one")
+
+        let removalQueue = PlaybackQueue(backend: backend, storageName: "removal_queue")
+        removalQueue.beginPlaying(one)
+        removalQueue.enqueue(two)
+        removalQueue.enqueue(three)
+        removalQueue.beginPlaying(two)
+        removalQueue.remove(two)
+        XCTAssertEqual(removalQueue.advanceAfterPlayback()?.name, "three")
+        removalQueue.remove(three)
+        XCTAssertNil(removalQueue.advanceAfterPlayback())
+
+        let firstRemoval = PlaybackQueue(backend: backend, storageName: "first_removal_queue")
+        firstRemoval.beginPlaying(one)
+        firstRemoval.enqueue(two)
+        firstRemoval.remove(one)
+        XCTAssertEqual(firstRemoval.advanceAfterPlayback()?.name, "two")
+
+        let multipleRemoval = PlaybackQueue(backend: backend, storageName: "multiple_removal_queue")
+        multipleRemoval.beginPlaying(one)
+        multipleRemoval.enqueue(two)
+        multipleRemoval.enqueue(three)
+        multipleRemoval.beginPlaying(two)
+        multipleRemoval.remove(at: IndexSet([0, 1]))
+        let restoredRemoval = PlaybackQueue(backend: backend, storageName: "multiple_removal_queue")
+        XCTAssertEqual(restoredRemoval.advanceAfterPlayback()?.name, "three")
+
+        let subsequentRemoval = PlaybackQueue(backend: backend, storageName: "subsequent_removal_queue")
+        subsequentRemoval.beginPlaying(one)
+        subsequentRemoval.enqueue(two)
+        subsequentRemoval.enqueue(three)
+        subsequentRemoval.beginPlaying(two)
+        subsequentRemoval.remove(two)
+        subsequentRemoval.remove(one)
+        XCTAssertEqual(subsequentRemoval.advanceAfterPlayback()?.name, "three")
+    }
+
     func testContentItemToleratesLooseTypes() throws {
         let item = try decode(ContentItem.self, """
         {"contentType":1,"plugin_type":"PlatformVideo","id":{"platform":"P","pluginId":"plug","value":"1"},

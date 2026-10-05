@@ -25,6 +25,7 @@ struct RemoteImage: View {
 @MainActor
 struct ContentRow: View {
     let item: ContentItem
+    @Environment(AppModel.self) private var app
 
     var body: some View {
         Group {
@@ -33,7 +34,21 @@ struct ContentRow: View {
                 if let u = item.unlockUrl.flatMap(URL.init(string:)) { PortableLink(destination: u) { card } } else { card }
             case .channel: NavigationLink(value: Route.channel(item.url)) { channelCard }
             case .playlist: NavigationLink(value: Route.playlist(item.url)) { card }
-            default: NavigationLink(value: Route.item(item)) { card }
+            default:
+                ZStack(alignment: .topTrailing) {
+                    NavigationLink(value: Route.item(item)) { card }
+                    if item.kind == .video {
+                        Menu {
+                            Button("Play next") { app.playbackQueue.playNext(SavedVideo(item)) }
+                            Button("Add to queue") { app.playbackQueue.enqueue(SavedVideo(item)) }
+                        } label: {
+                            Image(systemName: "ellipsis.circle.fill")
+                                .font(.title2)
+                                .padding(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
         .buttonStyle(.plain)

@@ -22,6 +22,7 @@ final class PlayerModel {
     private(set) var isPlaying = false
     private(set) var isFullscreen = false
     var title: String { details?.item.name ?? "" }
+    var onPlaybackEnded: (() -> Void)?
 
     @ObservationIgnored private var cues: [SubtitleCue] = []
     @ObservationIgnored private var details: VideoDetails?
@@ -32,6 +33,7 @@ final class PlayerModel {
     @ObservationIgnored private var lastHistoryWrite = Date.distantPast
     @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
+    @ObservationIgnored private var didFinishCurrentItem = false
 
     // MARK: loading
 
@@ -118,7 +120,16 @@ final class PlayerModel {
     func seek(to seconds: Double) {
         guard let backend else { return }
         let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
+        if duration <= 0 || target < duration - 0.5 { didFinishCurrentItem = false }
         backend.seek(to: target)
+    }
+    func replay() {
+        guard let backend else { return }
+        didFinishCurrentItem = false
+        backend.seek(to: 0)
+        backend.play()
+        playbackTime = 0
+        isPlaying = true
     }
 
     private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async {
@@ -136,6 +147,7 @@ final class PlayerModel {
                 else if let duration, Double(duration) - r < 15 { start = nil }
             }
             try await backend.load(request, resumeAt: start, autoplay: true)
+            didFinishCurrentItem = false
             selected = option
             playbackTime = backend.currentTime
             self.duration = backend.duration
@@ -181,7 +193,11 @@ final class PlayerModel {
     }
 
     private func finished() {
+        guard !didFinishCurrentItem else { return }
+        didFinishCurrentItem = true
+        isPlaying = false
         if let details, let library { library.recordProgress(SavedVideo(details.item), seconds: 0); library.flushHistory() }
+        onPlaybackEnded?()
     }
 
     // MARK: subtitles
@@ -240,7 +256,8 @@ final class PlayerModel {
             Task { if await rt.hasMember(handle: h, "onConcluded") { _ = try? await rt.callHandle(h, "onConcluded", [-1]) } }
         }
         trackerHandle = nil
-        if let seconds = backend?.currentTime, seconds.isFinite, seconds > 1, let details, let library {
+        if !didFinishCurrentItem,
+           let seconds = backend?.currentTime, seconds.isFinite, seconds > 1, let details, let library {
             library.recordProgress(SavedVideo(details.item), seconds: seconds)
         }
         library?.flushHistory()
@@ -251,6 +268,7 @@ final class PlayerModel {
         selected = nil
         playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
         cues = []; subtitleText = nil; subtitleChoice = nil
+        didFinishCurrentItem = false
     }
 }
 

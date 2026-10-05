@@ -15,6 +15,15 @@ struct VideoDetailView: View {
     @State private var state: LoadState = .loading
     @State private var tab: DetailTab = .about
     @State private var showPlaylistPicker = false
+    @State private var activeURL: String
+    @State private var activePreview: ContentItem?
+
+    nonisolated init(url: String, preview: ContentItem?) {
+        self.url = url
+        self.preview = preview
+        _activeURL = State(wrappedValue: url)
+        _activePreview = State(wrappedValue: preview)
+    }
 
     enum LoadState { case loading, failed(String), video(PluginRuntime, VideoDetails), post(PostDetails), unsupported(ContentItem) }
     enum DetailTab: String, CaseIterable { case about = "About", comments = "Comments", related = "Related" }
@@ -25,7 +34,7 @@ struct VideoDetailView: View {
             case .loading:
                 VStack(alignment: .leading, spacing: 12) {
                     Rectangle().fill(.secondary.opacity(0.15)).aspectRatio(16 / 9, contentMode: .fit)
-                    Text(preview?.name ?? "Loading…").font(.title3.bold()).padding(.horizontal)
+                    Text(activePreview?.name ?? "Loading…").font(.title3.bold()).padding(.horizontal)
                     ProgressView().frame(maxWidth: .infinity)
                 }
             case .failed(let message):
@@ -40,8 +49,14 @@ struct VideoDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: url) { await load() }
-        .onDisappear { player.teardown() }
+        .task(id: activeURL) {
+            player.onPlaybackEnded = advanceQueue
+            await load()
+        }
+        .onDisappear {
+            player.onPlaybackEnded = nil
+            player.teardown()
+        }
         .sheet(isPresented: $showPlaylistPicker) {
             if case .video(_, let d) = state { PlaylistPicker(video: SavedVideo(d.item)) }
         }
@@ -50,12 +65,12 @@ struct VideoDetailView: View {
     private func load() async {
         state = .loading
         var displayedCache = false
-        if let (runtime, cached) = await app.platform.cachedDetails(url: url) {
+        if let (runtime, cached) = await app.platform.cachedDetails(url: activeURL) {
             displayedCache = true
             await display(cached, runtime: runtime, loadPlayer: true)
         }
         do {
-            let (rt, details) = try await app.platform.details(url: url)
+            let (rt, details) = try await app.platform.details(url: activeURL)
             await display(details, runtime: rt, loadPlayer: !displayedCache)
         } catch {
             if !displayedCache { state = .failed(error.localizedDescription) }
@@ -66,10 +81,21 @@ struct VideoDetailView: View {
         switch details {
         case .video(let video):
             state = .video(runtime, video)
+            app.playbackQueue.beginPlaying(SavedVideo(video.item))
             if loadPlayer { await player.load(details: video, runtime: runtime, library: app.library) }
         case .post(let post): state = .post(post)
         case .other(let item): state = .unsupported(item)
         }
+    }
+
+    private func advanceQueue() {
+        guard let next = app.playbackQueue.advanceAfterPlayback() else { return }
+        if next.url == activeURL {
+            player.replay()
+            return
+        }
+        activePreview = ContentItem(saved: next)
+        activeURL = next.url
     }
 }
 

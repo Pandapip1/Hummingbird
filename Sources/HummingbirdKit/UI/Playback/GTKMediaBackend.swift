@@ -90,6 +90,18 @@ final class GTKMediaBackend: MediaBackend {
               group.options.indices.contains(index) else { return }
         item.select(group.options[index], in: group)
     }
+    func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? {
+        guard let item = player.currentItem else { return nil }
+        let characteristic: AVMediaCharacteristic = switch kind {
+        case .video: .visual
+        case .audio: .audible
+        case .subtitles: .legible
+        }
+        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic),
+              let selected = item.currentMediaSelection.selectedMediaOption(in: group),
+              let index = group.options.firstIndex(where: { $0 === selected }) else { return nil }
+        return tracks.first { $0.kind == kind && $0.id == "\(kind.rawValue)-\(index)" }
+    }
     func seek(to seconds: Double) { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
     func startPictureInPicture() {
         if pictureInPictureController == nil {

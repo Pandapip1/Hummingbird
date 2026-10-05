@@ -60,6 +60,19 @@ final class AVMediaBackend: MediaBackend {
         item.select(group.options[index], in: group)
     }
 
+    func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? {
+        guard let item = player?.currentItem else { return nil }
+        let characteristic: AVMediaCharacteristic = switch kind {
+        case .video: AVMediaCharacteristicVisual
+        case .audio: AVMediaCharacteristicAudible
+        case .subtitles: AVMediaCharacteristicLegible
+        }
+        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic),
+              let selected = item.currentMediaSelection.selectedMediaOption(in: group),
+              let index = group.options.firstIndex(where: { $0 === selected }) else { return nil }
+        return tracks.first { $0.kind == kind && $0.id == "\(kind.rawValue)-\(index)" }
+    }
+
     func canPlay(_ option: PlaybackOption) -> Bool { true }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {

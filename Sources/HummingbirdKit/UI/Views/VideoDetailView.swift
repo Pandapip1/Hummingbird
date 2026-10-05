@@ -266,14 +266,14 @@ struct PlayerControls: View {
                 VStack(spacing: 6) {
                     HStack(spacing: 12) {
                         if isFullscreen {
-                            Text(model.title).font(.headline).foregroundStyle(.white)
+                            Text(model.title).font(.headline)
                         }
                         Spacer()
-                        StreamMenu(model: model, interacted: interacted)
-                        QualityMenu(model: model, interacted: interacted)
+                        VideoMenu(model: model, interacted: interacted)
+                        AudioMenu(model: model, interacted: interacted)
                         SubtitleMenu(model: model, interacted: interacted)
-                        PlaybackSpeedMenu(model: model, interacted: interacted)
                     }
+                    .foregroundStyle(Color.white)
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                     .padding(.horizontal, 8)
@@ -315,6 +315,7 @@ struct PlayerControls: View {
                                   : "arrow.up.left.and.arrow.down.right")
                                 .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
                         }
+                        PlaybackSpeedMenu(model: model, interacted: interacted)
                     }
                     .foregroundStyle(Color.white)
                     .padding(.horizontal, 12).padding(.vertical, 9)
@@ -323,6 +324,9 @@ struct PlayerControls: View {
                 }
                 .padding(.vertical, 8)
             }
+        }
+        .onContinuousHover { phase in
+            if case .active = phase { interacted() }
         }
         .task { interacted() }
         .onChange(of: model.isPlaying) { playing in
@@ -372,29 +376,12 @@ private struct PlaybackSpeedMenu: View {
 }
 
 @MainActor
-private struct StreamMenu: View {
+private struct VideoMenu: View {
     let model: PlayerModel
     let interacted: () -> Void
     var body: some View {
-        let streams = model.tracks.filter { $0.kind != .subtitles }
-        if !streams.isEmpty {
-            Menu {
-                ForEach(streams, id: \.id) { track in
-                    Button { interacted(); model.selectTrack(track) } label: {
-                        Text(track.label ?? track.language ?? track.kind.rawValue.capitalized)
-                    }
-                }
-            } label: { Text("Stream").foregroundStyle(.white) }
-        }
-    }
-}
-
-@MainActor
-private struct QualityMenu: View {
-    let model: PlayerModel
-    let interacted: () -> Void
-    var body: some View {
-        if model.options.count > 1 {
+        let tracks = model.tracks.filter { $0.kind == .video }
+        if model.options.count > 1 || !tracks.isEmpty {
             Menu {
                 ForEach(model.options) { option in
                     Button { interacted(); Task { await model.select(option) } } label: {
@@ -402,7 +389,35 @@ private struct QualityMenu: View {
                         else { Text(option.label) }
                     }
                 }
-            } label: { Text("Quality").foregroundStyle(.white) }
+                if model.options.count > 1 && !tracks.isEmpty { Divider() }
+                ForEach(tracks, id: \.id) { track in
+                    Button { interacted(); model.selectTrack(track) } label: {
+                        let label = track.label ?? track.language ?? "Video"
+                        if model.selectedTrack(ofKind: .video)?.id == track.id { Label(label, systemImage: "checkmark") }
+                        else { Text(label) }
+                    }
+                }
+            } label: { Text("Video") }
+        }
+    }
+}
+
+@MainActor
+private struct AudioMenu: View {
+    let model: PlayerModel
+    let interacted: () -> Void
+    var body: some View {
+        let tracks = model.tracks.filter { $0.kind == .audio }
+        if !tracks.isEmpty {
+            Menu {
+                ForEach(tracks, id: \.id) { track in
+                    Button { interacted(); model.selectTrack(track) } label: {
+                        let label = track.label ?? track.language ?? "Audio"
+                        if model.selectedTrack(ofKind: .audio)?.id == track.id { Label(label, systemImage: "checkmark") }
+                        else { Text(label) }
+                    }
+                }
+            } label: { Text("Audio") }
         }
     }
 }
@@ -455,7 +470,7 @@ private struct SubtitleMenu: View {
                         }
                     }
                 }
-            } label: { Text("Subtitles").foregroundStyle(.white) }
+            } label: { Text("Subtitles") }
         }
     }
 }

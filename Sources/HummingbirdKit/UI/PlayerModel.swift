@@ -73,6 +73,10 @@ final class PlayerModel {
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
     @ObservationIgnored private var didFinishCurrentItem = false
 
+    init(backend: MediaBackend? = nil) {
+        self.backend = backend
+    }
+
     // MARK: loading
 
     func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore) async {
@@ -118,7 +122,14 @@ final class PlayerModel {
 
     func selectTrack(_ track: MediaTrack?) {
         backend?.selectTrack(track)
-        if track?.kind == .subtitles || track == nil { embeddedSubtitleChoice = track }
+        switch track?.kind {
+        case .video, .audio: break
+        case .subtitles: embeddedSubtitleChoice = track
+        case nil: embeddedSubtitleChoice = nil
+        }
+    }
+    func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? {
+        backend?.selectedTrack(ofKind: kind)
     }
     func chooseEmbeddedSubtitle(_ track: MediaTrack) async {
         await chooseSubtitle(nil)

@@ -1,3 +1,4 @@
+#if canImport(WebKit)
 import Foundation
 import Observation
 #if canImport(SwiftUI)
@@ -252,6 +253,7 @@ final class WebAuthSession {
     return JSON.stringify({requests, userAgent: navigator.userAgent});
     """#
 }
+#endif
 
 // MARK: - QR scanner
 

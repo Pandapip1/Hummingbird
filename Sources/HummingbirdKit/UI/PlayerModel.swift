@@ -2,6 +2,36 @@ import Foundation
 import Observation
 import SwiftOpenUI
 
+enum SubtitleColorChoice: String, CaseIterable, Sendable {
+    case white, yellow, green, cyan
+
+    var label: String { rawValue.capitalized }
+    var color: Color {
+        switch self {
+        case .white: .white
+        case .yellow: .yellow
+        case .green: .green
+        case .cyan: .cyan
+        }
+    }
+}
+
+enum SubtitleSizeChoice: Double, CaseIterable, Sendable {
+    case small = 16
+    case medium = 20
+    case large = 24
+    case extraLarge = 28
+
+    var label: String {
+        switch self {
+        case .small: "Small"
+        case .medium: "Medium"
+        case .large: "Large"
+        case .extraLarge: "Extra Large"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class PlayerModel {
@@ -14,6 +44,7 @@ final class PlayerModel {
     private(set) var isPreparing = false
     private(set) var subtitleText: String?
     private(set) var subtitleChoice: SubtitleSource?
+    private(set) var embeddedSubtitleChoice: MediaTrack?
     private(set) var subtitleSources: [SubtitleSource] = []
     var tracks: [MediaTrack] { backend?.tracks ?? [] }
     var pictureInPictureSupported: Bool { backend?.pictureInPictureSupported ?? false }
@@ -21,6 +52,12 @@ final class PlayerModel {
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
     private(set) var playbackRate: Float = 1
+    private(set) var subtitleColorChoice = SubtitleColorChoice(
+        rawValue: UserDefaults.standard.string(forKey: "subtitleColor") ?? "white"
+    ) ?? .white
+    private(set) var subtitleSizeChoice = SubtitleSizeChoice(
+        rawValue: UserDefaults.standard.double(forKey: "subtitleSize")
+    ) ?? .medium
     private(set) var isFullscreen = false
     var title: String { details?.item.name ?? "" }
     var onPlaybackEnded: (() -> Void)?
@@ -79,7 +116,14 @@ final class PlayerModel {
         await play(option, resumeAt: position, duration: details?.item.duration)
     }
 
-    func selectTrack(_ track: MediaTrack?) { backend?.selectTrack(track) }
+    func selectTrack(_ track: MediaTrack?) {
+        backend?.selectTrack(track)
+        if track?.kind == .subtitles || track == nil { embeddedSubtitleChoice = track }
+    }
+    func chooseEmbeddedSubtitle(_ track: MediaTrack) async {
+        await chooseSubtitle(nil)
+        selectTrack(track)
+    }
     func startPictureInPicture() { backend?.startPictureInPicture() }
     func stopPictureInPicture() { backend?.stopPictureInPicture() }
     func toggleFullscreen() {
@@ -120,6 +164,14 @@ final class PlayerModel {
         playbackRate = rate
         if isPlaying { backend?.setPlaybackRate(rate) }
     }
+    func setSubtitleColor(_ choice: SubtitleColorChoice) {
+        subtitleColorChoice = choice
+        UserDefaults.standard.set(choice.rawValue, forKey: "subtitleColor")
+    }
+    func setSubtitleSize(_ choice: SubtitleSizeChoice) {
+        subtitleSizeChoice = choice
+        UserDefaults.standard.set(choice.rawValue, forKey: "subtitleSize")
+    }
     func skip(by seconds: Double) {
         seek(to: playbackTime + seconds)
     }
@@ -156,6 +208,9 @@ final class PlayerModel {
             try await backend.load(request, resumeAt: start, autoplay: true)
             backend.setPlaybackRate(playbackRate)
             didFinishCurrentItem = false
+            // Media selections belong to the replaced AVPlayerItem. Do not show
+            // a stale embedded-caption checkmark after a quality/source change.
+            embeddedSubtitleChoice = nil
             selected = option
             playbackTime = backend.currentTime
             self.duration = backend.duration
@@ -211,6 +266,8 @@ final class PlayerModel {
     // MARK: subtitles
 
     func chooseSubtitle(_ sub: SubtitleSource?) async {
+        backend?.selectTrack(nil)
+        embeddedSubtitleChoice = nil
         subtitleChoice = sub
         cues = []
         subtitleText = nil
@@ -275,7 +332,7 @@ final class PlayerModel {
         backend = nil
         selected = nil
         playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
-        cues = []; subtitleText = nil; subtitleChoice = nil
+        cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil
         didFinishCurrentItem = false
     }
 }

@@ -252,9 +252,9 @@ struct PlayerControls: View {
 
             if let text = model.subtitleText {
                 Text(text)
-                    .font(.callout.weight(.medium))
+                    .font(.system(size: model.subtitleSizeChoice.rawValue).weight(.medium))
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(model.subtitleColorChoice.color)
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
                     .padding(.horizontal)
@@ -412,14 +412,47 @@ private struct SubtitleMenu: View {
     let model: PlayerModel
     let interacted: () -> Void
     var body: some View {
-        if !model.subtitleSources.isEmpty {
+        let embedded = model.tracks.filter { $0.kind == .subtitles }
+        if !model.subtitleSources.isEmpty || !embedded.isEmpty {
             Menu {
                 Button { interacted(); Task { await model.chooseSubtitle(nil) } } label: {
-                    if model.subtitleChoice == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
+                    if model.subtitleChoice == nil && model.embeddedSubtitleChoice == nil {
+                        Label("Off", systemImage: "checkmark")
+                    } else { Text("Off") }
+                }
+                ForEach(embedded, id: \.id) { track in
+                    Button { interacted(); Task { await model.chooseEmbeddedSubtitle(track) } } label: {
+                        let name = track.label ?? track.language ?? "Embedded"
+                        if model.embeddedSubtitleChoice?.id == track.id {
+                            Label(name, systemImage: "checkmark")
+                        } else { Text(name) }
+                    }
                 }
                 ForEach(model.subtitleSources) { s in
                     Button { interacted(); Task { await model.chooseSubtitle(s) } } label: {
                         if model.subtitleChoice?.id == s.id { Label(s.name, systemImage: "checkmark") } else { Text(s.name) }
+                    }
+                }
+                if model.embeddedSubtitleChoice == nil && !model.subtitleSources.isEmpty {
+                    Divider()
+                    ForEach(SubtitleColorChoice.allCases, id: \.rawValue) { choice in
+                        Button { interacted(); model.setSubtitleColor(choice) } label: {
+                            if model.subtitleColorChoice == choice {
+                                Label("Caption Color: \(choice.label)", systemImage: "checkmark")
+                            } else {
+                                Text("Caption Color: \(choice.label)")
+                            }
+                        }
+                    }
+                    Divider()
+                    ForEach(SubtitleSizeChoice.allCases, id: \.rawValue) { choice in
+                        Button { interacted(); model.setSubtitleSize(choice) } label: {
+                            if model.subtitleSizeChoice == choice {
+                                Label("Caption Size: \(choice.label)", systemImage: "checkmark")
+                            } else {
+                                Text("Caption Size: \(choice.label)")
+                            }
+                        }
                     }
                 }
             } label: { Text("Subtitles").foregroundStyle(.white) }

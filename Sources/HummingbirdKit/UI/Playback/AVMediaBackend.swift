@@ -42,7 +42,13 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func selectTrack(_ track: MediaTrack?) {
-        guard let track, let item = player?.currentItem else { return }
+        guard let item = player?.currentItem else { return }
+        guard let track else {
+            if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: AVMediaCharacteristicLegible) {
+                item.select(nil, in: group)
+            }
+            return
+        }
         let characteristic: AVMediaCharacteristic = switch track.kind {
         case .video: AVMediaCharacteristicVisual
         case .audio: AVMediaCharacteristicAudible

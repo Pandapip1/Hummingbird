@@ -62,6 +62,31 @@ final class GTKPlaybackTests: XCTestCase {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertGreaterThan(backend!.currentTime, 4.7)
+
+        let nonRangeURL = try XCTUnwrap(URL(string: "http://127.0.0.1:18743/no-range.mp4"))
+        try await backend!.load(
+            PlayRequest(video: ResolvedMedia(url: nonRangeURL, headers: [:]),
+                        audio: ResolvedMedia(url: nonRangeURL, headers: [:]),
+                        isLive: false),
+            resumeAt: nil,
+            autoplay: true
+        )
+        for _ in 0..<30 where backend!.currentTime < 0.25 {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        backend!.seek(to: 4)
+        for _ in 0..<50 where backend!.currentTime < 4.5 {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let positionAfterFallbackSeek = backend!.currentTime
+        XCTAssertGreaterThan(positionAfterFallbackSeek, 4.5)
+        for _ in 0..<5 {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertGreaterThan(backend!.currentTime, positionAfterFallbackSeek + 0.25)
         backend?.stop()
         gtk_window_destroy(UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self))
         backend = nil

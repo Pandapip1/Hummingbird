@@ -16,6 +16,12 @@ final class AVMediaBackend: MediaBackend {
     var onFailure: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
     private var itemObserver: NSObjectProtocol?
+    private var mediaSelectionGroups: [AVMediaCharacteristic: AVMediaSelectionGroup] = [:]
+    private var loadGeneration = 0
+    private var activeLoadGenerations: Set<Int> = []
+    private var committedLoadGeneration: Int?
+    private var invalidatedThroughGeneration = 0
+    private var loadCompletionWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     var currentTime: Double { player?.currentTime().seconds ?? 0 }
     var duration: Double {
@@ -24,12 +30,8 @@ final class AVMediaBackend: MediaBackend {
     }
     var isPlaying: Bool { (player?.rate ?? 0) > 0 }
     var tracks: [MediaTrack] {
-        #if os(visionOS)
-        return []
-        #else
-        guard let item = player?.currentItem else { return [] }
-        return item.asset.availableMediaCharacteristicsWithMediaSelectionOptions.flatMap { (characteristic) -> [MediaTrack] in
-            guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return [] }
+        return [AVMediaCharacteristic.visual, .audible, .legible].flatMap { characteristic -> [MediaTrack] in
+            guard let group = mediaSelectionGroups[characteristic] else { return [] }
             let kind: MediaTrack.Kind
             switch characteristic {
             case AVMediaCharacteristic.visual: kind = .video
@@ -42,14 +44,12 @@ final class AVMediaBackend: MediaBackend {
                            language: option.locale?.identifier, label: option.displayName)
             }
         }
-        #endif
     }
 
     func selectTrack(_ track: MediaTrack?) {
-        #if !os(visionOS)
         guard let item = player?.currentItem else { return }
         guard let track else {
-            if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: AVMediaCharacteristic.legible) {
+            if let group = mediaSelectionGroups[.legible] {
                 item.select(nil, in: group)
             }
             return
@@ -59,40 +59,67 @@ final class AVMediaBackend: MediaBackend {
         case .audio: AVMediaCharacteristic.audible
         case .subtitles: AVMediaCharacteristic.legible
         }
-        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic),
+        guard let group = mediaSelectionGroups[characteristic],
               let index = Int(track.id.split(separator: "-").last ?? "-1"),
               group.options.indices.contains(index) else { return }
         item.select(group.options[index], in: group)
-        #endif
     }
 
     func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? {
-        #if os(visionOS)
-        return nil
-        #else
         guard let item = player?.currentItem else { return nil }
         let characteristic: AVMediaCharacteristic = switch kind {
         case .video: AVMediaCharacteristic.visual
         case .audio: AVMediaCharacteristic.audible
         case .subtitles: AVMediaCharacteristic.legible
         }
-        guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic),
+        guard let group = mediaSelectionGroups[characteristic],
               let selected = item.currentMediaSelection.selectedMediaOption(in: group),
               let index = group.options.firstIndex(where: { $0 === selected }) else { return nil }
         return tracks.first { $0.kind == kind && $0.id == "\(kind.rawValue)-\(index)" }
-        #endif
     }
 
     func canPlay(_ option: PlaybackOption) -> Bool { true }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
-        let item = try await makeItem(for: request)
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        activeLoadGenerations.insert(generation)
+        var committedAsset: AVAsset?
+        defer {
+            if Task.isCancelled, let committedAsset {
+                cancelCommittedLoad(generation, asset: committedAsset)
+            }
+            finishLoad(generation)
+        }
+        let item: AVPlayerItem
+        do {
+            item = try await makeItem(for: request)
+        } catch {
+            if hasNewerCommittedLoad(than: generation) { throw MediaBackendLoadError.superseded }
+            throw error
+        }
+        try Task.checkCancellation()
+        try await waitForNewerLoads(than: generation)
+        try Task.checkCancellation()
+        guard canCommitLoad(generation) else { throw MediaBackendLoadError.superseded }
         removeObservers()
         let p = player ?? AVPlayer()
         p.replaceCurrentItem(with: item)
         player = p
+        committedLoadGeneration = generation
+        committedAsset = item.asset
+        mediaSelectionGroups = [:]
+        try await refreshMediaSelectionGroups(for: item.asset, generation: generation)
+        try Task.checkCancellation()
+        try await waitForNewerLoads(than: generation)
+        try Task.checkCancellation()
+        guard isCurrentLoad(generation, asset: item.asset) else { throw MediaBackendLoadError.superseded }
         if let resumeAt, resumeAt > 0 {
             await p.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            try Task.checkCancellation()
+            try await waitForNewerLoads(than: generation)
+            try Task.checkCancellation()
+            guard isCurrentLoad(generation, asset: item.asset) else { throw MediaBackendLoadError.superseded }
         }
         timeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
             Task { @MainActor in self?.onTick?(time.seconds) }
@@ -109,15 +136,100 @@ final class AVMediaBackend: MediaBackend {
     func seek(to seconds: Double) { player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
 
     func stop() {
+        loadGeneration &+= 1
+        invalidatedThroughGeneration = loadGeneration
+        activeLoadGenerations.removeAll()
+        committedLoadGeneration = nil
+        resumeLoadCompletionWaiters()
         removeObservers()
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
+        mediaSelectionGroups = [:]
     }
 
     private func removeObservers() {
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
         if let o = itemObserver { NotificationCenter.default.removeObserver(o); itemObserver = nil }
+    }
+
+    private func isCurrentLoad(_ generation: Int, asset: AVAsset) -> Bool {
+        committedLoadGeneration == generation && player?.currentItem?.asset === asset
+    }
+
+    private func cancelCommittedLoad(_ generation: Int, asset: AVAsset) {
+        guard isCurrentLoad(generation, asset: asset) else { return }
+        removeObservers()
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+        mediaSelectionGroups = [:]
+        committedLoadGeneration = nil
+    }
+
+    private func canCommitLoad(_ generation: Int) -> Bool {
+        generation > invalidatedThroughGeneration
+            && !hasNewerCommittedLoad(than: generation)
+            && !activeLoadGenerations.contains(where: { $0 > generation })
+    }
+
+    private func hasNewerCommittedLoad(than generation: Int) -> Bool {
+        (committedLoadGeneration ?? 0) > generation
+    }
+
+    private func waitForNewerLoads(than generation: Int) async throws {
+        while activeLoadGenerations.contains(where: { $0 > generation }) {
+            try Task.checkCancellation()
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if Task.isCancelled || !activeLoadGenerations.contains(where: { $0 > generation }) {
+                        continuation.resume()
+                    } else {
+                        loadCompletionWaiters[id] = continuation
+                    }
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in self?.resumeLoadCompletionWaiter(id) }
+            }
+            try Task.checkCancellation()
+        }
+    }
+
+    private func finishLoad(_ generation: Int) {
+        activeLoadGenerations.remove(generation)
+        resumeLoadCompletionWaiters()
+    }
+
+    private func resumeLoadCompletionWaiters() {
+        let waiters = loadCompletionWaiters
+        loadCompletionWaiters.removeAll()
+        waiters.values.forEach { $0.resume() }
+    }
+
+    private func resumeLoadCompletionWaiter(_ id: UUID) {
+        loadCompletionWaiters.removeValue(forKey: id)?.resume()
+    }
+
+    private func refreshMediaSelectionGroups(for asset: AVAsset, generation: Int) async throws {
+        do {
+            let characteristics = try await asset.load(.availableMediaCharacteristicsWithMediaSelectionOptions)
+            try Task.checkCancellation()
+            var groups: [AVMediaCharacteristic: AVMediaSelectionGroup] = [:]
+            for characteristic in characteristics {
+                if let group = try await asset.loadMediaSelectionGroup(for: characteristic) {
+                    groups[characteristic] = group
+                }
+                try Task.checkCancellation()
+            }
+            guard isCurrentLoad(generation, asset: asset) else { return }
+            mediaSelectionGroups = groups
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard isCurrentLoad(generation, asset: asset) else { return }
+            mediaSelectionGroups = [:]
+        }
     }
 
     // MARK: building items

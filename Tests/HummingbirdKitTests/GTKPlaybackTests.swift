@@ -7,6 +7,38 @@ import CGTK
 
 final class GTKPlaybackTests: XCTestCase {
     @MainActor
+    func testCancelledInstalledLoadClearsCurrentItemAfterReplacementFails() async throws {
+        let gate = InstalledItemGate()
+        var buildCount = 0
+        let backend = GTKMediaBackend(
+            itemFactory: { _, _ in
+                buildCount += 1
+                if buildCount == 2 { throw PluginError.execution("replacement failed") }
+                return AVPlayerItem(asset: AVAsset())
+            },
+            didInstallItem: { _ in try await gate.suspendAfterInstallation() }
+        )
+        let media = ResolvedMedia(url: try XCTUnwrap(URL(string: "https://example.com/video.mp4")), headers: [:])
+        let request = PlayRequest(video: media, audio: nil, isLive: false)
+
+        let first = Task { try? await backend.load(request, resumeAt: nil, autoplay: true) }
+        await gate.waitForInstallation()
+        XCTAssertNotNil(backend.player.currentItem)
+
+        do {
+            try await backend.load(request, resumeAt: nil, autoplay: true)
+            XCTFail("Expected replacement construction to fail")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "replacement failed")
+        }
+        first.cancel()
+        await first.value
+
+        XCTAssertNil(backend.player.currentItem)
+        XCTAssertTrue(backend.tracks.isEmpty)
+    }
+
+    @MainActor
     func testCustomHTTPHeadersReachGStreamer() async throws {
         gtk_init()
         let root = URL(fileURLWithPath: #filePath)
@@ -146,6 +178,33 @@ final class GTKPlaybackTests: XCTestCase {
             throw XCTSkip("custom-header playback fixture requires Python 3; set HUMMINGBIRD_TEST_PYTHON")
         }
         return path
+    }
+}
+
+@MainActor
+private final class InstalledItemGate {
+    private var installed = false
+    private var installationWaiter: CheckedContinuation<Void, Never>?
+    private var suspensionWaiter: CheckedContinuation<Void, Never>?
+
+    func waitForInstallation() async {
+        if installed { return }
+        await withCheckedContinuation { installationWaiter = $0 }
+    }
+
+    func suspendAfterInstallation() async throws {
+        installed = true
+        installationWaiter?.resume()
+        installationWaiter = nil
+        try await withTaskCancellationHandler {
+            await withCheckedContinuation { suspensionWaiter = $0 }
+            try Task.checkCancellation()
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.suspensionWaiter?.resume()
+                self?.suspensionWaiter = nil
+            }
+        }
     }
 }
 #endif

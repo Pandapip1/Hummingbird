@@ -21,6 +21,11 @@ struct PlayRequest: Sendable {
     var isLive: Bool
 }
 
+/// A newer playback request replaced this one before its asynchronous setup completed.
+enum MediaBackendLoadError: Error {
+    case superseded
+}
+
 /// The platform media player behind `PlayerModel`. AVFoundation on Apple platforms, GTK's media stack elsewhere.
 @MainActor
 protocol MediaBackend: AnyObject {

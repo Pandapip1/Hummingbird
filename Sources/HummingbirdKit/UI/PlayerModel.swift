@@ -110,7 +110,7 @@ final class PlayerModel {
         }
         let saved = SavedVideo(details.item)
         let resume = library.position(for: saved)
-        await play(choice, resumeAt: resume, duration: details.item.duration)
+        guard await play(choice, resumeAt: resume, duration: details.item.duration) else { return }
 
         if let first = details.subtitles.first(where: { $0.language?.hasPrefix(Locale.current.language.languageCode?.identifier ?? "en") == true }),
            UserDefaults.standard.bool(forKey: "showSubtitlesByDefault") {
@@ -121,7 +121,7 @@ final class PlayerModel {
 
     func select(_ option: PlaybackOption) async {
         let position = backend?.currentTime
-        await play(option, resumeAt: position, duration: details?.item.duration)
+        _ = await play(option, resumeAt: position, duration: details?.item.duration)
     }
 
     func selectTrack(_ track: MediaTrack?) {
@@ -206,8 +206,8 @@ final class PlayerModel {
         isPlaying = true
     }
 
-    private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async {
-        guard let backend else { return }
+    private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async -> Bool {
+        guard let backend else { return false }
         isPreparing = true
         defer { isPreparing = false }
         do {
@@ -230,8 +230,14 @@ final class PlayerModel {
             playbackTime = backend.currentTime
             self.duration = backend.duration
             isPlaying = backend.isPlaying
+            return true
+        } catch MediaBackendLoadError.superseded {
+            return false
+        } catch is CancellationError {
+            return false
         } catch {
             errorMessage = (error as? PluginError)?.localizedDescription ?? error.localizedDescription
+            return false
         }
     }
 

@@ -37,8 +37,11 @@ struct SearchView: View {
     @Environment(AppModel.self) private var app
     @State private var path = NavigationPath()
     @State private var query = ""
+    @State private var submittedQuery = ""
     @State private var feed: FeedModel?
     @State private var channels: [ContentItem] = []
+    @State private var suggestions: [String] = []
+    @State private var searchGeneration = 0
     @State private var resolving = false
     @State private var notice: String?
 
@@ -46,7 +49,7 @@ struct SearchView: View {
         NavigationStack(path: $path) {
             Group {
                 if app.plugins.enabledPlugins.isEmpty { NoSourcesView() }
-                else if let feed {
+                else if let feed, query.trimmingCharacters(in: .whitespacesAndNewlines) == submittedQuery {
                     List {
                         if !channels.isEmpty {
                             Section("Channels") {
@@ -69,14 +72,40 @@ struct SearchView: View {
                             ContentUnavailableView.search(text: query)
                         }
                     }
+                } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if app.searchHistory.queries.isEmpty {
+                        ContentUnavailableView("Search your sources", systemImage: "magnifyingglass",
+                                               description: Text("Type a search, or paste a link to open it directly."))
+                    } else {
+                        List {
+                            Section("Recent searches") {
+                                ForEach(app.searchHistory.queries, id: \.self) { value in
+                                    Button { runSuggestion(value) } label: {
+                                        Label(value, systemImage: "clock.arrow.circlepath")
+                                    }
+                                }
+                                .onDelete { offsets in
+                                    offsets.map { app.searchHistory.queries[$0] }
+                                        .forEach(app.searchHistory.remove)
+                                }
+                                Button("Clear recent searches", role: .destructive) { app.searchHistory.clear() }
+                            }
+                        }
+                    }
                 } else {
-                    ContentUnavailableView("Search your sources", systemImage: "magnifyingglass",
-                                           description: Text("Type a search, or paste a link to open it directly."))
+                    List {
+                        ForEach(suggestions, id: \.self) { value in
+                            Button { runSuggestion(value) } label: {
+                                Label(value, systemImage: "magnifyingglass")
+                            }
+                        }
+                    }
                 }
             }
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Search or paste a link")
             .onSubmit(of: .search) { Task { await submit() } }
+            .task(id: query) { await updateSuggestions() }
             .overlay(alignment: .bottom) {
                 if let notice { Text(notice).font(.footnote).padding(10).background(.thinMaterial, in: Capsule()).padding() }
             }
@@ -87,20 +116,51 @@ struct SearchView: View {
     private func submit() async {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        searchGeneration &+= 1
+        let generation = searchGeneration
+        submittedQuery = text
+        channels = []
+        notice = nil
+        resolving = false
+        app.searchHistory.record(text)
+        suggestions = []
         if text.contains("://") {
             resolving = true
-            defer { resolving = false }
-            if let route = await app.platform.classify(url: text) { path.append(route); return }
+            defer { if generation == searchGeneration { resolving = false } }
+            if let route = await app.platform.classify(url: text) {
+                guard generation == searchGeneration else { return }
+                path.append(route)
+                return
+            }
+            guard generation == searchGeneration else { return }
             notice = "None of your sources recognise that link."
             try? await Task.sleep(nanoseconds: 2_500_000_000)
-            notice = nil
+            if generation == searchGeneration { notice = nil }
             return
         }
-        let f = feed ?? app.makeFeed()
+        let f = app.makeFeed()
         feed = f
         async let found = app.platform.searchChannels(query: text)
         await f.reload(sources: app.platform.searchSources(query: text, type: nil, order: nil))
-        channels = await found.map { $0.1 }
+        let foundChannels = await found.map { $0.1 }
+        guard generation == searchGeneration else { return }
+        channels = foundChannels
+    }
+
+    private func runSuggestion(_ value: String) {
+        query = value
+        Task { await submit() }
+    }
+
+    private func updateSuggestions() async {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text != submittedQuery else { suggestions = []; return }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        guard !Task.isCancelled else { return }
+        let values = await app.platform.searchSuggestions(query: text)
+        guard !Task.isCancelled,
+              query.trimmingCharacters(in: .whitespacesAndNewlines) == text else { return }
+        suggestions = values
     }
 }
 

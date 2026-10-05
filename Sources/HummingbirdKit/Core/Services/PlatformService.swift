@@ -179,6 +179,28 @@ final class PlatformService {
         }
         return out
     }
+
+    func searchSuggestions(query: String) async -> [String] {
+        var suggestions: [String] = []
+        var seen = Set<String>()
+        for plugin in plugins.enabledPlugins where plugin.config.enableInSearch {
+            guard !Task.isCancelled else { return [] }
+            guard let runtime = plugins.runtime(for: plugin.id),
+                  (try? await runtime.enable()) != nil,
+                  runtime.has("searchSuggestions"),
+                  let values = try? await runtime.call("searchSuggestions", [query], as: [String].self)
+            else { continue }
+            guard !Task.isCancelled else { return [] }
+            for value in values {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                let key = trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                if seen.insert(key).inserted { suggestions.append(trimmed) }
+                if suggestions.count == 10 { return suggestions }
+            }
+        }
+        return suggestions
+    }
 }
 
 // MARK: - Navigation

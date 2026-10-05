@@ -6,6 +6,23 @@ final class ModelAndLogicTests: XCTestCase {
         try JSONDecoder().decode(T.self, from: Data(json.utf8))
     }
 
+    @MainActor
+    func testSearchHistoryDeduplicatesLimitsAndPersists() {
+        var saved: [[String]] = []
+        let history = SearchHistory(limit: 3, load: { ["Existing"] }, save: { saved.append($0) })
+        history.record("  first  ")
+        history.record("existing")
+        history.record("second")
+        history.record("third")
+
+        XCTAssertEqual(history.queries, ["third", "second", "existing"])
+        history.remove("second")
+        XCTAssertEqual(history.queries, ["third", "existing"])
+        history.clear()
+        XCTAssertEqual(history.queries, [])
+        XCTAssertEqual(saved.last, [])
+    }
+
     func testStorageDatabasePersistsAndOverwritesValues() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("HummingbirdStorageTests-\(UUID().uuidString)", isDirectory: true)

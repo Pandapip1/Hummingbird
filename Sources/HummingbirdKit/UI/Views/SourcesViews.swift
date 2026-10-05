@@ -68,7 +68,7 @@ struct AddSourceSheet: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let preview { PreviewView(preview: preview, onInstall: install, onCancel: { self.preview = nil }) }
+                if let preview { PreviewView(preview: preview) }
                 else if scanning {
                     ScannerPane(onCode: { code in scanning = false; urlText = code; Task { await prepare() } })
                 } else {
@@ -93,7 +93,23 @@ struct AddSourceSheet: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        if preview != nil {
+                            preview = nil
+                        } else {
+                            dismiss()
+                        }
+                    }
+                }
+                if let preview {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(preview.warnings.isEmpty ? "Install" : "Install anyway", action: install)
+                            .bold()
+                    }
+                }
+            }
         }
         .frame(minHeight: 320)
     }
@@ -115,8 +131,6 @@ struct AddSourceSheet: View {
 @MainActor
 private struct PreviewView: View {
     let preview: InstallPreview
-    let onInstall: () -> Void
-    let onCancel: () -> Void
 
     var body: some View {
         let c = preview.config
@@ -144,10 +158,6 @@ private struct PreviewView: View {
             }
             if !c.allowUrls.isEmpty {
                 Section("Can contact") { ForEach(c.allowUrls, id: \.self) { Text($0).font(.footnote.monospaced()) } }
-            }
-            Section {
-                Button(preview.warnings.isEmpty ? "Install" : "Install anyway", action: onInstall).bold()
-                Button("Back", role: .cancel, action: onCancel)
             }
         }
     }

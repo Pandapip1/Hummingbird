@@ -266,20 +266,19 @@ struct PlayerControls: View {
 
             if controlsVisible || !model.isPlaying {
                 VStack(spacing: 6) {
-                    if hasTopControls {
-                        HStack(spacing: 12) {
-                            if isFullscreen {
-                                Text(model.title).font(.headline).foregroundStyle(.white)
-                            }
-                            Spacer()
-                            StreamMenu(model: model, interacted: interacted)
-                            QualityMenu(model: model, interacted: interacted)
-                            SubtitleMenu(model: model, interacted: interacted)
+                    HStack(spacing: 12) {
+                        if isFullscreen {
+                            Text(model.title).font(.headline).foregroundStyle(.white)
                         }
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-                        .padding(.horizontal, 8)
+                        Spacer()
+                        StreamMenu(model: model, interacted: interacted)
+                        QualityMenu(model: model, interacted: interacted)
+                        SubtitleMenu(model: model, interacted: interacted)
+                        PlaybackSpeedMenu(model: model, interacted: interacted)
                     }
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.horizontal, 8)
 
                     Spacer()
 
@@ -359,9 +358,27 @@ struct PlayerControls: View {
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 
-    private var hasTopControls: Bool {
-        isFullscreen || !model.tracks.filter { $0.kind != .subtitles }.isEmpty
-            || model.options.count > 1 || !model.subtitleSources.isEmpty
+}
+
+@MainActor
+private struct PlaybackSpeedMenu: View {
+    let model: PlayerModel
+    let interacted: () -> Void
+    private let rates: [Float] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+
+    var body: some View {
+        Menu {
+            ForEach(rates, id: \.self) { rate in
+                Button { interacted(); model.setPlaybackRate(rate) } label: {
+                    let label = rate == 1 ? "Normal" : "\(rate.formatted())×"
+                    if rate == model.playbackRate { Label(label, systemImage: "checkmark") }
+                    else { Text(label) }
+                }
+            }
+        } label: {
+            Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×")
+                .foregroundStyle(.white)
+        }
     }
 }
 

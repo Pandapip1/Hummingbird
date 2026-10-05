@@ -53,6 +53,7 @@ final class GTKMediaBackend: MediaBackend {
 
     func play() { player.play() }
     func pause() { player.pause() }
+    func setPlaybackRate(_ rate: Float) { player.rate = rate }
     func seek(to seconds: Double) { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
     func startPictureInPicture() {
         if pictureInPictureController == nil {

@@ -50,11 +50,18 @@ final class GTKPlaybackTests: XCTestCase {
             resumeAt: nil,
             autoplay: true
         )
-        for _ in 0..<50 where backend!.currentTime < 0.25 {
+        backend!.setPlaybackRate(2)
+        for _ in 0..<10 {
             while g_main_context_iteration(nil, 0) != 0 {}
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        XCTAssertGreaterThan(backend!.currentTime, 0.25)
+        XCTAssertGreaterThan(backend!.currentTime, 1.4)
+        backend!.seek(to: 4)
+        for _ in 0..<5 {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertGreaterThan(backend!.currentTime, 4.7)
         backend?.stop()
         gtk_window_destroy(UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self))
         backend = nil

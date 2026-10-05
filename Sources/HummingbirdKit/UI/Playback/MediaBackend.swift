@@ -45,6 +45,7 @@ protocol MediaBackend: AnyObject {
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws
     func play()
     func pause()
+    func setPlaybackRate(_ rate: Float)
     func seek(to seconds: Double)
     /// Stops playback and releases the current item.
     func stop()
@@ -58,4 +59,5 @@ extension MediaBackend {
     var pictureInPictureSupported: Bool { false }
     func startPictureInPicture() {}
     func stopPictureInPicture() {}
+    func setPlaybackRate(_ rate: Float) { _ = rate }
 }

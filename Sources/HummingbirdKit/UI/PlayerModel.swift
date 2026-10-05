@@ -20,6 +20,7 @@ final class PlayerModel {
     private(set) var playbackTime: Double = 0
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
+    private(set) var playbackRate: Float = 1
     private(set) var isFullscreen = false
     var title: String { details?.item.name ?? "" }
     var onPlaybackEnded: (() -> Void)?
@@ -111,8 +112,13 @@ final class PlayerModel {
             isPlaying = false
         } else {
             backend.play()
+            backend.setPlaybackRate(playbackRate)
             isPlaying = true
         }
+    }
+    func setPlaybackRate(_ rate: Float) {
+        playbackRate = rate
+        if isPlaying { backend?.setPlaybackRate(rate) }
     }
     func skip(by seconds: Double) {
         seek(to: playbackTime + seconds)
@@ -128,6 +134,7 @@ final class PlayerModel {
         didFinishCurrentItem = false
         backend.seek(to: 0)
         backend.play()
+        backend.setPlaybackRate(playbackRate)
         playbackTime = 0
         isPlaying = true
     }
@@ -147,6 +154,7 @@ final class PlayerModel {
                 else if let duration, Double(duration) - r < 15 { start = nil }
             }
             try await backend.load(request, resumeAt: start, autoplay: true)
+            backend.setPlaybackRate(playbackRate)
             didFinishCurrentItem = false
             selected = option
             playbackTime = backend.currentTime

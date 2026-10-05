@@ -56,6 +56,17 @@ final class GTKPlaybackTests: XCTestCase {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         XCTAssertGreaterThan(backend!.currentTime, 1.4)
+        let positionBeforeRateChange = backend!.currentTime
+        backend!.setPlaybackRate(0.5)
+        XCTAssertEqual(backend!.currentTime, positionBeforeRateChange, accuracy: 0.25)
+        for _ in 0..<5 {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertGreaterThan(backend!.currentTime, positionBeforeRateChange + 0.1)
+        let positionBeforeRestoringRate = backend!.currentTime
+        backend!.setPlaybackRate(2)
+        XCTAssertEqual(backend!.currentTime, positionBeforeRestoringRate, accuracy: 0.25)
         backend!.seek(to: 4)
         XCTAssertEqual(backend!.currentTime, 4, accuracy: 0.25)
         for _ in 0..<5 {

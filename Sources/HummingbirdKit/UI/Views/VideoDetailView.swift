@@ -43,7 +43,8 @@ struct VideoDetailView: View {
                 case .video(let rt, let d):
                     VideoBody(runtime: rt, details: d, player: player, tab: $tab,
                               showPlaylistPicker: $showPlaylistPicker,
-                              maximumPlayerHeight: geometry.size.height * 0.9)
+                              playerWidth: geometry.size.width,
+                              playerHeight: PlayerLayout.height(width: geometry.size.width, viewportHeight: geometry.size.height))
                 case .post(let p):
                     PostBody(post: p)
                 case .unsupported(let item):
@@ -114,7 +115,8 @@ private struct VideoBody: View {
     let player: PlayerModel
     @Binding var tab: VideoDetailView.DetailTab
     @Binding var showPlaylistPicker: Bool
-    let maximumPlayerHeight: CGFloat
+    let playerWidth: CGFloat
+    let playerHeight: CGFloat
     @Environment(AppModel.self) private var app
     @State private var descriptionExpanded = false
 
@@ -122,12 +124,11 @@ private struct VideoBody: View {
         let item = details.item
         let saved = SavedVideo(item)
         VStack(alignment: .leading, spacing: 12) {
-            PlayerSection(model: player)
-                .frame(maxHeight: maximumPlayerHeight)
+            PlayerSection(model: player, width: playerWidth, height: playerHeight)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(item.name).font(.title3.bold())
-                Text(statsLine).font(.footnote).foregroundStyle(.secondary)
+                Text(item.name).font(.title3.bold()).lineLimit(nil)
+                Text(statsLine).font(.footnote).foregroundStyle(.secondary).lineLimit(nil)
 
                 if let author = item.author, !author.url.isEmpty {
                     NavigationLink(value: Route.channel(author.url)) {
@@ -200,9 +201,37 @@ private struct VideoBody: View {
 
 // MARK: - Player
 
+/// Reserve the player's complete footprint before laying out the metadata.
+/// A maximum alone does not give a flexible video surface an ideal height in a scroll view.
+enum PlayerLayout {
+    static let controlBarMinimumHeight: CGFloat = 44
+    static let minimumBarSeparation: CGFloat = 24
+    // Two bars, their 9-point vertical padding, the outer 8-point padding,
+    // and the spacer plus two 6-point gaps between the bars.
+    static let minimumHeight = 2 * (controlBarMinimumHeight + 2 * 9) + 2 * 8 + 2 * 6 + minimumBarSeparation
+
+    static func usesStackedTransport(width: CGFloat) -> Bool { width < 600 }
+    static func usesStackedTrackMenus(width: CGFloat) -> Bool { width < 280 }
+
+    static func minimumHeight(width: CGFloat) -> CGFloat {
+        let extraTransportRows: CGFloat = usesStackedTransport(width: width) ? 2 : 0
+        let extraTrackRows: CGFloat = usesStackedTrackMenus(width: width) ? 1 : 0
+        return minimumHeight + (extraTransportRows + extraTrackRows) * (controlBarMinimumHeight + 6)
+    }
+
+    static func height(width: CGFloat, viewportHeight: CGFloat) -> CGFloat {
+        let minimumHeight = minimumHeight(width: width)
+        // In a very short window the controls minimum takes precedence; the page scrolls.
+        let limit = max(minimumHeight, viewportHeight * 0.9)
+        return min(max(minimumHeight, width * 9 / 16), limit)
+    }
+}
+
 @MainActor
-private struct PlayerSection: View {
+struct PlayerSection: View {
     let model: PlayerModel
+    let width: CGFloat
+    let height: CGFloat
 
     var body: some View {
         #if canImport(UIKit) || os(macOS)
@@ -218,20 +247,18 @@ private struct PlayerSection: View {
     }
 
     private var player: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                Color.black
-                if model.hasMedia { PlayerSurface(model: model) }
-                if model.isPreparing { ProgressView().tint(.white) }
-                if let err = model.errorMessage {
-                    Text(err).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.white).padding()
-                }
+        ZStack {
+            Color.black
+            if model.hasMedia { PlayerSurface(model: model) }
+            if model.isPreparing { ProgressView().tint(.white) }
+            if let err = model.errorMessage {
+                Text(err).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.white).padding()
             }
-            .frame(maxWidth: .infinity)
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .overlay {
-                PlayerControls(model: model, isFullscreen: false)
-            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .overlay {
+            PlayerControls(model: model, isFullscreen: false, availableWidth: width)
         }
     }
 }
@@ -241,10 +268,12 @@ struct FullscreenPlayerView: View {
     let model: PlayerModel
 
     var body: some View {
-        ZStack {
-            Color.black
-            PlayerSurface(model: model)
-            PlayerControls(model: model, isFullscreen: true)
+        GeometryReader { geometry in
+            ZStack {
+                Color.black
+                PlayerSurface(model: model)
+                PlayerControls(model: model, isFullscreen: true, availableWidth: geometry.size.width)
+            }
         }
     }
 }
@@ -253,6 +282,7 @@ struct FullscreenPlayerView: View {
 struct PlayerControls: View {
     let model: PlayerModel
     let isFullscreen: Bool
+    var availableWidth: CGFloat = .infinity
     @State private var controlsVisible = true
     @State private var autoHide = PlayerControlsAutoHide()
 
@@ -269,53 +299,24 @@ struct PlayerControls: View {
                     .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
                     .padding(.horizontal)
                     .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, controlsVisible ? 58 : 16)
+                    .padding(.bottom, controlsVisible ? (PlayerLayout.usesStackedTransport(width: availableWidth) ? 178 : 78) : 16)
             }
 
             if controlsVisible || !model.isPlaying {
                 VStack(spacing: 6) {
-                    HStack(spacing: 12) {
-                        if isFullscreen {
-                            Text(model.title).font(.headline)
-                        }
-                        Spacer()
-                        VideoMenu(model: model, interacted: interacted)
-                        AudioMenu(model: model, interacted: interacted)
-                        SubtitleMenu(model: model, interacted: interacted)
-                    }
+                    trackControls
                     .foregroundStyle(Color.white)
+                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                     .padding(.horizontal, 8)
 
                     Spacer()
+                        .frame(minHeight: PlayerLayout.minimumBarSeparation, maxHeight: .infinity)
 
-                    HStack(spacing: 14) {
-                        Button { interacted(); model.skip(by: -10) } label: {
-                            Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds")
-                        }
-                        Button { interacted(); model.togglePlayback() } label: {
-                            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                                .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
-                        }
-                        Button { interacted(); model.skip(by: 10) } label: {
-                            Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds")
-                        }
-                        PlayerTimeline(model: model, interacted: interacted)
-                        if model.pictureInPictureSupported {
-                            Button { interacted(); model.startPictureInPicture() } label: {
-                                Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
-                            }
-                        }
-                        Button { interacted(); model.toggleFullscreen() } label: {
-                            Image(systemName: isFullscreen
-                                  ? "arrow.down.right.and.arrow.up.left"
-                                  : "arrow.up.left.and.arrow.down.right")
-                                .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
-                        }
-                        PlaybackSpeedMenu(model: model, interacted: interacted)
-                    }
+                    transportControls
                     .foregroundStyle(Color.white)
+                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                     .padding(.horizontal, 8)
@@ -331,6 +332,81 @@ struct PlayerControls: View {
             if playing { interacted() }
             else { autoHide.task?.cancel(); if !controlsVisible { controlsVisible = true } }
         }
+    }
+
+    @ViewBuilder
+    private var trackControls: some View {
+        if PlayerLayout.usesStackedTrackMenus(width: availableWidth) {
+            VStack(spacing: 6) {
+                HStack(spacing: 12) {
+                    VideoMenu(model: model, interacted: interacted)
+                    AudioMenu(model: model, interacted: interacted)
+                }
+                .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+                SubtitleMenu(model: model, interacted: interacted)
+                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+            }
+        } else {
+            HStack(spacing: 12) {
+                if isFullscreen && !PlayerLayout.usesStackedTransport(width: availableWidth) {
+                    Text(model.title).font(.headline)
+                }
+                Spacer()
+                VideoMenu(model: model, interacted: interacted)
+                AudioMenu(model: model, interacted: interacted)
+                SubtitleMenu(model: model, interacted: interacted)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var transportControls: some View {
+        if PlayerLayout.usesStackedTransport(width: availableWidth) {
+            VStack(spacing: 6) {
+                HStack(spacing: 14) { transportButtons }
+                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+                PlayerTimeline(model: model, interacted: interacted)
+                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+                HStack(spacing: 14) { secondaryButtons }
+                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+            }
+        } else {
+            HStack(spacing: 14) {
+                transportButtons
+                PlayerTimeline(model: model, interacted: interacted)
+                secondaryButtons
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var transportButtons: some View {
+        Button { interacted(); model.skip(by: -10) } label: {
+            Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds")
+        }
+        Button { interacted(); model.togglePlayback() } label: {
+            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
+        }
+        Button { interacted(); model.skip(by: 10) } label: {
+            Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds")
+        }
+    }
+
+    @ViewBuilder
+    private var secondaryButtons: some View {
+        if model.pictureInPictureSupported {
+            Button { interacted(); model.startPictureInPicture() } label: {
+                Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
+            }
+        }
+        Button { interacted(); model.toggleFullscreen() } label: {
+            Image(systemName: isFullscreen
+                  ? "arrow.down.right.and.arrow.up.left"
+                  : "arrow.up.left.and.arrow.down.right")
+                .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
+        }
+        PlaybackSpeedMenu(model: model, interacted: interacted)
     }
 
     private func interacted() {

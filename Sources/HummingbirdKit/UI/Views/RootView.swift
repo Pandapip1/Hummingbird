@@ -87,10 +87,13 @@ struct LoginSheet: View {
     let pluginID: String
 
     var body: some View {
+        // Capture the action while this sheet's environment is active. The
+        // authentication callback may run later, after an async cookie read.
+        let dismissSheet = dismiss
         if let plugin = app.plugins.plugin(pluginID), let spec = WebAuthSpec.login(for: plugin.config) {
             WebAuthSheet(spec: spec) { result in
                 if let result { app.plugins.saveAuth(result, pluginID: pluginID) }
-                dismiss()
+                dismissSheet()
             }
         } else {
             ContentUnavailableView("Login unavailable", systemImage: "person.crop.circle.badge.xmark",

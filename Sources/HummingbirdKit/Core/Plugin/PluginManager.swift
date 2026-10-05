@@ -54,6 +54,10 @@ final class PluginManager {
     var pendingCaptcha: CaptchaRequest?
     /// Set when a plugin needs the user to log in.
     var pendingLogin: String?
+    /// Invalidates credential-derived UI after login or logout. Credentials
+    /// live outside the observable plugin array, so views otherwise keep the
+    /// state they read during their previous body evaluation.
+    private(set) var credentialRevision = 0
 
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private let urlSession: URLSession = {
@@ -196,10 +200,14 @@ final class PluginManager {
 
     // MARK: credentials
 
-    func isLoggedIn(_ id: String) -> Bool { AuthKeychain.load(pluginID: id, kind: "auth") != nil }
+    func isLoggedIn(_ id: String) -> Bool {
+        _ = credentialRevision
+        return AuthKeychain.load(pluginID: id, kind: "auth") != nil
+    }
 
     func saveAuth(_ auth: SourceAuth, pluginID: String) {
         AuthKeychain.save(auth, pluginID: pluginID, kind: "auth")
+        credentialRevision &+= 1
         invalidate(pluginID)
         pendingLogin = nil
     }
@@ -212,6 +220,7 @@ final class PluginManager {
 
     func logout(_ id: String) {
         AuthKeychain.save(nil, pluginID: id, kind: "auth")
+        credentialRevision &+= 1
         invalidate(id)
     }
 

@@ -19,6 +19,11 @@ struct WebAuthSheet: View {
     }
 
     var body: some View {
+        // GTK's presented-window host does not currently deliver SwiftUI task
+        // or appearance callbacks reliably. Starting here is idempotent and
+        // ensures completion/cookie polling is active as soon as the sheet is
+        // rendered. Completion and cancellation both stop the task.
+        let _ = session.start()
         NavigationStack {
             WebView(session.page)
                 // A web view has no intrinsic content size. Give presented
@@ -37,7 +42,6 @@ struct WebAuthSheet: View {
                         ToolbarItem(placement: .confirmationAction) { Button("Done") { session.finish() } }
                     }
                 }
-                .onAppear { session.start() }
                 .onDisappear { session.stop() }
         }
     }
@@ -80,7 +84,12 @@ final class WebAuthSession {
 
     func start() {
         guard pollingTask == nil else { return }
-        pollingTask = Task { await self.run() }
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard await self?.pollOnce() == true else { return }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
     }
 
     func stop() {
@@ -88,11 +97,10 @@ final class WebAuthSession {
         pollingTask = nil
     }
 
-    private func run() async {
-        while !Task.isCancelled, !finished {
-            await inspectPage()
-            try? await Task.sleep(for: .milliseconds(250))
-        }
+    private func pollOnce() async -> Bool {
+        guard !finished else { return false }
+        await inspectPage()
+        return !finished
     }
 
     func cancel() {

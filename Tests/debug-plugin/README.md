@@ -23,9 +23,12 @@ Then in the app: **Sources → + →** `http://127.0.0.1:8742/DebugPlugin.json`
 The config carries no signature, which the installer allows; it will warn that
 the plugin is unsigned.
 
-The source detail page also exposes **Sign in**. Its local login page completes
-at `/login-complete`, where the fixture server sets an HTTP-only
-`debug_session` cookie so the embedded WebKit credential flow can be tested.
+The source detail page also exposes **Sign in**. Its local login page sends an
+authenticated background request to `/api/authorization/`, where the fixture
+server sets an HTTP-only `debug_session` cookie. Like Nebula, this completes
+without navigating away from the login page. Hummingbird should show the
+**Credentials ready** banner and capture credentials only after **Done**.
+`/login-complete` remains available to test navigation-based completion.
 
 `test.mp4` is generated on first run rather than committed, so no binary lands
 in the repo. It is gitignored.

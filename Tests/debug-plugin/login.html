@@ -17,6 +17,17 @@
     <h1>Debug source sign in</h1>
     <p>This local page verifies that the embedded WebKit login flow renders and captures an HTTP-only cookie.</p>
     <a id="sign-in" href="/login-complete">Sign in</a>
+    <p id="status" role="status"></p>
   </main>
+  <script>
+    document.getElementById('sign-in').addEventListener('click', async event => {
+      event.preventDefault();
+      const response = await fetch('/api/authorization/', {
+        headers: { Authorization: 'Bearer debug-token' }
+      });
+      document.getElementById('status').textContent = response.ok
+        ? 'Signed in. Confirm with Done in Hummingbird.' : 'Sign in failed.';
+    });
+  </script>
 </body>
 </html>

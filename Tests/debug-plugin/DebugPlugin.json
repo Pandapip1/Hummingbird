@@ -6,15 +6,16 @@
   "platformUrl": "http://127.0.0.1:8742",
   "sourceUrl": "http://127.0.0.1:8742/DebugPlugin.json",
   "scriptUrl": "./DebugPlugin.js",
-  "version": 2,
+  "version": 3,
   "id": "hummingbird-debug",
   "allowEval": false,
   "allowUrls": ["127.0.0.1", "127.0.0.1:8742"],
   "authentication": {
     "loginUrl": "http://127.0.0.1:8742/login.html",
-    "completionUrl": "http://127.0.0.1:8742/login-complete",
+    "completionUrl": "http://127.0.0.1:8742/api/authorization/",
     "allowedDomains": ["127.0.0.1"],
     "cookiesToFind": ["debug_session"],
+    "headersToFind": ["Authorization"],
     "cookiesExclOthers": true
   },
   "packages": [],

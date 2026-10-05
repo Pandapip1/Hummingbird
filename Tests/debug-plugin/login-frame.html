@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><title>Debug authentication iframe</title></head>
+<body><script>
+const transport = new URLSearchParams(location.search).get('transport');
+if (transport === 'xhr') {
+  const request = new XMLHttpRequest();
+  request.open('GET', '/api/authorization/');
+  request.setRequestHeader('Authorization', 'Bearer debug-token');
+  request.send();
+} else {
+  fetch('/api/authorization/', {headers: {Authorization: 'Bearer debug-token'}});
+}
+</script></body></html>

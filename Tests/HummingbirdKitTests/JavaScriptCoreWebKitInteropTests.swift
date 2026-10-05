@@ -75,6 +75,193 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
     }
 
     @MainActor
+    func testBackgroundAuthorizationCompletesWithoutPageNavigation() async throws {
+        guard let rawBase = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_AUTH_URL"],
+              let baseURL = URL(string: rawBase) else {
+            throw XCTSkip("set HUMMINGBIRD_DEBUG_AUTH_URL to exercise the live debug login server")
+        }
+        if gtk_is_initialized() == 0 { _ = gtk_init_check() }
+        guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
+
+        for transport in ["fetch", "xhr", "frame-fetch", "frame-xhr", "fetch-relative", "xhr-relative"] {
+            let loginURL = baseURL.appendingPathComponent("login.html")
+            var authOrigin = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+            if transport.hasPrefix("frame-") { authOrigin.host = "localhost" }
+            let authBase = authOrigin.url!
+            let authHost = authOrigin.host!
+            let spec = WebAuthSpec(
+                title: "Background authorization",
+                startURL: loginURL,
+                completionURL: authBase.appendingPathComponent("api/authorization/").absoluteString,
+                headersToFind: ["Authorization"],
+                // Third-party iframe cookies may be blocked by WebKit. The
+                // iframe cases exercise header/completion forwarding; the
+                // top-level cases additionally exercise HTTP-only cookies.
+                cookiesToFind: transport.hasPrefix("frame-") ? [] : ["debug_session"],
+                hostAllowed: { $0 == authHost }
+            )
+            var completedAuth: SourceAuth?
+            let session = WebAuthSession(spec: spec) { completedAuth = $0 }
+            let window = gtk_window_new()!
+            gtk_window_set_child(windowPointer(window), widgetFromOpaque(WebView(session.page).gtkCreateWidget()))
+            gtk_widget_set_visible(window, 1)
+            session.start()
+            defer {
+                session.stop()
+                gtk_window_destroy(windowPointer(window))
+            }
+
+            var deadline = Date().addingTimeInterval(10)
+            while session.page.title != "Hummingbird debug sign in", Date() < deadline {
+                _ = g_main_context_iteration(nil, 0)
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(session.page.title, "Hummingbird debug sign in")
+            XCTAssertFalse(session.credentialsReady)
+            let request = Task {
+                let script = transport.hasPrefix("frame-") ? """
+                    const frame = document.createElement('iframe');
+                    frame.src = frameURL;
+                    document.body.appendChild(frame);
+                    """ : transport.hasSuffix("-relative") ? """
+                    const base = document.createElement('base');
+                    base.href = '/api/';
+                    document.head.appendChild(base);
+                    if (transport === 'fetch-relative') {
+                      fetch('authorization/', {headers: {Authorization: 'Bearer debug-token'}});
+                    } else {
+                      const request = new XMLHttpRequest();
+                      request.open('GET', 'authorization/');
+                      request.setRequestHeader('Authorization', 'Bearer debug-token');
+                      request.send();
+                    }
+                    base.href = '/changed/';
+                    history.replaceState({}, '', '/changed/login.html');
+                    """ : transport == "fetch" ? """
+                    document.getElementById('sign-in').click();
+                    """ : """
+                    const request = new XMLHttpRequest();
+                    request.open('GET', '/api/authorization/');
+                    request.setRequestHeader('Authorization', 'Bearer debug-token');
+                    request.send();
+                    """
+                return try await session.page.callJavaScript(script, arguments: [
+                    "transport": transport,
+                    "frameURL": authBase.appendingPathComponent("login-frame.html").absoluteString +
+                        "?transport=" + (transport == "frame-xhr" ? "xhr" : "fetch")
+                ])
+            }
+            deadline = Date().addingTimeInterval(10)
+            while !session.credentialsReady, Date() < deadline {
+                _ = g_main_context_iteration(nil, 0)
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            _ = try await request.value
+            XCTAssertTrue(session.credentialsReady, "\(transport) completion URL must be detected")
+            if !transport.hasSuffix("-relative") {
+                XCTAssertEqual(session.page.url, loginURL, "completion must not require navigation")
+            }
+            XCTAssertNil(completedAuth, "readiness must wait for explicit Done")
+
+            let finish = Task { await session.finish() }
+            deadline = Date().addingTimeInterval(10)
+            while completedAuth == nil, Date() < deadline {
+                _ = g_main_context_iteration(nil, 0)
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            await finish.value
+            if !transport.hasPrefix("frame-") {
+                XCTAssertEqual(completedAuth?.cookieMap["." + authHost]?["debug_session"], "authenticated")
+            }
+            XCTAssertNil(completedAuth?.cookieMap["." + authHost]?["unrelated_cookie"])
+            XCTAssertEqual(completedAuth?.headers[authHost]?["authorization"], "Bearer debug-token")
+        }
+    }
+
+    @MainActor
+    func testFailedBackgroundAuthorizationDoesNotBecomeReady() async throws {
+        guard let rawBase = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_AUTH_URL"],
+              let baseURL = URL(string: rawBase) else {
+            throw XCTSkip("set HUMMINGBIRD_DEBUG_AUTH_URL to exercise the live debug login server")
+        }
+        if gtk_is_initialized() == 0 { _ = gtk_init_check() }
+        guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
+
+        for transport in ["fetch", "xhr"] {
+            for result in ["unauthorized", "network-error", "stale-then-headerless"] {
+                let spec = WebAuthSpec(
+                    title: "Failed authorization",
+                    startURL: baseURL.appendingPathComponent("login.html"),
+                    completionURL: baseURL.appendingPathComponent("api/authorization/").absoluteString + "?*",
+                    headersToFind: ["Authorization"], cookiesToFind: ["debug_session"],
+                    hostAllowed: { $0 == "127.0.0.1" }
+                )
+                var captured: SourceAuth?
+                let session = WebAuthSession(spec: spec) { captured = $0 }
+                let window = gtk_window_new()!
+                gtk_window_set_child(windowPointer(window), widgetFromOpaque(WebView(session.page).gtkCreateWidget()))
+                gtk_widget_set_visible(window, 1)
+                session.start()
+                defer { session.stop(); gtk_window_destroy(windowPointer(window)) }
+                var deadline = Date().addingTimeInterval(10)
+                while session.page.title != "Hummingbird debug sign in", Date() < deadline {
+                    _ = g_main_context_iteration(nil, 0)
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                let attempt = Task {
+                    try await session.page.callJavaScript("""
+                        // Seed the required cookie first, so completion status
+                        // is the only missing readiness condition.
+                        fetch('/login-complete').then(() => {
+                          const done = () => { document.title = 'Attempt finished'; };
+                          const attempt = (result, authenticated) => {
+                            const url = '/api/authorization/?result=' + result;
+                            if (transport === 'fetch') {
+                              return fetch(url, {headers: authenticated ? {Authorization: 'Bearer debug-token'} : {}})
+                                .catch(() => {});
+                            }
+                            return new Promise(resolve => {
+                              const request = new XMLHttpRequest();
+                              request.open('GET', url);
+                              if (authenticated) request.setRequestHeader('Authorization', 'Bearer debug-token');
+                              request.addEventListener('loadend', resolve);
+                              request.send();
+                            });
+                          };
+                          attempt(result === 'stale-then-headerless' ? 'unauthorized' : result, true)
+                            .then(() => result === 'stale-then-headerless' ? attempt('headerless', false) : undefined)
+                            .then(done);
+                        });
+                        """, arguments: ["transport": transport, "result": result])
+                }
+                deadline = Date().addingTimeInterval(10)
+                while session.page.title != "Attempt finished", Date() < deadline {
+                    _ = g_main_context_iteration(nil, 0)
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                _ = try await attempt.value
+                XCTAssertEqual(session.page.title, "Attempt finished")
+                deadline = Date().addingTimeInterval(0.75)
+                while Date() < deadline {
+                    _ = g_main_context_iteration(nil, 0)
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                XCTAssertFalse(session.credentialsReady, "\(transport) \(result) must not complete login")
+                XCTAssertNil(captured)
+                let finish = Task { await session.finish() }
+                deadline = Date().addingTimeInterval(10)
+                while captured == nil, Date() < deadline {
+                    _ = g_main_context_iteration(nil, 0)
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                await finish.value
+                XCTAssertEqual(captured?.cookieMap[".127.0.0.1"]?["debug_session"], "authenticated")
+                XCTAssertNil(captured?.headers["127.0.0.1"]?["authorization"], "failed requests must not supply credentials")
+            }
+        }
+    }
+
+    @MainActor
     func testDebugAuthenticationServerRendersAndSetsHTTPOnlyCookie() async throws {
         guard let rawBase = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_AUTH_URL"],
               let baseURL = URL(string: rawBase) else {

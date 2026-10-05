@@ -89,7 +89,8 @@ final class WebAuthSession {
         var configuration = WebPage.Configuration()
         configuration.websiteDataStore = dataStore
         configuration.userContentController.addUserScript(WKUserScript(
-            source: Self.captureScript, injectionTime: .atDocumentStart, forMainFrameOnly: false
+            source: Self.captureScript.replacingOccurrences(of: "__CAPTURE_CHANNEL__", with: UUID().uuidString),
+            injectionTime: .atDocumentStart, forMainFrameOnly: false
         ))
         page = WebPage(configuration: configuration)
         page.customUserAgent = spec.userAgent
@@ -147,12 +148,17 @@ final class WebAuthSession {
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             userAgent = object["userAgent"] as? String ?? userAgent
             for item in object["requests"] as? [[String: Any]] ?? [] {
-                guard let rawURL = item["url"] as? String, let url = URL(string: rawURL) else { continue }
+                guard item["completed"] as? Bool == true,
+                      let rawURL = item["url"] as? String, let url = URL(string: rawURL) else { continue }
                 var requestHeaders: [String: String] = [:]
                 for (name, value) in item["headers"] as? [String: Any] ?? [:] {
                     requestHeaders[name] = String(describing: value)
                 }
                 recordHeaders(requestHeaders, url: url)
+                // Some plugins complete at a fetch/XHR API endpoint. Required
+                // headers must come from this successful request, not an
+                // earlier failed or unrelated request.
+                if spec.hasCompletionHeaders(requestHeaders, url: url) { checkCompletion(url) }
             }
         }
 
@@ -194,16 +200,7 @@ final class WebAuthSession {
     }
 
     private func checkCompletion(_ url: URL) {
-        guard let target = spec.completionURL, !completionSeen else { return }
-        if target.hasSuffix("?*") {
-            let base = String(target.dropLast(2))
-            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            components?.query = nil
-            components?.fragment = nil
-            if components?.string == base || url.absoluteString.hasPrefix(base) { completionSeen = true }
-        } else if url.absoluteString == target {
-            completionSeen = true
-        }
+        if !completionSeen, spec.matchesCompletion(url) { completionSeen = true }
     }
 
     private func satisfied() -> Bool {
@@ -223,27 +220,53 @@ final class WebAuthSession {
     (() => {
       if (window.__hummingbirdAuthCapture) return;
       window.__hummingbirdAuthCapture = [];
+      const channel = '__CAPTURE_CHANNEL__';
+      // Each frame has a separate JS global. Forward cross-origin iframe
+      // events to the top frame, whose queue is drained by the native poller.
+      if (window === window.top) window.addEventListener('message', event => {
+        if (event.data && event.data.channel === channel && event.data.request)
+          window.__hummingbirdAuthCapture.push(event.data.request);
+      });
       const record = (url, headers) => {
-        try { window.__hummingbirdAuthCapture.push({url: String(new URL(url, location.href)), headers: headers || {}}); } catch (_) {}
+        try {
+          const request = {url, headers, completed: true};
+          if (window === window.top) window.__hummingbirdAuthCapture.push(request);
+          else window.top.postMessage({channel, request}, '*');
+        } catch (_) {}
       };
       const originalFetch = window.fetch;
       if (originalFetch) window.fetch = function(input, init) {
+        let url;
+        const headers = {};
         try {
-          const headers = {};
+          url = String(new URL(input && input.url !== undefined ? input.url : String(input), document.baseURI));
           const source = (init && init.headers) || (input && input.headers);
           if (source && typeof source.forEach === 'function') source.forEach((value, name) => headers[name] = value);
           else if (Array.isArray(source)) source.forEach(pair => headers[pair[0]] = pair[1]);
           else if (source) Object.keys(source).forEach(name => headers[name] = source[name]);
-          record(typeof input === 'string' ? input : input.url, headers);
         } catch (_) {}
-        return originalFetch.apply(this, arguments);
+        return originalFetch.apply(this, arguments).then(response => {
+          if (response.ok && url) record(url, headers);
+          return response;
+        });
       };
       const open = XMLHttpRequest.prototype.open;
       const setHeader = XMLHttpRequest.prototype.setRequestHeader;
       const send = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function(method, url) { this.__hb = {url, headers: {}}; return open.apply(this, arguments); };
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this.__hb = {url: String(new URL(url, document.baseURI)), headers: {}};
+        return open.apply(this, arguments);
+      };
       XMLHttpRequest.prototype.setRequestHeader = function(name, value) { if (this.__hb) this.__hb.headers[name] = value; return setHeader.apply(this, arguments); };
-      XMLHttpRequest.prototype.send = function() { if (this.__hb) record(this.__hb.url, this.__hb.headers); return send.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function() {
+        const request = this.__hb;
+        if (request) {
+          this.addEventListener('loadend', () => {
+            if (this.status >= 200 && this.status < 300) record(request.url, request.headers);
+          }, {once: true});
+        }
+        return send.apply(this, arguments);
+      };
     })();
     """#
 

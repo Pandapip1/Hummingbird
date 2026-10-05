@@ -47,12 +47,20 @@ function nonRangeVideo() {
     return item;
 }
 
+function headerVideo() {
+    var item = video();
+    item.id = platformId("debug-video-header");
+    item.name = "Debug header-protected test pattern (10s, 320x240)";
+    item.url = BASE + "/watch/debug-video-header";
+    return item;
+}
+
 source.enable = function (conf, settings, savedState) {};
 
 source.disable = function () {};
 
 source.getHome = function () {
-    return new VideoPager([video(), nonRangeVideo()], false);
+    return new VideoPager([video(), nonRangeVideo(), headerVideo()], false);
 };
 
 source.search = function (query) {
@@ -93,9 +101,12 @@ source.isContentDetailsUrl = function (url) {
 
 source.getContentDetails = function (url) {
     var noRange = url.indexOf("debug-video-no-range") >= 0;
+    var needsHeader = url.indexOf("debug-video-header") >= 0;
+    var itemName = needsHeader ? "Debug header-protected test pattern (10s, 320x240)"
+        : (noRange ? "Debug non-range test pattern (10s, 320x240)" : "Debug test pattern (10s, 320x240)");
     return new PlatformVideoDetails({
-        id: platformId(noRange ? "debug-video-no-range" : VIDEO_ID),
-        name: noRange ? "Debug non-range test pattern (10s, 320x240)" : "Debug test pattern (10s, 320x240)",
+        id: platformId(needsHeader ? "debug-video-header" : (noRange ? "debug-video-no-range" : VIDEO_ID)),
+        name: itemName,
         thumbnails: new Thumbnails([{ url: THUMBNAIL_URL, quality: 100 }]),
         author: author(),
         datetime: 0,
@@ -108,12 +119,18 @@ source.getContentDetails = function (url) {
         video: new VideoSourceDescriptor([
             new VideoUrlSource({
                 name: "320x240",
-                url: noRange ? NON_RANGE_VIDEO_URL : VIDEO_URL,
+                url: needsHeader ? BASE + "/header-video.mp4" : (noRange ? NON_RANGE_VIDEO_URL : VIDEO_URL),
                 width: 320,
                 height: 240,
                 duration: 10,
                 container: "video/mp4",
-                codec: "h264"
+                codec: "h264",
+                requestModifier: needsHeader ? new RequestModifier({
+                    modifyRequest: function(requestUrl, headers) {
+                        headers["X-Debug-Video"] = "allowed";
+                        return { url: requestUrl, headers: headers };
+                    }
+                }) : null
             })
         ])
     });

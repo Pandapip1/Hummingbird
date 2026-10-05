@@ -5,7 +5,7 @@ import Foundation
 /// Non-Apple playback through the fork's `AVPlayer` / `VideoPlayer` compatibility implementation.
 ///
 /// The direct GStreamer pipeline supports muxed/adaptive media and independent
-/// video and audio streams. Sources requiring custom HTTP headers remain unavailable.
+/// video and audio streams, including per-stream HTTP request headers.
 @MainActor
 final class GTKMediaBackend: MediaBackend {
     let player = AVPlayer()
@@ -31,14 +31,11 @@ final class GTKMediaBackend: MediaBackend {
     }
 
     func canPlay(_ option: PlaybackOption) -> Bool {
-        option.video.requestModifier == nil && option.audio?.requestModifier == nil
+        true
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
-        guard request.video.headers.isEmpty, request.audio?.headers.isEmpty != false else {
-            throw PluginError.notSupported("This source needs custom request headers, which the GTK player cannot use yet")
-        }
-        let item = try await makeItem(videoURL: request.video.url, audioURL: request.audio?.url)
+        let item = try await makeItem(video: request.video, audio: request.audio)
         player.replaceCurrentItem(with: item)
         if let resumeAt, resumeAt > 0 {
             player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
@@ -73,10 +70,15 @@ final class GTKMediaBackend: MediaBackend {
         player.pause(); player.replaceCurrentItem(with: nil)
     }
 
-    private func makeItem(videoURL: URL, audioURL: URL?) async throws -> AVPlayerItem {
-        guard let audioURL else { return AVPlayerItem(url: videoURL) }
-        let videoAsset = AVURLAsset(url: videoURL)
-        let audioAsset = AVURLAsset(url: audioURL)
+    private func asset(for media: ResolvedMedia) -> AVURLAsset {
+        let options: [String: Any]? = media.headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": media.headers]
+        return AVURLAsset(url: media.url, options: options)
+    }
+
+    private func makeItem(video: ResolvedMedia, audio: ResolvedMedia?) async throws -> AVPlayerItem {
+        let videoAsset = asset(for: video)
+        guard let audio else { return AVPlayerItem(asset: videoAsset) }
+        let audioAsset = asset(for: audio)
         guard let sourceVideo = try await videoAsset.loadTracks(withMediaType: .video).first,
               let sourceAudio = try await audioAsset.loadTracks(withMediaType: .audio).first else {
             throw PluginError.notSupported("The selected sources do not contain video and audio tracks")

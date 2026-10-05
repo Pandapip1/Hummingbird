@@ -32,18 +32,25 @@ final class DebugPluginTests: XCTestCase {
         let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
         try await runtime.enable()
         let pager = try await runtime.pager("getHome", as: ContentItem.self)
-        XCTAssertEqual(pager.initial.count, 2, "the debug source should cover range and non-range servers")
+        XCTAssertEqual(pager.initial.count, 3, "the debug source should cover range, non-range and custom-header servers")
         let item = try XCTUnwrap(pager.initial.first)
         XCTAssertFalse(item.url.isEmpty, "the video needs a details URL")
         XCTAssertEqual(item.duration, 10, "the fixed fixture should remain a ten-second video")
         XCTAssertEqual(item.thumbnailURL?.absoluteString, "http://127.0.0.1:8742/thumbnail.svg")
 
-        let nonRange = try XCTUnwrap(pager.initial.last)
+        let nonRange = try XCTUnwrap(pager.initial.dropLast().last)
         let data = try await runtime.callRaw("getContentDetails", [nonRange.url], kind: "details")
         guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
             return XCTFail("expected non-range video details")
         }
         XCTAssertEqual(details.videoSources.first?.url, "http://127.0.0.1:8742/no-range.mp4")
+
+        let protected = try XCTUnwrap(pager.initial.last)
+        let protectedData = try await runtime.callRaw("getContentDetails", [protected.url], kind: "details")
+        guard case .video(let protectedDetails) = try PluginRuntime.decode(ContentDetails.self, from: protectedData) else {
+            return XCTFail("expected header-protected video details")
+        }
+        XCTAssertNotNil(protectedDetails.videoSources.first?.requestModifier)
         await runtime.stop()
     }
 }

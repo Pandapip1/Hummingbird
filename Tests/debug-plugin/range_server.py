@@ -20,6 +20,16 @@ class RangeRequestHandler(SimpleHTTPRequestHandler):
             self.send_header("Set-Cookie", "debug_session=authenticated; Path=/; HttpOnly; SameSite=Lax")
             self.end_headers()
             return BytesIO(body)
+        if self.path.split("?", 1)[0] == "/header-video.mp4":
+            if self.headers.get("X-Debug-Video") != "allowed":
+                self.send_error(403, "Missing debug video header")
+                return None
+            self.path = "/test.mp4"
+        elif self.path.split("?", 1)[0] == "/header-audio.mp4":
+            if self.headers.get("X-Debug-Audio") != "allowed":
+                self.send_error(403, "Missing debug audio header")
+                return None
+            self.path = "/test.mp4"
         path = self.translate_path(self.path)
         supports_ranges = not self.path.startswith("/no-range.mp4")
         if not supports_ranges:

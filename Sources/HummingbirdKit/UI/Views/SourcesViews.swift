@@ -11,6 +11,7 @@ import SwiftOpenUI
 struct SourcesView: View {
     @Environment(AppModel.self) private var app
     @State private var showAdd = false
+    @State private var removeTarget: String?
 
     var body: some View {
         NavigationStack {
@@ -21,19 +22,7 @@ struct SourcesView: View {
                         .hiddenListRowSeparator()
                 }
                 ForEach(app.plugins.installed) { p in
-                    NavigationLink(value: Route.plugin(p.id)) {
-                        HStack(spacing: 12) {
-                            RemoteImage(url: p.iconURL.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(p.config.name).font(.headline)
-                                HStack(spacing: 6) {
-                                    Text("v\(p.config.version)").font(.caption).foregroundStyle(.secondary)
-                                    if let v = p.availableVersion { Text("Update: v\(v)").font(.caption.bold()).foregroundStyle(.orange) }
-                                    if !p.enabled { Text("Off").font(.caption).foregroundStyle(.secondary) }
-                                }
-                            }
-                        }
-                    }
+                    PluginRow(plugin: p) { removeTarget = p.id }
                 }
             }
             .navigationTitle("Sources")
@@ -47,8 +36,60 @@ struct SourcesView: View {
                 #endif
             }
             .sheet(isPresented: $showAdd) { AddSourceSheet() }
+            .confirmationDialog("Remove source?", isPresented: Binding(
+                get: { removeTarget != nil },
+                set: { if !$0 { removeTarget = nil } }
+            ), titleVisibility: .visible) {
+                if let removeTarget, let plugin = app.plugins.plugin(removeTarget) {
+                    Button("Remove \(plugin.config.name)", role: .destructive) {
+                        app.plugins.remove(removeTarget)
+                        self.removeTarget = nil
+                    }
+                }
+                Button("Cancel", role: .cancel) { removeTarget = nil }
+            } message: {
+                Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.")
+            }
             .refreshable { await app.plugins.checkForUpdates() }
             .routeDestinations()
+        }
+    }
+}
+
+/// A source row keeps the most useful plugin actions available without opening its detail page.
+@MainActor
+private struct PluginRow: View {
+    let plugin: InstalledPlugin
+    let requestRemove: () -> Void
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let row = HStack(spacing: 12) {
+            NavigationLink(value: Route.plugin(plugin.id)) {
+                HStack(spacing: 12) {
+                    RemoteImage(url: plugin.iconURL.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(plugin.config.name).font(.headline)
+                        HStack(spacing: 6) {
+                            Text("v\(plugin.config.version)").font(.caption).foregroundStyle(.secondary)
+                            if let v = plugin.availableVersion { Text("Update: v\(v)").font(.caption.bold()).foregroundStyle(.orange) }
+                            if !plugin.enabled { Text("Off").font(.caption).foregroundStyle(.secondary) }
+                        }
+                    }
+                }
+            }
+            Toggle("Enabled", isOn: Binding(
+                get: { app.plugins.plugin(plugin.id)?.enabled ?? plugin.enabled },
+                set: { app.plugins.setEnabled(plugin.id, $0) }
+            ))
+            .labelsHidden()
+        }
+
+        row.contextMenu {
+            Button(plugin.enabled ? "Disable" : "Enable") {
+                app.plugins.setEnabled(plugin.id, !plugin.enabled)
+            }
+            Button("Remove source", role: .destructive, action: requestRemove)
         }
     }
 }

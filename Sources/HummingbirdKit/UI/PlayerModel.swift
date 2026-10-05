@@ -1,6 +1,10 @@
 import Foundation
 import Observation
+#if canImport(SwiftUI)
+import SwiftUI
+#else
 import SwiftOpenUI
+#endif
 
 enum SubtitleColorChoice: String, CaseIterable, Sendable {
     case white, yellow, green, cyan

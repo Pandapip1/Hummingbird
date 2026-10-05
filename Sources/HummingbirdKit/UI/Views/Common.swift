@@ -211,9 +211,9 @@ struct PortableLazyVStack<Content: View>: View {
 
     var body: some View {
         #if canImport(SwiftUI)
-        LazyVStack(alignment: alignment, spacing: spacing.map { Int($0) } ?? 8, content: content)
+        LazyVStack(alignment: alignment, spacing: spacing ?? 8, content: content)
         #else
-        VStack(alignment: alignment, spacing: spacing.map { Int($0) } ?? 8, content: content)
+        VStack(alignment: alignment, spacing: spacing ?? 8, content: content)
         #endif
     }
 }

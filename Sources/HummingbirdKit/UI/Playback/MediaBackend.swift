@@ -1,5 +1,4 @@
 import Foundation
-import SwiftOpenUI
 
 struct MediaTrack: Hashable, Sendable {
     enum Kind: String, Sendable { case video, audio, subtitles }

@@ -201,7 +201,7 @@ struct SubscriptionsView: View {
             }
             .navigationTitle("Subscriptions")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     NavigationLink { ManageSubscriptionsView() } label: { Image(systemName: "person.2") }
                 }
             }
@@ -338,19 +338,21 @@ struct PlaybackQueueView: View {
         .listStyle(.plain)
         .navigationTitle("Queue")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button { app.playbackQueue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
                     .disabled(app.playbackQueue.items.count < 2)
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .primaryAction) {
                 Button { app.playbackQueue.cycleRepeatMode() } label: {
                     Image(systemName: app.playbackQueue.repeatMode.systemImage)
                 }
                 .accessibilityLabel(app.playbackQueue.repeatMode.label)
             }
+            #if os(iOS)
             ToolbarItem(placement: .topBarTrailing) {
                 EditButton()
             }
+            #endif
         }
         .overlay {
             if app.playbackQueue.items.isEmpty {
@@ -372,7 +374,9 @@ struct WatchLaterView: View {
         }
         .listStyle(.plain)
         .navigationTitle("Watch later")
+        #if os(iOS)
         .toolbar { EditButton() }
+        #endif
         .overlay { if app.library.watchLater.isEmpty { ContentUnavailableView("Nothing saved", systemImage: "clock", description: Text("Use \"Watch later\" on any video.")) } }
     }
 }
@@ -412,7 +416,9 @@ struct LocalPlaylistView: View {
         }
         .listStyle(.plain)
         .navigationTitle(playlist?.name ?? "Playlist")
+        #if os(iOS)
         .toolbar { EditButton() }
+        #endif
         .overlay { if playlist?.videos.isEmpty ?? true { ContentUnavailableView("Empty playlist", systemImage: "music.note.list") } }
     }
 }

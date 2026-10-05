@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: app.hummingbird
   deploymentTarget:
     iOS: "26.0"
+    macOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -44,8 +45,32 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: app.hummingbird.Hummingbird
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
+  HummingbirdMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Apps/macOS
+    dependencies:
+      - package: Hummingbird
+        product: HummingbirdKit
+    info:
+      path: Apps/macOS/Info.plist
+      properties:
+        CFBundleDisplayName: Hummingbird
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.hummingbird.HummingbirdMac
+        GENERATE_INFOPLIST_FILE: NO
 schemes:
   Hummingbird:
     build:
       targets:
         Hummingbird: all
+  HummingbirdMac:
+    build:
+      targets:
+        HummingbirdMac: all
+    run:
+      config: Debug

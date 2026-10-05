@@ -28,7 +28,9 @@ struct ChannelView: View {
             case .loaded(let rt, let info): content(rt, info)
             }
         }
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .task(id: url) { await load() }
     }
 
@@ -191,7 +193,9 @@ struct PlaylistView: View {
             } else { ProgressView() }
         }
         .navigationTitle(title)
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .task(id: url) { await load() }
     }
 

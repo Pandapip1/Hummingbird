@@ -25,13 +25,13 @@ final class AVMediaBackend: MediaBackend {
     var isPlaying: Bool { (player?.rate ?? 0) > 0 }
     var tracks: [MediaTrack] {
         guard let item = player?.currentItem else { return [] }
-        return item.asset.availableMediaCharacteristicsWithMediaSelectionOptions.flatMap { characteristic in
+        return item.asset.availableMediaCharacteristicsWithMediaSelectionOptions.flatMap { (characteristic) -> [MediaTrack] in
             guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic) else { return [] }
             let kind: MediaTrack.Kind
             switch characteristic {
-            case AVMediaCharacteristicVisual: kind = .video
-            case AVMediaCharacteristicAudible: kind = .audio
-            case AVMediaCharacteristicLegible: kind = .subtitles
+            case AVMediaCharacteristic.visual: kind = .video
+            case AVMediaCharacteristic.audible: kind = .audio
+            case AVMediaCharacteristic.legible: kind = .subtitles
             default: return []
             }
             return group.options.enumerated().map { index, option in
@@ -44,15 +44,15 @@ final class AVMediaBackend: MediaBackend {
     func selectTrack(_ track: MediaTrack?) {
         guard let item = player?.currentItem else { return }
         guard let track else {
-            if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: AVMediaCharacteristicLegible) {
+            if let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: AVMediaCharacteristic.legible) {
                 item.select(nil, in: group)
             }
             return
         }
         let characteristic: AVMediaCharacteristic = switch track.kind {
-        case .video: AVMediaCharacteristicVisual
-        case .audio: AVMediaCharacteristicAudible
-        case .subtitles: AVMediaCharacteristicLegible
+        case .video: AVMediaCharacteristic.visual
+        case .audio: AVMediaCharacteristic.audible
+        case .subtitles: AVMediaCharacteristic.legible
         }
         guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic),
               let index = Int(track.id.split(separator: "-").last ?? "-1"),
@@ -63,9 +63,9 @@ final class AVMediaBackend: MediaBackend {
     func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? {
         guard let item = player?.currentItem else { return nil }
         let characteristic: AVMediaCharacteristic = switch kind {
-        case .video: AVMediaCharacteristicVisual
-        case .audio: AVMediaCharacteristicAudible
-        case .subtitles: AVMediaCharacteristicLegible
+        case .video: AVMediaCharacteristic.visual
+        case .audio: AVMediaCharacteristic.audible
+        case .subtitles: AVMediaCharacteristic.legible
         }
         guard let group = item.asset.mediaSelectionGroup(forMediaCharacteristic: characteristic),
               let selected = item.currentMediaSelection.selectedMediaOption(in: group),

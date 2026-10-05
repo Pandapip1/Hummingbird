@@ -38,8 +38,13 @@ struct SourcesView: View {
             }
             .navigationTitle("Sources")
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .topBarLeading) { NavigationLink { AppSettingsView() } label: { Image(systemName: "gearshape") } }
                 ToolbarItem(placement: .topBarTrailing) { Button { showAdd = true } label: { Image(systemName: "plus") } }
+                #else
+                ToolbarItem(placement: .automatic) { NavigationLink { AppSettingsView() } label: { Image(systemName: "gearshape") } }
+                ToolbarItem(placement: .primaryAction) { Button { showAdd = true } label: { Image(systemName: "plus") } }
+                #endif
             }
             .sheet(isPresented: $showAdd) { AddSourceSheet() }
             .refreshable { await app.plugins.checkForUpdates() }
@@ -70,7 +75,11 @@ struct AddSourceSheet: View {
                     Form {
                         Section("Plugin URL") {
                             TextField("https://…/Config.json", text: $urlText)
-                                .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                                .autocorrectionDisabled()
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                                #endif
                             Button { Task { await prepare() } } label: { if working { ProgressView() } else { Text("Continue") } }
                                 .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
                         }
@@ -81,7 +90,9 @@ struct AddSourceSheet: View {
                 }
             }
             .navigationTitle("Add source")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         }
         .frame(minHeight: 320)
@@ -210,7 +221,9 @@ struct PluginDetailView: View {
                 }
             }
             .navigationTitle(p.config.name)
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .confirmationDialog("Remove \(p.config.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) { app.plugins.remove(pluginID); dismiss() }
             } message: { Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.") }

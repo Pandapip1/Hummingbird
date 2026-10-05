@@ -48,7 +48,9 @@ struct VideoDetailView: View {
                                        description: Text("\"\(item.name)\" is a kind of content Hummingbird does not display yet."))
             }
         }
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .task(id: activeURL) {
             player.onPlaybackEnded = advanceQueue
             await load()
@@ -195,7 +197,7 @@ private struct PlayerSection: View {
     let model: PlayerModel
 
     var body: some View {
-        #if canImport(UIKit)
+        #if canImport(UIKit) || os(macOS)
         player
         #else
         let isFullscreen = model.isFullscreen

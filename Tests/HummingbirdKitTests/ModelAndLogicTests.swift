@@ -6,6 +6,62 @@ final class ModelAndLogicTests: XCTestCase {
         try JSONDecoder().decode(T.self, from: Data(json.utf8))
     }
 
+    func testStorageDatabasePersistsAndOverwritesValues() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HummingbirdStorageTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("storage.sqlite3")
+
+        do {
+            let database = StorageDatabase(url: url)
+            XCTAssertNil(database.load(name: "history"))
+            XCTAssertTrue(database.save(Data("first".utf8), name: "history"))
+            XCTAssertEqual(database.load(name: "history"), Data("first".utf8))
+            XCTAssertTrue(database.save(Data("second".utf8), name: "history"))
+        }
+
+        let reopened = StorageDatabase(url: url)
+        XCTAssertEqual(reopened.load(name: "history"), Data("second".utf8))
+    }
+
+    func testStorageBackendImportsLegacyJSON() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HummingbirdStorageMigration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let legacyURL = directory.appendingPathComponent("history.json")
+        try JSONEncoder().encode(["legacy", "value"]).write(to: legacyURL)
+
+        let backend = StorageBackend(directory: directory)
+        let imported: [String]? = backend.load([String].self, name: "history")
+        XCTAssertEqual(imported, ["legacy", "value"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
+
+        let database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"))
+        let stored = database.load(name: "history").flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+        XCTAssertEqual(stored, imported)
+    }
+
+    func testStorageBackendReadsFallbackAfterDatabaseFailure() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HummingbirdStorageFallback-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A directory at the database path makes sqlite3_open_v2 fail without
+        // making the surrounding storage directory unwritable.
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("storage.sqlite3"),
+            withIntermediateDirectories: false
+        )
+
+        let backend = StorageBackend(directory: directory)
+        backend.save(["newest"], name: "history")
+        let loaded: [String]? = backend.load([String].self, name: "history")
+        XCTAssertEqual(loaded, ["newest"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("history.json").path))
+    }
+
     func testContentItemToleratesLooseTypes() throws {
         let item = try decode(ContentItem.self, """
         {"contentType":1,"plugin_type":"PlatformVideo","id":{"platform":"P","pluginId":"plug","value":"1"},

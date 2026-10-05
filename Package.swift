@@ -28,10 +28,17 @@ var targets: [Target] = [
         pkgConfig: "javascriptcoregtk-6.0",
         providers: [.apt(["libjavascriptcoregtk-6.0-dev"])]
     ),
+    .systemLibrary(
+        name: "CSQLite",
+        path: "Sources/CSQLite",
+        pkgConfig: "sqlite3",
+        providers: [.apt(["libsqlite3-dev"])]
+    ),
     .target(
         name: "HummingbirdKit",
         dependencies: [
             "CQuickJS",
+            "CSQLite",
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),
             .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: nonApple)),

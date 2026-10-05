@@ -44,6 +44,13 @@ hb-xcode / hb-build-ios  # macOS: regenerate Hummingbird.xcodeproj, then xcodebu
 On macOS the shell does not ship a Swift toolchain on purpose: the iOS and macOS SDKs only come with Xcode,
 and a second `swift` on `PATH` would shadow the one that matches them.
 
+The Linux Nix shell and packaged launcher default JavaScriptCore's structure-heap reservation to 256 MiB
+(`JSC_structureHeapSizeInKB=262144`) and its JIT-code reservation to 64 MiB
+(`JSC_jitMemoryReservationSize=67108864`). WebKit subprocesses inherit these settings. This avoids charging
+several GiB of unused reservations per process on systems with `vm.overcommit_memory=2`; it does not disable
+JIT or cap the general JavaScript heap. Existing values of either environment variable take precedence.
+Use the same variables when running a locally built executable outside the Nix shell.
+
 ## SwiftOpenUI fork
 
 `Vendor/SwiftOpenUI` is a submodule of a fork (branch `hummingbird`) that adds the SwiftUI API Hummingbird uses and upstream lacks:

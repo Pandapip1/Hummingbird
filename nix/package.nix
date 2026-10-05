@@ -155,6 +155,10 @@ stdenv.mkDerivation {
   # The media backend loads these at run time, and GSK/GdkPixbuf want their own data.
   preFixup = ''
     gappsWrapperArgs+=(
+      # Bound reservations, not the general JavaScript heap. These are also
+      # inherited by WebKit child processes, including its network process.
+      --set-default JSC_structureHeapSizeInKB "262144"
+      --set-default JSC_jitMemoryReservationSize "67108864"
       --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : "${
         lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" gstPlugins
       }"

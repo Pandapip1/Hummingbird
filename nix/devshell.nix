@@ -110,6 +110,11 @@
           export XDG_DATA_DIRS="${deps.iconTheme}/share:''${XDG_DATA_DIRS:-}"
           ${lib.optionalString isLinux ''
             export GIO_EXTRA_MODULES="${pkgs.glib-networking}/lib/gio/modules:''${GIO_EXTRA_MODULES:-}"
+            # JSC's default 4 GiB structure heap and 512 MiB JIT reservation
+            # consume real commit budget when Linux disables overcommit. Keep
+            # JIT enabled, and let callers override these embedding defaults.
+            export JSC_structureHeapSizeInKB="''${JSC_structureHeapSizeInKB:-262144}"
+            export JSC_jitMemoryReservationSize="''${JSC_jitMemoryReservationSize:-67108864}"
           ''}
 
           ${lib.optionalString isDarwin ''

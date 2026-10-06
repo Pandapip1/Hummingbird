@@ -4,6 +4,9 @@ import SwiftUI
 #else
 import SwiftOpenUI
 #endif
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 struct VideoDetailView: View {
@@ -235,11 +238,20 @@ struct PlayerSection: View {
     let model: PlayerModel
     let width: CGFloat
     let height: CGFloat
+    #if os(macOS)
+    @State private var fullscreenPresenter = MacOSFullscreenPresenter()
+    #endif
 
     var body: some View {
-        #if canImport(UIKit) || os(macOS)
+        #if os(macOS)
+        player
+            .onAppear { fullscreenPresenter.install(on: model) }
+            .onDisappear { fullscreenPresenter.uninstall() }
+        #elseif canImport(UIKit)
+        // iOS + tvOS: fullscreen is handled inside PlayerSurface via AVPlayerViewController.
         player
         #else
+        // GTK (SwiftOpenUI): use a fullscreen cover.
         let isFullscreen = model.isFullscreen
         player.fullScreenCover(
             isPresented: Binding(get: { isFullscreen }, set: { if !$0 { model.dismissFullscreen() } })
@@ -280,6 +292,82 @@ struct FullscreenPlayerView: View {
         }
     }
 }
+
+// MARK: - macOS fullscreen
+
+#if os(macOS)
+@MainActor
+private final class MacOSFullscreenPresenter: NSObject, NSWindowDelegate {
+    private weak var model: PlayerModel?
+    private var window: NSWindow?
+
+    func install(on model: PlayerModel) {
+        self.model = model
+        model.installFullscreenPresenter(
+            present: { [weak self] in self?.open() },
+            dismiss: { [weak self] in self?.requestClose() }
+        )
+    }
+
+    func uninstall() {
+        model?.removeFullscreenPresenter()
+        requestClose()
+        model = nil
+    }
+
+    private func open() {
+        guard window == nil, let model else { return }
+        let hosting = NSHostingController(
+            rootView: FullscreenPlayerView(model: model).preferredColorScheme(.dark)
+        )
+        let w = NSWindow(contentViewController: hosting)
+        w.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isReleasedWhenClosed = false
+        w.collectionBehavior = .fullScreenPrimary
+        w.delegate = self
+        w.setContentSize(NSSize(width: 1280, height: 720))
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        w.toggleFullScreen(nil)
+        window = w
+        model.fullscreenDidChange(true)
+    }
+
+    private func requestClose() {
+        guard let w = window else { return }
+        if w.styleMask.contains(.fullScreen) {
+            // Exit fullscreen first; windowDidExitFullScreen will close the window.
+            w.toggleFullScreen(nil)
+        } else {
+            performClose(w)
+        }
+    }
+
+    private func performClose(_ w: NSWindow) {
+        window = nil
+        w.delegate = nil
+        w.close()
+        model?.fullscreenDidChange(false)
+    }
+
+    nonisolated func windowDidExitFullScreen(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            guard let w = window else { return }
+            performClose(w)
+        }
+    }
+
+    nonisolated func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            guard window != nil else { return }
+            window = nil
+            model?.fullscreenDidChange(false)
+        }
+    }
+}
+#endif
 
 @MainActor
 struct PlayerControls: View {

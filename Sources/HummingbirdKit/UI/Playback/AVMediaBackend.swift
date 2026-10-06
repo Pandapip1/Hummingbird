@@ -320,7 +320,10 @@ struct PlayerSurface: UIViewControllerRepresentable {
             controller.player = (model.backend as? AVMediaBackend)?.player
             controller.showsPlaybackControls = false
             controller.allowsPictureInPicturePlayback = true
-            controller.modalPresentationStyle = .fullScreen
+            controller.modalPresentationStyle = .overFullScreen
+            #if os(iOS)
+            controller.modalPresentationCapturesStatusBarAppearance = true
+            #endif
 
             guard let container = controller.contentOverlayView else { return }
             let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))

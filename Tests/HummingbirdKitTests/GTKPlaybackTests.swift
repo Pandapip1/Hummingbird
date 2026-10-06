@@ -39,6 +39,38 @@ final class GTKPlaybackTests: XCTestCase {
     }
 
     @MainActor
+    func testMissingMediaReportsFailureBeforeAnyVideoFrame() async throws {
+        guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
+        var backend: GTKMediaBackend? = GTKMediaBackend()
+        let widget = VideoPlayer(player: backend!.player).gtkCreateWidget()
+        let window = gtk_window_new()!
+        gtk_window_set_child(UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self),
+                             UnsafeMutableRawPointer(widget).assumingMemoryBound(to: GtkWidget.self))
+        defer {
+            backend?.stop()
+            gtk_window_destroy(UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self))
+            backend = nil
+            while g_main_context_iteration(nil, 0) != 0 {}
+        }
+        var failure: String?
+        backend!.onFailure = { failure = $0 }
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        try await backend!.load(
+            PlayRequest(video: ResolvedMedia(url: missing, headers: [:]), audio: nil, isLive: false),
+            resumeAt: nil, autoplay: true)
+        let deadline = Date().addingTimeInterval(2)
+        while failure == nil, Date() < deadline {
+            // Track discovery used to pop and discard ERROR bus messages.
+            _ = backend!.tracks
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(try XCTUnwrap(failure).isEmpty)
+        XCTAssertFalse(backend!.isPlaying)
+        XCTAssertEqual(backend!.currentTime, 0)
+    }
+
+    @MainActor
     func testCustomHTTPHeadersReachGStreamer() async throws {
         gtk_init()
         let root = URL(fileURLWithPath: #filePath)

@@ -253,6 +253,6 @@ struct LoginSheet: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white)
+        .background(.background)
     }
 }

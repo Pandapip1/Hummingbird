@@ -82,11 +82,13 @@ private struct PluginRow: View {
         }
 
         row
+            #if !os(tvOS)
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive, action: requestRemove) {
                     Label("Remove", systemImage: "trash")
                 }
             }
+            #endif
             .contextMenu {
                 Button(plugin.enabled ? "Disable" : "Enable") {
                     app.plugins.setEnabled(plugin.id, !plugin.enabled)

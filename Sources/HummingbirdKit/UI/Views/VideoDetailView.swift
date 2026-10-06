@@ -329,7 +329,7 @@ struct PlayerControls: View {
             if case .active = phase { interacted() }
         }
         .task { interacted() }
-        .onChange(of: model.isPlaying) { playing in
+        .onChange(of: model.isPlaying) { _, playing in
             if playing { interacted() }
             else { autoHide.task?.cancel(); if !controlsVisible { controlsVisible = true } }
         }

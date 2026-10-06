@@ -81,12 +81,18 @@ private struct PluginRow: View {
             }
         }
 
-        row.contextMenu {
-            Button(plugin.enabled ? "Disable" : "Enable") {
-                app.plugins.setEnabled(plugin.id, !plugin.enabled)
+        row
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive, action: requestRemove) {
+                    Label("Remove", systemImage: "trash")
+                }
             }
-            Button("Remove source", role: .destructive, action: requestRemove)
-        }
+            .contextMenu {
+                Button(plugin.enabled ? "Disable" : "Enable") {
+                    app.plugins.setEnabled(plugin.id, !plugin.enabled)
+                }
+                Button("Remove source", role: .destructive, action: requestRemove)
+            }
     }
 }
 
@@ -125,10 +131,6 @@ struct AddSourceSheet: View {
                                 .textInputAutocapitalization(.never)
                                 .keyboardType(.URL)
                                 #endif
-                            #if !os(tvOS)
-                            Button { Task { await prepare() } } label: { if working { ProgressView() } else { Text("Continue") } }
-                                .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
-                            #endif
                         }
                         if AddSourceSheet.hasCamera {
                             Section { Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") } }
@@ -158,7 +160,6 @@ struct AddSourceSheet: View {
                             .bold()
                     }
                 }
-                #if os(tvOS)
                 if preview == nil && !scanning {
                     ToolbarItem(placement: .confirmationAction) {
                         Button { Task { await prepare() } } label: {
@@ -167,7 +168,6 @@ struct AddSourceSheet: View {
                         .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
                     }
                 }
-                #endif
             }
         }
         .frame(minHeight: 320)

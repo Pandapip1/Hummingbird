@@ -109,7 +109,7 @@ struct AddSourceSheet: View {
     @State private var preview: InstallPreview?
 
     static let hasCamera: Bool = {
-        #if canImport(AVFoundation)
+        #if os(iOS)
         return AVCaptureDevice.default(for: .video) != nil
         #else
         return false

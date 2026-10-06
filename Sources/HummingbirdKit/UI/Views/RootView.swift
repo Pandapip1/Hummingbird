@@ -4,6 +4,9 @@ import SwiftUI
 #else
 import SwiftOpenUI
 #endif
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 struct RootView: View {
@@ -20,18 +23,25 @@ struct RootView: View {
                 BrowserTabContentView(tab: app.activeTab)
             }
         }
-        // Browser-style tab chrome is desktop-shaped here: native toolbar
-        // navigation controls at the leading edge and tabs in the flexible
-        // principal region, the same SwiftUI structure used by AppKit on
-        // macOS. iOS keeps its ordinary tab-switcher treatment.
+        // Browser-style tab chrome: native toolbar navigation controls at the
+        // leading edge on desktop. macOS seats the tab strip below the toolbar
+        // via NSTitlebarAccessoryViewController (Safari-style separate row);
+        // other desktop platforms keep tabs in the .principal toolbar slot.
         #if !os(iOS) && !os(tvOS)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 BrowserHistoryControls(tab: app.activeTab)
             }
+            #if !os(macOS)
             ToolbarItem(placement: .principal) {
                 TabStripView()
             }
+            #endif
+        }
+        .background {
+            #if os(macOS)
+            TabBarAccessoryInstaller(app: model).frame(width: 0, height: 0)
+            #endif
         }
         #endif
         .overlay {
@@ -118,28 +128,62 @@ private struct BrowserHistoryControls: View {
 }
 
 /// Safari/Epiphany-style tab strip: the pinned tab's chip first (not
-/// closable), then each open content tab in order.
+/// closable), then each open content tab in order. Tabs share the bar
+/// width equally (min 100 pt each); horizontal scroll kicks in when they
+/// would be narrower than that. A thin separator appears between two
+/// adjacent inactive, non-hovered tabs, matching Safari's visual rhythm.
 @MainActor
 private struct TabStripView: View {
     @Environment(AppModel.self) private var app
+    @State private var hoveredTabID: UUID?
 
     var body: some View {
-        // The strip claims all available header width. Each tab gets an equal
-        // share while they fit; its 150-point minimum keeps labels usable, at
-        // which point the horizontal scroller takes over.
-        ScrollView(.horizontal) {
-            HStack(spacing: 4) {
-                TabChip(title: "Home", systemImage: "house.fill", isActive: app.activeTabID == app.pinnedTab.id,
-                        onSelect: { app.activeTabID = app.pinnedTab.id }, onClose: nil)
-                ForEach(app.contentTabs) { tab in
-                    TabChip(title: tab.title, systemImage: nil, isActive: app.activeTabID == tab.id,
-                            onSelect: { app.activeTabID = tab.id },
-                            onClose: { app.closeTab(tab.id) })
+        GeometryReader { geo in
+            let pinnedID = app.pinnedTab.id
+            let tabCount = CGFloat(max(1, 1 + app.contentTabs.count))
+            let tabWidth = max(100, geo.size.width / tabCount)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    TabChip(title: "Home", systemImage: "house.fill",
+                            isActive: app.activeTabID == pinnedID,
+                            isHovered: hoveredTabID == pinnedID,
+                            onSelect: { app.activeTabID = pinnedID },
+                            onClose: nil,
+                            onHoverChange: { hovered in hoveredTabID = hovered ? pinnedID : nil })
+                        .frame(width: tabWidth)
+
+                    ForEach(Array(app.contentTabs.enumerated()), id: \.element.id) { i, tab in
+                        let isActive = app.activeTabID == tab.id
+                        let prevID: UUID = i == 0 ? pinnedID : app.contentTabs[i - 1].id
+                        let prevIsActive = app.activeTabID == prevID
+                        let isHovered = hoveredTabID == tab.id
+                        let prevIsHovered = hoveredTabID == prevID
+                        if !isActive && !prevIsActive && !isHovered && !prevIsHovered {
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.15))
+                                .frame(width: 1)
+                                .padding(.vertical, 8)
+                        }
+                        TabChip(title: tab.title, systemImage: nil,
+                                isActive: isActive,
+                                isHovered: isHovered,
+                                onSelect: { app.activeTabID = tab.id },
+                                onClose: { app.closeTab(tab.id) },
+                                onHoverChange: { hovered in hoveredTabID = hovered ? tab.id : nil })
+                            .frame(width: tabWidth)
+                    }
                 }
+                .padding(.horizontal, 2).padding(.vertical, 2)
+                .background {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.05))
+                        .overlay(Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
+                }
+                .padding(.horizontal, 4).padding(.vertical, 3)
+                .frame(minWidth: geo.size.width)
             }
-            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -148,26 +192,155 @@ private struct TabChip: View {
     let title: String
     let systemImage: String?
     let isActive: Bool
+    let isHovered: Bool
     let onSelect: () -> Void
     let onClose: (() -> Void)?
+    let onHoverChange: (Bool) -> Void
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 6) {
-                if let systemImage { Image(systemName: systemImage) }
-                Text(title).lineLimit(1)
-                if let onClose {
-                    Button(action: onClose) { Image(systemName: "xmark") }
+            ZStack {
+                // Title centered in the full chip width
+                HStack(spacing: 4) {
+                    if let systemImage {
+                        Image(systemName: systemImage)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(title)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .foregroundStyle(isActive ? .primary : .secondary)
+                }
+                .frame(maxWidth: .infinity)
+
+                // Close button: left-pinned, circular badge background on hover
+                if let onClose, isHovered {
+                    HStack(spacing: 0) {
+                        Button(action: onClose) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 14, height: 14)
+                                .background(Circle().fill(Color.primary.opacity(0.12)))
+                        }
                         .buttonStyle(.plain)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 6)
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .frame(minWidth: 150, maxWidth: .infinity)
-            .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                if !isActive, isHovered {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.08))
+                        .padding(.vertical, 2).padding(.horizontal, 1)
+                }
+            }
         }
         .buttonStyle(.plain)
+        .modifier(ChipActiveStyle(isActive: isActive))
+        #if !os(tvOS)
+        .onHover { onHoverChange($0) }
+        #endif
     }
 }
+
+private struct ChipActiveStyle: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        #if canImport(SwiftUI)
+        if #available(macOS 26.0, iOS 26.0, *) {
+            if isActive {
+                content.glassEffect(.clear)
+            } else {
+                content
+            }
+        } else {
+            legacyActiveBackground(content)
+        }
+        #else
+        legacyActiveBackground(content)
+        #endif
+    }
+
+    @ViewBuilder
+    private func legacyActiveBackground(_ content: Content) -> some View {
+        if isActive {
+            content.background {
+                Capsule()
+                    .fill(.regularMaterial)
+                    .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                    .padding(.vertical, 2).padding(.horizontal, 1)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+#if os(macOS)
+/// Mounts `TabStripView` as an `NSTitlebarAccessoryViewController` so it
+/// occupies its own row below the window toolbar, matching Safari's layout.
+@MainActor
+private struct TabBarAccessoryInstaller: NSViewRepresentable {
+    let app: AppModel
+
+    func makeNSView(context: Context) -> _WindowObserverView {
+        let v = _WindowObserverView()
+        v.coordinator = context.coordinator
+        return v
+    }
+
+    func updateNSView(_ nsView: _WindowObserverView, context: Context) {
+        if let window = nsView.window {
+            context.coordinator.installIfNeeded(in: window)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(app: app) }
+
+    @MainActor
+    final class Coordinator {
+        let app: AppModel
+        private weak var installedWindow: NSWindow?
+        private var accessory: NSTitlebarAccessoryViewController?
+        private var retainedHosting: AnyObject?
+
+        init(app: AppModel) { self.app = app }
+
+        func installIfNeeded(in window: NSWindow) {
+            guard installedWindow !== window else { return }
+            let hc = NSHostingController(rootView: AnyView(
+                TabStripView().environment(app)
+            ))
+            // Fix the height so GeometryReader inside TabStripView gets a
+            // finite vertical proposal. The accessory VC manages width itself.
+            hc.view.frame = NSRect(x: 0, y: 0, width: window.frame.width, height: 28)
+            let vc = NSTitlebarAccessoryViewController()
+            vc.view = hc.view
+            vc.layoutAttribute = .bottom
+            vc.fullScreenMinHeight = 0
+            window.addTitlebarAccessoryViewController(vc)
+            installedWindow = window
+            accessory = vc
+            retainedHosting = hc
+        }
+    }
+
+    @MainActor
+    final class _WindowObserverView: NSView {
+        weak var coordinator: Coordinator?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { coordinator?.installIfNeeded(in: window) }
+        }
+    }
+}
+#endif
 
 private extension BrowserTab {
     /// `.id()` key for `RouteContent` so SwiftUI tears down and rebuilds the

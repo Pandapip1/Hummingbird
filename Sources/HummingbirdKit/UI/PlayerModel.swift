@@ -76,8 +76,6 @@ final class PlayerModel {
     @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
     @ObservationIgnored private var didFinishCurrentItem = false
-    @ObservationIgnored private var pendingSeekTarget: Double? = nil
-    @ObservationIgnored private var pendingSeekDeadline = Date.distantPast
 
     init(backend: MediaBackend? = nil) {
         self.backend = backend
@@ -196,9 +194,6 @@ final class PlayerModel {
         guard let backend else { return }
         let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
         if duration <= 0 || target < duration - 0.5 { didFinishCurrentItem = false }
-        pendingSeekTarget = target
-        pendingSeekDeadline = Date().addingTimeInterval(3)
-        playbackTime = target
         backend.seek(to: target)
     }
     func replay() {
@@ -213,7 +208,6 @@ final class PlayerModel {
 
     private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async -> Bool {
         guard let backend else { return false }
-        pendingSeekTarget = nil
         isPreparing = true
         defer { isPreparing = false }
         do {
@@ -272,22 +266,13 @@ final class PlayerModel {
 
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        let newDuration = backend?.duration ?? 0
-        if newDuration > 0 { duration = newDuration }
+        duration = backend?.duration ?? 0
         isPlaying = backend?.isPlaying ?? false
-        if let target = pendingSeekTarget {
-            if abs(seconds - target) < 1.0 || Date() > pendingSeekDeadline {
-                pendingSeekTarget = nil
-                playbackTime = seconds
-            }
-            // else: keep the optimistic seek position so the slider doesn't snap back
-        } else {
-            playbackTime = seconds
-        }
-        subtitleText = cues.first(where: { playbackTime >= $0.start && playbackTime <= $0.end })?.text
-        if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, playbackTime > 1 {
+        playbackTime = seconds
+        subtitleText = cues.first(where: { seconds >= $0.start && seconds <= $0.end })?.text
+        if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, seconds > 1 {
             lastHistoryWrite = Date()
-            library.recordProgress(SavedVideo(details.item), seconds: playbackTime)
+            library.recordProgress(SavedVideo(details.item), seconds: seconds)
         }
     }
 
@@ -370,7 +355,6 @@ final class PlayerModel {
         playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil
         didFinishCurrentItem = false
-        pendingSeekTarget = nil
     }
 }
 

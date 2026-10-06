@@ -4,6 +4,9 @@ import SwiftUI
 #else
 import SwiftOpenUI
 #endif
+#if canImport(AVFoundation)
+import AVFoundation
+#endif
 
 // MARK: - Source list
 
@@ -64,27 +67,18 @@ private struct PluginRow: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        let row = HStack(spacing: 12) {
-            NavigationLink(value: Route.plugin(plugin.id)) {
-                HStack(spacing: 12) {
-                    RemoteImage(url: plugin.iconURL.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(plugin.config.name).font(.headline)
-                        HStack(spacing: 6) {
-                            Text("v\(plugin.config.version)").font(.caption).foregroundStyle(.secondary)
-                            if let v = plugin.availableVersion { Text("Update: v\(v)").font(.caption.bold()).foregroundStyle(.orange) }
-                            if !plugin.enabled { Text("Off").font(.caption).foregroundStyle(.secondary) }
-                        }
+        let row = NavigationLink(value: Route.plugin(plugin.id)) {
+            HStack(spacing: 12) {
+                RemoteImage(url: plugin.iconURL.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(plugin.config.name).font(.headline)
+                    HStack(spacing: 6) {
+                        Text("v\(plugin.config.version)").font(.caption).foregroundStyle(.secondary)
+                        if let v = plugin.availableVersion { Text("Update: v\(v)").font(.caption.bold()).foregroundStyle(.orange) }
+                        if !plugin.enabled { Text("Off").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             }
-            #if !os(tvOS)
-            Toggle("Enabled", isOn: Binding(
-                get: { app.plugins.plugin(plugin.id)?.enabled ?? plugin.enabled },
-                set: { app.plugins.setEnabled(plugin.id, $0) }
-            ))
-            .labelsHidden()
-            #endif
         }
 
         row.contextMenu {
@@ -108,6 +102,14 @@ struct AddSourceSheet: View {
     @State private var errorText: String?
     @State private var preview: InstallPreview?
 
+    static let hasCamera: Bool = {
+        #if canImport(AVFoundation)
+        return AVCaptureDevice.default(for: .video) != nil
+        #else
+        return false
+        #endif
+    }()
+
     var body: some View {
         NavigationStack {
             Group {
@@ -128,9 +130,9 @@ struct AddSourceSheet: View {
                                 .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
                             #endif
                         }
-                        #if os(iOS)
-                        Section { Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") } }
-                        #endif
+                        if AddSourceSheet.hasCamera {
+                            Section { Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") } }
+                        }
                         if let errorText { Section { Text(errorText).foregroundStyle(.red).font(.footnote) } }
                         Section(footer: Text("Plugins are third-party code that runs on your device. Only add sources you trust.")) { EmptyView() }
                     }

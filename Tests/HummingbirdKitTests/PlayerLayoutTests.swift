@@ -12,7 +12,7 @@ final class PlayerLayoutTests: XCTestCase {
         XCTAssertEqual(PlayerLayout.height(width: 200, viewportHeight: 600), 326)
         XCTAssertEqual(PlayerLayout.height(width: 320, viewportHeight: 600), 276)
         XCTAssertEqual(PlayerLayout.height(width: 390, viewportHeight: 600), 276)
-        XCTAssertEqual(PlayerLayout.height(width: 1600, viewportHeight: 100), PlayerLayout.minimumHeight)
+        XCTAssertEqual(PlayerLayout.height(width: 1600, viewportHeight: 100), PlayerLayout.minimumHeight(width: 1600))
     }
 }
 

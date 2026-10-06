@@ -214,7 +214,8 @@ enum PlayerLayout {
     static func usesStackedTrackMenus(width: CGFloat) -> Bool { width < 280 }
 
     static func minimumHeight(width: CGFloat) -> CGFloat {
-        let extraTransportRows: CGFloat = usesStackedTransport(width: width) ? 2 : 0
+        // Timeline always gets its own row; non-stacked gains one row, stacked keeps two.
+        let extraTransportRows: CGFloat = usesStackedTransport(width: width) ? 2 : 1
         let extraTrackRows: CGFloat = usesStackedTrackMenus(width: width) ? 1 : 0
         return minimumHeight + (extraTransportRows + extraTrackRows) * (controlBarMinimumHeight + 6)
     }
@@ -299,7 +300,7 @@ struct PlayerControls: View {
                     .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
                     .padding(.horizontal)
                     .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, controlsVisible ? (PlayerLayout.usesStackedTransport(width: availableWidth) ? 178 : 78) : 16)
+                    .padding(.bottom, controlsVisible ? (PlayerLayout.usesStackedTransport(width: availableWidth) ? 178 : 128) : 16)
             }
 
             if controlsVisible || !model.isPlaying {
@@ -361,20 +362,21 @@ struct PlayerControls: View {
 
     @ViewBuilder
     private var transportControls: some View {
-        if PlayerLayout.usesStackedTransport(width: availableWidth) {
-            VStack(spacing: 6) {
+        VStack(spacing: 6) {
+            PlayerTimeline(model: model, interacted: interacted)
+                .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+            if PlayerLayout.usesStackedTransport(width: availableWidth) {
                 HStack(spacing: 14) { transportButtons }
-                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
-                PlayerTimeline(model: model, interacted: interacted)
                     .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
                 HStack(spacing: 14) { secondaryButtons }
                     .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
-            }
-        } else {
-            HStack(spacing: 14) {
-                transportButtons
-                PlayerTimeline(model: model, interacted: interacted)
-                secondaryButtons
+            } else {
+                HStack(spacing: 14) {
+                    transportButtons
+                    Spacer()
+                    secondaryButtons
+                }
+                .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
             }
         }
     }

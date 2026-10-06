@@ -54,7 +54,6 @@ struct SourcesView: View {
                 Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.")
             }
             .refreshable { await app.plugins.checkForUpdates() }
-            .routeDestinations()
         }
     }
 }
@@ -65,9 +64,13 @@ private struct PluginRow: View {
     let plugin: InstalledPlugin
     let requestRemove: () -> Void
     @Environment(AppModel.self) private var app
+    @Environment(\.openRoute) private var openRoute
 
     var body: some View {
-        let row = NavigationLink(value: Route.plugin(plugin.id)) {
+        // A plain Button draws none of List's automatic NavigationLink
+        // chevron, since opening a plugin's page now opens a tab rather than
+        // pushing — draw the same affordance explicitly.
+        let row = Button { openRoute(.plugin(plugin.id), title: plugin.config.name) } label: {
             HStack(spacing: 12) {
                 RemoteImage(url: plugin.iconURL.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
@@ -78,8 +81,11 @@ private struct PluginRow: View {
                         if !plugin.enabled { Text("Off").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
             }
         }
+        .buttonStyle(.plain)
 
         row
             #if !os(tvOS)

@@ -24,7 +24,6 @@ struct HomeView: View {
                 } else { ProgressView() }
             }
             .navigationTitle("Home")
-            .routeDestinations()
         }
         .task(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
     }
@@ -109,7 +108,6 @@ struct SearchView: View {
             .overlay(alignment: .bottom) {
                 if let notice { Text(notice).font(.footnote).padding(10).background(.thinMaterial, in: Capsule()).padding() }
             }
-            .routeDestinations()
         }
     }
 
@@ -205,7 +203,6 @@ struct SubscriptionsView: View {
                     NavigationLink { ManageSubscriptionsView() } label: { Image(systemName: "person.2") }
                 }
             }
-            .routeDestinations()
         }
         .task { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
     }
@@ -214,19 +211,23 @@ struct SubscriptionsView: View {
 @MainActor
 struct ManageSubscriptionsView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.openRoute) private var openRoute
 
     var body: some View {
         List {
             ForEach(app.library.subscriptions) { sub in
-                NavigationLink(value: Route.channel(sub.channelURL)) {
+                Button { openRoute(.channel(sub.channelURL), title: sub.name) } label: {
                     HStack(spacing: 12) {
                         RemoteImage(url: sub.thumbnail.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(Circle())
                         VStack(alignment: .leading) {
                             Text(sub.name).font(.headline)
                             Text(app.plugins.plugin(sub.pluginId)?.config.name ?? "Unknown source").font(.caption).foregroundStyle(.secondary)
                         }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                .buttonStyle(.plain)
                 #if !os(tvOS)
                 .swipeActions { Button("Unsubscribe", role: .destructive) { app.library.unsubscribe(sub.channelURL) } }
                 #endif
@@ -297,7 +298,6 @@ struct LibraryView: View {
                 } else { importMessage = "That file is not a Hummingbird library export." }
             }
             #endif
-            .routeDestinations()
         }
     }
 
@@ -315,12 +315,13 @@ struct LibraryView: View {
 @MainActor
 struct PlaybackQueueView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.openRoute) private var openRoute
 
     var body: some View {
         List {
             ForEach(app.playbackQueue.items) { video in
                 HStack(spacing: 8) {
-                    NavigationLink(value: Route.item(ContentItem(saved: video))) {
+                    Button { openRoute(.item(ContentItem(saved: video)), title: video.name) } label: {
                         HStack(spacing: 8) {
                         if video.id == app.playbackQueue.currentID {
                             Image(systemName: "play.fill").foregroundStyle(Color.accentColor)

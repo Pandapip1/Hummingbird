@@ -26,17 +26,20 @@ struct RemoteImage: View {
 struct ContentRow: View {
     let item: ContentItem
     @Environment(AppModel.self) private var app
+    @Environment(\.openRoute) private var openRoute
 
     var body: some View {
         Group {
             switch item.kind {
             case .locked:
                 if let u = item.unlockUrl.flatMap(URL.init(string:)) { PortableLink(destination: u) { card } } else { card }
-            case .channel: NavigationLink(value: Route.channel(item.url)) { channelCard }
-            case .playlist: NavigationLink(value: Route.playlist(item.url)) { card }
+            case .channel:
+                Button { openRoute(.channel(item.url), title: item.name) } label: { channelCard }
+            case .playlist:
+                Button { openRoute(.playlist(item.url), title: item.name) } label: { card }
             default:
                 ZStack(alignment: .topTrailing) {
-                    NavigationLink(value: Route.item(item)) { card }
+                    Button { openRoute(.item(item), title: item.name) } label: { card }
                     if item.kind == .video {
                         Menu {
                             Button("Play next") { app.playbackQueue.playNext(SavedVideo(item)) }
@@ -148,22 +151,24 @@ struct NoSourcesView: View {
     }
 }
 
-extension View {
-    /// Registers the screens every tab can navigate to.
-    func routeDestinations() -> some View {
-        navigationDestination(for: Route.self) { route in
-            switch route {
-            case .content(let url): VideoDetailView(url: url, preview: nil)
-            case .item(let item):
-                switch item.kind {
-                case .channel: ChannelView(url: item.url)
-                case .playlist: PlaylistView(url: item.url)
-                default: VideoDetailView(url: item.openURL, preview: item)
-                }
-            case .channel(let url): ChannelView(url: url)
-            case .playlist(let url): PlaylistView(url: url)
-            case .plugin(let id): PluginDetailView(pluginID: id)
+/// The screen a `Route` opens. Each is a self-contained browser-tab page —
+/// unlike the old single shared `NavigationStack`, there's nothing above this
+/// to supply chrome, so every one of these is responsible for its own.
+@MainActor
+struct RouteContent: View {
+    let route: Route
+    var body: some View {
+        switch route {
+        case .content(let url): VideoDetailView(url: url, preview: nil)
+        case .item(let item):
+            switch item.kind {
+            case .channel: ChannelView(url: item.url)
+            case .playlist: PlaylistView(url: item.url)
+            default: VideoDetailView(url: item.openURL, preview: item)
             }
+        case .channel(let url): ChannelView(url: url)
+        case .playlist(let url): PlaylistView(url: url)
+        case .plugin(let id): PluginDetailView(pluginID: id)
         }
     }
 }
@@ -228,6 +233,24 @@ extension View {
         #endif
     }
 }
+
+#if canImport(SwiftUI)
+extension View {
+    /// SwiftOpenUI's own `windowTitleBar(_:)` (see its doc comment) hosts
+    /// `titleBar` inside the real native `GtkHeaderBar` there. Real SwiftUI
+    /// has no equivalent — Apple apps that want content in the title bar
+    /// build it against AppKit directly (`NSWindow.titlebarAccessoryView
+    /// Controllers`, or native window tabs) — so this is a placeholder: it
+    /// renders `titleBar` as an ordinary leading view instead, until that
+    /// AppKit bridging exists. See the "browser-style tabs" TODO entry.
+    func windowTitleBar<T: View>(@ViewBuilder _ titleBar: () -> T) -> some View {
+        VStack(spacing: 0) {
+            titleBar()
+            self
+        }
+    }
+}
+#endif
 
 // MARK: - Pagination
 

@@ -23,6 +23,38 @@ final class AppModel {
     let playbackQueue: PlaybackQueue
     let searchHistory: SearchHistory
     var selectedTab: AppTab = .home
+
+    /// The pinned, uncloseable tab holding the five bottom-tab sections. It
+    /// has no history of its own (see `BrowserTab`'s doc comment) — only its
+    /// `id` is used, to tell `activeTabID` apart from an ordinary content tab.
+    let pinnedTab = BrowserTab(isPinned: true)
+    /// Ordinary browser tabs opened from `Route`-browsing content (a video, a
+    /// channel, a playlist, a plugin page). Order is tab-strip/switcher order.
+    var contentTabs: [BrowserTab] = []
+    var activeTabID: BrowserTab.ID
+
+    var activeTab: BrowserTab {
+        contentTabs.first { $0.id == activeTabID } ?? pinnedTab
+    }
+
+    /// Opens `route` in a new content tab and switches to it. The `openRoute`
+    /// environment action resolves to this from anywhere in the pinned tab.
+    func openInNewTab(_ route: Route, title: String? = nil) {
+        let tab = BrowserTab()
+        tab.push(route, title: title)
+        contentTabs.append(tab)
+        activeTabID = tab.id
+    }
+
+    func closeTab(_ id: BrowserTab.ID) {
+        guard id != pinnedTab.id else { return }
+        guard let index = contentTabs.firstIndex(where: { $0.id == id }) else { return }
+        contentTabs.remove(at: index)
+        guard activeTabID == id else { return }
+        // Land on a neighboring content tab if one remains, else back to pinned.
+        activeTabID = contentTabs[safe: index]?.id ?? contentTabs[safe: index - 1]?.id ?? pinnedTab.id
+    }
+
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
     init() {
@@ -34,6 +66,7 @@ final class AppModel {
         self.platform = platform
         self.playbackQueue = PlaybackQueue()
         self.searchHistory = SearchHistory()
+        self.activeTabID = pinnedTab.id
         self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
         self.homeFeed = FeedModel(
             initialItems: library.homeCache.map(ContentItem.init(saved:)),
@@ -74,4 +107,8 @@ final class AppModel {
             await loadHome()
         }
     }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

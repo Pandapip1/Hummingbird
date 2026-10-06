@@ -123,6 +123,7 @@ private struct VideoBody: View {
     let playerWidth: CGFloat
     let playerHeight: CGFloat
     @Environment(AppModel.self) private var app
+    @Environment(\.openRoute) private var openRoute
     @State private var descriptionExpanded = false
 
     var body: some View {
@@ -136,7 +137,7 @@ private struct VideoBody: View {
                 Text(statsLine).font(.footnote).foregroundStyle(.secondary).lineLimit(nil)
 
                 if let author = item.author, !author.url.isEmpty {
-                    NavigationLink(value: Route.channel(author.url)) {
+                    Button { openRoute(.channel(author.url), title: author.name) } label: {
                         HStack(spacing: 10) {
                             RemoteImage(url: author.thumbnail.flatMap(URL.init(string:))).frame(width: 36, height: 36).clipShape(Circle())
                             VStack(alignment: .leading) {

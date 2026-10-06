@@ -288,7 +288,7 @@ struct PlayerControls: View {
 
     var body: some View {
         ZStack {
-            Color.clear.onTapGesture { interacted() }
+            Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }
 
             if let text = model.subtitleText {
                 Text(text)

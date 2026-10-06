@@ -54,6 +54,9 @@ final class PluginManager {
     var pendingCaptcha: CaptchaRequest?
     /// Set when a plugin needs the user to log in.
     var pendingLogin: String?
+    /// Set when the user explicitly taps "Sign in" from the plugin detail screen;
+    /// the UI opens the login overlay directly without an intermediate alert.
+    var pendingDirectLogin: String?
     /// Invalidates credential-derived UI after login or logout. Credentials
     /// live outside the observable plugin array, so views otherwise keep the
     /// state they read during their previous body evaluation.

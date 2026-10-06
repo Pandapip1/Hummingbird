@@ -78,11 +78,13 @@ private struct PluginRow: View {
                     }
                 }
             }
+            #if !os(tvOS)
             Toggle("Enabled", isOn: Binding(
                 get: { app.plugins.plugin(plugin.id)?.enabled ?? plugin.enabled },
                 set: { app.plugins.setEnabled(plugin.id, $0) }
             ))
             .labelsHidden()
+            #endif
         }
 
         row.contextMenu {
@@ -121,10 +123,14 @@ struct AddSourceSheet: View {
                                 .textInputAutocapitalization(.never)
                                 .keyboardType(.URL)
                                 #endif
+                            #if !os(tvOS)
                             Button { Task { await prepare() } } label: { if working { ProgressView() } else { Text("Continue") } }
                                 .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
+                            #endif
                         }
+                        #if os(iOS)
                         Section { Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") } }
+                        #endif
                         if let errorText { Section { Text(errorText).foregroundStyle(.red).font(.footnote) } }
                         Section(footer: Text("Plugins are third-party code that runs on your device. Only add sources you trust.")) { EmptyView() }
                     }
@@ -150,6 +156,16 @@ struct AddSourceSheet: View {
                             .bold()
                     }
                 }
+                #if os(tvOS)
+                if preview == nil && !scanning {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button { Task { await prepare() } } label: {
+                            if working { ProgressView() } else { Text("Continue") }
+                        }
+                        .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
+                    }
+                }
+                #endif
             }
         }
         .frame(minHeight: 320)
@@ -240,10 +256,8 @@ struct PluginDetailView: View {
                             Label("Signed in", systemImage: "checkmark.seal")
                             Button("Sign out", role: .destructive) { app.plugins.logout(pluginID) }
                         } else {
-                            NavigationLink {
-                                LoginSheet(pluginID: pluginID)
-                            } label: {
-                                Text("Sign in")
+                            Button("Sign in") {
+                                app.plugins.pendingDirectLogin = pluginID
                             }
                         }
                     }

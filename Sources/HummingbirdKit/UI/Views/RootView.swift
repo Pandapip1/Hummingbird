@@ -33,6 +33,9 @@ struct RootView: View {
         } message: { id in
             Text("\(model.plugins.plugin(id)?.config.name ?? "This source") needs you to sign in to continue.")
         }
+        .onChange(of: plugins.pendingDirectLogin) { _, id in
+            if let id { loginTarget = LoginTarget(value: id); plugins.pendingDirectLogin = nil }
+        }
     }
 
     private var loginBinding: Binding<Bool> {

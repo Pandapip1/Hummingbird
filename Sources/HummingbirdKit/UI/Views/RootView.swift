@@ -20,14 +20,19 @@ struct RootView: View {
                 BrowserTabContentView(tab: app.activeTab)
             }
         }
-        // Browser-style tab chrome is desktop-shaped here (chips inside the
-        // toplevel window's own title bar, Safari/Epiphany-style); see the
-        // "browser-style tabs" TODO entry for why iOS instead gets a
-        // tab-switcher button rather than this strip, and for why this is a
-        // same-named-API placeholder on Apple rather than real AppKit
-        // window-chrome integration (`windowTitleBar(_:)`'s doc comments).
+        // Browser-style tab chrome is desktop-shaped here: native toolbar
+        // navigation controls at the leading edge and tabs in the flexible
+        // principal region, the same SwiftUI structure used by AppKit on
+        // macOS. iOS keeps its ordinary tab-switcher treatment.
         #if !os(iOS) && !os(tvOS)
-        .windowTitleBar { TabStripView() }
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                BrowserHistoryControls(tab: app.activeTab)
+            }
+            ToolbarItem(placement: .principal) {
+                TabStripView()
+            }
+        }
         #endif
         .overlay {
             if let loginTarget {
@@ -82,16 +87,7 @@ struct BrowserTabContentView: View {
     let tab: BrowserTab
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button { tab.goBack() } label: { Image(systemName: "chevron.left") }
-                    .disabled(!tab.canGoBack)
-                Button { tab.goForward() } label: { Image(systemName: "chevron.right") }
-                    .disabled(!tab.canGoForward)
-                Text(tab.title).font(.headline).lineLimit(1)
-                Spacer()
-            }
-            .padding(.horizontal, 12).padding(.vertical, 8)
+        Group {
             if let route = tab.current {
                 RouteContent(route: route)
                     .id(tab.historyIndexIdentity)
@@ -103,6 +99,24 @@ struct BrowserTabContentView: View {
     }
 }
 
+/// The current browser tab's own history, placed in the desktop window
+/// toolbar rather than repeated inside every route's content.
+@MainActor
+private struct BrowserHistoryControls: View {
+    let tab: BrowserTab
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button { tab.goBack() } label: { Image(systemName: "chevron.left") }
+                .disabled(!tab.canGoBack)
+                .accessibilityLabel("Back")
+            Button { tab.goForward() } label: { Image(systemName: "chevron.right") }
+                .disabled(!tab.canGoForward)
+                .accessibilityLabel("Forward")
+        }
+    }
+}
+
 /// Safari/Epiphany-style tab strip: the pinned tab's chip first (not
 /// closable), then each open content tab in order.
 @MainActor
@@ -110,25 +124,22 @@ private struct TabStripView: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        // Hosted inside the window's own title bar on desktop (see
-        // `windowTitleBar(_:)`), whose chrome already supplies the
-        // background — this draws only the chips themselves.
-        // Not a ScrollView: GtkScrolledWindow for a horizontal-only scroll
-        // deliberately doesn't propagate the content's natural width (so a
-        // long horizontal list can't blow out its container) — exactly
-        // backwards for a strip that should hug its content up to whatever
-        // room the header bar has, and only then clip. Many open tabs
-        // overflowing uncroppped rather than scrolling is a known gap for
-        // later; see the "browser-style tabs" TODO entry.
-        HStack(spacing: 4) {
-            TabChip(title: "Home", systemImage: "house.fill", isActive: app.activeTabID == app.pinnedTab.id,
-                    onSelect: { app.activeTabID = app.pinnedTab.id }, onClose: nil)
-            ForEach(app.contentTabs) { tab in
-                TabChip(title: tab.title, systemImage: nil, isActive: app.activeTabID == tab.id,
-                        onSelect: { app.activeTabID = tab.id },
-                        onClose: { app.closeTab(tab.id) })
+        // The strip claims all available header width. Each tab gets an equal
+        // share while they fit; its 150-point minimum keeps labels usable, at
+        // which point the horizontal scroller takes over.
+        ScrollView(.horizontal) {
+            HStack(spacing: 4) {
+                TabChip(title: "Home", systemImage: "house.fill", isActive: app.activeTabID == app.pinnedTab.id,
+                        onSelect: { app.activeTabID = app.pinnedTab.id }, onClose: nil)
+                ForEach(app.contentTabs) { tab in
+                    TabChip(title: tab.title, systemImage: nil, isActive: app.activeTabID == tab.id,
+                            onSelect: { app.activeTabID = tab.id },
+                            onClose: { app.closeTab(tab.id) })
+                }
             }
+            .frame(maxWidth: .infinity)
         }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -151,7 +162,7 @@ private struct TabChip: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
-            .frame(minWidth: 80, maxWidth: 200)
+            .frame(minWidth: 150, maxWidth: .infinity)
             .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)

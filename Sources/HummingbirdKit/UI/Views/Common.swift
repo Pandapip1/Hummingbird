@@ -234,24 +234,6 @@ extension View {
     }
 }
 
-#if canImport(SwiftUI)
-extension View {
-    /// SwiftOpenUI's own `windowTitleBar(_:)` (see its doc comment) hosts
-    /// `titleBar` inside the real native `GtkHeaderBar` there. Real SwiftUI
-    /// has no equivalent — Apple apps that want content in the title bar
-    /// build it against AppKit directly (`NSWindow.titlebarAccessoryView
-    /// Controllers`, or native window tabs) — so this is a placeholder: it
-    /// renders `titleBar` as an ordinary leading view instead, until that
-    /// AppKit bridging exists. See the "browser-style tabs" TODO entry.
-    func windowTitleBar<T: View>(@ViewBuilder _ titleBar: () -> T) -> some View {
-        VStack(spacing: 0) {
-            titleBar()
-            self
-        }
-    }
-}
-#endif
-
 // MARK: - Pagination
 
 extension View {

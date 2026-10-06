@@ -14,6 +14,9 @@ let
     gst-plugins-bad
     gst-plugins-ugly
     gst-libav
+    # Provides gtk4paintablesink with GL texture / DMA-BUF import support.
+    # The backend falls back to appsink on hosts without a usable GTK GL context.
+    gst-plugins-rs
   ];
 in
 rec {

@@ -109,7 +109,7 @@ struct AddSourceSheet: View {
     @State private var preview: InstallPreview?
 
     static let hasCamera: Bool = {
-        #if os(iOS)
+        #if canImport(AVFoundation)
         return AVCaptureDevice.default(for: .video) != nil
         #else
         return false
@@ -457,9 +457,11 @@ struct AppSettingsView: View {
 private struct ScannerPane: View {
     let onCode: (String) -> Void
     var body: some View {
-        #if os(iOS)
+        #if os(iOS) || os(macOS)
         QRScannerView(onCode: onCode)
+            #if os(iOS)
             .ignoresSafeArea()
+            #endif
             .overlay(alignment: .bottom) { Text("Point the camera at a plugin QR code").padding(10).background(.thinMaterial, in: Capsule()).padding() }
         #else
         Text("QR scanning is not available on this platform. Paste the plugin URL instead.")

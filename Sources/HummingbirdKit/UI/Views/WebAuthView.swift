@@ -340,4 +340,68 @@ struct QRScannerView: UIViewControllerRepresentable {
         }
     }
 }
+
+#elseif os(macOS)
+import AppKit
+import AVFoundation
+
+struct QRScannerView: NSViewRepresentable {
+    let onCode: (String) -> Void
+
+    func makeNSView(context: Context) -> ScannerNSView {
+        let v = ScannerNSView()
+        v.onCode = onCode
+        return v
+    }
+    func updateNSView(_ nsView: ScannerNSView, context: Context) {}
+
+    final class ScannerNSView: NSView, AVCaptureMetadataOutputObjectsDelegate {
+        var onCode: ((String) -> Void)?
+        private let session = AVCaptureSession()
+        private var preview: AVCaptureVideoPreviewLayer?
+        private var done = false
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            guard let device = AVCaptureDevice.default(for: .video),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  session.canAddInput(input) else { return }
+            session.addInput(input)
+            let output = AVCaptureMetadataOutput()
+            guard session.canAddOutput(output) else { return }
+            session.addOutput(output)
+            output.setMetadataObjectsDelegate(self, queue: .main)
+            output.metadataObjectTypes = [.qr]
+            let layer = AVCaptureVideoPreviewLayer(session: session)
+            layer.videoGravity = .resizeAspectFill
+            self.layer?.addSublayer(layer)
+            preview = layer
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func layout() {
+            super.layout()
+            preview?.frame = bounds
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil {
+                DispatchQueue.global(qos: .userInitiated).async { [session] in
+                    if !session.isRunning { session.startRunning() }
+                }
+            } else {
+                session.stopRunning()
+            }
+        }
+
+        func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from connection: AVCaptureConnection) {
+            guard !done, let code = (objects.first as? AVMetadataMachineReadableCodeObject)?.stringValue else { return }
+            done = true
+            onCode?(code)
+        }
+    }
+}
 #endif

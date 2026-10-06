@@ -54,7 +54,9 @@ struct VideoDetailView: View {
             }
         }
         #if os(iOS)
+        .ignoresSafeArea(edges: .top)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         #endif
         .task(id: activeURL) {
             player.onPlaybackEnded = advanceQueue

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Hosts one plugin in its own JavaScript context (JavaScriptCore or QuickJS, see `JSEngines`).
+/// Hosts one plugin in its own JavaScript context (JavaScriptCore, see `JSEngines`).
 ///
 /// A JS context is not thread-safe, so every touch of it happens on `queue`. Plugin code is synchronous (it blocks on
 /// HTTP calls), which is why calls from the UI are exposed as async wrappers around that queue.

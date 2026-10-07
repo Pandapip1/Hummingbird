@@ -1,7 +1,7 @@
 // Hummingbird plugin prelude.
 // Clean-room implementation of the plugin-facing JavaScript surface, written from the public
 // plugin type definitions, example plugins, and a prose behaviour report.
-// It runs inside the host's JavaScript engine (JavaScriptCore or QuickJS) before the plugin script.
+// It runs inside the host's JavaScript engine (JavaScriptCore) before the plugin script.
 //
 // The only function the host installs is `__hostCall(name, a, b) -> string`; everything else, including the
 // `__native` object below and the optional Http / DOMParser / Utilities packages, is built on it:

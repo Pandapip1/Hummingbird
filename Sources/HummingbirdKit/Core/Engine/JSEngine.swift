@@ -16,7 +16,7 @@ public protocol JSContextHost: AnyObject {
     func close()
 }
 
-/// A JavaScript engine. JavaScriptCore is preferred where the platform packages it; QuickJS is the portable fallback.
+/// A JavaScript engine backed by a JavaScriptCore implementation provided by the platform.
 public protocol JSEngine {
     /// Creates a context whose global scope has `__hostCall(name, a, b) -> string`, the only door from plugin
     /// code into the host. The prelude builds the plugin-facing API on top of it.
@@ -35,7 +35,7 @@ public enum JSEngines {
         #elseif canImport(CJavaScriptCoreGTK)
         return JavaScriptCoreGTKEngine()
         #else
-        return QuickJSEngine()
+        return UnavailableJavaScriptCoreEngine()
         #endif
     }()
 
@@ -56,5 +56,11 @@ public enum JSEngines {
         let context = try self.default.makeContext { _, _, _ in "" }
         context.close()
         #endif
+    }
+}
+
+private struct UnavailableJavaScriptCoreEngine: JSEngine {
+    func makeContext(hostCall: @escaping (_ name: String, _ a: String, _ b: String) -> String) throws -> JSContextHost {
+        throw JSEngineError(message: "JavaScriptCore is not available on this platform")
     }
 }

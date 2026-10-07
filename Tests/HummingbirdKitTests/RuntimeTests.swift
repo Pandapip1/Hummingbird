@@ -41,8 +41,8 @@ final class RuntimeTests: XCTestCase {
     }
     #endif
 
-    func testQuickJSAllowsDeepPluginCallGraphs() throws {
-        let context = try QuickJSEngine().makeContext { _, _, _ in "" }
+    func testJavaScriptCoreAllowsDeepPluginCallGraphs() throws {
+        let context = try JSEngines.default.makeContext { _, _, _ in "" }
         defer { context.close() }
         let value = try context.evaluate(
             "function descend(n) { return n === 0 ? 42 : descend(n - 1); } descend(1000)",

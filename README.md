@@ -9,8 +9,8 @@ desktop app through [SwiftOpenUI](https://github.com/codelynx/SwiftOpenUI).
 | Platform | UI | JS engine | Status |
 |---|---|---|---|
 | iOS 17+ | SwiftUI | JavaScriptCore | Written, **never built or run** (no Xcode here) |
-| Linux | SwiftOpenUI GTK4 | QuickJS | Builds, 20 tests pass, launches and renders (smoke-tested under Xvfb) |
-| Android | SwiftOpenUI Compose backend | QuickJS | **Not attempted or verified.** `HummingbirdKit` avoids Apple-only APIs, but there is no Android entry point and no NDK/SDK was available |
+| Linux | SwiftOpenUI GTK4 | JavaScriptCoreGTK | Builds, 20 tests pass, launches and renders (smoke-tested under Xvfb) |
+| Android | SwiftOpenUI Compose backend | JavaScriptCore required | **Not attempted or verified.** `HummingbirdKit` has no JavaScriptCore backend or Android entry point yet |
 
 The Linux smoke test only confirmed that the window opens and the empty-state Home screen renders. No real plugin
 was loaded through the GTK UI, and video playback in GTK is untested.
@@ -65,7 +65,7 @@ submodule from the fork. The fork is a local clone and has not been pushed to an
 
 | Piece | Where |
 |---|---|
-| JS engine protocol; QuickJS (vendored quickjs-ng) and JavaScriptCore implementations | `Sources/HummingbirdKit/Core/Engine/`, `Sources/CQuickJS/` |
+| JS engine protocol and JavaScriptCore implementations | `Sources/HummingbirdKit/Core/Engine/` |
 | Plugin runtime (`Type`, `PlatformVideo`, pagers, exceptions, `http`, ...) over a single `__hostCall` bridge | `Core/Plugin/Resources/prelude.js`, `Core/Plugin/PluginRuntime.swift` |
 | Install flow with RSA-SHA512 signature check (swift-crypto off Apple) and a validation dry run | `PluginManager.swift`, `ScriptSignature.swift` |
 | `allowUrls` enforcement, per-plugin cookie jars, credential store (Keychain on Apple, 0600 file elsewhere) | `HostHTTP.swift`, `SourceAuth.swift` |
@@ -96,7 +96,7 @@ the host's behaviour. Nothing was copied from it.
 - [Apple: JavaScriptCore](https://developer.apple.com/documentation/javascriptcore), [AVFoundation](https://developer.apple.com/documentation/avfoundation), [WKWebView](https://developer.apple.com/documentation/webkit/wkwebview), [SecKeyVerifySignature](https://developer.apple.com/documentation/security/1643715-seckeyverifysignature)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen), [SwiftSoup](https://github.com/scinfu/SwiftSoup)
 - [SwiftOpenUI](https://github.com/codelynx/SwiftOpenUI) (read from a local clone; GTK4 renderer in `Sources/Backend/GTK4/Rendering/GTKRenderer.swift`)
-- [quickjs-ng](https://github.com/quickjs-ng/quickjs) (vendored, see `Sources/CQuickJS/LICENSE`), [swift-crypto](https://github.com/apple/swift-crypto)
+- [swift-crypto](https://github.com/apple/swift-crypto)
 
 ## Licence
 

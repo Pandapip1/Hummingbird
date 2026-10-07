@@ -23,7 +23,7 @@ rec {
   inherit gstPlugins webkitGTK;
   iconTheme = pkgs.adwaita-icon-theme;
 
-  # Used by HummingbirdKit, CQuickJS and SwiftSoup on every platform.
+  # Used by HummingbirdKit, SwiftSoup on every platform.
   baseLibs = with pkgs; [
     zlib
     libxml2

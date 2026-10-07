@@ -2,7 +2,6 @@
 import PackageDescription
 
 // Hummingbird builds in three layers:
-//   CQuickJS     – vendored QuickJS-NG, the JavaScript engine used wherever JavaScriptCore is not available.
 //   HummingbirdKit   – one module with two folders. Core/ is the plugin host, models and services (no UI imports);
 //                  UI/ is the screens: real SwiftUI on Apple platforms, SwiftOpenUI (Vendor/SwiftOpenUI) elsewhere.
 // The iOS app target lives in project.yml (XcodeGen) and consumes this package; the Linux/GTK4 executable is below.
@@ -13,15 +12,6 @@ var products: [Product] = [
     .library(name: "HummingbirdKit", targets: ["HummingbirdKit"]),
 ]
 var targets: [Target] = [
-    .target(
-        name: "CQuickJS",
-        path: "Sources/CQuickJS",
-        exclude: ["LICENSE", "VERSION"],
-        cSettings: [
-            .define("_GNU_SOURCE"),
-            .unsafeFlags(["-w", "-fwrapv"]),   // upstream code, built as shipped
-        ]
-    ),
     .systemLibrary(
         name: "CJavaScriptCoreGTK",
         path: "Sources/CJavaScriptCoreGTK",
@@ -37,7 +27,6 @@ var targets: [Target] = [
     .target(
         name: "HummingbirdKit",
         dependencies: [
-            "CQuickJS",
             "CSQLite",
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),

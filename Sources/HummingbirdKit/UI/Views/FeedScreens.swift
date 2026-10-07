@@ -382,7 +382,9 @@ struct WatchLaterView: View {
         .listStyle(.plain)
         .navigationTitle("Watch later")
         #if os(iOS)
-        .toolbar { EditButton() }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { EditButton() }
+        }
         #endif
         .overlay { if app.library.watchLater.isEmpty { ContentUnavailableView("Nothing saved", systemImage: "clock", description: Text("Use \"Watch later\" on any video.")) } }
     }
@@ -404,7 +406,13 @@ struct HistoryView: View {
         }
         .listStyle(.plain)
         .navigationTitle("History")
-        .toolbar { if !app.library.history.isEmpty { Button("Clear", role: .destructive) { app.library.clearHistory() } } }
+        .toolbar {
+            if !app.library.history.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Clear", role: .destructive) { app.library.clearHistory() }
+                }
+            }
+        }
         .overlay { if app.library.history.isEmpty { ContentUnavailableView("No history", systemImage: "clock.arrow.circlepath") } }
     }
 }
@@ -424,7 +432,9 @@ struct LocalPlaylistView: View {
         .listStyle(.plain)
         .navigationTitle(playlist?.name ?? "Playlist")
         #if os(iOS)
-        .toolbar { EditButton() }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { EditButton() }
+        }
         #endif
         .overlay { if playlist?.videos.isEmpty ?? true { ContentUnavailableView("Empty playlist", systemImage: "music.note.list") } }
     }

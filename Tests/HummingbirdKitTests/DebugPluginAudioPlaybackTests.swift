@@ -108,5 +108,71 @@ final class DebugPluginAudioPlaybackTests: XCTestCase {
         XCTAssertGreaterThan(target, low * 10, "440 Hz energy should dominate the 220 Hz control bin")
         XCTAssertGreaterThan(target, high * 10, "440 Hz energy should dominate the 880 Hz control bin")
     }
+
+    @MainActor
+    func testSeparateAudioSourceReachesRealPulseSink() async throws {
+        try TestDisplaySession.start()
+        guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
+        let media = try DebugPluginFixture.ensureSeparateTestMediaExists()
+
+        let session = IsolatedAudioSession()
+        try session.start()
+        defer { session.stop() }
+        try session.verifyRecordingPath()
+        try session.verifyGStreamerPulsePath()
+
+        let server = try await DebugPluginFixture.startRangeServer(port: 8742)
+        defer { ProcessTermination.terminateAndWait(server) }
+
+        var backend: GTKMediaBackend? = GTKMediaBackend()
+        var failure: String?
+        backend!.onFailure = { failure = $0 }
+        let widget = VideoPlayer(player: backend!.player).gtkCreateWidget()
+        let window = gtk_window_new()!
+        gtk_window_set_child(UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self),
+                             UnsafeMutableRawPointer(widget).assumingMemoryBound(to: GtkWidget.self))
+        gtk_widget_set_visible(window, 1)
+        defer {
+            backend?.stop()
+            gtk_window_destroy(UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self))
+            backend = nil
+            while g_main_context_iteration(nil, 0) != 0 {}
+        }
+
+        let base = URL(string: "http://127.0.0.1:8742/")!
+        let request = PlayRequest(
+            video: ResolvedMedia(url: base.appendingPathComponent(media.video.lastPathComponent)),
+            audio: ResolvedMedia(url: base.appendingPathComponent(media.audio.lastPathComponent)),
+            isLive: false
+        )
+        let recording = try session.beginRecording()
+        try await backend!.load(request, resumeAt: nil, autoplay: true)
+
+        let playbackDeadline = Date().addingTimeInterval(5)
+        while backend!.currentTime < 1, Date() < playbackDeadline {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertNil(failure)
+        XCTAssertTrue(backend!.isPlaying)
+        XCTAssertGreaterThan(backend!.currentTime, 0.5)
+        let sinkInputs = try session.sinkInputSnapshot()
+        let recordDeadline = Date().addingTimeInterval(2)
+        while Date() < recordDeadline {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        session.endRecording()
+
+        let wav = try WAVSamples.read(recording)
+        XCTAssertGreaterThan(wav.mono.count, 1000,
+            "separate audio source produced no PCM. Pulse sink inputs:\n\(sinkInputs)")
+        XCTAssertGreaterThan(AudioAnalysis.rms(wav.mono), 0.02,
+            "separate audio source was silent. Pulse sink inputs:\n\(sinkInputs)")
+        let windowSamples = Array(wav.mono.suffix(wav.sampleRate / 2))
+        let target = AudioAnalysis.goertzelMagnitude(windowSamples, sampleRate: wav.sampleRate, frequency: 440)
+        let control = AudioAnalysis.goertzelMagnitude(windowSamples, sampleRate: wav.sampleRate, frequency: 880)
+        XCTAssertGreaterThan(target, control * 10)
+    }
 }
 #endif

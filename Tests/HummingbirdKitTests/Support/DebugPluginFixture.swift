@@ -46,6 +46,41 @@ enum DebugPluginFixture {
         }
     }
 
+    /// Creates the same fixture as independent video and audio files, matching
+    /// plugins that expose an `UnMuxVideoSourceDescriptor` (such as Nebula).
+    static func ensureSeparateTestMediaExists() throws -> (video: URL, audio: URL) {
+        let video = directory.appendingPathComponent("test-video-only.mp4")
+        let audio = directory.appendingPathComponent("test-audio-only.m4a")
+        guard !FileManager.default.fileExists(atPath: video.path)
+                || !FileManager.default.fileExists(atPath: audio.path) else {
+            return (video, audio)
+        }
+        let executable: String
+        var prefix: [String] = []
+        if let ffmpeg = try? which("ffmpeg") {
+            executable = ffmpeg
+        } else if let nix = try? which("nix") {
+            executable = nix
+            prefix = ["shell", "nixpkgs#ffmpeg", "--command", "ffmpeg"]
+        } else {
+            throw XCTSkip("generating separate playback fixtures needs ffmpeg")
+        }
+        try run(executable, prefix + [
+            "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "testsrc=duration=10:size=320x240:rate=15", "-pix_fmt", "yuv420p",
+            "-c:v", "libx264", "-an", video.path,
+        ])
+        try run(executable, prefix + [
+            "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+            "sine=frequency=440:duration=10", "-c:a", "aac", "-vn", audio.path,
+        ])
+        guard FileManager.default.fileExists(atPath: video.path),
+              FileManager.default.fileExists(atPath: audio.path) else {
+            throw XCTSkip("ffmpeg did not produce separate playback fixtures")
+        }
+        return (video, audio)
+    }
+
     static func pythonExecutable() throws -> String {
         if let configured = ProcessInfo.processInfo.environment["HUMMINGBIRD_TEST_PYTHON"],
            FileManager.default.isExecutableFile(atPath: configured) { return configured }

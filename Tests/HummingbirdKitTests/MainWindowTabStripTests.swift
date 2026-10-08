@@ -28,6 +28,8 @@ final class MainWindowTabStripTests: XCTestCase {
         pump()
 
         let tabBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: titlebar))
+        XCTAssertNotNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: root),
+                        "the pinned app sections use SwiftUI's sidebarAdaptable tab style")
         let tabView = try XCTUnwrap(swift_adw_tab_bar_get_view(tabBar))
         XCTAssertEqual(swift_adw_tab_view_get_n_pages(tabView), 2)
         let homePage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(tabView, 0))
@@ -37,6 +39,13 @@ final class MainWindowTabStripTests: XCTestCase {
         XCTAssertEqual(swift_adw_tab_view_get_selected_page(tabView), contentPage)
         let principalRow = try XCTUnwrap(ancestor(withCSSClass: "toolbar", from: tabBar))
         let header = try XCTUnwrap(findFirst(ofType: "GtkHeaderBar", in: titlebar))
+        XCTAssertNotNil(findLabel("New Tab", in: header),
+                        "the selected tab title belongs in the native window header")
+        XCTAssertEqual(String(cString: try XCTUnwrap(gtk_window_get_title(win))), "New Tab")
+        if let nestedSlot = findNestedTitlebarSlot(in: titlebar) {
+            XCTAssertNil(gtk_widget_get_first_child(nestedSlot),
+                         "the page title must not create a row underneath the browser tab bar")
+        }
         XCTAssertGreaterThanOrEqual(gtk_widget_get_height(principalRow), gtk_widget_get_height(header),
                                     "the native AdwTabBar must retain at least header-bar vertical rhythm")
         let titlebarHeight = gtk_widget_get_height(titlebar)
@@ -44,6 +53,7 @@ final class MainWindowTabStripTests: XCTestCase {
         pump()
         XCTAssertEqual(model.activeTabID, model.pinnedTab.id)
         XCTAssertNotEqual(model.activeTabID, contentID)
+        XCTAssertEqual(String(cString: try XCTUnwrap(gtk_window_get_title(win))), "Home")
 
         let updatedTitlebar = try XCTUnwrap(gtk_window_get_titlebar(win))
         let updatedBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: updatedTitlebar))
@@ -114,6 +124,17 @@ final class MainWindowTabStripTests: XCTestCase {
         var child = gtk_widget_get_first_child(widget)
         while let current = child {
             if let found = findFirst(ofType: expected, in: current) { return found }
+            child = gtk_widget_get_next_sibling(current)
+        }
+        return nil
+    }
+
+    private func findNestedTitlebarSlot(in widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
+        let object = UnsafeMutableRawPointer(widget).assumingMemoryBound(to: GObject.self)
+        if g_object_get_data(object, "gtk-swift-is-nested-titlebar-slot") != nil { return widget }
+        var child = gtk_widget_get_first_child(widget)
+        while let current = child {
+            if let found = findNestedTitlebarSlot(in: current) { return found }
             child = gtk_widget_get_next_sibling(current)
         }
         return nil

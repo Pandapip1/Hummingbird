@@ -36,6 +36,7 @@ struct RootView: View {
             MobileTabOverview(isPresented: $showingTabOverview)
                 .environment(model)
         }
+        .navigationTitle(windowTitle)
         // Browser-style tab chrome: native toolbar navigation controls at the
         // leading edge on desktop. macOS seats the tab strip below the toolbar
         // via NSTitlebarAccessoryViewController (Safari-style separate row);
@@ -83,6 +84,17 @@ struct RootView: View {
     private var loginBinding: Binding<Bool> {
         Binding(get: { model.plugins.pendingLogin != nil }, set: { if !$0 { model.plugins.pendingLogin = nil } })
     }
+
+    private var windowTitle: String {
+        guard model.activeTabID == model.pinnedTab.id else { return model.activeTab.title }
+        switch model.selectedTab {
+        case .home: return "Home"
+        case .subscriptions: return "Subscriptions"
+        case .search: return "Search"
+        case .library: return "Library"
+        case .sources: return "Sources"
+        }
+    }
 }
 
 /// The pinned tab: the app's five bottom-tab sections, unchanged from before
@@ -101,6 +113,7 @@ private struct PinnedTabView: View {
             LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(AppTab.library)
             SourcesView().tabItem { Label("Sources", systemImage: "puzzlepiece.extension") }.tag(AppTab.sources)
         }
+        .tabViewStyle(.sidebarAdaptable)
     }
 }
 

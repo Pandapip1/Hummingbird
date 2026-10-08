@@ -9,6 +9,25 @@ import SwiftOpenUI
 
 final class StartupResponsivenessTests: XCTestCase {
     @MainActor
+    func testPinnedTabsUseNativeAdaptiveSidebar() async throws {
+        try TestDisplaySession.start()
+        if gtk_is_initialized() == 0 { _ = gtk_init_check() }
+        try XCTSkipUnless(gtk_is_initialized() != 0, "no GTK display")
+        let root = widgetFromOpaque(gtkRenderView(
+            TabView {
+                Tab("Home") { Text("Home") }
+                Tab("Library") { Text("Library") }
+            }
+            .tabViewStyle(.sidebarAdaptable)
+        ))
+        g_object_ref_sink(gpointer(root))
+        defer { g_object_unref(gpointer(root)) }
+        XCTAssertNotNil(findWidget(ofType: "AdwViewSwitcherSidebar", in: root))
+        XCTAssertNil(findWidget(ofType: "AdwViewSwitcher", in: root),
+                     "sidebarAdaptable must not fall back to the default tab switcher")
+    }
+
+    @MainActor
     func testStartupDoesNotEvaluateUnselectedTabsAndRetainsVisitedPages() async throws {
         try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
@@ -75,6 +94,16 @@ final class StartupResponsivenessTests: XCTestCase {
         var child = gtk_widget_get_first_child(widget)
         while let current = child {
             if let stack = findStack(current) { return stack }
+            child = gtk_widget_get_next_sibling(current)
+        }
+        return nil
+    }
+
+    private func findWidget(ofType expected: String, in widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
+        if String(cString: g_type_name(gtk_swift_get_widget_type(widget))) == expected { return widget }
+        var child = gtk_widget_get_first_child(widget)
+        while let current = child {
+            if let found = findWidget(ofType: expected, in: current) { return found }
             child = gtk_widget_get_next_sibling(current)
         }
         return nil

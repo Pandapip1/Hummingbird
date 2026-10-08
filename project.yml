@@ -55,8 +55,23 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Hummingbird
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.video"
         GENERATE_INFOPLIST_FILE: NO
+  HummingbirdTVUITests:
+    type: bundle.ui-testing
+    platform: tvOS
+    sources:
+      - path: Tests/HummingbirdTVUITests
+    dependencies:
+      - target: Hummingbird
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.HummingbirdTVUITests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Hummingbird
 schemes:
   Hummingbird:
     build:
       targets:
         Hummingbird: all
+    test:
+      targets:
+        - HummingbirdTVUITests

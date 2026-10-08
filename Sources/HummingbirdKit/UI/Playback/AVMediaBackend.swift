@@ -396,6 +396,21 @@ private final class FullscreenPlayerViewController: AVPlayerViewController {
     override var preferredFocusEnvironments: [any UIFocusEnvironment] {
         controlsController.map { [$0] } ?? super.preferredFocusEnvironments
     }
+
+    override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
+        guard let controlsController,
+              let current = context.previouslyFocusedItem,
+              controlsController.contains(current) else {
+            return super.shouldUpdateFocus(in: context)
+        }
+
+        // AVKit's full-screen container is itself focusable. Directional
+        // movement at an edge of our controls must stay put instead of falling
+        // through to that container (or clearing focus when there is no next
+        // candidate).
+        guard let next = context.nextFocusedItem else { return false }
+        return controlsController.contains(next)
+    }
 }
 #else
 private typealias FullscreenPlayerViewController = AVPlayerViewController
@@ -407,6 +422,9 @@ private struct FullscreenPlayerControls: View {
     var body: some View {
         PlayerControls(model: model, isFullscreen: true)
             .frame(maxHeight: .infinity, alignment: .bottom)
+            #if os(tvOS)
+            .onExitCommand { model.toggleFullscreen() }
+            #endif
     }
 }
 #elseif canImport(AVKit) && canImport(SwiftUI) && os(macOS)

@@ -53,9 +53,16 @@ private struct TVPlayerDebugScene: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-            PlayerSurface(model: player)
-            PlayerControls(model: player, isFullscreen: false)
+            Color(white: 0.12).ignoresSafeArea()
+            ZStack {
+                Color.black
+                PlayerSurface(model: player)
+                PlayerControls(model: player, isFullscreen: false)
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .frame(maxWidth: 1_280)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .shadow(radius: 24)
         }
         .task {
             DebugServer.shared.registerProbe("fullscreen") { String(player.isFullscreen) }

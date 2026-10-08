@@ -7,6 +7,28 @@ final class ModelAndLogicTests: XCTestCase {
     }
 
     @MainActor
+    func testBrowserTabManagementCreatesSelectsAndClosesTabs() {
+        let model = AppModel()
+        model.openNewTab()
+        let blank = model.activeTab
+        XCTAssertNil(blank.current)
+
+        model.openInNewTab(.content("first"), title: "First")
+        let first = model.activeTab
+        model.openInNewTab(.content("second"), title: "Second")
+        let second = model.activeTab
+        XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, first.id, second.id])
+
+        model.activeTabID = first.id
+        model.closeTab(first.id)
+        XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, second.id])
+        XCTAssertEqual(model.activeTabID, second.id)
+        model.closeTab(second.id)
+        model.closeTab(blank.id)
+        XCTAssertEqual(model.activeTabID, model.pinnedTab.id)
+    }
+
+    @MainActor
     func testSearchHistoryDeduplicatesLimitsAndPersists() {
         var saved: [[String]] = []
         let history = SearchHistory(limit: 3, load: { ["Existing"] }, save: { saved.append($0) })

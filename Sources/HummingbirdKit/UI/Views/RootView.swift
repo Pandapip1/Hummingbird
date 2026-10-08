@@ -11,7 +11,9 @@ import AppKit
 @MainActor
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var loginTarget: LoginTarget?
+    @State private var showingTabOverview = false
 
     var body: some View {
         @Bindable var app = model
@@ -19,9 +21,19 @@ struct RootView: View {
         Group {
             if app.activeTabID == app.pinnedTab.id {
                 PinnedTabView()
+                    .environment(\.openRoute, OpenRouteAction { route, title in app.openInNewTab(route, title: title) })
             } else {
                 BrowserTabContentView(tab: app.activeTab)
             }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if horizontalSizeClass != nil {
+                MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+            }
+        }
+        .fullScreenCover(isPresented: $showingTabOverview) {
+            MobileTabOverview(isPresented: $showingTabOverview)
+                .environment(model)
         }
         // Browser-style tab chrome: native toolbar navigation controls at the
         // leading edge on desktop. macOS seats the tab strip below the toolbar
@@ -88,7 +100,6 @@ private struct PinnedTabView: View {
             LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(AppTab.library)
             SourcesView().tabItem { Label("Sources", systemImage: "puzzlepiece.extension") }.tag(AppTab.sources)
         }
-        .environment(\.openRoute, OpenRouteAction { route, title in app.openInNewTab(route, title: title) })
     }
 }
 
@@ -107,7 +118,7 @@ struct BrowserTabContentView: View {
                 RouteContent(route: route)
                     .id(tab.historyIndexIdentity)
             } else {
-                ContentUnavailableView("Nothing here", systemImage: "square.dashed")
+                PinnedTabView()
             }
         }
         .environment(\.openRoute, OpenRouteAction { route, title in tab.push(route, title: title) })

@@ -47,6 +47,14 @@ final class AppModel {
         activeTabID = tab.id
     }
 
+    /// Opens a blank start-page tab, matching the new-tab action in a browser
+    /// tab overview. Its first route replaces the start page in this tab.
+    func openNewTab() {
+        let tab = BrowserTab()
+        contentTabs.append(tab)
+        activeTabID = tab.id
+    }
+
     func closeTab(_ id: BrowserTab.ID) {
         guard id != pinnedTab.id else { return }
         guard let index = contentTabs.firstIndex(where: { $0.id == id }) else { return }

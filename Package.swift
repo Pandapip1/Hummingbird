@@ -21,6 +21,7 @@ var targets: [Target] = [
     ),
     .target(
         name: "DynamicTabbingKit",
+        dependencies: [.product(name: "BrowserTabs", package: "SwiftOpenUI")],
         path: "Sources/DynamicTabbingKit"
     ),
     .target(
@@ -57,7 +58,6 @@ var targets: [Target] = [
             .product(name: "QRCodeGenerator", package: "swift-qrcode-generator"),
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
             .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
-            .product(name: "BrowserTabs", package: "SwiftOpenUI"),
         ],
         path: "Sources/HummingbirdKit",
         resources: [.copy("Core/Plugin/Resources/prelude.js")],

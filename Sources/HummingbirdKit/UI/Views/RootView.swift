@@ -1,5 +1,5 @@
 import Foundation
-import BrowserTabs
+import DynamicTabbingKit
 import SwiftOpenUI
 #if os(macOS)
 import AppKit

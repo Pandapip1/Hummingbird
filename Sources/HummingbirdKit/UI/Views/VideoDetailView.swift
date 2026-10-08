@@ -446,15 +446,14 @@ struct PlayerControls: View {
 
     #if os(tvOS)
     private var hiddenControlsFocusTarget: some View {
-        Button { interacted() } label: {
-            Color.clear
-                .contentShape(Rectangle())
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .accessibilityLabel("Show playback controls")
-        .onMoveCommand { _ in interacted() }
+        Color.clear
+            .contentShape(Rectangle())
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .focusable()
+            .focusEffectDisabled()
+            .accessibilityLabel("Show playback controls")
+            .onTapGesture { interacted() }
+            .onMoveCommand { _ in interacted() }
     }
     #endif
 

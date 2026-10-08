@@ -3,6 +3,7 @@ import XCTest
 import Foundation
 import CGTK
 import CGTKBridge
+import CAdwaita
 import SwiftOpenUI
 @_spi(SwiftOpenUIBackend) import BackendGTK4
 
@@ -26,17 +27,17 @@ final class StartupResponsivenessTests: XCTestCase {
         XCTAssertNil(probe.evaluations["sources"])
         XCTAssertGreaterThan(probe.evaluations["home"] ?? 0, 0)
         XCTAssertEqual(probe.schemes["home"], .dark)
-        let originalHome = gtk_stack_get_child_by_name(OpaquePointer(stack), "home")
+        let originalHome = "home".withCString { swift_adw_view_stack_get_child_by_name(stack, $0) }
         let originalHomeBody = originalHome.flatMap { gtk_widget_get_first_child($0) }
 
-        gtk_stack_set_visible_child_name(OpaquePointer(stack), "sources")
+        "sources".withCString { swift_adw_view_stack_set_visible_child_name(stack, $0) }
         XCTAssertGreaterThan(probe.evaluations["sources"] ?? 0, 0)
         XCTAssertEqual(probe.schemes["sources"], .dark,
                        "deferred construction must restore the tab's environment")
         XCTAssertNil(probe.evaluations["library"])
         let afterFirstVisit = probe.evaluations
-        gtk_stack_set_visible_child_name(OpaquePointer(stack), "home")
-        gtk_stack_set_visible_child_name(OpaquePointer(stack), "sources")
+        "home".withCString { swift_adw_view_stack_set_visible_child_name(stack, $0) }
+        "sources".withCString { swift_adw_view_stack_set_visible_child_name(stack, $0) }
         XCTAssertEqual(probe.evaluations, afterFirstVisit, "visited pages must keep their widget/state lifetime")
         XCTAssertEqual(originalHome.flatMap { gtk_widget_get_first_child($0) }, originalHomeBody)
     }
@@ -63,14 +64,14 @@ final class StartupResponsivenessTests: XCTestCase {
         XCTAssertGreaterThan(probe.evaluations["third"] ?? 0, 0)
         // Switch by widget, independent of the generated duplicate-title IDs.
         let first = try XCTUnwrap(gtk_widget_get_first_child(stack))
-        gtk_stack_set_visible_child(OpaquePointer(stack), first)
+        swift_adw_view_stack_set_visible_child(stack, first)
         XCTAssertEqual(selected, 0)
         XCTAssertGreaterThan(probe.evaluations["first"] ?? 0, 0)
         XCTAssertNil(probe.evaluations["second"])
     }
 
     private func findStack(_ widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
-        if String(cString: g_type_name(gtk_swift_get_widget_type(widget))) == "GtkStack" { return widget }
+        if String(cString: g_type_name(gtk_swift_get_widget_type(widget))) == "AdwViewStack" { return widget }
         var child = gtk_widget_get_first_child(widget)
         while let current = child {
             if let stack = findStack(current) { return stack }

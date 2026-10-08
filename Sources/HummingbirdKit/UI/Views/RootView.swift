@@ -1,4 +1,5 @@
 import Foundation
+import BrowserTabs
 #if canImport(SwiftUI)
 import SwiftUI
 #else
@@ -46,7 +47,7 @@ struct RootView: View {
             }
             #if !os(macOS)
             ToolbarItem(placement: .principal) {
-                TabStripView()
+                BrowserTabStrip()
             }
             #endif
         }
@@ -143,193 +144,25 @@ private struct BrowserHistoryControls: View {
     }
 }
 
-/// Safari/Epiphany-style tab strip: the pinned tab's chip first (not
-/// closable), then each open content tab in order. Tabs share the bar
-/// width equally (min 100 pt each); horizontal scroll kicks in when they
-/// would be narrower than that. A thin separator appears between two
-/// adjacent inactive, non-hovered tabs, matching Safari's visual rhythm.
-enum TabStripLayout {
-    static let minimumTabWidth: CGFloat = 100
-    // Two points around the tab row, then four points around its background.
-    static let horizontalInsets: CGFloat = 12
-    static func tabWidth(availableWidth: CGFloat, tabCount: Int) -> CGFloat {
-        let count = CGFloat(max(1, tabCount))
-        return max(minimumTabWidth, (availableWidth - horizontalInsets) / count)
-    }
-}
-
 @MainActor
-private struct TabStripView: View {
+private struct BrowserTabStrip: View {
     @Environment(AppModel.self) private var app
-    @State private var hoveredTabID: UUID?
 
     var body: some View {
-        GeometryReader { geo in
-            let pinnedID = app.pinnedTab.id
-            let tabWidth = TabStripLayout.tabWidth(
-                availableWidth: geo.size.width,
-                tabCount: 1 + app.contentTabs.count
-            )
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    TabChip(title: "Home", systemImage: "house.fill",
-                            isActive: app.activeTabID == pinnedID,
-                            isHovered: hoveredTabID == pinnedID,
-                            showsLeadingSeparator: false,
-                            onSelect: { app.activeTabID = pinnedID },
-                            onClose: nil,
-                            onHoverChange: { hovered in hoveredTabID = hovered ? pinnedID : nil })
-                        .frame(width: tabWidth)
-
-                    ForEach(Array(app.contentTabs.enumerated()), id: \.element.id) { i, tab in
-                        let isActive = app.activeTabID == tab.id
-                        let prevID: UUID = i == 0 ? pinnedID : app.contentTabs[i - 1].id
-                        let prevIsActive = app.activeTabID == prevID
-                        let isHovered = hoveredTabID == tab.id
-                        let prevIsHovered = hoveredTabID == prevID
-                        TabChip(title: tab.title, systemImage: nil,
-                                isActive: isActive,
-                                isHovered: isHovered,
-                                showsLeadingSeparator: !isActive && !prevIsActive && !isHovered && !prevIsHovered,
-                                onSelect: { app.activeTabID = tab.id },
-                                onClose: { app.closeTab(tab.id) },
-                                onHoverChange: { hovered in hoveredTabID = hovered ? tab.id : nil })
-                            .frame(width: tabWidth)
-                    }
-                }
-                .padding(.horizontal, 2).padding(.vertical, 2)
-                .background {
-                    #if canImport(SwiftUI)
-                    Capsule()
-                        .fill(Color.primary.opacity(0.05))
-                        .overlay(Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
-                    #endif
-                }
-                .padding(.horizontal, 4).padding(.vertical, 3)
-                .frame(minWidth: geo.size.width)
-            }
-        }
-    }
-}
-
-@MainActor
-private struct TabChip: View {
-    let title: String
-    let systemImage: String?
-    let isActive: Bool
-    let isHovered: Bool
-    let showsLeadingSeparator: Bool
-    let onSelect: () -> Void
-    let onClose: (() -> Void)?
-    let onHoverChange: (Bool) -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            ZStack(alignment: .leading) {
-                if showsLeadingSeparator {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.15))
-                        .frame(width: 1, height: 14)
-                }
-
-                // Title centered in the full chip width
-                HStack(spacing: 4) {
-                    if let systemImage {
-                        Image(systemName: systemImage)
-                            .imageScale(.small)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(title)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .foregroundStyle(isActive ? .primary : .secondary)
-                }
-                .frame(maxWidth: .infinity)
-
-                // Close button: left-pinned, circular badge background on hover
-                if let onClose, isHovered {
-                    HStack(spacing: 0) {
-                        Button(action: onClose) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 14, height: 14)
-                                .background(Circle().fill(Color.primary.opacity(0.12)))
-                        }
-                        .buttonStyle(.plain)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 6)
-                }
-            }
-            .padding(.vertical, 3)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background {
-                if !isActive, isHovered {
-                    #if canImport(SwiftUI)
-                    Capsule()
-                        .fill(Color.primary.opacity(0.08))
-                        .padding(.vertical, 2).padding(.horizontal, 1)
-                    #else
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.primary.opacity(0.08))
-                        .padding(.vertical, 2).padding(.horizontal, 1)
-                    #endif
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .modifier(ChipActiveStyle(isActive: isActive))
-        #if !os(tvOS)
-        .onHover { onHoverChange($0) }
-        #endif
-    }
-}
-
-private struct ChipActiveStyle: ViewModifier {
-    let isActive: Bool
-
-    func body(content: Content) -> some View {
-        #if canImport(SwiftUI)
-        if #available(macOS 26.0, iOS 26.0, *) {
-            if isActive {
-                content.glassEffect(.clear)
-            } else {
-                content
-            }
-        } else {
-            legacyActiveBackground(content)
-        }
-        #else
-        legacyActiveBackground(content)
-        #endif
-    }
-
-    @ViewBuilder
-    private func legacyActiveBackground(_ content: Content) -> some View {
-        if isActive {
-            content.background {
-                #if canImport(SwiftUI)
-                Capsule()
-                    .fill(.regularMaterial)
-                    .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
-                    .padding(.vertical, 2).padding(.horizontal, 1)
-                #else
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(0.16))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.primary.opacity(0.18), lineWidth: 0.5))
-                    .padding(.vertical, 2).padding(.horizontal, 1)
-                #endif
-            }
-        } else {
-            content
-        }
+        BrowserTabBar(
+            items: [BrowserTabItem(id: app.pinnedTab.id, title: "Home", isPinned: true)]
+                + app.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) },
+            selection: Binding(
+                get: { app.activeTabID },
+                set: { app.activeTabID = $0 }
+            ),
+            onClose: { app.closeTab($0) }
+        )
     }
 }
 
 #if os(macOS)
-/// Mounts `TabStripView` as an `NSTitlebarAccessoryViewController` so it
+/// Mounts `BrowserTabStrip` as an `NSTitlebarAccessoryViewController` so it
 /// occupies its own row below the window toolbar, matching Safari's layout.
 @MainActor
 private struct TabBarAccessoryInstaller: NSViewRepresentable {
@@ -361,7 +194,7 @@ private struct TabBarAccessoryInstaller: NSViewRepresentable {
         func installIfNeeded(in window: NSWindow) {
             guard installedWindow !== window else { return }
             let hc = NSHostingController(rootView: AnyView(
-                TabStripView().environment(app)
+                BrowserTabStrip().environment(app)
             ))
             // Fix the height so GeometryReader inside TabStripView gets a
             // finite vertical proposal. The accessory VC manages width itself.

@@ -35,6 +35,8 @@ rec {
   gtkLibs =
     (with pkgs; [
       gtk4
+      libadwaita
+      appstream
       glib
       glib-networking # GIO TLS backend used by WebKitGTK/libsoup for HTTPS
       cairo

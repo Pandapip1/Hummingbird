@@ -2,6 +2,7 @@
 import XCTest
 import CGTK
 import CGTKBridge
+import CAdwaita
 import SwiftOpenUI
 @_spi(SwiftOpenUIBackend) import BackendGTK4
 @testable import HummingbirdKit
@@ -26,50 +27,35 @@ final class MainWindowTabStripTests: XCTestCase {
         defer { gtk_window_destroy(win) }
         pump()
 
-        let homeLabel = try XCTUnwrap(findLabel("Home", in: titlebar))
-        let contentLabel = try XCTUnwrap(findLabel("New Tab", in: titlebar))
-        let homeButton = try XCTUnwrap(ancestor(ofType: "GtkButton", from: homeLabel))
-        let contentButton = try XCTUnwrap(ancestor(ofType: "GtkButton", from: contentLabel))
-        let principalRow = try XCTUnwrap(ancestor(withCSSClass: "toolbar", from: homeButton))
+        let tabBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: titlebar))
+        let tabView = try XCTUnwrap(swift_adw_tab_bar_get_view(tabBar))
+        XCTAssertEqual(swift_adw_tab_view_get_n_pages(tabView), 2)
+        let homePage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(tabView, 0))
+        let contentPage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(tabView, 1))
+        XCTAssertNotEqual(swift_adw_tab_page_get_pinned(homePage), 0)
+        XCTAssertEqual(swift_adw_tab_page_get_pinned(contentPage), 0)
+        XCTAssertEqual(swift_adw_tab_view_get_selected_page(tabView), contentPage)
+        let principalRow = try XCTUnwrap(ancestor(withCSSClass: "toolbar", from: tabBar))
         let header = try XCTUnwrap(findFirst(ofType: "GtkHeaderBar", in: titlebar))
-        XCTAssertEqual(gtk_widget_get_height(principalRow), gtk_widget_get_height(header),
-                       "the tab row should follow the GTK theme's native header height")
-        var buttonOrigin = graphene_point_t(x: 0, y: 0)
-        var buttonInRow = graphene_point_t()
-        XCTAssertNotEqual(gtk_widget_compute_point(homeButton, principalRow, &buttonOrigin, &buttonInRow), 0)
-        let topMargin = Double(buttonInRow.y)
-        let bottomMargin = Double(gtk_widget_get_height(principalRow) - gtk_widget_get_height(homeButton)) - topMargin
-        XCTAssertGreaterThanOrEqual(topMargin, 8)
-        XCTAssertGreaterThanOrEqual(bottomMargin, 8)
-        let inactiveHeight = gtk_widget_get_height(homeButton)
-        let activeHeight = gtk_widget_get_height(contentButton)
+        XCTAssertGreaterThanOrEqual(gtk_widget_get_height(principalRow), gtk_widget_get_height(header),
+                                    "the native AdwTabBar must retain at least header-bar vertical rhythm")
         let titlebarHeight = gtk_widget_get_height(titlebar)
-        XCTAssertNotEqual(gtk_widget_get_sensitive(homeButton), 0)
-        XCTAssertNotEqual(gtk_widget_get_can_target(homeButton), 0)
-
-        var origin = graphene_point_t(x: 0, y: 0)
-        var center = graphene_point_t()
-        XCTAssertNotEqual(gtk_widget_compute_point(homeButton, titlebar, &origin, &center), 0)
-        center.x += Float(gtk_widget_get_width(homeButton)) / 2
-        center.y += Float(gtk_widget_get_height(homeButton)) / 2
-        let picked = try XCTUnwrap(gtk_widget_pick(titlebar, Double(center.x), Double(center.y), GTK_PICK_DEFAULT))
-        XCTAssertTrue(picked == homeButton || gtk_widget_is_ancestor(picked, homeButton) != 0,
-                      "Home center picked \(typeName(picked)) outside its button")
-
-        XCTAssertNotEqual(gtk_widget_activate(homeButton), 0)
+        swift_adw_tab_view_set_selected_page(tabView, homePage)
         pump()
         XCTAssertEqual(model.activeTabID, model.pinnedTab.id)
         XCTAssertNotEqual(model.activeTabID, contentID)
 
         let updatedTitlebar = try XCTUnwrap(gtk_window_get_titlebar(win))
-        let updatedHome = try XCTUnwrap(ancestor(ofType: "GtkButton", from: try XCTUnwrap(findLabel("Home", in: updatedTitlebar))))
-        let updatedContent = try XCTUnwrap(ancestor(ofType: "GtkButton", from: try XCTUnwrap(findLabel("New Tab", in: updatedTitlebar))))
-        XCTAssertEqual(gtk_widget_get_height(updatedHome), activeHeight,
-                       "Home must use the same natural height as an active content tab")
-        XCTAssertEqual(gtk_widget_get_height(updatedContent), inactiveHeight,
-                       "content tabs must use the same natural height as inactive Home")
+        let updatedBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: updatedTitlebar))
+        let updatedTabView = try XCTUnwrap(swift_adw_tab_bar_get_view(updatedBar))
+        XCTAssertEqual(swift_adw_tab_view_get_selected_page(updatedTabView),
+                       swift_adw_tab_view_get_nth_page(updatedTabView, 0))
         XCTAssertEqual(gtk_widget_get_height(updatedTitlebar), titlebarHeight,
                        "switching to Home must not resize the CSD tab row")
+        let updatedContentPage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(updatedTabView, 1))
+        swift_adw_tab_view_close_page(updatedTabView, updatedContentPage)
+        pump()
+        XCTAssertTrue(model.contentTabs.isEmpty, "AdwTabView close requests must reach AppModel")
     }
 
     private func pump() {

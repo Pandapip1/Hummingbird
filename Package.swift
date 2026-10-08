@@ -38,6 +38,7 @@ var targets: [Target] = [
             .product(name: "QRCodeGenerator", package: "swift-qrcode-generator"),
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
             .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
+            .product(name: "BrowserTabs", package: "SwiftOpenUI"),
         ],
         path: "Sources/HummingbirdKit",
         resources: [.copy("Core/Plugin/Resources/prelude.js")],
@@ -54,6 +55,7 @@ var targets: [Target] = [
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
             .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
             .product(name: "BackendGTK4", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
+            .product(name: "CAdwaita", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
         ],
         path: "Tests/HummingbirdKitTests"
     ),

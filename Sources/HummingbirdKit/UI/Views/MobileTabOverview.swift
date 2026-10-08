@@ -5,8 +5,8 @@ import SwiftUI
 import SwiftOpenUI
 #endif
 
-/// Safari-style compact browser controls. The tab model itself is shared;
-/// the horizontal size class selects this compact-device presentation.
+/// Compact browser controls. On iOS the containing `TabView` presents these
+/// through its native bottom-accessory area so they share the tab-bar chrome.
 @MainActor
 struct MobileBrowserToolbar: View {
     @Environment(AppModel.self) private var app
@@ -14,27 +14,38 @@ struct MobileBrowserToolbar: View {
 
     var body: some View {
         HStack {
-            Button { app.activeTab.goBack() } label: { Image(systemName: "chevron.left") }
+            Button { app.activeTab.goBack() } label: {
+                tabBarButtonLabel { Image(systemName: "chevron.left") }
+            }
                 .disabled(!app.activeTab.canGoBack)
                 .accessibilityLabel("Back")
-            Button { app.activeTab.goForward() } label: { Image(systemName: "chevron.right") }
+            Button { app.activeTab.goForward() } label: {
+                tabBarButtonLabel { Image(systemName: "chevron.right") }
+            }
                 .disabled(!app.activeTab.canGoForward)
                 .accessibilityLabel("Forward")
             Spacer()
             Button { showingTabOverview = true } label: {
-                ZStack {
-                    Image(systemName: "square.on.square")
-                    Text("\(app.contentTabs.count + 1)")
-                        .font(.system(size: 9, weight: .semibold))
-                        .offset(y: -1)
+                tabBarButtonLabel {
+                    ZStack {
+                        Image(systemName: "square.on.square")
+                        Text("\(app.contentTabs.count + 1)")
+                            .font(.system(size: 9, weight: .semibold))
+                            .offset(y: -1)
+                    }
                 }
             }
             .accessibilityLabel("Show \(app.contentTabs.count + 1) tabs")
         }
         .font(.headline)
-        .padding(.horizontal, 22)
-        .frame(height: 44)
-        .background { Rectangle().fill(.regularMaterial) }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+    }
+
+    private func tabBarButtonLabel<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 }
 

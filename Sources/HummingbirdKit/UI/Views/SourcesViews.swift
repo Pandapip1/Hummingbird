@@ -31,10 +31,10 @@ struct SourcesView: View {
             .navigationTitle("Sources")
             .toolbar {
                 #if os(iOS)
-                ToolbarItem(placement: .topBarLeading) { NavigationLink { AppSettingsView() } label: { Image(systemName: "gearshape") } }
+                ToolbarItem(placement: .topBarLeading) { settingsButton }
                 ToolbarItem(placement: .topBarTrailing) { Button { showAdd = true } label: { Image(systemName: "plus") } }
                 #else
-                ToolbarItem(placement: .automatic) { NavigationLink { AppSettingsView() } label: { Image(systemName: "gearshape") } }
+                ToolbarItem(placement: .automatic) { settingsButton }
                 ToolbarItem(placement: .primaryAction) { Button { showAdd = true } label: { Image(systemName: "plus") } }
                 #endif
             }
@@ -55,6 +55,16 @@ struct SourcesView: View {
             }
             .refreshable { await app.plugins.checkForUpdates() }
         }
+    }
+
+    private var settingsButton: some View {
+        // Settings is a top-level destination. Always give it its own tab,
+        // even when Sources is being shown from a blank browser tab whose
+        // contextual `openRoute` action would otherwise reuse that tab.
+        Button { app.openInNewTab(.settings, title: "Settings") } label: {
+            Image(systemName: "gearshape")
+        }
+        .accessibilityLabel("Settings")
     }
 }
 

@@ -12,7 +12,6 @@ import AppKit
 @MainActor
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var loginTarget: LoginTarget?
     @State private var showingTabOverview = false
 
@@ -22,16 +21,11 @@ struct RootView: View {
         BrowserTabContainer(items: browserTabItems, selection: activeTabBinding, onClose: { app.closeTab($0) }) {
             Group {
                 if app.activeTabID == app.pinnedTab.id {
-                    PinnedTabView()
+                    PinnedTabView(showingTabOverview: $showingTabOverview)
                         .environment(\.openRoute, OpenRouteAction { route, title in app.openInNewTab(route, title: title) })
                 } else {
-                    BrowserTabContentView(tab: app.activeTab)
+                    BrowserTabContentView(tab: app.activeTab, showingTabOverview: $showingTabOverview)
                 }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if horizontalSizeClass != nil {
-                MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
             }
         }
         #if !os(macOS)
@@ -111,6 +105,7 @@ struct RootView: View {
 @MainActor
 private struct PinnedTabView: View {
     @Environment(AppModel.self) private var app
+    @Binding var showingTabOverview: Bool
 
     var body: some View {
         @Bindable var app = app
@@ -122,6 +117,15 @@ private struct PinnedTabView: View {
             SourcesView().tabItem { Label("Sources", systemImage: "puzzlepiece.extension") }.tag(AppTab.sources)
         }
         .tabViewStyle(.sidebarAdaptable)
+        #if os(iOS)
+        .tabViewBottomAccessory {
+            MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+        }
+        #elseif os(tvOS)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+        }
+        #endif
     }
 }
 
@@ -133,14 +137,20 @@ private struct PinnedTabView: View {
 @MainActor
 struct BrowserTabContentView: View {
     let tab: BrowserTab
+    @Binding var showingTabOverview: Bool
 
     var body: some View {
         Group {
             if let route = tab.current {
                 RouteContent(route: route)
                     .id(tab.historyIndexIdentity)
+                    #if os(iOS) || os(tvOS)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+                    }
+                    #endif
             } else {
-                PinnedTabView()
+                PinnedTabView(showingTabOverview: $showingTabOverview)
             }
         }
         .environment(\.openRoute, OpenRouteAction { route, title in tab.push(route, title: title) })

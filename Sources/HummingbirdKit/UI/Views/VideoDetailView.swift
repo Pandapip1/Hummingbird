@@ -380,7 +380,10 @@ struct PlayerControls: View {
 
     var body: some View {
         ZStack {
-            Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { interacted() }
+                .modifier(PlayerNonFocusableModifier())
 
             if let text = model.subtitleText {
                 Text(text)
@@ -397,21 +400,23 @@ struct PlayerControls: View {
             if controlsVisible || !model.isPlaying {
                 VStack(spacing: 6) {
                     trackControls
-                    .foregroundStyle(Color.white)
-                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-                    .padding(.horizontal, 8)
+                        .modifier(PlayerFocusSectionModifier())
+                        .foregroundStyle(Color.white)
+                        .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal, 8)
 
                     Spacer()
                         .frame(minHeight: PlayerLayout.minimumBarSeparation, maxHeight: .infinity)
 
                     transportControls
-                    .foregroundStyle(Color.white)
-                    .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-                    .padding(.horizontal, 8)
+                        .modifier(PlayerFocusSectionModifier())
+                        .foregroundStyle(Color.white)
+                        .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.horizontal, 8)
                 }
                 .padding(.vertical, 8)
             }
@@ -513,6 +518,33 @@ struct PlayerControls: View {
         }
     }
 
+}
+
+/// Directional focus sections are a tvOS presentation concern. Keeping the
+/// availability check in one modifier leaves the player hierarchy and actions
+/// identical on every platform.
+private struct PlayerFocusSectionModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        content.focusSection()
+        #else
+        content
+        #endif
+    }
+}
+
+/// The full-player tap target reveals controls, but must never compete with
+/// those controls for Siri Remote focus.
+private struct PlayerNonFocusableModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        content.focusable(false)
+        #else
+        content
+        #endif
+    }
 }
 
 /// Resetting the idle timer must not invalidate the controls under the pointer.

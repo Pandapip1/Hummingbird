@@ -377,6 +377,7 @@ struct PlayerControls: View {
     var availableWidth: CGFloat = .infinity
     @State private var controlsVisible = true
     @State private var autoHide = PlayerControlsAutoHide()
+    @Namespace private var playerFocusNamespace
 
     var body: some View {
         ZStack {
@@ -413,6 +414,9 @@ struct PlayerControls: View {
         .onContinuousHover { phase in
             if case .active = phase { interacted() }
         }
+        #if os(tvOS)
+        .focusScope(playerFocusNamespace)
+        #endif
         .task { interacted() }
         .onChange(of: model.isPlaying) { _, playing in
             if playing { interacted() }
@@ -512,6 +516,9 @@ struct PlayerControls: View {
             Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
                 .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
         }
+        #if os(tvOS)
+        .prefersDefaultFocus(isFullscreen, in: playerFocusNamespace)
+        #endif
         Button { interacted(); model.skip(by: 10) } label: {
             Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds")
         }

@@ -168,11 +168,10 @@ private struct TabOverviewCard: View {
                 .clipped()
             }
             .buttonStyle(.plain)
-            // A resizable/aspect-fill AsyncImage can retain an ideal size
-            // larger than the button's proposal. Constrain the button itself,
-            // not only its label, so neither its drawing nor hit-testing leaks
-            // into neighboring tab cards.
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Constrain the button horizontally, but leave its height to the
+            // finite card layout. An infinite height inside this ScrollView
+            // creates an unbounded proposal and can blank the render surface.
+            .frame(maxWidth: .infinity)
             .clipped()
             .accessibilityLabel("Open \(title)")
         }

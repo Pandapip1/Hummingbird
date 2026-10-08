@@ -192,9 +192,16 @@ private struct TabStripView: View {
                 }
                 .padding(.horizontal, 2).padding(.vertical, 2)
                 .background {
+                    #if canImport(SwiftUI)
                     Capsule()
                         .fill(Color.primary.opacity(0.05))
                         .overlay(Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
+                    #else
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
+                    #endif
                 }
                 .padding(.horizontal, 4).padding(.vertical, 3)
                 .frame(minWidth: geo.size.width)
@@ -250,9 +257,15 @@ private struct TabChip: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
                 if !isActive, isHovered {
+                    #if canImport(SwiftUI)
                     Capsule()
                         .fill(Color.primary.opacity(0.08))
                         .padding(.vertical, 2).padding(.horizontal, 1)
+                    #else
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.primary.opacity(0.08))
+                        .padding(.vertical, 2).padding(.horizontal, 1)
+                    #endif
                 }
             }
         }
@@ -287,10 +300,18 @@ private struct ChipActiveStyle: ViewModifier {
     private func legacyActiveBackground(_ content: Content) -> some View {
         if isActive {
             content.background {
+                #if canImport(SwiftUI)
                 Capsule()
                     .fill(.regularMaterial)
                     .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
                     .padding(.vertical, 2).padding(.horizontal, 1)
+                #else
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(.regularMaterial)
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                    .padding(.vertical, 2).padding(.horizontal, 1)
+                #endif
             }
         } else {
             content

@@ -17,10 +17,9 @@ final class MainWindowTabStripTests: XCTestCase {
         model.openNewTab()
         let contentID = model.activeTabID
         let root = widgetFromOpaque(gtkRenderView(RootView().environment(model)))
-        XCTAssertNil(findTitlebar(in: root),
-                     "the WindowGroup host must not discover and detach chrome from AdwTabOverview")
         let window = gtk_window_new()!
         let win = UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self)
+        gtkConfigureSelfContainedWindowChrome(win, content: root)
         gtk_window_set_child(win, root)
         gtk_window_set_default_size(win, 1280, 720)
         gtk_widget_set_visible(window, 1)
@@ -28,10 +27,14 @@ final class MainWindowTabStripTests: XCTestCase {
         pump()
 
         let overview = try XCTUnwrap(findFirst(ofType: "AdwTabOverview", in: root))
-        XCTAssertEqual(gtk_window_get_child(win), overview,
-                       "AdwTabOverview must be the GtkWindow's top-level child")
-        XCTAssertNil(gtk_window_get_titlebar(win),
-                     "AdwTabOverview owns the window chrome; GtkWindow must not detach a titlebar")
+        XCTAssertEqual(gtk_window_get_child(win), root,
+                       "the structural root host must remain the window content")
+        let sentinel = try XCTUnwrap(gtk_window_get_titlebar(win))
+        XCTAssertEqual(gtk_widget_get_visible(sentinel), 0,
+                       "GtkWindow's titlebar sentinel must stay invisible")
+        let sentinelObject = UnsafeMutableRawPointer(sentinel).assumingMemoryBound(to: GObject.self)
+        XCTAssertNotNil(g_object_get_data(sentinelObject, "gtk-swift-window-chrome-sentinel"),
+                        "the hidden sentinel must suppress GtkWindow's duplicate decorations")
         let toolbarView = try XCTUnwrap(findFirst(ofType: "AdwToolbarView", in: overview))
         let tabBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: toolbarView))
         let overviewButton = try XCTUnwrap(findFirst(ofType: "AdwTabButton", in: toolbarView))
@@ -99,19 +102,6 @@ final class MainWindowTabStripTests: XCTestCase {
             while g_main_context_pending(nil) != 0 { _ = g_main_context_iteration(nil, 0) }
             Thread.sleep(forTimeInterval: 0.005)
         }
-    }
-
-    private func findTitlebar(in widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
-        let object = UnsafeMutableRawPointer(widget).assumingMemoryBound(to: GObject.self)
-        if let data = g_object_get_data(object, "gtk-swift-window-titlebar") {
-            return UnsafeMutableRawPointer(data).assumingMemoryBound(to: GtkWidget.self)
-        }
-        var child = gtk_widget_get_first_child(widget)
-        while let current = child {
-            if let found = findTitlebar(in: current) { return found }
-            child = gtk_widget_get_next_sibling(current)
-        }
-        return nil
     }
 
     private func findLabel(_ text: String, in widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {

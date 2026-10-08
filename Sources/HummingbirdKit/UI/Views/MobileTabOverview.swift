@@ -66,6 +66,7 @@ struct MobileTabOverview: View {
                                     let index = row * columnCount + column
                                     if index == 0 {
                                         TabOverviewCard(
+                                            width: cardWidth,
                                             title: "Home",
                                             systemImage: "house.fill",
                                             thumbnailURL: nil,
@@ -73,10 +74,10 @@ struct MobileTabOverview: View {
                                             onSelect: { select(app.pinnedTab.id) },
                                             onClose: nil
                                         )
-                                        .frame(width: cardWidth)
                                     } else if app.contentTabs.indices.contains(index - 1) {
                                         let tab = app.contentTabs[index - 1]
                                         TabOverviewCard(
+                                            width: cardWidth,
                                             title: tab.title,
                                             systemImage: tab.previewSystemImage,
                                             thumbnailURL: tab.previewThumbnailURL,
@@ -84,7 +85,6 @@ struct MobileTabOverview: View {
                                             onSelect: { select(tab.id) },
                                             onClose: { app.closeTab(tab.id) }
                                         )
-                                        .frame(width: cardWidth)
                                     } else {
                                         Color.clear.frame(width: cardWidth)
                                     }
@@ -124,6 +124,7 @@ struct MobileTabOverview: View {
 
 @MainActor
 private struct TabOverviewCard: View {
+    let width: CGFloat
     let title: String
     let systemImage: String
     let thumbnailURL: URL?
@@ -175,7 +176,10 @@ private struct TabOverviewCard: View {
             .clipped()
             .accessibilityLabel("Open \(title)")
         }
-        .aspectRatio(0.72, contentMode: .fit)
+        // Establish finite layout bounds before clipping. A caller-applied
+        // frame changes only the card's reported size; an aspect-fill image
+        // can otherwise keep oversized internal drawing bounds.
+        .frame(width: width, height: width / 0.72)
         // SwiftUI permits descendants to render outside a parent's layout
         // bounds. Establish a hard card boundary before applying the rounded
         // mask and the intentionally out-of-bounds shadow.

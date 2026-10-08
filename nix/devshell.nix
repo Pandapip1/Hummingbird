@@ -125,9 +125,28 @@
           ''}
 
           ${lib.optionalString isDarwin ''
-            if ! xcrun -f xcodebuild >/dev/null 2>&1; then
+            # nix-darwin/nixpkgs can put its SDK's xcrun and xcode-select ahead
+            # of the system tools. That SDK is enough for C builds but does not
+            # contain Swift. Prefer an explicitly selected full Xcode, then the
+            # conventional installation, and finally the system selection.
+            hummingbird_xcode_developer="''${DEVELOPER_DIR:-}"
+            if [ ! -x "$hummingbird_xcode_developer/usr/bin/xcodebuild" ]; then
+              if [ -x /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild ]; then
+                hummingbird_xcode_developer=/Applications/Xcode.app/Contents/Developer
+              else
+                hummingbird_xcode_developer="$(/usr/bin/xcode-select -p 2>/dev/null || true)"
+              fi
+            fi
+
+            if [ -x "$hummingbird_xcode_developer/usr/bin/xcodebuild" ] \
+              && [ -x "$hummingbird_xcode_developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift" ]; then
+              export DEVELOPER_DIR="$hummingbird_xcode_developer"
+              export PATH="$DEVELOPER_DIR/usr/bin:$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"
+              export SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+            else
               echo "warning: no Xcode found — the iOS variant needs Xcode and an iOS SDK" >&2
             fi
+            unset hummingbird_xcode_developer
           ''}
 
           if [ ! -e Vendor/SwiftOpenUI/Package.swift ]; then

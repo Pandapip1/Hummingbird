@@ -1,11 +1,7 @@
 #if canImport(WebKit)
 import Foundation
 import Observation
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 import WebKit
 
 @MainActor

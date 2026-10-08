@@ -1,9 +1,5 @@
 import Foundation
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 
 /// What a login or captcha web view should wait for before it hands credentials back.
 struct WebAuthSpec {

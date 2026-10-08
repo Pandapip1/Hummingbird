@@ -1,9 +1,5 @@
 import Foundation
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 import Observation
 #if os(iOS)
 import AVFoundation

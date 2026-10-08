@@ -1,9 +1,7 @@
 #if canImport(AVFoundation)
 import Foundation
 import AVFoundation
-#if canImport(SwiftUI)
-import SwiftUI
-#endif
+import SwiftOpenUI
 #if canImport(AVKit)
 import AVKit
 #endif
@@ -348,7 +346,9 @@ struct PlayerSurface: UIViewControllerRepresentable {
                 overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
             overlay.didMove(toParent: controller)
+            #if os(tvOS)
             controller.controlsController = overlay
+            #endif
 
             fullscreenController = controller
             overlayController = overlay

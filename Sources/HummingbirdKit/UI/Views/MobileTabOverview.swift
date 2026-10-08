@@ -1,9 +1,5 @@
 import Foundation
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 
 /// Compact browser controls. On iOS the containing `TabView` presents these
 /// through its native bottom-accessory area so they share the tab-bar chrome.

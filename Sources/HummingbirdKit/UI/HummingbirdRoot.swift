@@ -1,10 +1,6 @@
 import Foundation
 import DebugKit
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 
 /// The app's root view with its model, for platform entry points (`Apps/iOS`, `Sources/HummingbirdGTK`).
 @MainActor

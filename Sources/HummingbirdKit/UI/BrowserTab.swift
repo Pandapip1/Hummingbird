@@ -1,9 +1,5 @@
 import Foundation
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 import Observation
 
 /// One open browser tab: a self-contained, linear back/forward history of

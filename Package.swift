@@ -42,7 +42,7 @@ var targets: [Target] = [
             .product(name: "NIOHTTP1", package: "swift-nio"),
             .product(name: "NIOPosix", package: "swift-nio"),
             .product(name: "QRCodeGenerator", package: "swift-qrcode-generator"),
-            .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
+            .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
             .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
             .product(name: "BrowserTabs", package: "SwiftOpenUI"),
         ],

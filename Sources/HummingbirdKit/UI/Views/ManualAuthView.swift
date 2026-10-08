@@ -2,11 +2,7 @@ import Foundation
 #if !canImport(WebKit)
 import Observation
 import QRCodeGenerator
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 
 /// On tvOS, hands a fresh isolated browser login to another Hummingbird device.
 @MainActor

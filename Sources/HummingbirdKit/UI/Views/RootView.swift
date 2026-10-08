@@ -1,10 +1,6 @@
 import Foundation
 import BrowserTabs
-#if canImport(SwiftUI)
-import SwiftUI
-#else
 import SwiftOpenUI
-#endif
 #if os(macOS)
 import AppKit
 #endif

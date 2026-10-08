@@ -15,9 +15,4 @@ final class TabStripLayoutTests: XCTestCase {
         XCTAssertEqual(width, 100)
         XCTAssertGreaterThan(width * 4 + TabStripLayout.horizontalInsets, 320)
     }
-
-    func testTabsShareThePrincipalRowsHeightInsideStripInsets() {
-        XCTAssertEqual(TabStripLayout.tabHeight(availableHeight: 34), 24)
-        XCTAssertEqual(TabStripLayout.tabHeight(availableHeight: 28), 18)
-    }
 }

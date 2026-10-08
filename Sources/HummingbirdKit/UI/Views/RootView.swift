@@ -152,16 +152,9 @@ enum TabStripLayout {
     static let minimumTabWidth: CGFloat = 100
     // Two points around the tab row, then four points around its background.
     static let horizontalInsets: CGFloat = 12
-    // Two points around the tab row, then three points around its background.
-    static let verticalInsets: CGFloat = 10
-
     static func tabWidth(availableWidth: CGFloat, tabCount: Int) -> CGFloat {
         let count = CGFloat(max(1, tabCount))
         return max(minimumTabWidth, (availableWidth - horizontalInsets) / count)
-    }
-
-    static func tabHeight(availableHeight: CGFloat) -> CGFloat {
-        max(0, availableHeight - verticalInsets)
     }
 }
 
@@ -177,8 +170,6 @@ private struct TabStripView: View {
                 availableWidth: geo.size.width,
                 tabCount: 1 + app.contentTabs.count
             )
-            let tabHeight = TabStripLayout.tabHeight(availableHeight: geo.size.height)
-
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
                     TabChip(title: "Home", systemImage: "house.fill",
@@ -188,7 +179,7 @@ private struct TabStripView: View {
                             onSelect: { app.activeTabID = pinnedID },
                             onClose: nil,
                             onHoverChange: { hovered in hoveredTabID = hovered ? pinnedID : nil })
-                        .frame(width: tabWidth, height: tabHeight)
+                        .frame(width: tabWidth)
 
                     ForEach(Array(app.contentTabs.enumerated()), id: \.element.id) { i, tab in
                         let isActive = app.activeTabID == tab.id
@@ -203,7 +194,7 @@ private struct TabStripView: View {
                                 onSelect: { app.activeTabID = tab.id },
                                 onClose: { app.closeTab(tab.id) },
                                 onHoverChange: { hovered in hoveredTabID = hovered ? tab.id : nil })
-                            .frame(width: tabWidth, height: tabHeight)
+                            .frame(width: tabWidth)
                     }
                 }
                 .padding(.horizontal, 2).padding(.vertical, 2)
@@ -249,7 +240,7 @@ private struct TabChip: View {
                 HStack(spacing: 4) {
                     if let systemImage {
                         Image(systemName: systemImage)
-                            .font(.caption2)
+                            .imageScale(.small)
                             .foregroundStyle(.secondary)
                     }
                     Text(title)

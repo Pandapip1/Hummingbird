@@ -397,29 +397,17 @@ struct PlayerControls: View {
                     .padding(.bottom, controlsVisible ? (PlayerLayout.usesStackedTransport(width: availableWidth) ? 178 : 128) : 16)
             }
 
+            #if os(tvOS)
+            // Keep the controls in the focus hierarchy while their chrome is
+            // hidden. Removing this subtree leaves the focus engine with no
+            // destination, so a Siri Remote move cannot reveal it again.
+            controlBars(visible: controlsVisible || !model.isPlaying)
+                .onMoveCommand { _ in interacted() }
+            #else
             if controlsVisible || !model.isPlaying {
-                VStack(spacing: 6) {
-                    trackControls
-                        .modifier(PlayerFocusSectionModifier())
-                        .foregroundStyle(Color.white)
-                        .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-                        .padding(.horizontal, 8)
-
-                    Spacer()
-                        .frame(minHeight: PlayerLayout.minimumBarSeparation, maxHeight: .infinity)
-
-                    transportControls
-                        .modifier(PlayerFocusSectionModifier())
-                        .foregroundStyle(Color.white)
-                        .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-                        .padding(.horizontal, 8)
-                }
-                .padding(.vertical, 8)
+                controlBars(visible: true)
             }
+            #endif
         }
         .onContinuousHover { phase in
             if case .active = phase { interacted() }
@@ -429,6 +417,30 @@ struct PlayerControls: View {
             if playing { interacted() }
             else { autoHide.task?.cancel(); if !controlsVisible { controlsVisible = true } }
         }
+    }
+
+    private func controlBars(visible: Bool) -> some View {
+        VStack(spacing: 6) {
+            trackControls
+                .modifier(PlayerFocusSectionModifier())
+                .foregroundStyle(Color.white.opacity(visible ? 1 : 0))
+                .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(.black.opacity(visible ? 0.72 : 0), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 8)
+
+            Spacer()
+                .frame(minHeight: PlayerLayout.minimumBarSeparation, maxHeight: .infinity)
+
+            transportControls
+                .modifier(PlayerFocusSectionModifier())
+                .foregroundStyle(Color.white.opacity(visible ? 1 : 0))
+                .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .background(.black.opacity(visible ? 0.72 : 0), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 8)
+        }
+        .padding(.vertical, 8)
     }
 
     @ViewBuilder

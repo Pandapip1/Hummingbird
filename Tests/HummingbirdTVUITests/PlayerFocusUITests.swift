@@ -20,6 +20,13 @@ final class PlayerFocusUITests: XCTestCase {
         XCTAssertTrue(exitFullscreen.waitForExistence(timeout: 5))
         XCTAssertTrue(playerControlHasFocus(in: app))
 
+        XCUIRemote.shared.press(.left)
+        XCTAssertNotNil(focusedButton(label: "Back 10 seconds", in: app))
+        XCUIRemote.shared.press(.right)
+        XCTAssertNotNil(focusedButton(label: "Play", in: app))
+        XCUIRemote.shared.press(.right)
+        XCTAssertNotNil(focusedButton(label: "Forward 10 seconds", in: app))
+
         XCUIRemote.shared.press(.down)
         XCTAssertTrue(playerControlHasFocus(in: app), "Down must not move focus into AVKit's container")
 
@@ -30,5 +37,9 @@ final class PlayerFocusUITests: XCTestCase {
     private func playerControlHasFocus(in app: XCUIApplication) -> Bool {
         let labels = Set(["Back 10 seconds", "Play", "Forward 10 seconds", "Exit Full Screen", "Speed"])
         return app.buttons.allElementsBoundByIndex.contains { labels.contains($0.label) && $0.hasFocus }
+    }
+
+    private func focusedButton(label: String, in app: XCUIApplication) -> XCUIElement? {
+        app.buttons.allElementsBoundByIndex.first { $0.label == label && $0.hasFocus }
     }
 }

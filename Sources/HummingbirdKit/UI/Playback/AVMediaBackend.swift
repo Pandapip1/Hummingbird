@@ -298,7 +298,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
     final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
         weak var model: PlayerModel?
         weak var inlineController: AVPlayerViewController?
-        private var fullscreenController: AVPlayerViewController?
+        private var fullscreenController: UIViewController?
         private var overlayController: UIViewController?
 
         init(model: PlayerModel) { self.model = model }
@@ -316,10 +316,15 @@ struct PlayerSurface: UIViewControllerRepresentable {
                   let inlineController,
                   let presenter = presentingController(from: inlineController) else { return }
 
-            let controller = FullscreenPlayerViewController()
-            controller.player = (model.backend as? AVMediaBackend)?.player
-            controller.showsPlaybackControls = false
-            controller.allowsPictureInPicturePlayback = true
+            let playerController = AVPlayerViewController()
+            playerController.player = (model.backend as? AVMediaBackend)?.player
+            playerController.showsPlaybackControls = false
+            playerController.allowsPictureInPicturePlayback = true
+            #if os(tvOS)
+            let controller = FullscreenPlayerViewController(playerController: playerController)
+            #else
+            let controller = playerController
+            #endif
             controller.modalPresentationStyle = .overFullScreen
             #if os(iOS)
             controller.modalPresentationCapturesStatusBarAppearance = true
@@ -390,30 +395,38 @@ struct PlayerSurface: UIViewControllerRepresentable {
 /// AVPlayerViewController otherwise prefers its own full-screen container,
 /// which is focusable even when the native playback controls are disabled.
 @MainActor
-private final class FullscreenPlayerViewController: AVPlayerViewController {
+private final class FullscreenPlayerViewController: UIViewController {
+    let playerController: AVPlayerViewController
     weak var controlsController: UIViewController?
+
+    init(playerController: AVPlayerViewController) {
+        self.playerController = playerController
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        addChild(playerController)
+        playerController.view.translatesAutoresizingMaskIntoConstraints = false
+        playerController.view.isUserInteractionEnabled = false
+        view.insertSubview(playerController.view, at: 0)
+        NSLayoutConstraint.activate([
+            playerController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            playerController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            playerController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            playerController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        playerController.didMove(toParent: self)
+    }
 
     override var preferredFocusEnvironments: [any UIFocusEnvironment] {
         controlsController.map { [$0] } ?? super.preferredFocusEnvironments
     }
 
-    override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
-        guard let controlsController,
-              let current = context.previouslyFocusedItem,
-              controlsController.contains(current) else {
-            return super.shouldUpdateFocus(in: context)
-        }
-
-        // AVKit's full-screen container is itself focusable. Directional
-        // movement at an edge of our controls must stay put instead of falling
-        // through to that container (or clearing focus when there is no next
-        // candidate).
-        guard let next = context.nextFocusedItem else { return false }
-        return controlsController.contains(next)
-    }
 }
-#else
-private typealias FullscreenPlayerViewController = AVPlayerViewController
 #endif
 
 @MainActor

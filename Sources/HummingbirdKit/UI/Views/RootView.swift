@@ -148,6 +148,23 @@ private struct BrowserHistoryControls: View {
 /// width equally (min 100 pt each); horizontal scroll kicks in when they
 /// would be narrower than that. A thin separator appears between two
 /// adjacent inactive, non-hovered tabs, matching Safari's visual rhythm.
+enum TabStripLayout {
+    static let minimumTabWidth: CGFloat = 100
+    // Two points around the tab row, then four points around its background.
+    static let horizontalInsets: CGFloat = 12
+    // Two points around the tab row, then three points around its background.
+    static let verticalInsets: CGFloat = 10
+
+    static func tabWidth(availableWidth: CGFloat, tabCount: Int) -> CGFloat {
+        let count = CGFloat(max(1, tabCount))
+        return max(minimumTabWidth, (availableWidth - horizontalInsets) / count)
+    }
+
+    static func tabHeight(availableHeight: CGFloat) -> CGFloat {
+        max(0, availableHeight - verticalInsets)
+    }
+}
+
 @MainActor
 private struct TabStripView: View {
     @Environment(AppModel.self) private var app
@@ -156,8 +173,11 @@ private struct TabStripView: View {
     var body: some View {
         GeometryReader { geo in
             let pinnedID = app.pinnedTab.id
-            let tabCount = CGFloat(max(1, 1 + app.contentTabs.count))
-            let tabWidth = max(100, geo.size.width / tabCount)
+            let tabWidth = TabStripLayout.tabWidth(
+                availableWidth: geo.size.width,
+                tabCount: 1 + app.contentTabs.count
+            )
+            let tabHeight = TabStripLayout.tabHeight(availableHeight: geo.size.height)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 0) {
@@ -167,7 +187,7 @@ private struct TabStripView: View {
                             onSelect: { app.activeTabID = pinnedID },
                             onClose: nil,
                             onHoverChange: { hovered in hoveredTabID = hovered ? pinnedID : nil })
-                        .frame(width: tabWidth)
+                        .frame(width: tabWidth, height: tabHeight)
 
                     ForEach(Array(app.contentTabs.enumerated()), id: \.element.id) { i, tab in
                         let isActive = app.activeTabID == tab.id
@@ -175,19 +195,21 @@ private struct TabStripView: View {
                         let prevIsActive = app.activeTabID == prevID
                         let isHovered = hoveredTabID == tab.id
                         let prevIsHovered = hoveredTabID == prevID
-                        if !isActive && !prevIsActive && !isHovered && !prevIsHovered {
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.15))
-                                .frame(width: 1)
-                                .padding(.vertical, 8)
-                        }
                         TabChip(title: tab.title, systemImage: nil,
                                 isActive: isActive,
                                 isHovered: isHovered,
                                 onSelect: { app.activeTabID = tab.id },
                                 onClose: { app.closeTab(tab.id) },
                                 onHoverChange: { hovered in hoveredTabID = hovered ? tab.id : nil })
-                            .frame(width: tabWidth)
+                            .frame(width: tabWidth, height: tabHeight)
+                            .overlay(alignment: .leading) {
+                                if !isActive && !prevIsActive && !isHovered && !prevIsHovered {
+                                    Rectangle()
+                                        .fill(Color.primary.opacity(0.15))
+                                        .frame(width: 1)
+                                        .padding(.vertical, 8)
+                                }
+                            }
                     }
                 }
                 .padding(.horizontal, 2).padding(.vertical, 2)

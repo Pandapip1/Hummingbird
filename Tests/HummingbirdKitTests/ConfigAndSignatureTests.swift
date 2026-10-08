@@ -8,6 +8,14 @@ import _CryptoExtras
 @testable import HummingbirdKit
 
 final class ConfigAndSignatureTests: XCTestCase {
+    func testSettingAcceptsStringEncodedAdvancedFlag() throws {
+        let setting = try JSONDecoder().decode(
+            PluginSetting.self,
+            from: Data(#"{"name":"Developer option","isAdvanced":"true"}"#.utf8)
+        )
+        XCTAssertEqual(setting.isAdvanced, true)
+    }
+
     func testConfigDefaultsAndRelativeURLs() throws {
         let json = #"{"name":"Demo","id":"abc","scriptUrl":"./Demo.js","iconUrl":"icon.png","version":3,"allowUrls":["example.com",".cdn.example.org"],"packages":["Http"]}"#
         let c = try JSONDecoder().decode(PluginConfig.self, from: Data(json.utf8))

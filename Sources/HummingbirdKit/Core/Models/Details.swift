@@ -22,6 +22,9 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
     var priority: Bool = false
     var original: Bool = false
     var requestModifier: RequestModifierRef?
+    var handle: Int?
+    var hasGenerate: Bool = false
+    var hasRequestExecutor: Bool = false
 
     var id: String { "\(pluginType)|\(url)" }
     var isHLS: Bool { pluginType.hasPrefix("HLS") }
@@ -30,6 +33,7 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case plugin_type, name, url, width, height, container, codec, bitrate, duration, language, priority, original, requestModifier
+        case __handle, hasGenerate, hasRequestExecutor
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -46,6 +50,9 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
         priority = c.looseBool(.priority) ?? false
         original = c.looseBool(.original) ?? false
         requestModifier = try? c.decodeIfPresent(RequestModifierRef.self, forKey: .requestModifier)
+        handle = c.looseInt(.__handle)
+        hasGenerate = c.looseBool(.hasGenerate) ?? false
+        hasRequestExecutor = c.looseBool(.hasRequestExecutor) ?? false
     }
 }
 

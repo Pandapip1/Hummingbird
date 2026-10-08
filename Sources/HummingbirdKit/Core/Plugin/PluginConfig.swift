@@ -15,6 +15,29 @@ struct PluginSetting: Codable, Identifiable, Hashable {
     var key: String { variable ?? name }
     var id: String { key }
     var kind: String { (type ?? "").lowercased() }
+
+    enum CodingKeys: String, CodingKey {
+        case name, description, type, `default`, variable, dependency, warningDialog, options, isAdvanced
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        type = try c.decodeIfPresent(String.self, forKey: .type)
+        `default` = try c.decodeIfPresent(String.self, forKey: .default)
+        variable = try c.decodeIfPresent(String.self, forKey: .variable)
+        dependency = try c.decodeIfPresent(String.self, forKey: .dependency)
+        warningDialog = try c.decodeIfPresent(String.self, forKey: .warningDialog)
+        options = try c.decodeIfPresent([String].self, forKey: .options)
+        if let value = try? c.decodeIfPresent(Bool.self, forKey: .isAdvanced) {
+            isAdvanced = value
+        } else if let value = try? c.decodeIfPresent(String.self, forKey: .isAdvanced) {
+            isAdvanced = ["true", "1", "yes"].contains(value.lowercased())
+        } else {
+            isAdvanced = nil
+        }
+    }
 }
 
 struct PluginAuthConfig: Codable, Hashable {

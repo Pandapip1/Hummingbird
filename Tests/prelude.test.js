@@ -135,7 +135,7 @@ test("playlist kind retains the contents pager", () => {
   assert.strictEqual(pl.contents.hasMore, true);
 });
 
-test("http: single, batch with DUMMY, bytes, and errors", () => {
+test("http: single, batch, bytes, and errors", () => {
   const seen = [];
   const c = makeContext((reqs, parallel) => {
     const list = JSON.parse(reqs);
@@ -153,11 +153,10 @@ test("http: single, batch with DUMMY, bytes, and errors", () => {
   assert.strictEqual(single.isOk, true);
   assert.strictEqual(seen[0].list[0].headers.X, "y");
   assert.strictEqual(seen[0].list[0].useAuth, false);
-  const batch = JSON.parse(run(c, "JSON.stringify(http.batch().GET('https://a/1',{},false).DUMMY().POST('https://a/404','{}',{},true).execute())"));
-  assert.strictEqual(batch.length, 3);
-  assert.strictEqual(batch[1], null);
-  assert.strictEqual(batch[2].code, 404);
-  assert.strictEqual(batch[2].isOk, false);
+  const batch = JSON.parse(run(c, "JSON.stringify(http.batch().GET('https://a/1',{},false).POST('https://a/404','{}',{},true).execute())"));
+  assert.strictEqual(batch.length, 2);
+  assert.strictEqual(batch[1].code, 404);
+  assert.strictEqual(batch[1].isOk, false);
   const last = seen[seen.length - 1];
   assert.strictEqual(last.parallel, true);
   assert.strictEqual(last.list[1].useAuth, true);

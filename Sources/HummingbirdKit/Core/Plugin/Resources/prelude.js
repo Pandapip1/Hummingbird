@@ -422,6 +422,30 @@
     this.name = obj.name || "Dash"; this.duration = obj.duration || 0; this.url = obj.url;
     copyIf(this, obj, ["language", "requestModifier", "original"]);
   };
+  // Newer Grayjay plugins expose dynamically generated DASH manifests. The
+  // concrete plugin subclass supplies generate() and, optionally, a request
+  // executor. Keeping the source shape here lets older hosts safely ignore
+  // these adaptive sources while still loading the plugin and using its
+  // progressive/HLS alternatives.
+  global.DashManifestRawSource = function (obj) {
+    global.VideoUrlSource.call(this, obj || {});
+    this.plugin_type = "DashManifestRawSource";
+  };
+  global.DashManifestRawSource.prototype = Object.create(global.VideoUrlSource.prototype);
+  global.DashManifestRawSource.prototype.constructor = global.DashManifestRawSource;
+  global.DashManifestRawSource.prototype.generate = function () {
+    throw new global.ScriptImplementationException("Missing required generate() on DashManifestRawSource");
+  };
+  global.DashManifestRawSource.prototype.getRequestExecutor = function () { return null; };
+
+  global.DashManifestRawAudioSource = function (obj) {
+    global.AudioUrlSource.call(this, obj || {});
+    this.plugin_type = "DashManifestRawAudioSource";
+  };
+  global.DashManifestRawAudioSource.prototype = Object.create(global.AudioUrlSource.prototype);
+  global.DashManifestRawAudioSource.prototype.constructor = global.DashManifestRawAudioSource;
+  global.DashManifestRawAudioSource.prototype.generate = global.DashManifestRawSource.prototype.generate;
+  global.DashManifestRawAudioSource.prototype.getRequestExecutor = function () { return null; };
   global.RequestModifier = function (obj) {
     obj = obj || {};
     this.allowByteSkip = obj.allowByteSkip;
@@ -518,7 +542,8 @@
     warn: function () { global.console.log.apply(null, arguments); },
     error: function () { global.console.log.apply(null, arguments); },
     info: function () { global.console.log.apply(null, arguments); },
-    debug: function () { global.console.log.apply(null, arguments); }
+    debug: function () { global.console.log.apply(null, arguments); },
+    clear: function () {}
   };
 
   // Defaults the plugin overrides. isChannelUrl / isContentDetailsUrl default to false.
@@ -529,13 +554,18 @@
     isChannelUrl: function () { return false; },
     isContentDetailsUrl: function () { return false; }
   };
+  // Grayjay defines this host global even outside its plugin test runner.
+  // Current official plugins branch on it during normal feed parsing.
+  if (global.IS_TESTING === undefined) global.IS_TESTING = false;
 
   global.bridge = global.bridge || {};
   Object.assign(global.bridge, {
     buildPlatform: "ios",
     buildSpecVersion: 2,
     supportedContent: [1, 2, 4, 7, 9, 11, 60, 70],
-    supportedFeatures: ["ReloadRequiredException", "HttpBatchClient"],
+    // This host supports ordinary batched requests, but not the newer dummy
+    // slots/session-client contract denoted by HttpBatchClient.
+    supportedFeatures: ["ReloadRequiredException"],
     isLoggedIn: function () { return __native.isLoggedIn(); },
     log: function (s) { __native.log(String(s)); },
     toast: function (s) { __native.toast(String(s)); },
@@ -753,7 +783,6 @@
   Batch.prototype.requestWithBody = function (method, url, body, headers, useAuth) { return this._push(this._owner, method, url, body, headers, useAuth); };
   Batch.prototype.GET = function (url, headers, useAuth) { return this._push(this._owner, "GET", url, null, headers, useAuth); };
   Batch.prototype.POST = function (url, body, headers, useAuth) { return this._push(this._owner, "POST", url, body, headers, useAuth); };
-  Batch.prototype.DUMMY = function () { this._items.push(null); return this; };
   Batch.prototype.execute = function () {
     var live = [], index = [];
     this._items.forEach(function (it, i) { if (it !== null) { live.push(it); index.push(i); } });
@@ -796,6 +825,8 @@
 
   var handles = {};
   var nextHandle = 1;
+  var pendingPromises = {};
+  var nextPromise = 1;
   function putHandle(obj) { var id = nextHandle++; handles[id] = obj; return id; }
 
   function describeError(e) {
@@ -833,6 +864,11 @@
       if (!s || typeof s !== "object") return s;
       var c = Object.assign({}, s);
       if (s.requestModifier) { c.requestModifier = { handle: putHandle(s.requestModifier), allowByteSkip: s.requestModifier.allowByteSkip !== false }; }
+      if (typeof s.generate === "function" || typeof s.getRequestExecutor === "function") {
+        c.__handle = putHandle(s);
+        c.hasGenerate = typeof s.generate === "function";
+        c.hasRequestExecutor = typeof s.getRequestExecutor === "function";
+      }
       return c;
     }
     if (out.video) {
@@ -857,6 +893,27 @@
     return { pager: id, results: res, hasMore: !!p.hasMore, nextRequest: p.nextRequest };
   }
 
+  function preparedValue(v, kind) {
+    if (kind === "pager") {
+      if (!isPager(v)) return { pager: 0, results: [], hasMore: false };
+      return pagerPayload(v, putHandle(v));
+    }
+    if (kind === "details") return prepareDetails(v);
+    return v === undefined ? null : v;
+  }
+
+  function awaitValue(v, kind) {
+    if (!v || typeof v.then !== "function") return null;
+    var id = nextPromise++;
+    pendingPromises[id] = { done: false };
+    v.then(function (value) {
+      pendingPromises[id] = { done: true, ok: true, value: preparedValue(value, kind) };
+    }, function (error) {
+      pendingPromises[id] = { done: true, ok: false, error: describeError(error) };
+    });
+    return JSON.stringify({ ok: true, pending: id });
+  }
+
   global.__jb = {
     // kind: "value" | "pager" | "details"
     invoke: function (name, argsJson, kind) {
@@ -866,6 +923,8 @@
         var args = argsJson ? JSON.parse(argsJson) : [];
         var v = fn.apply(global.source, args);
         if (v && typeof v === "object" && typeof v.plugin_type === "string" && /Exception$/.test(v.plugin_type)) throw v;
+        var waiting = awaitValue(v, kind);
+        if (waiting) return waiting;
         if (kind === "pager") {
           if (!isPager(v)) return JSON.stringify({ ok: true, value: { pager: 0, results: [], hasMore: false } });
           var id = putHandle(v);
@@ -882,6 +941,12 @@
       } catch (e) {
         return JSON.stringify({ ok: false, error: describeError(e) });
       }
+    },
+    pollPromise: function (id) {
+      var p = pendingPromises[id];
+      if (!p || !p.done) return JSON.stringify({ ok: true, pending: id });
+      delete pendingPromises[id];
+      return JSON.stringify(p.ok ? { ok: true, value: p.value } : { ok: false, error: p.error });
     },
     nextPage: function (id) {
       try {
@@ -903,6 +968,8 @@
         var fn = o[method];
         if (typeof fn !== "function") return JSON.stringify({ ok: false, error: { type: "ScriptImplementationException", msg: "Missing " + method } });
         var v = fn.apply(o, argsJson ? JSON.parse(argsJson) : []);
+        var waiting = awaitValue(v, "value");
+        if (waiting) return waiting;
         return JSON.stringify({ ok: true, value: v === undefined ? null : v });
       } catch (e) {
         return JSON.stringify({ ok: false, error: describeError(e) });

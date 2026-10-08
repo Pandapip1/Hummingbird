@@ -194,6 +194,23 @@ final class PluginRuntime: @unchecked Sendable {
         throw PluginError.execution("The plugin failed")
     }
 
+    private func pendingPromise(in result: String?) -> Int? {
+        guard let text = result, let data = text.data(using: .utf8),
+              let env = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return env["pending"] as? Int
+    }
+
+    private func unwrapAwaiting(_ initial: String?) async throws -> Data {
+        var result = initial
+        let deadline = Date().addingTimeInterval(60)
+        while let id = pendingPromise(in: result) {
+            guard Date() < deadline else { throw PluginError.execution("The plugin's asynchronous operation timed out") }
+            try await Task.sleep(for: .milliseconds(10))
+            result = try await perform { try self.evalResult("__jb.pollPromise(\(id))") }
+        }
+        return try unwrap(result)
+    }
+
     private static func loadPrelude() throws -> String {
         if let o = preludeOverride { return o }
         guard let url = Bundle.module.url(forResource: "prelude", withExtension: "js"),
@@ -260,11 +277,12 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Invokes `source.<name>(...args)`; `kind` is "value", "pager" or "details". Returns the JSON of the result.
     func callRaw(_ name: String, _ args: [Any] = [], kind: String = "value") async throws -> Data {
-        try await perform {
+        let result = try await perform {
             try self.enableLocked()
             let js = "__jb.invoke(\(jsString(name)), \(jsString(try self.argsJSON(args))), \(jsString(kind)))"
-            return try self.unwrap(try self.evalResult(js))
+            return try self.evalResult(js)
         }
+        return try await unwrapAwaiting(result)
     }
 
     func call<T: Decodable>(_ name: String, _ args: [Any] = [], as type: T.Type = T.self) async throws -> T {
@@ -281,9 +299,10 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     func callHandle(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> Data {
-        try await perform {
-            try self.unwrap(try self.evalResult("__jb.callHandle(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"))
+        let result = try await perform {
+            try self.evalResult("__jb.callHandle(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))")
         }
+        return try await unwrapAwaiting(result)
     }
 
     func handlePager<Item: Decodable & Sendable>(_ handle: Int, _ method: String, _ args: [Any] = [], as item: Item.Type) async throws -> PluginPager<Item> {

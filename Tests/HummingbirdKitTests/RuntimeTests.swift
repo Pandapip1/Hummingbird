@@ -3,6 +3,24 @@ import XCTest
 
 /// Runs a small plugin inside a real JavaScriptCore host context (no network involved).
 final class RuntimeTests: XCTestCase {
+    func testCurrentRawDashPrimitivesCanBeSubclassed() async throws {
+        let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"Raw DASH"}"#.utf8))
+        let script = """
+        class GeneratedVideo extends DashManifestRawSource { generate() { return "<MPD/>"; } }
+        class GeneratedAudio extends DashManifestRawAudioSource { generate() { return "<MPD/>"; } }
+        source.search = function() { return new VideoPager([], false); };
+        source.getChannel = function() { return new PlatformChannel({ name: "Channel", url: "u" }); };
+        source.getChannelContents = function() { return new VideoPager([], false); };
+        source.getContentDetails = function() { return null; };
+        source.rawTypes = function() { return [new GeneratedVideo({}).plugin_type, new GeneratedAudio({}).plugin_type]; };
+        """
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        defer { Task { await runtime.stop() } }
+        try await runtime.validate()
+        let types: [String] = try await runtime.call("rawTypes")
+        XCTAssertEqual(types, ["DashManifestRawSource", "DashManifestRawAudioSource"])
+    }
+
     private let script = """
     class P extends VideoPager {
       constructor(n) { super([new PlatformVideo({ id: new PlatformID('Demo', 'v' + n, plugin.config.id), name: 'Video ' + n + ' ' + plugin.settings.greeting,
@@ -25,6 +43,8 @@ final class RuntimeTests: XCTestCase {
         video: new VideoSourceDescriptor([ new VideoUrlSource({ url: 'https://demo.test/v.mp4', height: 480, container: 'video/mp4' }) ]) });
     };
     source.getEnabledWith = function() { return enabledWith; };
+    source.asyncValue = function() { return Promise.resolve(42); };
+    source.asyncTimerValue = function() { return new Promise(function(resolve) { setTimeout(function() { resolve(43); }, 5); }); };
     source.hashes = function() { return [utility.md5String('a'), utility.sha256String('a'), utility.toBase64('hi')]; };
     source.dom = function() { var d = domParser.parseFromString('<div><p class="x">hi</p><a href="/l">go</a></div>', 'text/html'); return [d.querySelector('p').textContent, d.querySelector('a').getAttribute('href'), String(d.querySelectorAll('p').length)]; };
     """
@@ -66,6 +86,14 @@ final class RuntimeTests: XCTestCase {
         let e = try await rt.call("getEnabledWith", as: E.self)
         XCTAssertEqual(e.name, "Demo")
         XCTAssertTrue(e.flag, "declared default \"true\" is parsed to a boolean")
+    }
+
+    func testPromiseReturningPluginMethod() async throws {
+        let rt = try runtime()
+        let value = try await rt.call("asyncValue", as: Int.self)
+        XCTAssertEqual(value, 42)
+        let timerValue = try await rt.call("asyncTimerValue", as: Int.self)
+        XCTAssertEqual(timerValue, 43)
     }
 
     func testStoredSettingOverridesDefault() async throws {

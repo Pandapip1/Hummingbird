@@ -6,6 +6,9 @@ import AdvancedVideoPlayerKit
 #if canImport(AVKit)
 import AVKit
 #endif
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor
 final class AVMediaBackend: MediaBackend {
@@ -21,6 +24,9 @@ final class AVMediaBackend: MediaBackend {
     private var committedLoadGeneration: Int?
     private var invalidatedThroughGeneration = 0
     private var loadCompletionWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    #if os(macOS)
+    private var playbackActivity: NSObjectProtocol?
+    #endif
 
     var currentTime: Double { player?.currentTime().seconds ?? 0 }
     var duration: Double {
@@ -122,17 +128,35 @@ final class AVMediaBackend: MediaBackend {
             Task { @MainActor in self?.onTick?(time.seconds) }
         }
         itemObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.onEnded?() }
+            Task { @MainActor in
+                self?.deactivatePlaybackEnvironment()
+                self?.onEnded?()
+            }
         }
-        if autoplay { p.play() }
+        if autoplay {
+            activatePlaybackEnvironment()
+            p.play()
+        }
     }
 
-    func play() { player?.play() }
-    func pause() { player?.pause() }
-    func setPlaybackRate(_ rate: Float) { player?.rate = rate }
+    func play() {
+        guard player != nil else { return }
+        activatePlaybackEnvironment()
+        player?.play()
+    }
+    func pause() {
+        player?.pause()
+        deactivatePlaybackEnvironment()
+    }
+    func setPlaybackRate(_ rate: Float) {
+        if rate > 0, player != nil { activatePlaybackEnvironment() }
+        else { deactivatePlaybackEnvironment() }
+        player?.rate = rate
+    }
     func seek(to seconds: Double) { player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
 
     func stop() {
+        deactivatePlaybackEnvironment()
         loadGeneration &+= 1
         invalidatedThroughGeneration = loadGeneration
         activeLoadGenerations.removeAll()
@@ -156,12 +180,46 @@ final class AVMediaBackend: MediaBackend {
 
     private func cancelCommittedLoad(_ generation: Int, asset: AVAsset) {
         guard isCurrentLoad(generation, asset: asset) else { return }
+        deactivatePlaybackEnvironment()
         removeObservers()
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
         mediaSelectionGroups = [:]
         committedLoadGeneration = nil
+    }
+
+    /// Keeps playback alive under the platform policies that normally suspend
+    /// media or blank the display after user inactivity.
+    private func activatePlaybackEnvironment() {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setActive(true)
+        } catch {
+            onFailure?("Could not activate background audio: \(error.localizedDescription)")
+        }
+        UIApplication.shared.isIdleTimerDisabled = true
+        #elseif os(macOS)
+        guard playbackActivity == nil else { return }
+        playbackActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleDisplaySleepDisabled],
+            reason: "Hummingbird is playing video"
+        )
+        #endif
+    }
+
+    private func deactivatePlaybackEnvironment() {
+        #if os(iOS)
+        UIApplication.shared.isIdleTimerDisabled = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #elseif os(macOS)
+        if let playbackActivity {
+            ProcessInfo.processInfo.endActivity(playbackActivity)
+            self.playbackActivity = nil
+        }
+        #endif
     }
 
     private func canCommitLoad(_ generation: Int) -> Bool {

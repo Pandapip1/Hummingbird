@@ -1,9 +1,6 @@
 import Foundation
 import SwiftOpenUI
 import Observation
-#if os(iOS)
-import AVFoundation
-#endif
 
 enum AppTab: Hashable { case home, subscriptions, search, library, sources }
 
@@ -80,11 +77,6 @@ final class AppModel {
             },
             didUpdate: { [weak library] items in library?.updateHomeCache(items) }
         )
-        #if os(iOS)
-        // Playback continues with the screen locked and in Picture in Picture.
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-        try? AVAudioSession.sharedInstance().setActive(true)
-        #endif
     }
 
     /// Hands a feed model the error reporter it needs.

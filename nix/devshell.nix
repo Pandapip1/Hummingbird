@@ -28,26 +28,29 @@
             '';
         in
         [
-          (mk "hb-build" ''exec swift build "$@"'')
-          (mk "hb-test" ''exec swift test "$@"'')
+          (mk "hb-build" ''exec swift build --scratch-path .build/native "$@"'')
+          (mk "hb-test" ''exec swift test --scratch-path .build/native "$@"'')
         ]
         ++ lib.optionals isLinux [
           (mk "hb-run" ''exec swift run Hummingbird-gtk "$@"'')
         ]
         ++ lib.optionals isDarwin [
-          (mk "hb-build-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift build --product Hummingbird-gtk "$@"'')
-          (mk "hb-run-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift run Hummingbird-gtk "$@"'')
+          (mk "hb-build-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift build --scratch-path .build/gtk --product Hummingbird-gtk "$@"'')
+          (mk "hb-run-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift run --scratch-path .build/gtk Hummingbird-gtk "$@"'')
           (mk "hb-xcode" ''
             xcodegen generate
             echo "Hummingbird.xcodeproj regenerated from project.yml"
           '')
           (mk "hb-build-ios" ''
             xcodegen generate
-            exec xcodebuild \
+            # Keep Nix's Darwin linker wrappers and host-library search paths
+            # out of Xcode's cross-SDK link steps.
+            exec env -u LD -u NIX_LDFLAGS -u NIX_CFLAGS_COMPILE -u LIBRARY_PATH \
+              -u PKG_CONFIG_PATH -u PKG_CONFIG_PATH_FOR_TARGET -u PKG_CONFIG xcodebuild \
               -project Hummingbird.xcodeproj \
               -scheme Hummingbird \
               -destination "generic/platform=iOS Simulator" \
-              -derivedDataPath .build/DerivedData \
+              -derivedDataPath .build/DerivedData-iOS \
               build "$@"
           '')
         ];

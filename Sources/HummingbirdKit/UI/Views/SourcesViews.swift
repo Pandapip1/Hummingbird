@@ -471,7 +471,7 @@ struct AppSettingsView: View {
 private struct ScannerPane: View {
     let onCode: (String) -> Void
     var body: some View {
-        #if os(iOS) || os(macOS)
+        #if (os(iOS) || os(macOS)) && !BACKEND_GTK
         QRScannerView(onCode: onCode)
             #if os(iOS)
             .ignoresSafeArea()

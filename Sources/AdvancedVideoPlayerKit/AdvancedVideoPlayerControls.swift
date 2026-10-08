@@ -1,4 +1,5 @@
 import SwiftOpenUI
+import Foundation
 
 public enum AdvancedVideoPlayerLayout {
     public static let controlBarMinimumHeight: CGFloat = 44
@@ -30,7 +31,9 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     private let accessories: (@escaping () -> Void) -> Accessories
     @State private var controlsVisible = true
     @State private var autoHide = ControlsAutoHide()
+    #if os(tvOS)
     @Namespace private var focusNamespace
+    #endif
 
     public init(
         model: Model,

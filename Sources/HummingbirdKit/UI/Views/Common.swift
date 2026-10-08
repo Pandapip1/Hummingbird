@@ -194,7 +194,7 @@ struct PortableLink<Label: View>: View {
     @ViewBuilder let label: () -> Label
 
     var body: some View {
-        #if canImport(SwiftUI)
+        #if canImport(SwiftUI) && !BACKEND_GTK
         Link(destination: destination, label: label)
         #else
         Button { SystemServices.openURL(destination) } label: { label() }
@@ -211,7 +211,7 @@ struct PortableLazyVStack<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        #if canImport(SwiftUI)
+        #if canImport(SwiftUI) && !BACKEND_GTK
         LazyVStack(alignment: alignment, spacing: spacing ?? 8, content: content)
         #else
         VStack(alignment: alignment, spacing: spacing ?? 8, content: content)
@@ -246,7 +246,7 @@ extension View {
     /// So the automatic trigger is used only where the list is lazy. Elsewhere
     /// the lists offer `LoadMoreButton` instead.
     func loadsNextPageWhenLast(_ isLast: Bool, _ load: @escaping () async -> Void) -> some View {
-        #if canImport(SwiftUI)
+        #if canImport(SwiftUI) && !BACKEND_GTK
         return onAppear { if isLast { Task { await load() } } }
         #else
         return self
@@ -262,7 +262,7 @@ struct LoadMoreButton: View {
     let feed: FeedModel
 
     var body: some View {
-        #if canImport(SwiftUI)
+        #if canImport(SwiftUI) && !BACKEND_GTK
         EmptyView()
         #else
         if feed.hasMore && !feed.isLoading {

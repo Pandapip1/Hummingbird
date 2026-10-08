@@ -1,7 +1,9 @@
 import HummingbirdKit
 import SwiftOpenUI
 @_spi(SwiftOpenUIBackend) import BackendGTK4
+#if BACKEND_GTK_WEBKIT
 import WebKit
+#endif
 import CGTK
 import CGTKBridge
 import Foundation
@@ -18,6 +20,7 @@ MainActor.assumeIsolated {
     // default font map, otherwise symbol labels are permanently resolved through
     // a fallback font for this process.
     gtkRegisterBundledIconFont()
+    #if BACKEND_GTK_WEBKIT
     // JavaScriptCoreGTK and WebKitGTK share WTF process-global state. Start a
     // WebKit page on the GTK thread before plugin runtimes create JSC contexts
     // on their serial worker queues.
@@ -45,5 +48,11 @@ MainActor.assumeIsolated {
     } catch {
         fatalError("Could not initialize the shared JavaScript runtime: \(error)")
     }
+    #else
+    // Darwin uses the system JavaScriptCore framework. WebKitGTK is not
+    // available there, so it does not need the shared-WTF bootstrap.
+    do { try JSEngines.initializeDefaultRuntimeOnCurrentThread() }
+    catch { fatalError("Could not initialize JavaScriptCore: \(error)") }
+    #endif
     GTK4Backend().run(HummingbirdGTKApp.self)
 }

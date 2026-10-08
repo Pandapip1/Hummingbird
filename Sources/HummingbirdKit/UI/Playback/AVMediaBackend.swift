@@ -1,4 +1,4 @@
-#if canImport(AVFoundation)
+#if canImport(AVFoundation) && !BACKEND_GTK
 import Foundation
 import AVFoundation
 import SwiftOpenUI

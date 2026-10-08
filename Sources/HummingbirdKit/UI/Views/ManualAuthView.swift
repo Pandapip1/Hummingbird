@@ -1,5 +1,5 @@
 import Foundation
-#if !canImport(WebKit)
+#if !canImport(WebKit) || BACKEND_GTK
 import Observation
 import QRCodeGenerator
 import SwiftOpenUI

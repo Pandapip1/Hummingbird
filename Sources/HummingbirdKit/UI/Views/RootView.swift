@@ -1,7 +1,7 @@
 import Foundation
 import DynamicTabbingKit
 import SwiftOpenUI
-#if os(macOS)
+#if os(macOS) && !BACKEND_GTK
 import AppKit
 #endif
 
@@ -42,7 +42,7 @@ struct RootView: View {
             }
         }
         .background {
-            #if os(macOS)
+            #if os(macOS) && !BACKEND_GTK
             TabBarAccessoryInstaller(app: model).frame(width: 0, height: 0)
             #endif
         }
@@ -188,7 +188,7 @@ private struct BrowserTabStrip: View {
     }
 }
 
-#if os(macOS)
+#if os(macOS) && !BACKEND_GTK
 /// Mounts `BrowserTabStrip` as an `NSTitlebarAccessoryViewController` so it
 /// occupies its own row below the window toolbar, matching Safari's layout.
 @MainActor

@@ -76,4 +76,34 @@ rec {
 
   # Everything the Linux build of the GTK app links against.
   linuxBuildLibs = baseLibs ++ gtkLibs;
+
+  # Development-only GTK backend on macOS. WebKitGTK is intentionally absent:
+  # nixpkgs marks it broken on Darwin, and SwiftOpenUI excludes that adapter.
+  darwinGtkLibs = with pkgs; [
+    gtk4
+    libadwaita
+    appstream
+    glib
+    pcre2
+    cairo
+    pango
+    gdk-pixbuf
+    graphene
+    harfbuzz
+    fribidi
+    libthai
+    libdatrie
+    fontconfig
+    freetype
+    libepoxy
+    libxdmcp
+    librsvg
+    gst_all_1.gstreamer
+    gst_all_1.gstreamer.dev
+    gst_all_1.gst-plugins-base
+    gst_all_1.gst-plugins-base.dev
+    iconTheme
+    (pkgs.callPackage ./sysprof-capture-stub.nix { })
+    (pkgs.callPackage ./libunwind-pc-stub.nix { })
+  ];
 }

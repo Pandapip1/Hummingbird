@@ -1,6 +1,17 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
+let requestedBackend = Context.environment["SWIFTOPENUI_BACKEND"]?.lowercased()
+#if os(Linux)
+let gtkBackendEnabled = requestedBackend == nil || requestedBackend == "gtk"
+#else
+let gtkBackendEnabled = requestedBackend == "gtk"
+#endif
+var backendSwiftSettings: [SwiftSetting] = gtkBackendEnabled ? [.define("BACKEND_GTK")] : []
+#if os(Linux)
+if gtkBackendEnabled { backendSwiftSettings.append(.define("BACKEND_GTK_WEBKIT")) }
+#endif
+
 // Hummingbird builds in three layers:
 //   HummingbirdKit   – one module with two folders. Core/ is the plugin host, models and services (no UI imports);
 //                  UI/ is the screens: real SwiftUI on Apple platforms, SwiftOpenUI (Vendor/SwiftOpenUI) elsewhere.
@@ -27,7 +38,8 @@ var targets: [Target] = [
     .target(
         name: "AdvancedVideoPlayerKit",
         dependencies: [.product(name: "SwiftOpenUI", package: "SwiftOpenUI")],
-        path: "Sources/AdvancedVideoPlayerKit"
+        path: "Sources/AdvancedVideoPlayerKit",
+        swiftSettings: backendSwiftSettings
     ),
     .systemLibrary(
         name: "CJavaScriptCoreGTK",
@@ -61,6 +73,7 @@ var targets: [Target] = [
         ],
         path: "Sources/HummingbirdKit",
         resources: [.copy("Core/Plugin/Resources/prelude.js")],
+        swiftSettings: backendSwiftSettings,
         linkerSettings: [
             // The Swift 6.1 Linux toolchain's libswiftObservation.so references a runtime symbol that libswiftCore.so
             // does not export (it is only called on a fatal-error path), so the link needs this to succeed.
@@ -80,23 +93,27 @@ var targets: [Target] = [
     ),
 ]
 
-#if os(Linux)
+if gtkBackendEnabled {
 products.append(.executable(name: "Hummingbird-gtk", targets: ["HummingbirdGTK"]))
+var gtkExecutableDependencies: [Target.Dependency] = [
+    "HummingbirdKit",
+    .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
+    .product(name: "BackendGTK4", package: "SwiftOpenUI"),
+    .product(name: "CGTK", package: "SwiftOpenUI"),
+    .product(name: "CGTKBridge", package: "SwiftOpenUI"),
+]
+#if os(Linux)
+gtkExecutableDependencies.append(.product(name: "WebKit", package: "SwiftOpenUI"))
+#endif
 targets.append(
     .executableTarget(
         name: "HummingbirdGTK",
-        dependencies: [
-            "HummingbirdKit",
-            .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
-            .product(name: "BackendGTK4", package: "SwiftOpenUI"),
-            .product(name: "WebKit", package: "SwiftOpenUI"),
-            .product(name: "CGTK", package: "SwiftOpenUI"),
-            .product(name: "CGTKBridge", package: "SwiftOpenUI"),
-        ],
-        path: "Sources/HummingbirdGTK"
+        dependencies: gtkExecutableDependencies,
+        path: "Sources/HummingbirdGTK",
+        swiftSettings: backendSwiftSettings
     )
 )
-#endif
+}
 
 let package = Package(
     name: "Hummingbird",

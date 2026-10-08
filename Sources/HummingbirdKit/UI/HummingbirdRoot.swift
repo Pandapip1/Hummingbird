@@ -6,12 +6,12 @@ import SwiftOpenUI
 @MainActor
 public struct HummingbirdRoot: View {
     @State private var model = AppModel()
-    #if canImport(SwiftUI)
+    #if canImport(SwiftUI) && !BACKEND_GTK
     @Environment(\.scenePhase) private var scenePhase
     #endif
     public init() {}
     public var body: some View {
-        #if canImport(SwiftUI)
+        #if canImport(SwiftUI) && !BACKEND_GTK
         #if os(tvOS)
         if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] == "player" {
             TVPlayerDebugScene()
@@ -29,7 +29,7 @@ public struct HummingbirdRoot: View {
         #endif
     }
 
-    #if canImport(SwiftUI)
+    #if canImport(SwiftUI) && !BACKEND_GTK
     private var appRoot: some View {
         RootView()
             .environment(model)
@@ -42,7 +42,7 @@ public struct HummingbirdRoot: View {
     #endif
 }
 
-#if canImport(SwiftUI) && os(tvOS)
+#if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
 @MainActor
 private struct TVPlayerDebugScene: View {
     @State private var player = PlayerModel(backend: AVMediaBackend())

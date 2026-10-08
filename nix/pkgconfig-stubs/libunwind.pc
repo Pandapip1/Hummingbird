@@ -1,0 +1,5 @@
+Name: libunwind
+Description: Apple platform unwind runtime (SwiftPM pkg-config resolver stub)
+Version: 1.0
+Libs:
+Cflags:

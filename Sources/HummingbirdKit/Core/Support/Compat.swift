@@ -4,7 +4,7 @@ import Foundation
 #endif
 
 // SwiftUI adds these IndexSet-based edits to arrays; the portable core needs them where SwiftUI is absent.
-#if !canImport(SwiftUI)
+#if !canImport(SwiftUI) || BACKEND_GTK
 extension RangeReplaceableCollection where Self: MutableCollection, Index == Int {
     mutating func remove(atOffsets offsets: IndexSet) {
         for i in offsets.sorted(by: >) { remove(at: i) }

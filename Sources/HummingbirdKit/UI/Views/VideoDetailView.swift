@@ -1,7 +1,7 @@
 import Foundation
 import SwiftOpenUI
 import AdvancedVideoPlayerKit
-#if os(macOS)
+#if os(macOS) && !BACKEND_GTK
 import AppKit
 #endif
 
@@ -219,12 +219,12 @@ struct PlayerSection: View {
     let model: PlayerModel
     let width: CGFloat
     let height: CGFloat
-    #if os(macOS)
+    #if os(macOS) && !BACKEND_GTK
     @State private var fullscreenPresenter = MacOSFullscreenPresenter()
     #endif
 
     var body: some View {
-        #if os(macOS)
+        #if os(macOS) && !BACKEND_GTK
         player
             .onAppear { fullscreenPresenter.install(on: model) }
             .onDisappear { fullscreenPresenter.uninstall() }
@@ -276,7 +276,7 @@ struct FullscreenPlayerView: View {
 
 // MARK: - macOS fullscreen
 
-#if os(macOS)
+#if os(macOS) && !BACKEND_GTK
 @MainActor
 private final class MacOSFullscreenPresenter: NSObject, NSWindowDelegate {
     private weak var model: PlayerModel?
@@ -406,6 +406,7 @@ private struct HummingbirdPlayerAccessories: View {
     }
 }
 
+#if !BACKEND_GTK
 @MainActor
 struct LegacyPlayerControls: View {
     let model: PlayerModel
@@ -682,6 +683,8 @@ private struct PlaybackSpeedMenu: View {
         }
     }
 }
+
+#endif
 
 @MainActor
 private struct VideoMenu: View {

@@ -35,6 +35,8 @@
           (mk "hb-run" ''exec swift run Hummingbird-gtk "$@"'')
         ]
         ++ lib.optionals isDarwin [
+          (mk "hb-build-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift build --product Hummingbird-gtk "$@"'')
+          (mk "hb-run-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift run Hummingbird-gtk "$@"'')
           (mk "hb-xcode" ''
             xcodegen generate
             echo "Hummingbird.xcodeproj regenerated from project.yml"
@@ -95,7 +97,9 @@
             pkgs.xcodegen
           ];
 
-        buildInputs = deps.baseLibs ++ lib.optionals isLinux deps.gtkLibs;
+        buildInputs = deps.baseLibs
+          ++ lib.optionals isLinux deps.gtkLibs
+          ++ lib.optionals isDarwin deps.darwinGtkLibs;
 
         env = lib.optionalAttrs isLinux {
           GST_PLUGIN_SYSTEM_PATH_1_0 = lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" deps.gstPlugins;
@@ -147,6 +151,17 @@
               echo "warning: no Xcode found — the iOS variant needs Xcode and an iOS SDK" >&2
             fi
             unset hummingbird_xcode_developer
+
+            # SwiftPM's system-library importer needs the GStreamer headers
+            # explicitly even though pkg-config can resolve its link flags.
+            export CPATH="${lib.makeSearchPath "include/gstreamer-1.0" [
+              pkgs.gst_all_1.gstreamer.dev
+              pkgs.gst_all_1.gst-plugins-base.dev
+            ]}:''${CPATH:-}"
+            # Xcode's linker does not inherit Nix's usual compiler-wrapper
+            # search paths. Make the libraries named by pkg-config visible to
+            # SwiftPM while retaining the system Swift/macOS SDK toolchain.
+            export LIBRARY_PATH="${lib.makeLibraryPath (deps.baseLibs ++ deps.darwinGtkLibs)}:''${LIBRARY_PATH:-}"
           ''}
 
           if [ ! -e Vendor/SwiftOpenUI/Package.swift ]; then
@@ -154,7 +169,7 @@
           fi
 
           echo "Hummingbird dev shell (${system}) — swift $(swift --version 2>/dev/null | sed -n 's/.*version \([0-9.]*\).*/\1/p' | head -1)" >&2
-          echo "  hb-build, hb-test${lib.optionalString isLinux ", hb-run (GTK app)"}${lib.optionalString isDarwin ", hb-xcode, hb-build-ios"}" >&2
+          echo "  hb-build, hb-test${lib.optionalString isLinux ", hb-run (GTK app)"}${lib.optionalString isDarwin ", hb-build-gtk, hb-run-gtk, hb-xcode, hb-build-ios"}" >&2
         '';
       };
     };

@@ -1,4 +1,4 @@
-#if canImport(WebKit)
+#if canImport(WebKit) && !BACKEND_GTK
 import Foundation
 import Observation
 import SwiftOpenUI
@@ -276,7 +276,7 @@ final class WebAuthSession {
 
 // MARK: - QR scanner
 
-#if os(iOS)
+#if os(iOS) && !BACKEND_GTK
 import UIKit
 import AVFoundation
 
@@ -337,7 +337,7 @@ struct QRScannerView: UIViewControllerRepresentable {
     }
 }
 
-#elseif os(macOS)
+#elseif os(macOS) && !BACKEND_GTK
 import AppKit
 import AVFoundation
 

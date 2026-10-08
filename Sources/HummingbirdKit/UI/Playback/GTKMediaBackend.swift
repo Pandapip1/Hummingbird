@@ -1,4 +1,4 @@
-#if !canImport(AVFoundation)
+#if !canImport(AVFoundation) || BACKEND_GTK
 import Foundation
 @_spi(SwiftOpenUIBackend) import SwiftOpenUI
 import AdvancedVideoPlayerKit

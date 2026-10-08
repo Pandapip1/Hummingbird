@@ -1,5 +1,6 @@
 import Foundation
 import SwiftOpenUI
+import AdvancedVideoPlayerKit
 #if os(macOS)
 import AppKit
 #endif
@@ -205,28 +206,11 @@ private struct VideoBody: View {
 
 /// Reserve the player's complete footprint before laying out the metadata.
 /// A maximum alone does not give a flexible video surface an ideal height in a scroll view.
-enum PlayerLayout {
-    static let controlBarMinimumHeight: CGFloat = 44
-    static let minimumBarSeparation: CGFloat = 24
-    // Two bars, their 9-point vertical padding, the outer 8-point padding,
-    // and the spacer plus two 6-point gaps between the bars.
-    static let minimumHeight = 2 * (controlBarMinimumHeight + 2 * 9) + 2 * 8 + 2 * 6 + minimumBarSeparation
+typealias PlayerLayout = AdvancedVideoPlayerLayout
 
-    static func usesStackedTransport(width: CGFloat) -> Bool { width < 600 }
-    static func usesStackedTrackMenus(width: CGFloat) -> Bool { width < 280 }
-
-    static func minimumHeight(width: CGFloat) -> CGFloat {
-        // Timeline always gets its own row; non-stacked gains one row, stacked keeps two.
-        let extraTransportRows: CGFloat = usesStackedTransport(width: width) ? 2 : 1
-        let extraTrackRows: CGFloat = usesStackedTrackMenus(width: width) ? 1 : 0
-        return minimumHeight + (extraTransportRows + extraTrackRows) * (controlBarMinimumHeight + 6)
-    }
-
-    static func height(width: CGFloat, viewportHeight: CGFloat) -> CGFloat {
-        let minimumHeight = minimumHeight(width: width)
-        // In a very short window the controls minimum takes precedence; the page scrolls.
-        let limit = max(minimumHeight, viewportHeight * 0.9)
-        return min(max(minimumHeight, width * 9 / 16), limit)
+extension AdvancedVideoPlayerLayout {
+    static func usesStackedTrackMenus(width: CGFloat) -> Bool {
+        usesStackedAccessoryControls(width: width)
     }
 }
 
@@ -368,6 +352,62 @@ private final class MacOSFullscreenPresenter: NSObject, NSWindowDelegate {
 
 @MainActor
 struct PlayerControls: View {
+    let model: PlayerModel
+    let isFullscreen: Bool
+    var availableWidth: CGFloat = .infinity
+
+    var body: some View {
+        ZStack {
+            if let text = model.subtitleText {
+                Text(text)
+                    .font(.system(size: model.subtitleSizeChoice.rawValue).weight(.medium))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(model.subtitleColorChoice.color)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
+                    .padding(.horizontal)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, PlayerLayout.usesStackedTransport(width: availableWidth) ? 178 : 128)
+            }
+
+            AdvancedVideoPlayerControls(
+                model: model,
+                isFullscreen: isFullscreen,
+                availableWidth: availableWidth
+            ) { interacted in
+                HummingbirdPlayerAccessories(model: model, availableWidth: availableWidth, interacted: interacted)
+            }
+        }
+    }
+}
+
+/// Hummingbird contributes source and track selection to the reusable player.
+/// Other applications can supply entirely different accessory controls.
+@MainActor
+private struct HummingbirdPlayerAccessories: View {
+    let model: PlayerModel
+    let availableWidth: CGFloat
+    let interacted: () -> Void
+
+    var body: some View {
+        if PlayerLayout.usesStackedAccessoryControls(width: availableWidth) {
+            VStack(spacing: 6) {
+                HStack(spacing: 12) {
+                    VideoMenu(model: model, interacted: interacted)
+                    AudioMenu(model: model, interacted: interacted)
+                }
+                SubtitleMenu(model: model, interacted: interacted)
+            }
+        } else {
+            VideoMenu(model: model, interacted: interacted)
+            AudioMenu(model: model, interacted: interacted)
+            SubtitleMenu(model: model, interacted: interacted)
+        }
+    }
+}
+
+@MainActor
+struct LegacyPlayerControls: View {
     let model: PlayerModel
     let isFullscreen: Bool
     var availableWidth: CGFloat = .infinity
@@ -649,23 +689,14 @@ private struct VideoMenu: View {
     let interacted: () -> Void
     var body: some View {
         let tracks = model.tracks.filter { $0.kind == .video }
-        if model.options.count > 1 || !tracks.isEmpty {
-            Menu {
-                ForEach(model.options) { option in
-                    Button { interacted(); Task { await model.select(option) } } label: {
-                        if option.id == model.selected?.id { Label(option.label, systemImage: "checkmark") }
-                        else { Text(option.label) }
-                    }
-                }
-                if model.options.count > 1 && !tracks.isEmpty { Divider() }
-                ForEach(tracks, id: \.id) { track in
-                    Button { interacted(); model.selectTrack(track) } label: {
-                        let label = track.label ?? track.language ?? "Video"
-                        if model.selectedTrack(ofKind: .video)?.id == track.id { Label(label, systemImage: "checkmark") }
-                        else { Text(label) }
-                    }
-                }
-            } label: { Text("Video") }
+        if model.options.count > 1 {
+            VideoSourceControl(options: model.options, selectedID: model.selected?.id, label: \.label,
+                               onSelect: { option in Task { await model.select(option) } }, interacted: interacted)
+        }
+        if !tracks.isEmpty {
+            MediaTrackControl(title: "Video Track", tracks: tracks,
+                              selectedID: model.selectedTrack(ofKind: .video)?.id, fallbackLabel: "Video",
+                              onSelect: model.selectTrack, interacted: interacted)
         }
     }
 }
@@ -676,17 +707,9 @@ private struct AudioMenu: View {
     let interacted: () -> Void
     var body: some View {
         let tracks = model.tracks.filter { $0.kind == .audio }
-        if !tracks.isEmpty {
-            Menu {
-                ForEach(tracks, id: \.id) { track in
-                    Button { interacted(); model.selectTrack(track) } label: {
-                        let label = track.label ?? track.language ?? "Audio"
-                        if model.selectedTrack(ofKind: .audio)?.id == track.id { Label(label, systemImage: "checkmark") }
-                        else { Text(label) }
-                    }
-                }
-            } label: { Text("Audio") }
-        }
+        MediaTrackControl(title: "Audio", tracks: tracks,
+                          selectedID: model.selectedTrack(ofKind: .audio)?.id, fallbackLabel: "Audio",
+                          onSelect: model.selectTrack, interacted: interacted)
     }
 }
 
@@ -696,49 +719,35 @@ private struct SubtitleMenu: View {
     let interacted: () -> Void
     var body: some View {
         let embedded = model.tracks.filter { $0.kind == .subtitles }
-        if !model.subtitleSources.isEmpty || !embedded.isEmpty {
-            Menu {
-                Button { interacted(); Task { await model.chooseSubtitle(nil) } } label: {
-                    if model.subtitleChoice == nil && model.embeddedSubtitleChoice == nil {
-                        Label("Off", systemImage: "checkmark")
-                    } else { Text("Off") }
-                }
-                ForEach(embedded, id: \.id) { track in
-                    Button { interacted(); Task { await model.chooseEmbeddedSubtitle(track) } } label: {
-                        let name = track.label ?? track.language ?? "Embedded"
-                        if model.embeddedSubtitleChoice?.id == track.id {
-                            Label(name, systemImage: "checkmark")
-                        } else { Text(name) }
+        let external = model.subtitleSources.map { SubtitleOption(id: $0.id, name: $0.name) }
+        SubtitleControl(
+            embedded: embedded,
+            external: external,
+            selectedEmbeddedID: model.embeddedSubtitleChoice?.id,
+            selectedExternalID: model.subtitleChoice?.id,
+            onSelectEmbedded: { track in Task { await model.chooseEmbeddedSubtitle(track) } },
+            onSelectExternal: { option in
+                let source = option.flatMap { selected in model.subtitleSources.first { $0.id == selected.id } }
+                Task { await model.chooseSubtitle(source) }
+            },
+            interacted: interacted
+        ) {
+            if model.embeddedSubtitleChoice == nil && !model.subtitleSources.isEmpty {
+                Divider()
+                ForEach(SubtitleColorChoice.allCases, id: \.rawValue) { choice in
+                    Button { interacted(); model.setSubtitleColor(choice) } label: {
+                        if model.subtitleColorChoice == choice { Label("Caption Color: \(choice.label)", systemImage: "checkmark") }
+                        else { Text("Caption Color: \(choice.label)") }
                     }
                 }
-                ForEach(model.subtitleSources) { s in
-                    Button { interacted(); Task { await model.chooseSubtitle(s) } } label: {
-                        if model.subtitleChoice?.id == s.id { Label(s.name, systemImage: "checkmark") } else { Text(s.name) }
+                Divider()
+                ForEach(SubtitleSizeChoice.allCases, id: \.rawValue) { choice in
+                    Button { interacted(); model.setSubtitleSize(choice) } label: {
+                        if model.subtitleSizeChoice == choice { Label("Caption Size: \(choice.label)", systemImage: "checkmark") }
+                        else { Text("Caption Size: \(choice.label)") }
                     }
                 }
-                if model.embeddedSubtitleChoice == nil && !model.subtitleSources.isEmpty {
-                    Divider()
-                    ForEach(SubtitleColorChoice.allCases, id: \.rawValue) { choice in
-                        Button { interacted(); model.setSubtitleColor(choice) } label: {
-                            if model.subtitleColorChoice == choice {
-                                Label("Caption Color: \(choice.label)", systemImage: "checkmark")
-                            } else {
-                                Text("Caption Color: \(choice.label)")
-                            }
-                        }
-                    }
-                    Divider()
-                    ForEach(SubtitleSizeChoice.allCases, id: \.rawValue) { choice in
-                        Button { interacted(); model.setSubtitleSize(choice) } label: {
-                            if model.subtitleSizeChoice == choice {
-                                Label("Caption Size: \(choice.label)", systemImage: "checkmark")
-                            } else {
-                                Text("Caption Size: \(choice.label)")
-                            }
-                        }
-                    }
-                }
-            } label: { Text("Subtitles") }
+            }
         }
     }
 }

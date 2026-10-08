@@ -1,6 +1,6 @@
 import Foundation
 import SwiftOpenUI
-import Observation
+import DynamicTabbingKit
 
 /// One open browser tab: a self-contained, linear back/forward history of
 /// `Route`s, the way a real browser tab works — not a `NavigationStack`,
@@ -11,52 +11,21 @@ import Observation
 /// own: `AppModel.pinnedTab` is a `BrowserTab` only so it can share `id`/
 /// `isPinned` bookkeeping with ordinary tabs, but its `history` stays empty
 /// and nothing pushes onto it. See the "browser-style tabs" TODO entry.
-@MainActor
-@Observable
-final class BrowserTab: Identifiable {
-    let id: UUID
-    let isPinned: Bool
-    private(set) var history: [Route] = []
-    private(set) var historyIndex: Int = -1
-    var title: String = "New Tab"
+typealias BrowserTab = DynamicTab<Route>
 
-    init(id: UUID = UUID(), isPinned: Bool = false) {
-        self.id = id
-        self.isPinned = isPinned
+extension DynamicTab where Page == Route {
+    static func hummingbirdTab(id: UUID = UUID(), isPinned: Bool = false) -> DynamicTab<Route> {
+        DynamicTab(id: id, isPinned: isPinned, defaultTitle: placeholderTitle)
     }
 
-    var current: Route? { history.indices.contains(historyIndex) ? history[historyIndex] : nil }
-    var canGoBack: Bool { historyIndex > 0 }
-    var canGoForward: Bool { historyIndex < history.count - 1 }
-
-    /// Push a new route. Ordinary browser semantics: anything ahead of the
-    /// current position (reachable by "forward") is discarded, same as
-    /// navigating a web page away from a back-visited page.
-    func push(_ route: Route, title: String? = nil) {
-        if historyIndex < history.count - 1 { history.removeLast(history.count - 1 - historyIndex) }
-        history.append(route)
-        historyIndex = history.count - 1
-        self.title = title ?? Self.placeholderTitle(for: route)
-    }
-
-    func goBack() { guard canGoBack else { return }; historyIndex -= 1 }
-    func goForward() { guard canGoForward else { return }; historyIndex += 1 }
-
-    /// Called by a pushed screen once it knows its own title (e.g. a video's
-    /// real name after loading, vs. the placeholder guessed from the route
-    /// at push time).
-    func reportTitle(_ title: String) {
-        guard !title.isEmpty, current != nil else { return }
-        self.title = title
-    }
-
-    fileprivate static func placeholderTitle(for route: Route) -> String {
+    private static func placeholderTitle(for route: Route) -> String {
         switch route {
         case .item(let item): return item.name.isEmpty ? "Video" : item.name
         case .content: return "Loading…"
         case .channel: return "Channel"
         case .playlist: return "Playlist"
         case .plugin: return "Plugin"
+        default: return "Page"
         }
     }
 }

@@ -24,7 +24,7 @@ final class AppModel {
     /// The pinned, uncloseable tab holding the five bottom-tab sections. It
     /// has no history of its own (see `BrowserTab`'s doc comment) — only its
     /// `id` is used, to tell `activeTabID` apart from an ordinary content tab.
-    let pinnedTab = BrowserTab(isPinned: true)
+    let pinnedTab = BrowserTab.hummingbirdTab(isPinned: true)
     /// Ordinary browser tabs opened from `Route`-browsing content (a video, a
     /// channel, a playlist, a plugin page). Order is tab-strip/switcher order.
     var contentTabs: [BrowserTab] = []
@@ -37,7 +37,7 @@ final class AppModel {
     /// Opens `route` in a new content tab and switches to it. The `openRoute`
     /// environment action resolves to this from anywhere in the pinned tab.
     func openInNewTab(_ route: Route, title: String? = nil) {
-        let tab = BrowserTab()
+        let tab = BrowserTab.hummingbirdTab()
         tab.push(route, title: title)
         contentTabs.append(tab)
         activeTabID = tab.id
@@ -46,7 +46,7 @@ final class AppModel {
     /// Opens a blank start-page tab, matching the new-tab action in a browser
     /// tab overview. Its first route replaces the start page in this tab.
     func openNewTab() {
-        let tab = BrowserTab()
+        let tab = BrowserTab.hummingbirdTab()
         contentTabs.append(tab)
         activeTabID = tab.id
     }

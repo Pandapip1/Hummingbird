@@ -11,11 +11,22 @@ let nonApple: [Platform] = [.linux, .android, .windows]
 var products: [Product] = [
     .library(name: "HummingbirdKit", targets: ["HummingbirdKit"]),
     .library(name: "DebugKit", targets: ["DebugKit"]),
+    .library(name: "DynamicTabbingKit", targets: ["DynamicTabbingKit"]),
+    .library(name: "AdvancedVideoPlayerKit", targets: ["AdvancedVideoPlayerKit"]),
 ]
 var targets: [Target] = [
     .target(
         name: "DebugKit",
         path: "Sources/DebugKit"
+    ),
+    .target(
+        name: "DynamicTabbingKit",
+        path: "Sources/DynamicTabbingKit"
+    ),
+    .target(
+        name: "AdvancedVideoPlayerKit",
+        dependencies: [.product(name: "SwiftOpenUI", package: "SwiftOpenUI")],
+        path: "Sources/AdvancedVideoPlayerKit"
     ),
     .systemLibrary(
         name: "CJavaScriptCoreGTK",
@@ -33,6 +44,8 @@ var targets: [Target] = [
         name: "HummingbirdKit",
         dependencies: [
             "DebugKit",
+            "DynamicTabbingKit",
+            "AdvancedVideoPlayerKit",
             "CSQLite",
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),

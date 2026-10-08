@@ -2,6 +2,7 @@
 import Foundation
 import AVFoundation
 import SwiftOpenUI
+import AdvancedVideoPlayerKit
 #if canImport(AVKit)
 import AVKit
 #endif
@@ -75,8 +76,6 @@ final class AVMediaBackend: MediaBackend {
               let index = group.options.firstIndex(where: { $0 === selected }) else { return nil }
         return tracks.first { $0.kind == kind && $0.id == "\(kind.rawValue)-\(index)" }
     }
-
-    func canPlay(_ option: PlaybackOption) -> Bool { true }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
         loadGeneration &+= 1

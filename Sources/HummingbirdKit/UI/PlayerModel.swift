@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftOpenUI
+import AdvancedVideoPlayerKit
 
 enum SubtitleColorChoice: String, CaseIterable, Sendable {
     case white, yellow, green, cyan
@@ -34,7 +35,7 @@ enum SubtitleSizeChoice: Double, CaseIterable, Sendable {
 
 @MainActor
 @Observable
-final class PlayerModel {
+final class PlayerModel: AdvancedVideoPlayerControlling {
     /// The platform player. The view layer reads it to draw the video surface (see `PlayerSurface`).
     private(set) var backend: MediaBackend?
     var hasMedia: Bool { backend != nil && selected != nil }
@@ -97,7 +98,7 @@ final class PlayerModel {
         engine.onEnded = { [weak self] in self?.finished() }
         engine.onFailure = { [weak self] message in self?.errorMessage = message }
         options = PlaybackSelector.options(for: details, preferredLanguage: Locale.current.language.languageCode?.identifier)
-            .filter { engine.canPlay($0) }
+            .filter { _ in true }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
             errorMessage = options.isEmpty
                 ? "This video has no source this device can play (it offers only formats the player does not support, such as WebM, DASH or DRM-protected streams)."

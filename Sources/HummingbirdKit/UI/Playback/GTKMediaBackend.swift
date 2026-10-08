@@ -1,6 +1,7 @@
 #if !canImport(AVFoundation)
 import Foundation
 @_spi(SwiftOpenUIBackend) import SwiftOpenUI
+import AdvancedVideoPlayerKit
 
 /// Non-Apple playback through the fork's `AVPlayer` / `VideoPlayer` compatibility implementation.
 ///
@@ -63,10 +64,6 @@ final class GTKMediaBackend: MediaBackend {
                 self?.onFailure?(message)
             }
         }
-    }
-
-    func canPlay(_ option: PlaybackOption) -> Bool {
-        true
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {

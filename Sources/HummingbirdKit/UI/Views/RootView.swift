@@ -19,12 +19,14 @@ struct RootView: View {
     var body: some View {
         @Bindable var app = model
         @Bindable var plugins = model.plugins
-        Group {
-            if app.activeTabID == app.pinnedTab.id {
-                PinnedTabView()
-                    .environment(\.openRoute, OpenRouteAction { route, title in app.openInNewTab(route, title: title) })
-            } else {
-                BrowserTabContentView(tab: app.activeTab)
+        BrowserTabContainer(items: browserTabItems, selection: activeTabBinding, onClose: { app.closeTab($0) }) {
+            Group {
+                if app.activeTabID == app.pinnedTab.id {
+                    PinnedTabView()
+                        .environment(\.openRoute, OpenRouteAction { route, title in app.openInNewTab(route, title: title) })
+                } else {
+                    BrowserTabContentView(tab: app.activeTab)
+                }
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -46,11 +48,6 @@ struct RootView: View {
             ToolbarItemGroup(placement: .navigation) {
                 BrowserHistoryControls(tab: app.activeTab)
             }
-            #if !os(macOS)
-            ToolbarItem(placement: .principal) {
-                BrowserTabStrip()
-            }
-            #endif
         }
         .background {
             #if os(macOS)
@@ -94,6 +91,15 @@ struct RootView: View {
         case .library: return "Library"
         case .sources: return "Sources"
         }
+    }
+
+    private var browserTabItems: [BrowserTabItem] {
+        [BrowserTabItem(id: model.pinnedTab.id, title: "Home", isPinned: true)]
+            + model.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) }
+    }
+
+    private var activeTabBinding: Binding<UUID> {
+        Binding(get: { model.activeTabID }, set: { model.activeTabID = $0 })
     }
 }
 

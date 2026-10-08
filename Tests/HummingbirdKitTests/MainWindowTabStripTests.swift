@@ -17,19 +17,24 @@ final class MainWindowTabStripTests: XCTestCase {
         model.openNewTab()
         let contentID = model.activeTabID
         let root = widgetFromOpaque(gtkRenderView(RootView().environment(model)))
+        XCTAssertNil(findTitlebar(in: root),
+                     "the WindowGroup host must not discover and detach chrome from AdwTabOverview")
         let window = gtk_window_new()!
         let win = UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self)
         gtk_window_set_child(win, root)
-        let titlebar = try XCTUnwrap(findTitlebar(in: root))
-        gtk_window_set_titlebar(win, titlebar)
         gtk_window_set_default_size(win, 1280, 720)
         gtk_widget_set_visible(window, 1)
         defer { gtk_window_destroy(win) }
         pump()
 
-        let tabBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: titlebar))
-        let overviewButton = try XCTUnwrap(findFirst(ofType: "AdwTabButton", in: titlebar))
         let overview = try XCTUnwrap(findFirst(ofType: "AdwTabOverview", in: root))
+        XCTAssertEqual(gtk_window_get_child(win), overview,
+                       "AdwTabOverview must be the GtkWindow's top-level child")
+        XCTAssertNil(gtk_window_get_titlebar(win),
+                     "AdwTabOverview owns the window chrome; GtkWindow must not detach a titlebar")
+        let toolbarView = try XCTUnwrap(findFirst(ofType: "AdwToolbarView", in: overview))
+        let tabBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: toolbarView))
+        let overviewButton = try XCTUnwrap(findFirst(ofType: "AdwTabButton", in: toolbarView))
         XCTAssertNotNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: root),
                         "the pinned app sections use SwiftUI's sidebarAdaptable tab style")
         let tabView = try XCTUnwrap(swift_adw_tab_bar_get_view(tabBar))
@@ -45,9 +50,9 @@ final class MainWindowTabStripTests: XCTestCase {
                         "the selected overview card must own the rendered tab content")
         XCTAssertEqual(swift_adw_tab_view_get_selected_page(tabView), contentPage)
         let principalRow = try XCTUnwrap(ancestor(withCSSClass: "toolbar", from: tabBar))
-        let header = try XCTUnwrap(findFirst(ofType: "GtkHeaderBar", in: titlebar))
+        let header = try XCTUnwrap(findFirst(ofType: "GtkHeaderBar", in: toolbarView))
         XCTAssertNotNil(ancestor(ofType: "GtkHeaderBar", from: overviewButton),
-                        "the overview button belongs in the top CSD row with the window controls")
+                        "the overview button belongs in the embedded top row with the window controls")
         XCTAssertEqual(gtk_widget_activate(overviewButton), 1)
         pump()
         XCTAssertEqual(swift_adw_tab_overview_get_open(overview), 1,
@@ -56,32 +61,32 @@ final class MainWindowTabStripTests: XCTestCase {
         XCTAssertNotNil(findLabel("New Tab", in: header),
                         "the selected tab title belongs in the native window header")
         XCTAssertEqual(String(cString: try XCTUnwrap(gtk_window_get_title(win))), "New Tab")
-        if let nestedSlot = findNestedTitlebarSlot(in: titlebar) {
+        if let nestedSlot = findNestedTitlebarSlot(in: toolbarView) {
             XCTAssertNil(gtk_widget_get_first_child(nestedSlot),
                          "the page title must not create a row underneath the browser tab bar")
         }
         XCTAssertGreaterThanOrEqual(gtk_widget_get_height(principalRow), gtk_widget_get_height(header),
                                     "the native AdwTabBar must retain at least header-bar vertical rhythm")
-        let titlebarHeight = gtk_widget_get_height(titlebar)
+        let toolbarHeight = gtk_widget_get_height(toolbarView)
         swift_adw_tab_view_set_selected_page(tabView, homePage)
         pump()
         XCTAssertEqual(model.activeTabID, model.pinnedTab.id)
         XCTAssertNotEqual(model.activeTabID, contentID)
         XCTAssertEqual(String(cString: try XCTUnwrap(gtk_window_get_title(win))), "Home")
 
-        let updatedTitlebar = try XCTUnwrap(gtk_window_get_titlebar(win))
-        if let nestedSlot = findNestedTitlebarSlot(in: updatedTitlebar) {
+        let updatedToolbar = try XCTUnwrap(findFirst(ofType: "AdwToolbarView", in: overview))
+        if let nestedSlot = findNestedTitlebarSlot(in: updatedToolbar) {
             XCTAssertEqual(gtk_widget_get_visible(nestedSlot), 0,
                            "Home's hidden Back button must not leave a blank titlebar row")
             XCTAssertEqual(gtk_widget_get_height(nestedSlot), 0,
                            "the empty nested navigation row must consume no vertical space")
         }
-        let updatedBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: updatedTitlebar))
+        let updatedBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: updatedToolbar))
         let updatedTabView = try XCTUnwrap(swift_adw_tab_bar_get_view(updatedBar))
         XCTAssertEqual(swift_adw_tab_view_get_selected_page(updatedTabView),
                        swift_adw_tab_view_get_nth_page(updatedTabView, 0))
-        XCTAssertEqual(gtk_widget_get_height(updatedTitlebar), titlebarHeight,
-                       "switching to Home must not resize the CSD tab row")
+        XCTAssertEqual(gtk_widget_get_height(updatedToolbar), toolbarHeight,
+                       "switching to Home must not resize the overview's window contents")
         let updatedContentPage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(updatedTabView, 1))
         swift_adw_tab_view_close_page(updatedTabView, updatedContentPage)
         pump()

@@ -316,7 +316,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
                   let inlineController,
                   let presenter = presentingController(from: inlineController) else { return }
 
-            let controller = AVPlayerViewController()
+            let controller = FullscreenPlayerViewController()
             controller.player = (model.backend as? AVMediaBackend)?.player
             controller.showsPlaybackControls = false
             controller.allowsPictureInPicturePlayback = true
@@ -325,11 +325,16 @@ struct PlayerSurface: UIViewControllerRepresentable {
             controller.modalPresentationCapturesStatusBarAppearance = true
             #endif
 
-            guard let container = controller.contentOverlayView else { return }
             let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
             overlay.view.backgroundColor = .clear
             controller.addChild(overlay)
             overlay.view.translatesAutoresizingMaskIntoConstraints = false
+            // AVPlayerViewController's contentOverlayView belongs to AVKit's
+            // own focus environment. On tvOS its container wins focus during
+            // presentation, leaving interactive SwiftUI content unreachable.
+            // Install controls above the player root so they participate in
+            // the presented controller's focus hierarchy instead.
+            let container = controller.view!
             container.addSubview(overlay.view)
             NSLayoutConstraint.activate([
                 overlay.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -338,12 +343,16 @@ struct PlayerSurface: UIViewControllerRepresentable {
                 overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
             overlay.didMove(toParent: controller)
+            controller.controlsController = overlay
 
             fullscreenController = controller
             overlayController = overlay
             inlineController.player = nil
             model.fullscreenDidChange(true)
-            presenter.present(controller, animated: true)
+            presenter.present(controller, animated: true) {
+                controller.setNeedsFocusUpdate()
+                controller.updateFocusIfNeeded()
+            }
             controller.presentationController?.delegate = self
         }
 
@@ -376,6 +385,21 @@ struct PlayerSurface: UIViewControllerRepresentable {
         }
     }
 }
+
+#if os(tvOS)
+/// AVPlayerViewController otherwise prefers its own full-screen container,
+/// which is focusable even when the native playback controls are disabled.
+@MainActor
+private final class FullscreenPlayerViewController: AVPlayerViewController {
+    weak var controlsController: UIViewController?
+
+    override var preferredFocusEnvironments: [any UIFocusEnvironment] {
+        controlsController.map { [$0] } ?? super.preferredFocusEnvironments
+    }
+}
+#else
+private typealias FullscreenPlayerViewController = AVPlayerViewController
+#endif
 
 @MainActor
 private struct FullscreenPlayerControls: View {

@@ -30,6 +30,17 @@ final class MainWindowTabStripTests: XCTestCase {
         let contentLabel = try XCTUnwrap(findLabel("New Tab", in: titlebar))
         let homeButton = try XCTUnwrap(ancestor(ofType: "GtkButton", from: homeLabel))
         let contentButton = try XCTUnwrap(ancestor(ofType: "GtkButton", from: contentLabel))
+        let principalRow = try XCTUnwrap(ancestor(withCSSClass: "toolbar", from: homeButton))
+        let header = try XCTUnwrap(findFirst(ofType: "GtkHeaderBar", in: titlebar))
+        XCTAssertEqual(gtk_widget_get_height(principalRow), gtk_widget_get_height(header),
+                       "the tab row should follow the GTK theme's native header height")
+        var buttonOrigin = graphene_point_t(x: 0, y: 0)
+        var buttonInRow = graphene_point_t()
+        XCTAssertNotEqual(gtk_widget_compute_point(homeButton, principalRow, &buttonOrigin, &buttonInRow), 0)
+        let topMargin = Double(buttonInRow.y)
+        let bottomMargin = Double(gtk_widget_get_height(principalRow) - gtk_widget_get_height(homeButton)) - topMargin
+        XCTAssertGreaterThanOrEqual(topMargin, 8)
+        XCTAssertGreaterThanOrEqual(bottomMargin, 8)
         let inactiveHeight = gtk_widget_get_height(homeButton)
         let activeHeight = gtk_widget_get_height(contentButton)
         let titlebarHeight = gtk_widget_get_height(titlebar)
@@ -99,6 +110,25 @@ final class MainWindowTabStripTests: XCTestCase {
         while let node = current {
             if typeName(node) == expected { return node }
             current = gtk_widget_get_parent(node)
+        }
+        return nil
+    }
+
+    private func ancestor(withCSSClass name: String, from widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
+        var current: UnsafeMutablePointer<GtkWidget>? = widget
+        while let node = current {
+            if gtk_widget_has_css_class(node, name) != 0 { return node }
+            current = gtk_widget_get_parent(node)
+        }
+        return nil
+    }
+
+    private func findFirst(ofType expected: String, in widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
+        if typeName(widget) == expected { return widget }
+        var child = gtk_widget_get_first_child(widget)
+        while let current = child {
+            if let found = findFirst(ofType: expected, in: current) { return found }
+            child = gtk_widget_get_next_sibling(current)
         }
         return nil
     }

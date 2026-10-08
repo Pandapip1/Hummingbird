@@ -15,14 +15,7 @@ struct RootView: View {
         @Bindable var app = model
         @Bindable var plugins = model.plugins
         BrowserTabContainer(items: browserTabItems, selection: activeTabBinding, onClose: { app.closeTab($0) }) {
-            Group {
-                if app.activeTabID == app.pinnedTab.id {
-                    PinnedTabView(showingTabOverview: $showingTabOverview)
-                        .environment(\.openRoute, OpenRouteAction { route, title in app.openInNewTab(route, title: title) })
-                } else {
-                    BrowserTabContentView(tab: app.activeTab, showingTabOverview: $showingTabOverview)
-                }
-            }
+            BrowserTabContentView(tab: app.activeTab, showingTabOverview: $showingTabOverview)
         }
         #if !os(macOS)
         .fullScreenCover(isPresented: $showingTabOverview) {
@@ -35,12 +28,17 @@ struct RootView: View {
         // leading edge on desktop. macOS seats the tab strip below the toolbar
         // via NSTitlebarAccessoryViewController (Safari-style separate row);
         // other desktop platforms keep tabs in the .principal toolbar slot.
-        #if !os(iOS) && !os(tvOS)
         .toolbar {
+            #if !os(iOS) && !os(tvOS)
+            ToolbarItem(placement: .navigation) {
+                AppSectionMenu()
+            }
             ToolbarItemGroup(placement: .navigation) {
                 BrowserHistoryControls(tab: app.activeTab)
             }
+            #endif
         }
+        #if !os(iOS) && !os(tvOS)
         .background {
             #if os(macOS) && !BACKEND_GTK
             TabBarAccessoryInstaller(app: model).frame(width: 0, height: 0)
@@ -75,19 +73,11 @@ struct RootView: View {
     }
 
     private var windowTitle: String {
-        guard model.activeTabID == model.pinnedTab.id else { return model.activeTab.title }
-        switch model.selectedTab {
-        case .home: return "Home"
-        case .subscriptions: return "Subscriptions"
-        case .search: return "Search"
-        case .library: return "Library"
-        case .sources: return "Sources"
-        }
+        model.activeTab.title
     }
 
     private var browserTabItems: [BrowserTabItem] {
-        [BrowserTabItem(id: model.pinnedTab.id, title: "Home", isPinned: true)]
-            + model.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) }
+        model.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) }
     }
 
     private var activeTabBinding: Binding<UUID> {
@@ -95,33 +85,27 @@ struct RootView: View {
     }
 }
 
-/// The pinned tab: the app's five bottom-tab sections, unchanged from before
-/// browser tabs existed. `Route`-browsing content opened from here (a video,
-/// a channel, …) leaves this tab entirely and opens a new one.
 @MainActor
-private struct PinnedTabView: View {
+struct AppSectionMenu: View {
     @Environment(AppModel.self) private var app
-    @Binding var showingTabOverview: Bool
 
     var body: some View {
-        @Bindable var app = app
-        TabView(selection: $app.selectedTab) {
-            HomeView().tabItem { Label("Home", systemImage: "house") }.tag(AppTab.home)
-            SubscriptionsView().tabItem { Label("Subscriptions", systemImage: "rectangle.stack.person.crop") }.tag(AppTab.subscriptions)
-            SearchView().tabItem { Label("Search", systemImage: "magnifyingglass") }.tag(AppTab.search)
-            LibraryView().tabItem { Label("Library", systemImage: "books.vertical") }.tag(AppTab.library)
-            SourcesView().tabItem { Label("Sources", systemImage: "puzzlepiece.extension") }.tag(AppTab.sources)
+        Menu {
+            sectionButton("Home", systemImage: "house", route: .home)
+            sectionButton("Subscriptions", systemImage: "rectangle.stack.person.crop", route: .subscriptions)
+            sectionButton("Search", systemImage: "magnifyingglass", route: .search)
+            sectionButton("Library", systemImage: "books.vertical", route: .library)
+            sectionButton("Sources", systemImage: "puzzlepiece.extension", route: .sources)
+        } label: {
+            Image(systemName: "plus.square")
         }
-        .tabViewStyle(.sidebarAdaptable)
-        #if os(iOS)
-        .tabViewBottomAccessory {
-            MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+        .accessibilityLabel("Open section in new tab")
+    }
+
+    private func sectionButton(_ title: String, systemImage: String, route: Route) -> some View {
+        Button { app.openSection(route, title: title) } label: {
+            Label(title, systemImage: systemImage)
         }
-        #elseif os(tvOS)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
-        }
-        #endif
     }
 }
 
@@ -132,26 +116,78 @@ private struct PinnedTabView: View {
 /// same tab's history rather than opening yet another tab.
 @MainActor
 struct BrowserTabContentView: View {
+    @Environment(AppModel.self) private var app
     let tab: BrowserTab
     @Binding var showingTabOverview: Bool
 
     var body: some View {
         Group {
             if let route = tab.current {
-                RouteContent(route: route)
+                RouteContent(
+                    route: route,
+                    player: app.player(forTab: tab.id),
+                    shouldKeepPlaybackWhenHidden: {
+                        tab.current == route && app.contentTabs.contains { $0.id == tab.id }
+                    }
+                )
                     .id(tab.historyIndexIdentity)
-                    #if os(iOS) || os(tvOS)
+                    #if os(iOS)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
                     }
                     #endif
             } else {
-                PinnedTabView(showingTabOverview: $showingTabOverview)
+                NavigationStack {
+                    ContentUnavailableView("New Tab", systemImage: "plus.square", description: Text("Choose a section from the menu."))
+                        .navigationTitle("New Tab")
+                }
+                #if os(iOS)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+                }
+                #endif
             }
         }
+        #if os(tvOS)
+        .overlay(alignment: .top) {
+            TVBrowserToolbar(tab: tab, showingTabOverview: $showingTabOverview)
+        }
+        #endif
         .environment(\.openRoute, OpenRouteAction { route, title in tab.push(route, title: title) })
     }
 }
+
+#if os(tvOS)
+@MainActor
+private struct TVBrowserToolbar: View {
+    @Environment(AppModel.self) private var app
+    let tab: BrowserTab
+    @Binding var showingTabOverview: Bool
+
+    var body: some View {
+        HStack(spacing: 18) {
+            AppSectionMenu()
+            Button { tab.goBack() } label: { Image(systemName: "chevron.left") }
+                .disabled(!tab.canGoBack)
+                .accessibilityLabel("Back")
+            Button { tab.goForward() } label: { Image(systemName: "chevron.right") }
+                .disabled(!tab.canGoForward)
+                .accessibilityLabel("Forward")
+            Spacer()
+            Button { showingTabOverview = true } label: {
+                Label(tabCountLabel, systemImage: "square.on.square")
+            }
+            .accessibilityLabel("Show \(tabCountLabel)")
+        }
+        .padding(.horizontal, 48)
+        .padding(.vertical, 12)
+    }
+
+    private var tabCountLabel: String {
+        "\(app.contentTabs.count) \(app.contentTabs.count == 1 ? "tab" : "tabs")"
+    }
+}
+#endif
 
 /// The current browser tab's own history, placed in the desktop window
 /// toolbar rather than repeated inside every route's content.
@@ -177,8 +213,7 @@ private struct BrowserTabStrip: View {
 
     var body: some View {
         BrowserTabBar(
-            items: [BrowserTabItem(id: app.pinnedTab.id, title: "Home", isPinned: true)]
-                + app.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) },
+            items: app.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) },
             selection: Binding(
                 get: { app.activeTabID },
                 set: { app.activeTabID = $0 }

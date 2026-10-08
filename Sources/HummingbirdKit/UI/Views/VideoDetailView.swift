@@ -9,19 +9,23 @@ import AppKit
 struct VideoDetailView: View {
     let url: String
     let preview: ContentItem?
+    let shouldKeepPlaybackWhenHidden: () -> Bool
 
     @Environment(AppModel.self) private var app
-    @State private var player = PlayerModel()
+    @State private var player: PlayerModel
     @State private var state: LoadState = .loading
     @State private var tab: DetailTab = .about
     @State private var showPlaylistPicker = false
     @State private var activeURL: String
     @State private var activePreview: ContentItem?
 
-    nonisolated init(url: String, preview: ContentItem?) {
+    init(url: String, preview: ContentItem?, player: PlayerModel,
+         shouldKeepPlaybackWhenHidden: @escaping () -> Bool) {
         self.url = url
         self.preview = preview
-        _activeURL = State(wrappedValue: url)
+        self.shouldKeepPlaybackWhenHidden = shouldKeepPlaybackWhenHidden
+        _player = State(wrappedValue: player)
+        _activeURL = State(wrappedValue: player.loadedURL ?? url)
         _activePreview = State(wrappedValue: preview)
     }
 
@@ -63,8 +67,18 @@ struct VideoDetailView: View {
             await load()
         }
         .onDisappear {
-            player.onPlaybackEnded = nil
-            player.teardown()
+            let disappearingURL = activeURL
+            Task { @MainActor in
+                // Let tab navigation update its route before deciding whether
+                // this is merely a tab switch or the page really went away.
+                await Task.yield()
+                guard !shouldKeepPlaybackWhenHidden() else { return }
+                // A replacement video view may already have reused this tab's
+                // player. Never let the outgoing page tear down the new media.
+                guard player.loadedURL == disappearingURL else { return }
+                player.onPlaybackEnded = nil
+                player.teardown()
+            }
         }
         .sheet(isPresented: $showPlaylistPicker) {
             if case .video(_, let d) = state { PlaylistPicker(video: SavedVideo(d.item)) }
@@ -74,9 +88,10 @@ struct VideoDetailView: View {
     private func load() async {
         state = .loading
         var displayedCache = false
+        let playerAlreadyLoaded = player.hasMedia && player.loadedURL == activeURL
         if let (runtime, cached) = await app.platform.cachedDetails(url: activeURL) {
             displayedCache = true
-            await display(cached, runtime: runtime, loadPlayer: true)
+            await display(cached, runtime: runtime, loadPlayer: !playerAlreadyLoaded)
         }
         do {
             let (rt, details) = try await app.platform.details(url: activeURL)
@@ -91,7 +106,9 @@ struct VideoDetailView: View {
         case .video(let video):
             state = .video(runtime, video)
             app.playbackQueue.beginPlaying(SavedVideo(video.item))
-            if loadPlayer { await player.load(details: video, runtime: runtime, library: app.library) }
+            if loadPlayer {
+                await player.load(details: video, runtime: runtime, library: app.library, sourceURL: activeURL)
+            }
         case .post(let post): state = .post(post)
         case .other(let item): state = .unsupported(item)
         }

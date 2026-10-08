@@ -142,7 +142,8 @@ struct NoSourcesView: View {
         } description: {
             Text("Hummingbird gets its content from plugins. Add a source by pasting its URL or scanning its QR code.")
         } actions: {
-            Button("Add a source") { app.selectedTab = .sources }.buttonStyle(.borderedProminent)
+            Button("Add a source") { app.openSection(.sources, title: "Sources") }
+                .buttonStyle(.borderedProminent)
         }
     }
 }
@@ -153,18 +154,31 @@ struct NoSourcesView: View {
 @MainActor
 struct RouteContent: View {
     let route: Route
+    let player: PlayerModel
+    let shouldKeepPlaybackWhenHidden: () -> Bool
     var body: some View {
-        switch route {
-        case .content(let url): VideoDetailView(url: url, preview: nil)
-        case .item(let item):
-            switch item.kind {
-            case .channel: ChannelView(url: item.url)
-            case .playlist: PlaylistView(url: item.url)
-            default: VideoDetailView(url: item.openURL, preview: item)
+        Group {
+            switch route {
+            case .home: HomeView()
+            case .subscriptions: SubscriptionsView()
+            case .search: SearchView()
+            case .library: LibraryView()
+            case .sources: SourcesView()
+            case .content(let url):
+                VideoDetailView(url: url, preview: nil, player: player,
+                                shouldKeepPlaybackWhenHidden: shouldKeepPlaybackWhenHidden)
+            case .item(let item):
+                switch item.kind {
+                case .channel: ChannelView(url: item.url)
+                case .playlist: PlaylistView(url: item.url)
+                default:
+                    VideoDetailView(url: item.openURL, preview: item, player: player,
+                                    shouldKeepPlaybackWhenHidden: shouldKeepPlaybackWhenHidden)
+                }
+            case .channel(let url): ChannelView(url: url)
+            case .playlist(let url): PlaylistView(url: url)
+            case .plugin(let id): PluginDetailView(pluginID: id)
             }
-        case .channel(let url): ChannelView(url: url)
-        case .playlist(let url): PlaylistView(url: url)
-        case .plugin(let id): PluginDetailView(pluginID: id)
         }
     }
 }

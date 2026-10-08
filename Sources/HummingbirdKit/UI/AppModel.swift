@@ -2,8 +2,6 @@ import Foundation
 import SwiftOpenUI
 import Observation
 
-enum AppTab: Hashable { case home, subscriptions, search, library, sources }
-
 /// Owns the long-lived services and wires them together.
 @MainActor
 @Observable
@@ -15,20 +13,17 @@ final class AppModel {
     let homeFeed: FeedModel
     let playbackQueue: PlaybackQueue
     let searchHistory: SearchHistory
-    var selectedTab: AppTab = .home
     var incomingCredentialPairing: CredentialPairingRequest?
 
-    /// The pinned, uncloseable tab holding the five bottom-tab sections. It
-    /// has no history of its own (see `BrowserTab`'s doc comment) — only its
-    /// `id` is used, to tell `activeTabID` apart from an ordinary content tab.
-    let pinnedTab = BrowserTab.hummingbirdTab(isPinned: true)
-    /// Ordinary browser tabs opened from `Route`-browsing content (a video, a
-    /// channel, a playlist, a plugin page). Order is tab-strip/switcher order.
+    /// Ordinary browser tabs, including app sections opened from the menu.
+    /// Order is tab-strip/switcher order.
     var contentTabs: [BrowserTab] = []
     var activeTabID: BrowserTab.ID
 
+    @ObservationIgnored private var tabPlayers: [BrowserTab.ID: PlayerModel] = [:]
+
     var activeTab: BrowserTab {
-        contentTabs.first { $0.id == activeTabID } ?? pinnedTab
+        contentTabs.first { $0.id == activeTabID } ?? contentTabs[0]
     }
 
     /// Opens `route` in a new content tab and switches to it. The `openRoute`
@@ -48,13 +43,31 @@ final class AppModel {
         activeTabID = tab.id
     }
 
+    /// Opens one of the app's top-level sections as an ordinary browser tab.
+    func openSection(_ route: Route, title: String) {
+        openInNewTab(route, title: title)
+    }
+
     func closeTab(_ id: BrowserTab.ID) {
-        guard id != pinnedTab.id else { return }
         guard let index = contentTabs.firstIndex(where: { $0.id == id }) else { return }
+        tabPlayers.removeValue(forKey: id)?.teardown()
         contentTabs.remove(at: index)
         guard activeTabID == id else { return }
-        // Land on a neighboring content tab if one remains, else back to pinned.
-        activeTabID = contentTabs[safe: index]?.id ?? contentTabs[safe: index - 1]?.id ?? pinnedTab.id
+        if let neighbor = contentTabs[safe: index] ?? contentTabs[safe: index - 1] {
+            activeTabID = neighbor.id
+        } else {
+            openNewTab()
+        }
+    }
+
+    /// Playback belongs to the browser tab, not to its currently mounted view.
+    /// SwiftUI replaces that view when another tab is selected, but the media
+    /// session should continue until this tab navigates elsewhere or is closed.
+    func player(forTab id: BrowserTab.ID) -> PlayerModel {
+        if let player = tabPlayers[id] { return player }
+        let player = PlayerModel()
+        tabPlayers[id] = player
+        return player
     }
 
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
@@ -68,7 +81,10 @@ final class AppModel {
         self.platform = platform
         self.playbackQueue = PlaybackQueue()
         self.searchHistory = SearchHistory()
-        self.activeTabID = pinnedTab.id
+        let initialTab = BrowserTab.hummingbirdTab()
+        initialTab.push(.home, title: "Home")
+        self.contentTabs = [initialTab]
+        self.activeTabID = initialTab.id
         self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
         self.homeFeed = FeedModel(
             initialItems: library.homeCache.map(ContentItem.init(saved:)),

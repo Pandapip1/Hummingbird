@@ -21,17 +21,19 @@ struct MobileBrowserToolbar: View {
                 .disabled(!app.activeTab.canGoForward)
                 .accessibilityLabel("Forward")
             Spacer()
+            AppSectionMenu()
+                .frame(width: 44, height: 44)
             Button { showingTabOverview = true } label: {
                 tabBarButtonLabel {
                     ZStack {
                         Image(systemName: "square.on.square")
-                        Text("\(app.contentTabs.count + 1)")
+                        Text("\(app.contentTabs.count)")
                             .font(.system(size: 9, weight: .semibold))
                             .offset(y: -1)
                     }
                 }
             }
-            .accessibilityLabel("Show \(app.contentTabs.count + 1) tabs")
+            .accessibilityLabel("Show \(app.contentTabs.count) tabs")
         }
         .font(.headline)
         .buttonStyle(.plain)
@@ -56,7 +58,7 @@ struct MobileTabOverview: View {
                 let columnCount = max(2, Int(geometry.size.width / 190))
                 let cardWidth = (geometry.size.width - CGFloat(32) - CGFloat(columnCount - 1) * CGFloat(16))
                     / CGFloat(columnCount)
-                let tabCount = app.contentTabs.count + 1
+                let tabCount = app.contentTabs.count
                 let rowCount = (tabCount + columnCount - 1) / columnCount
                 ScrollView {
                     VStack(spacing: 18) {
@@ -64,18 +66,8 @@ struct MobileTabOverview: View {
                             HStack(spacing: 16) {
                                 ForEach(0..<columnCount, id: \.self) { column in
                                     let index = row * columnCount + column
-                                    if index == 0 {
-                                        TabOverviewCard(
-                                            width: cardWidth,
-                                            title: "Home",
-                                            systemImage: "house.fill",
-                                            thumbnailURL: nil,
-                                            isActive: app.activeTabID == app.pinnedTab.id,
-                                            onSelect: { select(app.pinnedTab.id) },
-                                            onClose: nil
-                                        )
-                                    } else if app.contentTabs.indices.contains(index - 1) {
-                                        let tab = app.contentTabs[index - 1]
+                                    if app.contentTabs.indices.contains(index) {
+                                        let tab = app.contentTabs[index]
                                         TabOverviewCard(
                                             width: cardWidth,
                                             title: tab.title,
@@ -95,7 +87,11 @@ struct MobileTabOverview: View {
                     .padding(16)
                 }
             }
+            #if os(tvOS)
+            .background(.thickMaterial)
+            #else
             .background(Color.secondary.opacity(0.08))
+            #endif
             .navigationTitle("Tabs")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -202,6 +198,11 @@ private extension BrowserTab {
 
     var previewSystemImage: String {
         switch current {
+        case .home: return "house"
+        case .subscriptions: return "rectangle.stack.person.crop"
+        case .search: return "magnifyingglass"
+        case .library: return "books.vertical"
+        case .sources: return "puzzlepiece.extension"
         case .item(let item):
             switch item.kind {
             case .playlist: return "list.bullet.rectangle"

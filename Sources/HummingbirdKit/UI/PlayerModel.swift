@@ -39,6 +39,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// The platform player. The view layer reads it to draw the video surface (see `PlayerSurface`).
     private(set) var backend: MediaBackend?
     var hasMedia: Bool { backend != nil && selected != nil }
+    private(set) var loadedURL: String?
     private(set) var options: [PlaybackOption] = []
     private(set) var selected: PlaybackOption?
     private(set) var errorMessage: String?
@@ -80,8 +81,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     // MARK: loading
 
-    func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore) async {
+    func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore, sourceURL: String) async {
         teardown()
+        loadedURL = sourceURL
         self.details = details
         self.subtitleSources = details.subtitles
         self.runtime = runtime
@@ -348,6 +350,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         removeFullscreenPresenter()
         backend?.stop()
         backend = nil
+        loadedURL = nil
         selected = nil
         playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil

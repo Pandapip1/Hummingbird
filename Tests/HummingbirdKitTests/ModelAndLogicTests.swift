@@ -9,6 +9,10 @@ final class ModelAndLogicTests: XCTestCase {
     @MainActor
     func testBrowserTabManagementCreatesSelectsAndClosesTabs() {
         let model = AppModel()
+        let home = model.activeTab
+        XCTAssertEqual(home.current, .home)
+        XCTAssertEqual(home.title, "Home")
+
         model.openNewTab()
         let blank = model.activeTab
         XCTAssertNil(blank.current)
@@ -17,20 +21,18 @@ final class ModelAndLogicTests: XCTestCase {
         let first = model.activeTab
         model.openInNewTab(.content("second"), title: "Second")
         let second = model.activeTab
-        XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, first.id, second.id])
-
-        model.activeTabID = model.pinnedTab.id
-        XCTAssertEqual(model.activeTab.id, model.pinnedTab.id)
-        XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, first.id, second.id],
-                       "selecting Home must not close or replace content tabs")
+        XCTAssertEqual(model.contentTabs.map(\.id), [home.id, blank.id, first.id, second.id])
 
         model.activeTabID = first.id
         model.closeTab(first.id)
-        XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, second.id])
+        XCTAssertEqual(model.contentTabs.map(\.id), [home.id, blank.id, second.id])
         XCTAssertEqual(model.activeTabID, second.id)
         model.closeTab(second.id)
         model.closeTab(blank.id)
-        XCTAssertEqual(model.activeTabID, model.pinnedTab.id)
+        XCTAssertEqual(model.activeTabID, home.id)
+        model.closeTab(home.id)
+        XCTAssertEqual(model.contentTabs.count, 1)
+        XCTAssertNil(model.activeTab.current, "closing the last tab must leave a blank tab")
     }
 
     @MainActor

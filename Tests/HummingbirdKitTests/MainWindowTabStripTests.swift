@@ -9,7 +9,7 @@ import SwiftOpenUI
 
 final class MainWindowTabStripTests: XCTestCase {
     @MainActor
-    func testRenderedHomeTabIsPickableAndRestoresPinnedContent() async throws {
+    func testRenderedSectionTabIsPickableAndAllTabsAreClosable() async throws {
         try TestDisplaySession.start()
         guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
 
@@ -38,19 +38,18 @@ final class MainWindowTabStripTests: XCTestCase {
         let toolbarView = try XCTUnwrap(findFirst(ofType: "AdwToolbarView", in: overview))
         let tabBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: toolbarView))
         let overviewButton = try XCTUnwrap(findFirst(ofType: "AdwTabButton", in: toolbarView))
-        XCTAssertNotNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: root),
-                        "the pinned app sections use SwiftUI's sidebarAdaptable tab style")
+        XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: root),
+                     "top-level sections must no longer render a nested TabView sidebar")
         let tabView = try XCTUnwrap(swift_adw_tab_bar_get_view(tabBar))
         XCTAssertEqual(swift_adw_tab_view_get_n_pages(tabView), 2)
         let homePage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(tabView, 0))
         let contentPage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(tabView, 1))
-        XCTAssertNotEqual(swift_adw_tab_page_get_pinned(homePage), 0)
+        XCTAssertEqual(swift_adw_tab_page_get_pinned(homePage), 0)
         XCTAssertEqual(swift_adw_tab_page_get_pinned(contentPage), 0)
         XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(homePage))), "Home")
         XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(contentPage))), "New Tab")
-        XCTAssertNotNil(findFirst(ofType: "AdwViewSwitcherSidebar",
-                                  in: try XCTUnwrap(swift_adw_tab_page_get_child(contentPage))),
-                        "the selected overview card must own the rendered tab content")
+        XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar",
+                               in: try XCTUnwrap(swift_adw_tab_page_get_child(contentPage))))
         XCTAssertEqual(swift_adw_tab_view_get_selected_page(tabView), contentPage)
         let principalRow = try XCTUnwrap(ancestor(withCSSClass: "toolbar", from: tabBar))
         let header = try XCTUnwrap(findFirst(ofType: "GtkHeaderBar", in: toolbarView))
@@ -73,7 +72,7 @@ final class MainWindowTabStripTests: XCTestCase {
         let toolbarHeight = gtk_widget_get_height(toolbarView)
         swift_adw_tab_view_set_selected_page(tabView, homePage)
         pump()
-        XCTAssertEqual(model.activeTabID, model.pinnedTab.id)
+        XCTAssertEqual(model.activeTabID, homePageID(model))
         XCTAssertNotEqual(model.activeTabID, contentID)
         XCTAssertEqual(String(cString: try XCTUnwrap(gtk_window_get_title(win))), "Home")
 
@@ -93,7 +92,12 @@ final class MainWindowTabStripTests: XCTestCase {
         let updatedContentPage = try XCTUnwrap(swift_adw_tab_view_get_nth_page(updatedTabView, 1))
         swift_adw_tab_view_close_page(updatedTabView, updatedContentPage)
         pump()
-        XCTAssertTrue(model.contentTabs.isEmpty, "AdwTabView close requests must reach AppModel")
+        XCTAssertEqual(model.contentTabs.count, 1, "AdwTabView close requests must reach AppModel")
+    }
+
+    @MainActor
+    private func homePageID(_ model: AppModel) -> UUID {
+        model.contentTabs.first { $0.current == .home }!.id
     }
 
     private func pump() {

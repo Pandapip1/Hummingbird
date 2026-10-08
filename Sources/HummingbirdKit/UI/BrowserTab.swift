@@ -6,11 +6,8 @@ import DynamicTabbingKit
 /// `Route`s, the way a real browser tab works — not a `NavigationStack`,
 /// which has no notion of "forward" once you've gone back.
 ///
-/// The app's five bottom-tab sections (Home, Subscriptions, Search, Library,
-/// Sources) live in a single pinned tab instead, which has no history of its
-/// own: `AppModel.pinnedTab` is a `BrowserTab` only so it can share `id`/
-/// `isPinned` bookkeeping with ordinary tabs, but its `history` stays empty
-/// and nothing pushes onto it. See the "browser-style tabs" TODO entry.
+/// App sections and content pages use the same tab/history model. Top-level
+/// sections are opened from the app menu as ordinary, reusable tabs.
 typealias BrowserTab = DynamicTab<Route>
 
 extension DynamicTab where Page == Route {
@@ -20,6 +17,11 @@ extension DynamicTab where Page == Route {
 
     private static func placeholderTitle(for route: Route) -> String {
         switch route {
+        case .home: return "Home"
+        case .subscriptions: return "Subscriptions"
+        case .search: return "Search"
+        case .library: return "Library"
+        case .sources: return "Sources"
         case .item(let item): return item.name.isEmpty ? "Video" : item.name
         case .content: return "Loading…"
         case .channel: return "Channel"

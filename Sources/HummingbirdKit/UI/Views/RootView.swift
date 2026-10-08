@@ -49,6 +49,11 @@ struct RootView: View {
                 LoginSheet(pluginID: loginTarget.value) { self.loginTarget = nil }
             }
         }
+        .overlay {
+            if let request = app.incomingCredentialPairing {
+                PairedDeviceLoginSheet(request: request) { app.incomingCredentialPairing = nil }
+            }
+        }
         .overlay(alignment: .top) { ToastBanner() }
         .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request) }
         .alert("Login required", isPresented: loginBinding, presenting: model.plugins.pendingLogin) { id in
@@ -427,5 +432,107 @@ struct LoginSheet: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
+    }
+}
+
+/// Runs a new isolated login for a QR pairing request. Credentials already
+/// stored on the scanning device are deliberately neither loaded nor changed.
+@MainActor
+private struct PairedDeviceLoginSheet: View {
+    @Environment(AppModel.self) private var app
+    let request: CredentialPairingRequest
+    let onClose: () -> Void
+    @State private var config: PluginConfig?
+    @State private var error: String?
+    @State private var sending = false
+    @State private var verified = false
+    @State private var remoteAccepted = false
+
+    var body: some View {
+        Group {
+            if let error {
+                VStack(spacing: 16) {
+                    ContentUnavailableView("Login unavailable", systemImage: "exclamationmark.triangle",
+                                           description: Text(error))
+                    Button("Close", action: onClose)
+                }
+            } else if !verified {
+                VStack(spacing: 20) {
+                    Text("Verify this sign-in").font(.title2)
+                    Text(request.verificationEmoji)
+                        .font(.title2)
+                        .accessibilityLabel("Verification emoji: \(request.verificationEmoji)")
+                    Text("Check that these emoji match the TV. Continue only if every emoji is the same.")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("They don’t match", role: .destructive) {
+                            Task { try? await request.reject(); onClose() }
+                        }
+                        Button("They match") { verified = true }
+                    }
+                }
+                .padding()
+            } else if !remoteAccepted {
+                VStack(spacing: 16) {
+                    ProgressView("Waiting for the TV to confirm…")
+                    Button("Cancel pairing", role: .cancel) {
+                        Task { try? await request.reject(); onClose() }
+                    }
+                }
+            } else if let config, let spec = WebAuthSpec.login(for: config) {
+                WebAuthSheet(spec: spec) { auth in
+                    guard let auth else { onClose(); return }
+                    sending = true
+                    Task {
+                        do {
+                            try await request.send(auth)
+                            onClose()
+                        } catch {
+                            self.error = error.localizedDescription
+                            sending = false
+                        }
+                    }
+                }
+                .overlay {
+                    if sending { ProgressView("Sending credentials…") }
+                }
+            } else {
+                ProgressView("Preparing secure login…")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
+        .task(id: verified && remoteAccepted) {
+            guard verified, remoteAccepted, config == nil, error == nil else { return }
+            do {
+                let fetched = try await app.plugins.fetchConfig(from: request.pluginSourceURL)
+                guard fetched.id == request.pluginID else {
+                    throw PairingError.invalidRequest
+                }
+                config = fetched
+            }
+            catch { self.error = error.localizedDescription }
+        }
+        .task {
+            while !Task.isCancelled && !remoteAccepted && error == nil {
+                do {
+                    switch try await request.remoteStatus() {
+                    case .accepted:
+                        remoteAccepted = true
+                        return
+                    case .rejected:
+                        error = "The TV reported that the verification emoji did not match."
+                        return
+                    case .waiting:
+                        break
+                    }
+                } catch {
+                    // A transient LAN failure must not dismiss a login the user
+                    // has not yet accepted or rejected.
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 }

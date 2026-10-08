@@ -18,6 +18,7 @@ public struct HummingbirdRoot: View {
         RootView()
             .environment(model)
             .task { await model.plugins.checkForUpdates() }
+            .onOpenURL { model.handleIncomingURL($0) }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { model.library.flushHistory(); model.library.persistSubscriptionState() }
             }
@@ -25,6 +26,7 @@ public struct HummingbirdRoot: View {
         RootView()
             .environment(model)
             .task { await model.plugins.checkForUpdates() }
+            .onOpenURL { model.handleIncomingURL($0) }
         #endif
     }
 }

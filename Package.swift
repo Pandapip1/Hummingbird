@@ -30,8 +30,12 @@ var targets: [Target] = [
             "CSQLite",
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),
-            .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: nonApple)),
+            .product(name: "Crypto", package: "swift-crypto"),
             .product(name: "_CryptoExtras", package: "swift-crypto", condition: .when(platforms: nonApple)),
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOHTTP1", package: "swift-nio"),
+            .product(name: "NIOPosix", package: "swift-nio"),
+            .product(name: "QRCodeGenerator", package: "swift-qrcode-generator"),
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
             .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
         ],
@@ -80,6 +84,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
+        .package(url: "https://github.com/fwcd/swift-qrcode-generator.git", from: "1.0.0"),
         .package(path: "Vendor/SwiftOpenUI"),
     ],
     targets: targets

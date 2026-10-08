@@ -115,6 +115,20 @@ final class PluginManager {
 
     // MARK: install
 
+    /// Fetches only the signed-in browser configuration for a one-time remote
+    /// login. It does not install the plugin or read credentials on this device.
+    func fetchConfig(from rawURL: URL) async throws -> PluginConfig {
+        guard ["http", "https"].contains(rawURL.scheme?.lowercased()) else { throw InstallError.badURL }
+        let data: Data
+        do { data = try await download(rawURL) } catch { throw InstallError.download(error.localizedDescription) }
+        var config: PluginConfig
+        do { config = try JSONDecoder().decode(PluginConfig.self, from: data) }
+        catch { throw InstallError.invalidConfig(error.localizedDescription) }
+        if config.sourceUrl == nil || config.sourceUrl?.isEmpty == true { config.sourceUrl = rawURL.absoluteString }
+        guard config.authentication != nil else { throw InstallError.invalid("This plugin does not support signing in.") }
+        return config
+    }
+
     /// Downloads and checks a plugin. Nothing is stored until `commit` is called.
     func prepareInstall(from rawURL: String) async throws -> InstallPreview {
         var text = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)

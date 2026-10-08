@@ -8,6 +8,8 @@ import SwiftOpenUI
 /// What a login or captcha web view should wait for before it hands credentials back.
 struct WebAuthSpec {
     var title: String
+    var pluginID: String? = nil
+    var pluginSourceURL: URL? = nil
     var startURL: URL?
     var html: String?
     var userAgent: String?
@@ -76,7 +78,9 @@ struct WebAuthSpec {
 
     static func login(for plugin: PluginConfig) -> WebAuthSpec? {
         guard let a = plugin.authentication, let url = URL(string: a.loginUrl) else { return nil }
-        return WebAuthSpec(title: "Log in to \(plugin.name)", startURL: url, html: nil, userAgent: a.userAgent,
+        return WebAuthSpec(title: "Log in to \(plugin.name)", pluginID: plugin.id,
+                           pluginSourceURL: plugin.sourceUrl.flatMap(URL.init(string:)),
+                           startURL: url, html: nil, userAgent: a.userAgent,
                            completionURL: a.completionUrl, allowedDomains: a.allowedDomains,
                            headersToFind: a.headersToFind ?? [], domainHeadersToFind: a.domainHeadersToFind ?? [:],
                            cookiesToFind: a.cookiesToFind ?? [], cookiesExclOthers: a.cookiesExclOthers ?? true,
@@ -89,7 +93,8 @@ struct WebAuthSpec {
         guard start != nil || body != nil else { return nil }
         // A captcha page's own body is only used when the plugin did not configure a captcha URL.
         let html = c?.captchaUrl == nil ? body : nil
-        return WebAuthSpec(title: "Captcha for \(plugin.name)", startURL: start, html: html, userAgent: c?.userAgent,
+        return WebAuthSpec(title: "Captcha for \(plugin.name)", pluginID: nil, pluginSourceURL: nil,
+                           startURL: start, html: html, userAgent: c?.userAgent,
                            completionURL: c?.completionUrl, allowedDomains: nil,
                            cookiesToFind: c?.cookiesToFind ?? [], cookiesExclOthers: c?.cookiesExclOthers ?? true,
                            hostAllowed: { plugin.allowsHost($0) })

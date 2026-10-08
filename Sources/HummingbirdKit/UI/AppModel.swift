@@ -23,6 +23,7 @@ final class AppModel {
     let playbackQueue: PlaybackQueue
     let searchHistory: SearchHistory
     var selectedTab: AppTab = .home
+    var incomingCredentialPairing: CredentialPairingRequest?
 
     /// The pinned, uncloseable tab holding the five bottom-tab sections. It
     /// has no history of its own (see `BrowserTab`'s doc comment) — only its
@@ -105,6 +106,12 @@ final class AppModel {
         // return; finish that requested transition here once the old load settles.
         if plugins.enabledPlugins.map(\.id) != homeFeedPluginIDs {
             await loadHome()
+        }
+    }
+
+    func handleIncomingURL(_ url: URL) {
+        if let request = CredentialPairingRequest(url: url) {
+            incomingCredentialPairing = request
         }
     }
 }

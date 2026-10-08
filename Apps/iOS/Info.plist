@@ -14,6 +14,17 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.hummingbird.credential-login</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>hummingbird</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -24,11 +35,13 @@
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Used to scan QR codes that add plugin sources.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Used to load plugins served from your own computer during development.</string>
+	<string>Hummingbird uses your local network to transfer plugin sign-in credentials and load locally hosted plugins.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

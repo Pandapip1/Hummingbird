@@ -168,9 +168,19 @@ private struct TabOverviewCard: View {
                 .clipped()
             }
             .buttonStyle(.plain)
+            // A resizable/aspect-fill AsyncImage can retain an ideal size
+            // larger than the button's proposal. Constrain the button itself,
+            // not only its label, so neither its drawing nor hit-testing leaks
+            // into neighboring tab cards.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
             .accessibilityLabel("Open \(title)")
         }
         .aspectRatio(0.72, contentMode: .fit)
+        // SwiftUI permits descendants to render outside a parent's layout
+        // bounds. Establish a hard card boundary before applying the rounded
+        // mask and the intentionally out-of-bounds shadow.
+        .clipped()
         .background(.background)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {

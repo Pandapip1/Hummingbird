@@ -10,8 +10,13 @@ let nonApple: [Platform] = [.linux, .android, .windows]
 
 var products: [Product] = [
     .library(name: "HummingbirdKit", targets: ["HummingbirdKit"]),
+    .library(name: "DebugKit", targets: ["DebugKit"]),
 ]
 var targets: [Target] = [
+    .target(
+        name: "DebugKit",
+        path: "Sources/DebugKit"
+    ),
     .systemLibrary(
         name: "CJavaScriptCoreGTK",
         path: "Sources/CJavaScriptCoreGTK",
@@ -27,6 +32,7 @@ var targets: [Target] = [
     .target(
         name: "HummingbirdKit",
         dependencies: [
+            "DebugKit",
             "CSQLite",
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),

@@ -184,6 +184,7 @@ private struct TabStripView: View {
                     TabChip(title: "Home", systemImage: "house.fill",
                             isActive: app.activeTabID == pinnedID,
                             isHovered: hoveredTabID == pinnedID,
+                            showsLeadingSeparator: false,
                             onSelect: { app.activeTabID = pinnedID },
                             onClose: nil,
                             onHoverChange: { hovered in hoveredTabID = hovered ? pinnedID : nil })
@@ -198,18 +199,11 @@ private struct TabStripView: View {
                         TabChip(title: tab.title, systemImage: nil,
                                 isActive: isActive,
                                 isHovered: isHovered,
+                                showsLeadingSeparator: !isActive && !prevIsActive && !isHovered && !prevIsHovered,
                                 onSelect: { app.activeTabID = tab.id },
                                 onClose: { app.closeTab(tab.id) },
                                 onHoverChange: { hovered in hoveredTabID = hovered ? tab.id : nil })
                             .frame(width: tabWidth, height: tabHeight)
-                            .overlay(alignment: .leading) {
-                                if !isActive && !prevIsActive && !isHovered && !prevIsHovered {
-                                    Rectangle()
-                                        .fill(Color.primary.opacity(0.15))
-                                        .frame(width: 1)
-                                        .padding(.vertical, 8)
-                                }
-                            }
                     }
                 }
                 .padding(.horizontal, 2).padding(.vertical, 2)
@@ -233,6 +227,7 @@ private struct TabChip: View {
     let systemImage: String?
     let isActive: Bool
     let isHovered: Bool
+    let showsLeadingSeparator: Bool
     let onSelect: () -> Void
     let onClose: (() -> Void)?
     let onHoverChange: (Bool) -> Void
@@ -240,6 +235,16 @@ private struct TabChip: View {
     var body: some View {
         Button(action: onSelect) {
             ZStack {
+                if showsLeadingSeparator {
+                    HStack(spacing: 0) {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.15))
+                            .frame(width: 1)
+                            .padding(.vertical, 8)
+                        Spacer(minLength: 0)
+                    }
+                }
+
                 // Title centered in the full chip width
                 HStack(spacing: 4) {
                     if let systemImage {

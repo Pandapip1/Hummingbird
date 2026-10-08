@@ -398,14 +398,15 @@ struct PlayerControls: View {
             }
 
             #if os(tvOS)
-            // Keep the controls in the focus hierarchy while their chrome is
-            // hidden. Removing this subtree leaves the focus engine with no
-            // destination, so a Siri Remote move cannot reveal it again.
-            controlBars(visible: controlsVisible || !model.isPlaying)
-                .onMoveCommand { _ in interacted() }
+            if controlsVisible || !model.isPlaying {
+                controlBars
+                    .onMoveCommand { _ in interacted() }
+            } else {
+                hiddenControlsFocusTarget
+            }
             #else
             if controlsVisible || !model.isPlaying {
-                controlBars(visible: true)
+                controlBars
             }
             #endif
         }
@@ -419,14 +420,14 @@ struct PlayerControls: View {
         }
     }
 
-    private func controlBars(visible: Bool) -> some View {
+    private var controlBars: some View {
         VStack(spacing: 6) {
             trackControls
                 .modifier(PlayerFocusSectionModifier())
-                .foregroundStyle(Color.white.opacity(visible ? 1 : 0))
+                .foregroundStyle(Color.white)
                 .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
                 .padding(.horizontal, 12).padding(.vertical, 9)
-                .background(.black.opacity(visible ? 0.72 : 0), in: RoundedRectangle(cornerRadius: 8))
+                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                 .padding(.horizontal, 8)
 
             Spacer()
@@ -434,14 +435,28 @@ struct PlayerControls: View {
 
             transportControls
                 .modifier(PlayerFocusSectionModifier())
-                .foregroundStyle(Color.white.opacity(visible ? 1 : 0))
+                .foregroundStyle(Color.white)
                 .frame(minHeight: PlayerLayout.controlBarMinimumHeight)
                 .padding(.horizontal, 12).padding(.vertical, 9)
-                .background(.black.opacity(visible ? 0.72 : 0), in: RoundedRectangle(cornerRadius: 8))
+                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                 .padding(.horizontal, 8)
         }
         .padding(.vertical, 8)
     }
+
+    #if os(tvOS)
+    private var hiddenControlsFocusTarget: some View {
+        Button { interacted() } label: {
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .accessibilityLabel("Show playback controls")
+        .onMoveCommand { _ in interacted() }
+    }
+    #endif
 
     @ViewBuilder
     private var trackControls: some View {

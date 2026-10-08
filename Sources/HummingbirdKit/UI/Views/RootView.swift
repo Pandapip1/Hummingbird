@@ -34,10 +34,12 @@ struct RootView: View {
                 MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
             }
         }
+        #if !os(macOS)
         .fullScreenCover(isPresented: $showingTabOverview) {
             MobileTabOverview(isPresented: $showingTabOverview)
                 .environment(model)
         }
+        #endif
         .navigationTitle(windowTitle)
         // Browser-style tab chrome: native toolbar navigation controls at the
         // leading edge on desktop. macOS seats the tab strip below the toolbar

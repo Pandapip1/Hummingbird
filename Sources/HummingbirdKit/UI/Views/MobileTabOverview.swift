@@ -91,9 +91,10 @@ struct MobileTabOverview: View {
             .background(Color.secondary.opacity(0.08))
             .navigationTitle("Tabs")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { isPresented = false }
                 }
+                #if os(iOS)
                 ToolbarItem(placement: .bottomBar) {
                     Button {
                         app.openNewTab()
@@ -103,6 +104,7 @@ struct MobileTabOverview: View {
                     }
                     .accessibilityLabel("New tab")
                 }
+                #endif
             }
         }
     }

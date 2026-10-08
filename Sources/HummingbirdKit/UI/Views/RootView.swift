@@ -225,15 +225,11 @@ private struct TabChip: View {
 
     var body: some View {
         Button(action: onSelect) {
-            ZStack {
+            ZStack(alignment: .leading) {
                 if showsLeadingSeparator {
-                    HStack(spacing: 0) {
-                        Rectangle()
-                            .fill(Color.primary.opacity(0.15))
-                            .frame(width: 1)
-                            .padding(.vertical, 8)
-                        Spacer(minLength: 0)
-                    }
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.15))
+                        .frame(width: 1, height: 14)
                 }
 
                 // Title centered in the full chip width

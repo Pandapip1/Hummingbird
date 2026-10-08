@@ -19,6 +19,11 @@ final class ModelAndLogicTests: XCTestCase {
         let second = model.activeTab
         XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, first.id, second.id])
 
+        model.activeTabID = model.pinnedTab.id
+        XCTAssertEqual(model.activeTab.id, model.pinnedTab.id)
+        XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, first.id, second.id],
+                       "selecting Home must not close or replace content tabs")
+
         model.activeTabID = first.id
         model.closeTab(first.id)
         XCTAssertEqual(model.contentTabs.map(\.id), [blank.id, second.id])

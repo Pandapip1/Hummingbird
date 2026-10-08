@@ -196,11 +196,6 @@ private struct TabStripView: View {
                     Capsule()
                         .fill(Color.primary.opacity(0.05))
                         .overlay(Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
-                    #else
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(0.05))
-                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
                     #endif
                 }
                 .padding(.horizontal, 4).padding(.vertical, 3)
@@ -307,9 +302,9 @@ private struct ChipActiveStyle: ViewModifier {
                     .padding(.vertical, 2).padding(.horizontal, 1)
                 #else
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(.regularMaterial)
+                    .fill(Color.primary.opacity(0.16))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                        .stroke(Color.primary.opacity(0.18), lineWidth: 0.5))
                     .padding(.vertical, 2).padding(.horizontal, 1)
                 #endif
             }

@@ -26,6 +26,7 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
         }.value
 
         try await MainActor.run {
+            try TestDisplaySession.start()
             if gtk_is_initialized() == 0 { _ = gtk_init_check() }
             guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
             let widget = widgetFromOpaque(WebView(WebPage()).gtkCreateWidget())
@@ -39,6 +40,7 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
 
     func testAuthenticationPageIsLoadedBeforeWebViewAttachment() async throws {
         try await MainActor.run {
+            try TestDisplaySession.start()
             if gtk_is_initialized() == 0 { _ = gtk_init_check() }
             guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
             let spec = WebAuthSpec(
@@ -76,6 +78,7 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
 
     @MainActor
     func testBackgroundAuthorizationCompletesWithoutPageNavigation() async throws {
+        try TestDisplaySession.start()
         guard let rawBase = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_AUTH_URL"],
               let baseURL = URL(string: rawBase) else {
             throw XCTSkip("set HUMMINGBIRD_DEBUG_AUTH_URL to exercise the live debug login server")
@@ -184,6 +187,7 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
               let baseURL = URL(string: rawBase) else {
             throw XCTSkip("set HUMMINGBIRD_DEBUG_AUTH_URL to exercise the live debug login server")
         }
+        try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
 
@@ -267,6 +271,7 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
               let baseURL = URL(string: rawBase) else {
             throw XCTSkip("set HUMMINGBIRD_DEBUG_AUTH_URL to exercise the live debug login server")
         }
+        try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         let bootstrapPage = WebPage()
         let bootstrapWidget = widgetFromOpaque(WebView(bootstrapPage).gtkCreateWidget())
@@ -287,6 +292,7 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
             _ = try context.evaluate("1 + 1", name: "live-web-auth-order-test")
             context.close()
         }.value
+        try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
         let spec = WebAuthSpec(

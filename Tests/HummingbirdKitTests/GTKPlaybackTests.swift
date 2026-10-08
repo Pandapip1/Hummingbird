@@ -40,6 +40,7 @@ final class GTKPlaybackTests: XCTestCase {
 
     @MainActor
     func testMissingMediaReportsFailureBeforeAnyVideoFrame() async throws {
+        try TestDisplaySession.start()
         guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
         var backend: GTKMediaBackend? = GTKMediaBackend()
         let widget = VideoPlayer(player: backend!.player).gtkCreateWidget()
@@ -72,20 +73,12 @@ final class GTKPlaybackTests: XCTestCase {
 
     @MainActor
     func testCustomHTTPHeadersReachGStreamer() async throws {
+        try TestDisplaySession.start()
         gtk_init()
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("debug-plugin")
-        let python = try pythonExecutable()
-        let server = Process()
-        server.executableURL = URL(fileURLWithPath: python)
-        server.arguments = [root.appendingPathComponent("range_server.py").path,
-                            "18743", "--bind", "127.0.0.1", "--directory", root.path]
-        server.standardOutput = FileHandle.nullDevice
-        server.standardError = FileHandle.nullDevice
-        try server.run()
+        try DebugPluginFixture.ensureTestVideoExists()
+        let server = try await DebugPluginFixture.startRangeServer(port: 18743)
         defer {
-            if server.isRunning { server.terminate(); server.waitUntilExit() }
+            ProcessTermination.terminateAndWait(server)
         }
 
         let url = try XCTUnwrap(URL(string: "http://127.0.0.1:18743/header-video.mp4"))
@@ -191,25 +184,6 @@ final class GTKPlaybackTests: XCTestCase {
         gtk_window_destroy(UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self))
         backend = nil
         while g_main_context_iteration(nil, 0) != 0 {}
-    }
-
-    private func pythonExecutable() throws -> String {
-        if let configured = ProcessInfo.processInfo.environment["HUMMINGBIRD_TEST_PYTHON"],
-           FileManager.default.isExecutableFile(atPath: configured) { return configured }
-        let lookup = Process()
-        let output = Pipe()
-        lookup.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        lookup.arguments = ["sh", "-c", "command -v python3"]
-        lookup.standardOutput = output
-        lookup.standardError = FileHandle.nullDevice
-        try lookup.run()
-        lookup.waitUntilExit()
-        let path = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard lookup.terminationStatus == 0, FileManager.default.isExecutableFile(atPath: path) else {
-            throw XCTSkip("custom-header playback fixture requires Python 3; set HUMMINGBIRD_TEST_PYTHON")
-        }
-        return path
     }
 }
 

@@ -25,6 +25,7 @@ import SwiftOpenUI
 extension PlayerLayoutTests {
     @MainActor
     func testPlayerAllocationAndControlsStayAboveMetadata() async throws {
+        try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
         for (width, viewportHeight) in [(800, 800), (1100, 400), (800, 150), (320, 600), (390, 600), (200, 600)] {

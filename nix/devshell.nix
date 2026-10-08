@@ -29,16 +29,7 @@
         in
         [
           (mk "hb-build" ''exec swift build "$@"'')
-          (mk "hb-test" ''
-            ${lib.optionalString isLinux ''
-              # SwiftOpenUI's GTK4 render tests need a display; give them a
-              # throwaway one only when the caller has none of their own.
-              if [ -z "''${DISPLAY:-}" ] && [ -z "''${WAYLAND_DISPLAY:-}" ]; then
-                exec xvfb-run -a swift test "$@"
-              fi
-            ''}
-            exec swift test "$@"
-          '')
+          (mk "hb-test" ''exec swift test "$@"'')
         ]
         ++ lib.optionals isLinux [
           (mk "hb-run" ''exec swift run Hummingbird-gtk "$@"'')
@@ -79,7 +70,23 @@
               swift
               swiftpm
               swift-format
-              xvfb-run
+              xvfb
+              # Not linked against anything — run-time tools the test suite shells
+              # out to for DebugPluginAudioPlaybackTests' isolated PipeWire
+              # instance (IsolatedAudioSession), same role as xvfb-run above.
+              pipewire
+              wireplumber
+              dbus # private session bus for the isolated PipeWire integration test
+              pulseaudio # pactl/parecord: Pulse-protocol clients that talk to pipewire-pulse
+              # Tests/debug-plugin's range_server.py (GTKPlaybackTests,
+              # DebugPluginAudioPlaybackTests) and generating test.mp4 on demand
+              # both need python3/ffmpeg; neither was previously in this shell
+              # (serve.sh's own comment: "Needs ffmpeg and python3, both of which
+              # `nix develop` does not carry"), which is exactly what let
+              # GTKPlaybackTests quietly depend on a developer having run
+              # `serve.sh` by hand at least once outside the shell.
+              python3
+              ffmpeg
             ]
           )
           # nixpkgs only builds xcodegen on aarch64-darwin; elsewhere fall back

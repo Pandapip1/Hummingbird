@@ -4,20 +4,8 @@ import XCTest
 /// The debug source exists to give playback a fixed input. If it drifts out of
 /// step with the plugin API these fail here rather than in the app.
 final class DebugPluginTests: XCTestCase {
-    private func loadDebugPlugin() throws -> (PluginConfig, String) {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // HummingbirdKitTests
-            .deletingLastPathComponent()   // Tests
-            .appendingPathComponent("debug-plugin")
-        let config = try JSONDecoder().decode(
-            PluginConfig.self,
-            from: Data(contentsOf: root.appendingPathComponent("DebugPlugin.json")))
-        let script = try String(contentsOf: root.appendingPathComponent("DebugPlugin.js"), encoding: .utf8)
-        return (config, script)
-    }
-
     func testDebugPluginProvidesEveryRequiredEntryPoint() async throws {
-        let (config, script) = try loadDebugPlugin()
+        let (config, script) = try DebugPluginFixture.loadPlugin()
         XCTAssertEqual(config.authentication?.loginUrl, "http://127.0.0.1:8742/login.html")
         XCTAssertEqual(config.authentication?.completionUrl, "http://127.0.0.1:8742/api/authorization/")
         XCTAssertEqual(config.authentication?.headersToFind, ["Authorization"])
@@ -29,7 +17,7 @@ final class DebugPluginTests: XCTestCase {
     }
 
     func testDebugPluginHomeReturnsRangeAndNonRangeVideos() async throws {
-        let (config, script) = try loadDebugPlugin()
+        let (config, script) = try DebugPluginFixture.loadPlugin()
         let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
         try await runtime.enable()
         let pager = try await runtime.pager("getHome", as: ContentItem.self)

@@ -9,6 +9,7 @@ import SwiftOpenUI
 final class StartupResponsivenessTests: XCTestCase {
     @MainActor
     func testStartupDoesNotEvaluateUnselectedTabsAndRetainsVisitedPages() async throws {
+        try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         try XCTSkipUnless(gtk_is_initialized() != 0, "no GTK display")
         let probe = StartupTabProbe()
@@ -42,6 +43,7 @@ final class StartupResponsivenessTests: XCTestCase {
 
     @MainActor
     func testBoundSelectionAndDuplicateTabNamesStillBuildOnlyTheSelectedPage() async throws {
+        try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         try XCTSkipUnless(gtk_is_initialized() != 0, "no GTK display")
         let probe = StartupTabProbe()

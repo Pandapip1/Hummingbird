@@ -9,6 +9,7 @@ import SwiftOpenUI
 final class PlayerControlsInteractionTests: XCTestCase {
     @MainActor
     func testPointerMotionPreservesButtonsAndPauseAction() async throws {
+        try TestDisplaySession.start()
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
         let backend = ControlsBackend()
@@ -47,6 +48,7 @@ final class PlayerControlsInteractionTests: XCTestCase {
 
     @MainActor
     func testStationaryPointerCanPauseAndResumeAfterReplacement() async throws {
+        try TestDisplaySession.start()
         guard ProcessInfo.processInfo.environment["GDK_BACKEND"] == "x11",
               let executable = (ProcessInfo.processInfo.environment["PATH"] ?? "")
                 .split(separator: ":")
@@ -76,7 +78,7 @@ final class PlayerControlsInteractionTests: XCTestCase {
             let output = Pipe()
             process.standardOutput = output
             try process.run()
-            process.waitUntilExit()
+            ProcessTermination.wait(for: process)
             XCTAssertEqual(process.terminationStatus, 0)
             return String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)

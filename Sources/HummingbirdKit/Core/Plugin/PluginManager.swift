@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import DebugKit
 
 /// A plugin as stored on this device.
 struct InstalledPlugin: Codable, Identifiable, Hashable {
@@ -94,8 +95,26 @@ final class PluginManager {
         let r = PluginRuntime(config: p.config, script: p.script, settings: p.settings,
                               auth: AuthKeychain.load(pluginID: id, kind: "auth"),
                               captcha: AuthKeychain.load(pluginID: id, kind: "captcha"))
-        r.onToast = { [weak self] msg in Task { @MainActor in self?.toast = msg } }
+        r.onToast = { [weak self] msg in
+            DebugServer.record("plugin", "alert", fields: [
+                "plugin": id,
+                "message": String(msg.prefix(500)),
+            ])
+            Task { @MainActor in self?.toast = msg }
+        }
         r.onLog = { msg in
+            let lower = msg.lowercased()
+            let safeUMPLog = lower.hasPrefix("ump ")
+                || lower.hasPrefix("ump:")
+                || lower.hasPrefix("ump descriptor ")
+                || lower.hasPrefix("====== ump")
+                || lower.hasPrefix("abr enabled:")
+            if safeUMPLog {
+                DebugServer.record("plugin", "ump_log", fields: [
+                    "plugin": id,
+                    "message": String(msg.prefix(500)),
+                ])
+            }
             #if DEBUG
             print("[plugin \(id)] \(msg)")
             #endif

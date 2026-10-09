@@ -263,7 +263,18 @@ struct PlayerSection: View {
         ZStack {
             Color.black
             if model.hasMedia { PlayerSurface(model: model) }
-            if model.isPreparing { ProgressView().tint(.white) }
+            if model.isPreparing {
+                VStack(spacing: 10) {
+                    ProgressView().tint(.white)
+                    if let message = model.preparationMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white)
+                    }
+                }
+                .padding()
+            }
             if let err = model.errorMessage {
                 Text(err).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.white).padding()
             }

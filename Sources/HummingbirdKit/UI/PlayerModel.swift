@@ -47,6 +47,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var selectedAudioSource: MediaSource?
     private(set) var errorMessage: String?
     private(set) var isPreparing = false
+    private(set) var preparationMessage: String?
     private(set) var subtitleText: String?
     private(set) var subtitleChoice: SubtitleSource?
     private(set) var embeddedSubtitleChoice: MediaTrack?
@@ -79,6 +80,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var didFinishCurrentItem = false
     @ObservationIgnored private var playGeneration = 0
     @ObservationIgnored private var requestedPluginReload: (message: String, data: String?)?
+    @ObservationIgnored private var declaredDuration: Double = 0
+    @ObservationIgnored private var pendingSeekTask: Task<Void, Never>?
 
     init(backend: MediaBackend? = nil) {
         self.backend = backend
@@ -95,12 +98,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         teardown()
         loadedURL = sourceURL
         self.details = details
+        declaredDuration = Double(details.item.duration ?? 0)
+        duration = declaredDuration
         self.subtitleSources = details.subtitles
         self.runtime = runtime
         self.library = library
         errorMessage = nil
+        preparationMessage = nil
         isPreparing = true
-        defer { isPreparing = false }
+        defer { isPreparing = false; preparationMessage = nil }
 
         let maxHeight = UserDefaults.standard.object(forKey: "maxVideoHeight") as? Int ?? 1080
         let preferAdaptive = UserDefaults.standard.object(forKey: "preferAdaptive") as? Bool ?? true
@@ -112,6 +118,18 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let preferredLanguage = Locale.current.language.languageCode?.identifier
         let splitAudioSources = PlaybackSelector.audioChoices(details.audioSources)
         selectedAudioSource = PlaybackSelector.bestAudio(details.audioSources, language: preferredLanguage)
+        let sourceTypes = Dictionary(grouping: details.videoSources, by: \.pluginType)
+            .map { "\($0.key):\($0.value.count)" }
+            .sorted()
+            .joined(separator: ",")
+        let umpSources = details.videoSources.filter(\.isUMP)
+        DebugServer.record("player", "source_inventory", fields: [
+            "types": sourceTypes,
+            "umpCount": String(umpSources.count),
+            "umpHasURL": String(umpSources.contains { !$0.url.isEmpty }),
+            "umpVideoFormats": String(umpSources.reduce(0) { $0 + $1.videoFormats.count }),
+            "umpAudioFormats": String(umpSources.reduce(0) { $0 + $1.audioFormats.count }),
+        ])
         options = PlaybackSelector.options(for: details, preferredLanguage: preferredLanguage)
             .filter { _ in true }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
@@ -256,13 +274,27 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         UserDefaults.standard.set(choice.rawValue, forKey: "subtitleSize")
     }
     func skip(by seconds: Double) {
-        seek(to: playbackTime + seconds)
+        seek(to: playbackTime + seconds, coalescing: false)
     }
     func seek(to seconds: Double) {
+        seek(to: seconds, coalescing: true)
+    }
+    private func seek(to seconds: Double, coalescing: Bool) {
         guard let backend else { return }
         let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
         if duration <= 0 || target < duration - 0.5 { didFinishCurrentItem = false }
-        backend.seek(to: target)
+        playbackTime = target
+        pendingSeekTask?.cancel()
+        if coalescing {
+            pendingSeekTask = Task { @MainActor [weak self, weak backend] in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+                backend?.seek(to: target)
+                self?.pendingSeekTask = nil
+            }
+        } else {
+            backend.seek(to: target)
+        }
     }
     func replay() {
         guard let backend else { return }
@@ -351,7 +383,13 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         ])
         if source.isUMP {
             let maxHeight = UserDefaults.standard.object(forKey: "maxVideoHeight") as? Int ?? 1080
-            let url = try await UMPMediaProxy.shared.register(source: source, maximumHeight: maxHeight, language: Locale.current.language.languageCode?.identifier)
+            let url = try await UMPMediaProxy.shared.register(
+                source: source,
+                maximumHeight: maxHeight,
+                language: Locale.current.language.languageCode?.identifier
+            ) { [weak self] progress in
+                Task { @MainActor in self?.preparationMessage = progress.message }
+            }
             return ResolvedMedia(url: url, headers: [:])
         }
         if source.pluginType == "DashManifestRawSource", let handle = source.handle, let runtime {
@@ -382,7 +420,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        duration = backend?.duration ?? 0
+        let backendDuration = backend?.duration ?? 0
+        duration = backendDuration > 0 ? backendDuration : declaredDuration
         isPlaying = backend?.isPlaying ?? false
         playbackTime = seconds
         subtitleText = cues.first(where: { seconds >= $0.start && seconds <= $0.end })?.text
@@ -460,6 +499,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     // MARK: teardown
 
     func teardown() {
+        pendingSeekTask?.cancel()
+        pendingSeekTask = nil
         trackerTask?.cancel(); trackerTask = nil
         if let h = trackerHandle, let rt = runtime {
             Task { if await rt.hasMember(handle: h, "onConcluded") { _ = try? await rt.callHandle(h, "onConcluded", [-1]) } }
@@ -478,7 +519,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         selected = nil
         audioSources = []
         selectedAudioSource = nil
-        playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
+        playbackTime = 0; duration = 0; declaredDuration = 0; isPlaying = false; isFullscreen = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil
         didFinishCurrentItem = false
     }

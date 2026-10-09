@@ -3,6 +3,39 @@ import XCTest
 
 /// Runs a small plugin inside a real JavaScriptCore host context (no network involved).
 final class RuntimeTests: XCTestCase {
+    func testAsyncFeatureAndBrowserFallbackEvaluation() async throws {
+        let config = try JSONDecoder().decode(
+            PluginConfig.self,
+            from: Data(#"{"name":"Browser fallback","packagesOptional":["Browser"]}"#.utf8)
+        )
+        let script = """
+        source.features = function() { return bridge.supportedFeatures; };
+        source.dynamic = function() { return eval("40 + 2"); };
+        """
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        defer { Task { await runtime.stop() } }
+        let features: [String] = try await runtime.call("features")
+        XCTAssertTrue(features.contains("Async"))
+        let value: Int = try await runtime.call("dynamic")
+        XCTAssertEqual(value, 42)
+    }
+
+    func testDirectEvalRemainsUnavailableWithoutPermissionOrBrowserFallback() async throws {
+        let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"No eval"}"#.utf8))
+        let runtime = PluginRuntime(
+            config: config,
+            script: "source.dynamic = function() { return eval('42'); };",
+            settings: [:], auth: nil, captcha: nil
+        )
+        defer { Task { await runtime.stop() } }
+        do {
+            let _: Int = try await runtime.call("dynamic")
+            XCTFail("eval should require permission or a Browser-package fallback")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("eval is not allowed"))
+        }
+    }
+
     func testRequestExecutorAcceptsJavaScriptBufferTypes() async throws {
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"Byte executor"}"#.utf8))
         let script = """

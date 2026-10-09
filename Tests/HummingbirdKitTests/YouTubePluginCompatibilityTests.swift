@@ -8,6 +8,10 @@ import AVFoundation
 /// Opt-in compatibility probe for the moving upstream plugin. Run with:
 /// HUMMINGBIRD_YOUTUBE_PLUGIN_DIR=/path/to/youtube swift test --filter YouTubePluginCompatibilityTests
 final class YouTubePluginCompatibilityTests: XCTestCase {
+    private let fixtureVideoURL = "https://www.youtube.com/watch?v=S4Qf8o4QSDs"
+    private let fixtureCaptionURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    private let fixtureChannelURL = "https://www.youtube.com/channel/UCIBNAd4nO5rk6G8YaEudqNw"
+
     func testCurrentOfficialPluginLoads() async throws {
         guard let path = ProcessInfo.processInfo.environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DIR"] else {
             throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_PLUGIN_DIR to an official plugin checkout")
@@ -30,7 +34,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         let home = try await runtime.pager("getHome", as: ContentItem.self)
         XCTAssertFalse(home.initial.isEmpty)
 
-        let url = "https://www.youtube.com/watch?v=S4Qf8o4QSDs"
+        let url = fixtureVideoURL
         let data = try await runtime.callRaw("getContentDetails", [url], kind: "details")
         guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
             return XCTFail("Expected video details")
@@ -59,10 +63,102 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         }
     }
 
+    func testCurrentOfficialPluginSearchAndChannelSurface() async throws {
+        let runtime = try makeRuntime()
+        defer { Task { await runtime.stop() } }
+        _ = try await runtime.enable()
+
+        let suggestions = try await runtime.call("searchSuggestions", ["swift lang"], as: [String].self)
+        XCTAssertFalse(suggestions.isEmpty)
+        let search = try await runtime.pager(
+            "search", ["Swift programming", NSNull(), NSNull(), NSNull()], as: ContentItem.self
+        )
+        XCTAssertFalse(search.initial.isEmpty)
+        if search.hasMore { _ = try await search.next() }
+        let channel = try await runtime.call("getChannel", [fixtureChannelURL], as: ChannelInfo.self)
+        XCTAssertFalse(channel.name.isEmpty)
+        let contents = try await runtime.pager(
+            "getChannelContents", [fixtureChannelURL, NSNull(), NSNull(), NSNull()], as: ContentItem.self
+        )
+        XCTAssertFalse(contents.initial.isEmpty)
+        if contents.hasMore { _ = try await contents.next() }
+    }
+
+    func testCurrentOfficialPluginCommentsRecommendationsAndSubtitles() async throws {
+        let runtime = try makeRuntime()
+        defer { Task { await runtime.stop() } }
+        let details = try await videoDetails(runtime, url: fixtureCaptionURL)
+
+        if details.hasComments {
+            let comments = try await runtime.handlePager(details.handle, "getComments", as: PluginComment.self)
+            if comments.hasMore { _ = try await comments.next() }
+            if let comment = comments.initial.first(where: { $0.replyCount > 0 }) {
+                _ = try await runtime.subCommentsPager(handle: comment.handle)
+            }
+        } else if runtime.has("getComments") {
+            _ = try await runtime.pager("getComments", [fixtureCaptionURL], as: PluginComment.self)
+        }
+
+        if details.hasRecommendations {
+            let recommendations = try await runtime.handlePager(
+                details.handle, "getContentRecommendations", as: ContentItem.self
+            )
+            if recommendations.hasMore { _ = try await recommendations.next() }
+        } else if runtime.has("getContentRecommendations") {
+            _ = try await runtime.pager(
+                "getContentRecommendations", [fixtureCaptionURL, NSNull()], as: ContentItem.self
+            )
+        }
+
+        if let subtitle = details.subtitles.first {
+            if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
+                print("[youtube subtitles] \(details.subtitles)")
+            }
+            var text: String?
+            if let handle = subtitle.getSubtitlesHandle {
+                for attempt in 0..<3 where text?.isEmpty ?? true {
+                    if attempt > 0 { try await Task.sleep(for: .milliseconds(500)) }
+                    if let data = try? await runtime.callHandle(handle, "getSubtitles") {
+                        text = try? PluginRuntime.decode(String.self, from: data)
+                    }
+                }
+            }
+            if (text?.isEmpty ?? true), let rawURL = subtitle.url, let url = URL(string: rawURL) {
+                text = String(data: try await URLSession.shared.data(from: url).0, encoding: .utf8)
+            }
+            XCTAssertFalse(text?.isEmpty ?? true)
+            XCTAssertFalse(SubtitleParser.parse(text ?? "").isEmpty)
+        }
+    }
+
+    func testCurrentOfficialPluginPlaylistSurface() async throws {
+        let runtime = try makeRuntime()
+        defer { Task { await runtime.stop() } }
+        _ = try await runtime.enable()
+        guard runtime.has("searchPlaylists"), runtime.has("getPlaylist") else {
+            return XCTFail("Official YouTube plugin should expose playlist search and details")
+        }
+        let playlists = try await runtime.pager("searchPlaylists", ["Swift programming"], as: ContentItem.self)
+        let item = try XCTUnwrap(playlists.initial.first)
+        let payload = try PluginRuntime.decode(
+            PlaylistDetailsPayload.self,
+            from: try await runtime.callRaw("getPlaylist", [item.url], kind: "playlist")
+        )
+        XCTAssertFalse(payload.header.name.isEmpty)
+        XCTAssertFalse(payload.contents.results.compactMap(\.value).isEmpty)
+        if payload.contents.hasMore {
+            let next = try PluginRuntime.decode(
+                PagerPayload<ContentItem>.self,
+                from: try await runtime.nextPageRaw(handle: payload.contents.pager)
+            )
+            XCTAssertFalse(next.results.compactMap(\.value).isEmpty)
+        }
+    }
+
     func testCurrentOfficialPluginGeneratedPlaybackTransport() async throws {
         let runtime = try makeRuntime()
         defer { Task { await runtime.stop() } }
-        let url = "https://www.youtube.com/watch?v=S4Qf8o4QSDs"
+        let url = fixtureVideoURL
         let data = try await runtime.callRaw("getContentDetails", [url], kind: "details")
         guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data),
               let source = details.videoSources.first(where: { $0.container == "video/mp4" }),
@@ -141,5 +237,13 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             runtime.onToast = { print("[youtube toast] \($0)") }
         }
         return runtime
+    }
+
+    private func videoDetails(_ runtime: PluginRuntime, url: String? = nil) async throws -> VideoDetails {
+        let data = try await runtime.callRaw("getContentDetails", [url ?? fixtureVideoURL], kind: "details")
+        guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
+            throw PluginError.execution("Expected YouTube video details")
+        }
+        return details
     }
 }

@@ -77,8 +77,27 @@ final class PluginRuntime: @unchecked Sendable {
             }
             for p in config.packagesOptional { _ = installPackage(p) }
 
-            if !config.allowEval {
-                try eval("globalThis.eval = function () { throw new ScriptImplementationException('eval is not allowed by this plugin'); };", name: "eval-guard")
+            // Browser-capable plugins may use their engine fallback when the optional
+            // Browser package is unavailable. That fallback has to evaluate the same
+            // remote scripts a browser page would execute (notably YouTube BotGuard).
+            if !config.allowEval && !config.packagesOptional.contains("Browser") {
+                try eval("""
+                    (function () {
+                      var nativeEval = globalThis.eval;
+                      var NativeFunction = globalThis.Function;
+                      var blockedEval = function () {
+                        throw new ScriptImplementationException('eval is not allowed by this plugin');
+                      };
+                      globalThis.eval = blockedEval;
+                      globalThis.Function = function () {
+                        var args = arguments;
+                        globalThis.eval = nativeEval;
+                        try { return NativeFunction.apply(this, args); }
+                        finally { globalThis.eval = blockedEval; }
+                      };
+                      globalThis.Function.prototype = NativeFunction.prototype;
+                    })();
+                    """, name: "eval-guard")
             }
             if let reloadData {
                 try eval("var __reloadData = \(jsString(reloadData));", name: "reload-data")
@@ -114,7 +133,11 @@ final class PluginRuntime: @unchecked Sendable {
             let ms = max(0, Double(b) ?? 0)
             queue.asyncAfter(deadline: .now() + ms / 1000) { [weak self] in
                 guard let self, let ctx = self.context else { return }
-                _ = try? ctx.evaluate("__jb.fireTimer(\(id))", name: "timer")
+                do {
+                    _ = try ctx.evaluate("__jb.fireTimer(\(id))", name: "timer")
+                } catch {
+                    self.onLog?("Timer callback failed: \(error)")
+                }
             }
             return ""
         case "dom.parse": return dom.parse(a)

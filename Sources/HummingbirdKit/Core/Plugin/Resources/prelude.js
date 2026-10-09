@@ -38,7 +38,9 @@
       var fn = timers[id];
       if (!fn) return;
       delete timers[id];
-      try { fn(); } catch (e) { }
+      try { fn(); } catch (e) {
+        __native.log("Timer callback failed: " + (e && e.message ? e.message : e) + (e && e.stack ? "\n" + e.stack : ""));
+      }
     }
   };
 
@@ -565,7 +567,7 @@
     supportedContent: [1, 2, 4, 7, 9, 11, 60, 70],
     // This host supports ordinary batched requests, but not the newer dummy
     // slots/session-client contract denoted by HttpBatchClient.
-    supportedFeatures: ["ReloadRequiredException"],
+    supportedFeatures: ["ReloadRequiredException", "Async"],
     isLoggedIn: function () { return __native.isLoggedIn(); },
     log: function (s) { __native.log(String(s)); },
     toast: function (s) { __native.toast(String(s)); },

@@ -323,8 +323,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard let sub else { return }
         var text: String?
         if let h = sub.getSubtitlesHandle, let runtime {
-            text = (try? await runtime.callHandle(h, "getSubtitles")).flatMap { try? JSONDecoder().decode(String.self, from: $0) }
-        } else if let u = sub.url, let url = URL(string: u) {
+            for attempt in 0..<3 where text?.isEmpty ?? true {
+                if attempt > 0 { try? await Task.sleep(for: .milliseconds(500)) }
+                text = (try? await runtime.callHandle(h, "getSubtitles"))
+                    .flatMap { try? JSONDecoder().decode(String.self, from: $0) }
+            }
+        }
+        // Some plugins expose both a convenience loader and the underlying URL.
+        // A generated loader can expire independently, so fall back to the URL.
+        if (text?.isEmpty ?? true), let u = sub.url, let url = URL(string: u) {
             text = (try? await URLSession.shared.data(from: url)).flatMap { String(data: $0.0, encoding: .utf8) }
         }
         if let text { cues = SubtitleParser.parse(text) }

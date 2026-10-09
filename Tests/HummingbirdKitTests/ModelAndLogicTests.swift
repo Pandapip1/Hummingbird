@@ -241,6 +241,45 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: false)?.kind, .progressive)
     }
 
+    func testGeneratedPlaybackSelectionKeepsMP4QualitiesOnly() throws {
+        let d = try decode(VideoDetails.self, """
+        {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},"description":"",
+         "video":{"isUnMuxed":true,"videoSources":[
+            {"plugin_type":"DashManifestRawSource","__handle":1,"hasGenerate":true,"height":720,"container":"video/mp4","codec":"avc1.64001f"},
+            {"plugin_type":"DashManifestRawSource","__handle":2,"hasGenerate":true,"height":720,"container":"video/mp4","codec":"avc1.64001f"},
+            {"plugin_type":"DashManifestRawSource","__handle":3,"hasGenerate":true,"height":1080,"container":"video/mp4","codec":"avc1.640028"},
+            {"plugin_type":"DashManifestRawSource","__handle":4,"hasGenerate":true,"height":2160,"container":"video/webm","codec":"vp9"}]}}
+        """)
+        let options = PlaybackSelector.options(for: d)
+        XCTAssertEqual(options.map(\.height).sorted(), [720, 1080])
+        XCTAssertTrue(options.allSatisfy { $0.kind == .generated })
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720, preferAdaptive: true)?.height, 720)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true)?.height, 1080)
+    }
+
+    func testGeneratedDashTimelineConvertsToSeekableHLS() throws {
+        let mpd = """
+        <MPD><Period>
+          <AdaptationSet contentType="video"><Representation codecs="avc1.64001f" bandwidth="1000000" width="1280" height="720">
+            <SegmentTemplate timescale="1000" startNumber="7" initialization="https://grayjay.internal/video/internal/init.mp4" media="https://grayjay.internal/video/internal/segment.mp4?segIndex=$Number$">
+              <SegmentTimeline><S t="0" d="2500" r="2"/><S d="1000"/></SegmentTimeline>
+            </SegmentTemplate></Representation></AdaptationSet>
+          <AdaptationSet contentType="audio"><Representation codecs="mp4a.40.2" bandwidth="128000">
+            <SegmentTemplate timescale="1000" startNumber="7" initialization="https://grayjay.internal/audio/internal/init.mp4" media="https://grayjay.internal/audio/internal/segment.mp4?segIndex=$Number$">
+              <SegmentTimeline><S t="0" d="2500" r="2"/><S d="1000"/></SegmentTimeline>
+            </SegmentTemplate></Representation></AdaptationSet>
+        </Period></MPD>
+        """
+        let playlists = try DashToHLS.convert(mpd, baseURL: "http://127.0.0.1:1234/presentation")
+        XCTAssertTrue(playlists.master.contains("CODECS=\"avc1.64001f,mp4a.40.2\""))
+        XCTAssertTrue(playlists.master.contains("AUDIO=\"audio\""))
+        XCTAssertTrue(playlists.video.contains("#EXT-X-MEDIA-SEQUENCE:7"))
+        XCTAssertEqual(playlists.video.components(separatedBy: "#EXTINF:").count - 1, 4)
+        XCTAssertTrue(playlists.video.contains("segIndex=7"))
+        XCTAssertTrue(playlists.video.contains("segIndex=10"))
+        XCTAssertTrue(playlists.video.hasSuffix("#EXT-X-ENDLIST\n"))
+    }
+
     func testSubtitleParsing() {
         let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:03.500\nHello <b>world</b>\n\n1\n00:01:02,000 --> 00:01:04,000 align:start\nSecond\nline\n"
         let cues = SubtitleParser.parse(vtt)

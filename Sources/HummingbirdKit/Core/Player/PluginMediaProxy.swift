@@ -147,7 +147,7 @@ actor PluginMediaProxy {
     }
 }
 
-private enum DashToHLS {
+enum DashToHLS {
     struct Result { let master: String; let video: String; let audio: String? }
     private struct Track {
         let kind: String

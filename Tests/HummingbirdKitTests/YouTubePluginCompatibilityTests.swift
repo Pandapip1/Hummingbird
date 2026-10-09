@@ -108,6 +108,12 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertGreaterThan(player.currentTime().seconds, 0.05, "Generated playback did not advance")
+        await player.seek(to: CMTime(seconds: 5, preferredTimescale: 600))
+        for _ in 0..<150 where player.currentTime().seconds < 5.25 {
+            if item.status == .failed { throw item.error ?? PluginError.execution("AVPlayer rejected generated seek") }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertGreaterThan(player.currentTime().seconds, 5.25, "Generated playback did not resume after seeking")
         #endif
     }
 

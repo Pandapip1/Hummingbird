@@ -28,6 +28,19 @@ final class UMPProtocolTests: XCTestCase {
         XCTAssertEqual(fields[1].bytes, Data("abc".utf8))
     }
 
+    func testProtobufReaderRebasesDataSlices() throws {
+        var writer = ProtoWriter()
+        writer.varint(1, 150)
+        writer.bytes(2, Data("abc".utf8))
+        let framed = Data([0xde, 0xad]) + writer.data + Data([0xbe, 0xef])
+        let slice = framed[2..<(framed.count - 2)]
+        XCTAssertNotEqual(slice.startIndex, 0)
+
+        let fields = try ProtoReader(slice).fields()
+        XCTAssertEqual(fields[0].varint, 150)
+        XCTAssertEqual(fields[1].bytes, Data("abc".utf8))
+    }
+
     func testUMPSourceDecodesAndIsSelectable() throws {
         let json = #"{"contentType":1,"name":"Example","url":"https://example.com/watch","video":{"isUnMuxed":false,"videoSources":[{"plugin_type":"UMPSource","url":"https://example.com/ump","ustreamerConfig":"AQ","videoFormats":[{"itag":137,"lastModified":"18446744073709551615","mimeType":"video/mp4","height":1080}],"audioFormats":[{"itag":140,"lastModified":"7","mimeType":"audio/mp4"}]}]}}"#
         let details = try JSONDecoder().decode(VideoDetails.self, from: Data(json.utf8))

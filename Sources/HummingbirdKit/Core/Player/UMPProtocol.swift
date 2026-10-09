@@ -19,8 +19,10 @@ struct ProtoWriter {
 struct ProtoField { let number: Int; let wire: Int; let varint: UInt64?; let bytes: Data? }
 
 struct ProtoReader {
-    private let data: Data
-    init(_ data: Data) { self.data = data }
+    // Data slices retain their original indices. Protocol payloads are often
+    // slices of a framed response, so rebase them before offset-based parsing.
+    private let data: [UInt8]
+    init(_ data: Data) { self.data = Array(data) }
     func fields(maxBytes: Int = 32 * 1024 * 1024) throws -> [ProtoField] {
         guard data.count <= maxBytes else { throw UMPProtocolError.oversized }
         var offset = 0, result: [ProtoField] = []
@@ -29,17 +31,17 @@ struct ProtoReader {
             guard number > 0 else { throw UMPProtocolError.malformed }
             switch wire {
             case 0: result.append(.init(number: number, wire: wire, varint: try Self.varint(data, &offset), bytes: nil))
-            case 1: guard offset + 8 <= data.count else { throw UMPProtocolError.truncated }; result.append(.init(number: number, wire: wire, varint: nil, bytes: data[offset..<offset+8])); offset += 8
+            case 1: guard offset + 8 <= data.count else { throw UMPProtocolError.truncated }; result.append(.init(number: number, wire: wire, varint: nil, bytes: Data(data[offset..<offset+8]))); offset += 8
             case 2:
                 let length = try Self.varint(data, &offset); guard length <= UInt64(maxBytes), length <= UInt64(data.count - offset) else { throw UMPProtocolError.truncated }
-                let end = offset + Int(length); result.append(.init(number: number, wire: wire, varint: nil, bytes: data[offset..<end])); offset = end
-            case 5: guard offset + 4 <= data.count else { throw UMPProtocolError.truncated }; result.append(.init(number: number, wire: wire, varint: nil, bytes: data[offset..<offset+4])); offset += 4
+                let end = offset + Int(length); result.append(.init(number: number, wire: wire, varint: nil, bytes: Data(data[offset..<end]))); offset = end
+            case 5: guard offset + 4 <= data.count else { throw UMPProtocolError.truncated }; result.append(.init(number: number, wire: wire, varint: nil, bytes: Data(data[offset..<offset+4]))); offset += 4
             default: throw UMPProtocolError.unsupportedWireType(wire)
             }
         }
         return result
     }
-    static func varint(_ data: Data, _ offset: inout Int) throws -> UInt64 {
+    static func varint(_ data: [UInt8], _ offset: inout Int) throws -> UInt64 {
         var value: UInt64 = 0, shift: UInt64 = 0
         for _ in 0..<10 { guard offset < data.count else { throw UMPProtocolError.truncated }; let b = data[offset]; offset += 1; value |= UInt64(b & 0x7f) << shift; if b < 0x80 { return value }; shift += 7 }
         throw UMPProtocolError.malformed

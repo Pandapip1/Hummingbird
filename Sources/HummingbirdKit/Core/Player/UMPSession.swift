@@ -1,10 +1,11 @@
 import Foundation
+import DebugKit
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
 
 enum UMPSessionError: LocalizedError, Sendable {
-    case invalidSource, unauthorized, forbidden, protocolFailure(String, Int), protectionExpired, noProgress, incomplete
+    case invalidSource, unauthorized, forbidden, protocolFailure(String, Int), protectionExpired, reloadRequired, noProgress, incomplete
     var errorDescription: String? {
         switch self {
         case .invalidSource: "Invalid UMP source"
@@ -12,6 +13,7 @@ enum UMPSessionError: LocalizedError, Sendable {
         case .forbidden: "UMP playback was forbidden"
         case .protocolFailure(let type, let code): "UMP server error \(type)/\(code)"
         case .protectionExpired: "The playback token expired; refresh the video details"
+        case .reloadRequired: "YouTube requested refreshed playback details"
         case .noProgress: "The UMP server stopped producing media"
         case .incomplete: "The UMP presentation was incomplete"
         }
@@ -19,6 +21,16 @@ enum UMPSessionError: LocalizedError, Sendable {
 }
 
 private struct UMPPending { let header: UMPMediaHeader; var bytes = Data() }
+
+struct UMPPreparationProgress: Sendable {
+    let request: UInt64
+    let retrySeconds: Int?
+
+    var message: String {
+        if let retrySeconds { return "YouTube requested a retry in \(retrySeconds)s (request \(request + 1))" }
+        return "Preparing YouTube stream (request \(request))"
+    }
+}
 
 private struct UMPTrackStore {
     var initialization: Data?
@@ -51,16 +63,20 @@ actor UMPSession {
     private var redirects = 0
     private var backoffMS: UInt64 = 0
     private var terminalError: UMPSessionError?
+    private var playbackPositionMS: UInt64 = 0
+    private let progress: (@Sendable (UMPPreparationProgress) -> Void)?
 
-    init(source: MediaSource, maximumHeight: Int = 1080, language: String? = nil) throws {
+    init(source: MediaSource, maximumHeight: Int = 1080, language: String? = nil,
+         progress: (@Sendable (UMPPreparationProgress) -> Void)? = nil) throws {
         guard let endpoint = URL(string: source.url), source.ustreamerConfig != nil else { throw UMPSessionError.invalidSource }
-        let capped = source.videoFormats.filter { $0.height == 0 || $0.height <= maximumHeight }
-        guard let video = (capped.isEmpty ? source.videoFormats : capped).max(by: { $0.height == $1.height ? $0.bitrate < $1.bitrate : $0.height < $1.height }) else { throw UMPSessionError.invalidSource }
-        var audios = source.audioFormats
+        let hlsVideos = source.videoFormats.filter(Self.isHLSCompatibleVideo)
+        let capped = hlsVideos.filter { $0.height == 0 || $0.height <= maximumHeight }
+        guard let video = (capped.isEmpty ? hlsVideos : capped).max(by: { $0.height == $1.height ? $0.bitrate < $1.bitrate : $0.height < $1.height }) else { throw UMPSessionError.invalidSource }
+        var audios = source.audioFormats.filter(Self.isHLSCompatibleAudio)
         if let language, audios.contains(where: { $0.language?.lowercased().hasPrefix(language.lowercased()) == true }) { audios = audios.filter { $0.language?.lowercased().hasPrefix(language.lowercased()) == true } }
         if audios.contains(where: \.original) { audios = audios.filter(\.original) }
         guard let audio = audios.max(by: { $0.bitrate < $1.bitrate }) else { throw UMPSessionError.invalidSource }
-        self.source = source; self.endpoint = endpoint; self.video = video; self.audio = audio
+        self.source = source; self.endpoint = endpoint; self.video = video; self.audio = audio; self.progress = progress
         tracks[UMPFormatID(video)] = UMPTrackStore(); tracks[UMPFormatID(audio)] = UMPTrackStore()
     }
 
@@ -105,6 +121,13 @@ actor UMPSession {
         throw UMPSessionError.incomplete
     }
 
+    func notePlaybackRequest(video isVideo: Bool, sequence: Int) {
+        let format = isVideo ? video : audio
+        if let chunk = tracks[UMPFormatID(format)]?.segments[sequence] {
+            playbackPositionMS = UInt64(max(0, chunk.start * 1_000))
+        }
+    }
+
     private var minimallyReady: Bool {
         tracks.values.allSatisfy { $0.initialization != nil && !$0.segments.isEmpty }
     }
@@ -122,8 +145,19 @@ actor UMPSession {
     }
 
     private func fetch() async throws {
-        if backoffMS > 0 { try await Task.sleep(nanoseconds: min(backoffMS, 10_000) * 1_000_000); backoffMS = 0 }
+        if backoffMS > 0 {
+            let delay = backoffMS
+            backoffMS = 0
+            var remaining = Int((delay + 999) / 1_000)
+            while remaining > 0 {
+                progress?(.init(request: requestNumber, retrySeconds: remaining))
+                let interval = min(delay, 1_000)
+                try await Task.sleep(nanoseconds: interval * 1_000_000)
+                remaining -= 1
+            }
+        }
         requestNumber += 1
+        progress?(.init(request: requestNumber, retrySeconds: nil))
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
         var query = components.queryItems ?? []; query.removeAll { $0.name == "rn" }; query.append(.init(name: "rn", value: String(requestNumber))); components.queryItems = query
         guard let url = components.url else { throw UMPSessionError.invalidSource }
@@ -135,9 +169,17 @@ actor UMPSession {
         request.setValue("https://www.youtube.com/", forHTTPHeaderField: "Referer")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw UMPSessionError.invalidSource }
-        if http.statusCode == 401 { throw UMPSessionError.unauthorized }; if http.statusCode == 403 { throw UMPSessionError.forbidden }
+        DebugServer.record("ump", "response", fields: [
+            "request": String(requestNumber),
+            "status": String(http.statusCode),
+            "bytes": String(data.count),
+        ])
+        if http.statusCode == 401 { throw UMPSessionError.unauthorized }
+        if http.statusCode == 403 { throw UMPSessionError.protocolFailure("HTTP", 403) }
         guard (200..<300).contains(http.statusCode) else { throw UMPSessionError.protocolFailure("HTTP", http.statusCode) }
+        pending.removeAll(keepingCapacity: true)
         try consume(UMPFraming.decode(data))
+        pending.removeAll(keepingCapacity: true)
     }
 
     private func requestBody() -> Data {
@@ -145,7 +187,7 @@ actor UMPSession {
         var root = ProtoWriter()
         root.message(1) { abr in
             abr.varint(18, 1920); abr.varint(19, 1080); abr.varint(23, 2_000_000)
-            abr.varint(28, 0); abr.varint(29, 0); abr.varint(34, 1); abr.varint(36, 0); abr.varint(39, 0)
+            abr.varint(28, playbackPositionMS); abr.varint(29, 0); abr.varint(34, 1); abr.varint(36, 0); abr.varint(39, 0)
             abr.varint(40, 3); abr.varint(44, 1); abr.varint(46, audio.isDrc ? 1 : 0); abr.varint(57, 0); abr.varint(58, 1); abr.varint(59, UInt64(max(0, video.height)))
             abr.fixed32(285, Float(1).bitPattern)
         }
@@ -176,14 +218,20 @@ actor UMPSession {
     }
 
     private func consume(_ parts: [UMPPart]) throws {
+        DebugServer.record("ump", "parts", fields: [
+            "request": String(requestNumber),
+            "types": Dictionary(grouping: parts, by: \.type).map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ","),
+        ])
         for part in parts {
             switch part.type {
             case 20: let header = try UMPMediaHeader(part.payload); guard tracks[header.format] != nil else { throw UMPProtocolError.invalidFormat }; pending[header.id] = UMPPending(header: header)
             case 21: var o = 0; let id = try UMPFraming.decodeCompact(part.payload, &o); guard pending[id] != nil else { continue }; pending[id]!.bytes.append(part.payload[o...])
             case 22:
-                var o = 0; let id = try UMPFraming.decodeCompact(part.payload, &o); guard var item = pending.removeValue(forKey: id) else { continue }; item.bytes.append(part.payload[o...]); if let expected = item.header.expectedLength, expected != item.bytes.count { continue }; store(item)
+                var o = 0; let id = try UMPFraming.decodeCompact(part.payload, &o); guard let item = pending.removeValue(forKey: id) else { continue }; if let expected = item.header.expectedLength, expected != item.bytes.count { continue }; store(item)
             case 35:
-                let f = try ProtoReader(part.payload).fields(); cookie = f.first { $0.number == 7 }?.bytes; backoffMS = f.first { $0.number == 4 }?.varint ?? 0
+                let f = try ProtoReader(part.payload).fields()
+                if let replacement = f.first(where: { $0.number == 7 })?.bytes, !replacement.isEmpty { cookie = replacement }
+                backoffMS = f.first { $0.number == 4 }?.varint ?? 0
             case 42:
                 let metadata = try UMPInitMetadata(part.payload); guard tracks[metadata.format] != nil else { throw UMPProtocolError.invalidFormat }; tracks[metadata.format]?.finalSegment = metadata.finalSegment
             case 43:
@@ -192,6 +240,7 @@ actor UMPSession {
                 let f = try ProtoReader(part.payload).fields()
                 let type = f.first { $0.number == 1 }?.bytes.flatMap { String(data: $0, encoding: .utf8) } ?? "Unknown"
                 throw UMPSessionError.protocolFailure(type, Int(f.first { $0.number == 2 }?.varint ?? 0))
+            case 46: throw UMPSessionError.reloadRequired
             case 57:
                 let f = try ProtoReader(part.payload).fields(); let type = Int(f.first { $0.number == 1 }?.varint ?? 0); if let value = f.first(where: { $0.number == 3 })?.bytes { contexts[type] = value }; if (f.first { $0.number == 4 }?.varint ?? 0) != 0 { activeContexts.insert(type) }
             case 58:
@@ -202,17 +251,37 @@ actor UMPSession {
                 policy.filter { $0.number == 2 }.forEach { if let v = $0.varint { activeContexts.remove(Int(v)) } }
                 policy.filter { $0.number == 3 }.forEach { if let v = $0.varint { contexts[Int(v)] = nil; activeContexts.remove(Int(v)) } }
             case 67:
-                let f = try ProtoReader(part.payload).fields(); if f.first(where: { $0.number == 1 })?.varint == 1 { throw UMPSessionError.forbidden }
+                let f = try ProtoReader(part.payload).fields()
+                if f.first(where: { $0.number == 1 })?.varint == 1 {
+                    // This is a playback-blocked UI notification, not a terminal
+                    // transport result. Bootstrap responses can include it beside
+                    // the cookie/context required by the next request.
+                    DebugServer.record("ump", "playback_blocked_notice", fields: ["request": String(requestNumber)])
+                }
             default: continue
             }
         }
     }
 
     private func store(_ item: UMPPending) {
+        redirects = 0
         if item.header.isInit { tracks[item.header.format]?.initialization = item.bytes; return }
         let timing = item.header.tickRange.flatMap { $0.timescale > 0 ? (Double($0.start) / Double($0.timescale), Double($0.duration) / Double($0.timescale)) : nil } ?? (Double(item.header.startMS) / 1000, Double(item.header.durationMS) / 1000)
         tracks[item.header.format]?.segments[item.header.sequence] = .init(sequence: item.header.sequence, start: timing.0, duration: timing.1, data: item.bytes)
     }
 
     private static func base64(_ string: String?) -> Data? { guard var string, !string.isEmpty else { return nil }; string = string.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/"); string += String(repeating: "=", count: (4 - string.count % 4) % 4); return Data(base64Encoded: string, options: .ignoreUnknownCharacters) }
+
+    private static func isHLSCompatibleVideo(_ format: UMPFormat) -> Bool {
+        guard format.mimeType.lowercased() == "video/mp4" else { return false }
+        let codec = format.codecs?.lowercased() ?? ""
+        return codec.hasPrefix("avc1") || codec.hasPrefix("avc3")
+            || codec.hasPrefix("hvc1") || codec.hasPrefix("hev1")
+    }
+
+    private static func isHLSCompatibleAudio(_ format: UMPFormat) -> Bool {
+        guard format.mimeType.lowercased() == "audio/mp4" else { return false }
+        let codec = format.codecs?.lowercased() ?? ""
+        return codec.hasPrefix("mp4a") || codec.hasPrefix("ac-3") || codec.hasPrefix("ec-3")
+    }
 }

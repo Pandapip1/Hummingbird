@@ -250,7 +250,30 @@ struct PluginDetailView: View {
 
     var body: some View {
         if let p = app.plugins.plugin(pluginID) {
-            Form {
+            Group {
+                #if os(macOS)
+                ScrollView {
+                    pluginForm(for: p)
+                }
+                .defaultScrollAnchor(.top)
+                #else
+                pluginForm(for: p)
+                #endif
+            }
+            .navigationTitle(p.config.name)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .confirmationDialog("Remove \(p.config.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
+                Button("Remove", role: .destructive) { app.plugins.remove(pluginID); dismiss() }
+            } message: { Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.") }
+        } else {
+            ContentUnavailableView("Source removed", systemImage: "trash")
+        }
+    }
+
+    private func pluginForm(for p: InstalledPlugin) -> some View {
+        Form {
                 Section {
                     Toggle("Enabled", isOn: Binding(get: { p.enabled }, set: { app.plugins.setEnabled(pluginID, $0) }))
                     LabeledContent("Version", value: "\(p.config.version)")
@@ -301,17 +324,7 @@ struct PluginDetailView: View {
                     Button("Remove source", role: .destructive) { confirmRemove = true }
                 }
             }
-            .navigationTitle(p.config.name)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .confirmationDialog("Remove \(p.config.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
-                Button("Remove", role: .destructive) { app.plugins.remove(pluginID); dismiss() }
-            } message: { Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.") }
-        } else {
-            ContentUnavailableView("Source removed", systemImage: "trash")
         }
-    }
 
     private func update() async {
         working = true; defer { working = false }

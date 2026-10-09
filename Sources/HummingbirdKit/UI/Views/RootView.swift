@@ -148,6 +148,7 @@ struct BrowserTabContentView: View {
                 #endif
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         #if os(tvOS)
         .overlay(alignment: .top) {
             TVBrowserToolbar(tab: tab, showingTabOverview: $showingTabOverview)

@@ -74,6 +74,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
     @ObservationIgnored private var didFinishCurrentItem = false
+    @ObservationIgnored private var playGeneration = 0
 
     init(backend: MediaBackend? = nil) {
         self.backend = backend
@@ -208,6 +209,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?, autoplay: Bool = true) async -> Bool {
         guard let backend else { return false }
+        playGeneration &+= 1
+        let generation = playGeneration
         isPreparing = true
         defer { isPreparing = false }
         do {
@@ -227,6 +230,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             // a stale embedded-caption checkmark after a quality/source change.
             embeddedSubtitleChoice = nil
             selected = option
+            if generation == playGeneration { errorMessage = nil }
             playbackTime = backend.currentTime
             self.duration = backend.duration
             isPlaying = backend.isPlaying

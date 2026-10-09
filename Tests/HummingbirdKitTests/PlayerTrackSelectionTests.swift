@@ -119,6 +119,23 @@ final class PlayerTrackSelectionTests: XCTestCase {
         XCTAssertTrue(model.isPlaying)
     }
 
+    func testSuccessfulQualityRetryClearsPreviousError() async {
+        let backend = RecoveringReplacementBackend()
+        let model = PlayerModel(backend: backend)
+        let initial = playbackOption(id: "initial", url: "https://example.com/initial.mp4")
+        let broken = playbackOption(id: "broken", url: "https://example.com/broken.mp4")
+        let recovered = playbackOption(id: "recovered", url: "https://example.com/recovered.mp4")
+
+        await model.select(initial)
+        await model.select(broken)
+        XCTAssertEqual(model.selected, initial)
+        XCTAssertEqual(model.errorMessage, "replacement failed")
+
+        await model.select(recovered)
+        XCTAssertEqual(model.selected, recovered)
+        XCTAssertNil(model.errorMessage)
+    }
+
     private func playbackOption(id: String, url: String) -> PlaybackOption {
         let source = try! JSONDecoder().decode(
             MediaSource.self,
@@ -155,6 +172,35 @@ private final class RecordingSelectionBackend: MediaBackend {
         loadedResumeTime = resumeAt
         loadedAutoplay = autoplay
         if let resumeAt { currentTime = resumeAt }
+        isPlaying = autoplay
+    }
+    func play() { isPlaying = true }
+    func pause() { isPlaying = false }
+    func setPlaybackRate(_ rate: Float) {}
+    func seek(to seconds: Double) { currentTime = seconds }
+    func stop() { isPlaying = false }
+}
+
+@MainActor
+private final class RecoveringReplacementBackend: MediaBackend {
+    var currentTime = 30.0
+    var duration = 120.0
+    var isPlaying = true
+    var onTick: (@MainActor (Double) -> Void)?
+    var onEnded: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (String) -> Void)?
+    var pictureInPictureSupported = false
+    private var loadCount = 0
+
+    func selectTrack(_ track: MediaTrack?) {}
+    func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? { nil }
+    func setExternalSubtitle(_ url: URL?) {}
+    func startPictureInPicture() {}
+    func stopPictureInPicture() {}
+    func canPlay(_ option: PlaybackOption) -> Bool { true }
+    func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
+        loadCount += 1
+        if loadCount == 2 { throw PluginError.execution("replacement failed") }
         isPlaying = autoplay
     }
     func play() { isPlaying = true }

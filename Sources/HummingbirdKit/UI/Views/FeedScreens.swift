@@ -1,4 +1,5 @@
 import Foundation
+import DebugKit
 import SwiftOpenUI
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
@@ -30,18 +31,18 @@ struct HomeView: View {
 @MainActor
 struct SearchView: View {
     @Environment(AppModel.self) private var app
-    @State private var path = NavigationPath()
+    @Environment(\.openRoute) private var openRoute
     @State private var query = ""
     @State private var submittedQuery = ""
     @State private var feed: FeedModel?
     @State private var channels: [ContentItem] = []
     @State private var suggestions: [String] = []
     @State private var searchGeneration = 0
-    @State private var resolving = false
     @State private var notice: String?
+    @State private var pendingURL: String?
 
     var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack {
             Group {
                 if app.plugins.enabledPlugins.isEmpty { NoSourcesView() }
                 else if let feed, query.trimmingCharacters(in: .whitespacesAndNewlines) == submittedQuery {
@@ -104,6 +105,19 @@ struct SearchView: View {
             .overlay(alignment: .bottom) {
                 if let notice { Text(notice).font(.footnote).padding(10).background(.thinMaterial, in: Capsule()).padding() }
             }
+            .confirmationDialog("Open link as…", isPresented: Binding(
+                get: { pendingURL != nil },
+                set: { if !$0 { pendingURL = nil } }
+            ), titleVisibility: .visible) {
+                if let url = pendingURL {
+                    Button("Video or Stream") { openRoute(.content(url), title: "Video"); pendingURL = nil }
+                    Button("Channel") { openRoute(.channel(url), title: "Channel"); pendingURL = nil }
+                    Button("Playlist") { openRoute(.playlist(url), title: "Playlist"); pendingURL = nil }
+                }
+                Button("Cancel", role: .cancel) { pendingURL = nil }
+            } message: {
+                Text("Choose the view to open. The link itself does not decide the content type.")
+            }
         }
     }
 
@@ -115,21 +129,25 @@ struct SearchView: View {
         submittedQuery = text
         channels = []
         notice = nil
-        resolving = false
         app.searchHistory.record(text)
         suggestions = []
         if text.contains("://") {
-            resolving = true
-            defer { if generation == searchGeneration { resolving = false } }
-            if let route = await app.platform.classify(url: text) {
-                guard generation == searchGeneration else { return }
-                path.append(route)
-                return
-            }
+            let routes = await app.platform.recognizedRoutes(for: text)
             guard generation == searchGeneration else { return }
-            notice = "None of your sources recognise that link."
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            if generation == searchGeneration { notice = nil }
+            DebugServer.record("routing", "manual_url_matches", fields: [
+                "content": String(routes.contains(.content(text))),
+                "channel": String(routes.contains(.channel(text))),
+                "playlist": String(routes.contains(.playlist(text))),
+            ])
+            if routes.count == 1, let route = routes.first {
+                openRoute(route)
+            } else if routes.isEmpty {
+                notice = "None of your sources recognise that link."
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                if generation == searchGeneration { notice = nil }
+            } else {
+                pendingURL = text
+            }
             return
         }
         let f = app.makeFeed()

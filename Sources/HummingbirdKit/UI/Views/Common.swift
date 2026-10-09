@@ -1,4 +1,5 @@
 import Foundation
+import DebugKit
 import SwiftOpenUI
 
 @MainActor
@@ -30,12 +31,18 @@ struct ContentRow: View {
             case .locked:
                 if let u = item.unlockUrl.flatMap(URL.init(string:)) { PortableLink(destination: u) { card } } else { card }
             case .channel:
-                Button { openRoute(.channel(item.url), title: item.name) } label: { channelCard }
+                Button {
+                    DebugServer.record("routing", "content_row_open", fields: ["kind": "channel"])
+                    openRoute(.channel(item.url), title: item.name)
+                } label: { channelCard }
             case .playlist:
                 Button { openRoute(.playlist(item.url), title: item.name) } label: { card }
             default:
                 ZStack(alignment: .topTrailing) {
-                    Button { openRoute(.item(item), title: item.name) } label: { card }
+                    Button {
+                        DebugServer.record("routing", "content_row_open", fields: ["kind": String(describing: item.kind)])
+                        openRoute(.item(item), title: item.name)
+                    } label: { card }
                     if item.kind == .video {
                         Menu {
                             Button("Play next") { app.playbackQueue.playNext(SavedVideo(item)) }

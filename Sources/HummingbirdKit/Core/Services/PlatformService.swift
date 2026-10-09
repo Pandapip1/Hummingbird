@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import DebugKit
 
 private func capture<T>(_ op: () async throws -> T) async -> Result<T, Error> {
     do { return .success(try await op()) } catch { return .failure(error) }
@@ -78,6 +79,7 @@ final class PlatformService {
     }
 
     func details(url: String) async throws -> (PluginRuntime, ContentDetails) {
+        DebugServer.record("routing", "content_details", fields: ["host": URL(string: url)?.host ?? "unknown"])
         guard let rt = await route(url: url, check: "isContentDetailsUrl") else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getContentDetails", [url], kind: "details") }
@@ -126,6 +128,7 @@ final class PlatformService {
     }
 
     func channel(url: String) async throws -> (PluginRuntime, ChannelInfo) {
+        DebugServer.record("routing", "channel", fields: ["host": URL(string: url)?.host ?? "unknown"])
         guard let rt = await route(url: url, check: "isChannelUrl") else { throw PluginError.notInstalled }
         do {
             let info = try await withReload(rt) { try await rt.call("getChannel", [url], as: ChannelInfo.self) }
@@ -134,6 +137,7 @@ final class PlatformService {
     }
 
     func playlist(url: String) async throws -> (PluginRuntime, PlaylistDetailsPayload, PluginPager<ContentItem>) {
+        DebugServer.record("routing", "playlist", fields: ["host": URL(string: url)?.host ?? "unknown"])
         guard let rt = await route(url: url, check: "isPlaylistUrl", requires: ["getPlaylist", "isPlaylistUrl"]) else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getPlaylist", [url], kind: "playlist") }
@@ -142,12 +146,16 @@ final class PlatformService {
         } catch { _ = surface(error, pluginID: rt.id); throw error }
     }
 
-    /// What kind of thing a pasted URL is, if any plugin recognises it.
-    func classify(url: String) async -> Route? {
-        if await route(url: url, check: "isContentDetailsUrl") != nil { return .content(url) }
-        if await route(url: url, check: "isChannelUrl") != nil { return .channel(url) }
-        if await route(url: url, check: "isPlaylistUrl", requires: ["getPlaylist", "isPlaylistUrl"]) != nil { return .playlist(url) }
-        return nil
+    /// Resolves intent only at the manual URL-entry boundary. Navigation from
+    /// content UI passes an explicit Route and never calls this method.
+    func recognizedRoutes(for url: String) async -> [Route] {
+        var matches: [Route] = []
+        if await route(url: url, check: "isContentDetailsUrl") != nil { matches.append(.content(url)) }
+        if await route(url: url, check: "isChannelUrl") != nil { matches.append(.channel(url)) }
+        if await route(url: url, check: "isPlaylistUrl", requires: ["getPlaylist", "isPlaylistUrl"]) != nil {
+            matches.append(.playlist(url))
+        }
+        return matches
     }
 
     // MARK: capabilities
@@ -212,7 +220,14 @@ final class PlatformService {
         for p in plugins.enabledPlugins where p.config.enableInSearch {
             guard let rt = plugins.runtime(for: p.id), (try? await rt.enable()) != nil, rt.has("searchChannels") else { continue }
             if let pager = try? await rt.pager("searchChannels", [query], as: ContentItem.self) {
-                out.append(contentsOf: pager.initial.map { (rt, $0) })
+                // The API method supplies the semantic type even when an older
+                // plugin omits PlatformChannel's contentType discriminator.
+                // Preserve that explicit intent all the way into tab routing.
+                out.append(contentsOf: pager.initial.map { item in
+                    var channel = item
+                    channel.contentType = 60
+                    return (rt, channel)
+                })
             }
         }
         return out

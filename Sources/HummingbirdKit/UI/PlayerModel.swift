@@ -120,7 +120,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     func select(_ option: PlaybackOption) async {
         let position = backend?.currentTime
-        _ = await play(option, resumeAt: position, duration: details?.item.duration)
+        let autoplay = backend?.isPlaying ?? true
+        _ = await play(option, resumeAt: position, duration: details?.item.duration, autoplay: autoplay)
     }
 
     func selectTrack(_ track: MediaTrack?) {
@@ -205,7 +206,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         isPlaying = true
     }
 
-    private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?) async -> Bool {
+    private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?, autoplay: Bool = true) async -> Bool {
         guard let backend else { return false }
         isPreparing = true
         defer { isPreparing = false }
@@ -219,7 +220,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 if r <= 5 || option.kind == .live { start = nil }
                 else if let duration, Double(duration) - r < 15 { start = nil }
             }
-            try await backend.load(request, resumeAt: start, autoplay: true)
+            try await backend.load(request, resumeAt: start, autoplay: autoplay)
             backend.setPlaybackRate(playbackRate)
             didFinishCurrentItem = false
             // Media selections belong to the replaced AVPlayerItem. Do not show

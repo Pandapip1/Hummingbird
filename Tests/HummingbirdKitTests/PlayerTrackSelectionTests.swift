@@ -98,6 +98,27 @@ final class PlayerTrackSelectionTests: XCTestCase {
         await secondTask.value
     }
 
+    func testQualitySelectionPreservesPositionAndPausedState() async {
+        let backend = RecordingSelectionBackend(currentTime: 42, isPlaying: false)
+        let model = PlayerModel(backend: backend)
+        let option = playbackOption(id: "720p", url: "https://example.com/720.mp4")
+
+        await model.select(option)
+
+        XCTAssertEqual(backend.loadedResumeTime, 42)
+        XCTAssertEqual(backend.loadedAutoplay, false)
+        XCTAssertFalse(model.isPlaying)
+
+        backend.currentTime = 57
+        backend.isPlaying = true
+        let next = playbackOption(id: "1080p", url: "https://example.com/1080.mp4")
+        await model.select(next)
+
+        XCTAssertEqual(backend.loadedResumeTime, 57)
+        XCTAssertEqual(backend.loadedAutoplay, true)
+        XCTAssertTrue(model.isPlaying)
+    }
+
     private func playbackOption(id: String, url: String) -> PlaybackOption {
         let source = try! JSONDecoder().decode(
             MediaSource.self,
@@ -105,6 +126,42 @@ final class PlayerTrackSelectionTests: XCTestCase {
         )
         return PlaybackOption(id: id, label: id, kind: .progressive, video: source, audio: nil, height: 720)
     }
+}
+
+@MainActor
+private final class RecordingSelectionBackend: MediaBackend {
+    var currentTime: Double
+    var duration = 120.0
+    var isPlaying: Bool
+    var onTick: (@MainActor (Double) -> Void)?
+    var onEnded: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (String) -> Void)?
+    var pictureInPictureSupported = false
+    var loadedResumeTime: Double?
+    var loadedAutoplay: Bool?
+
+    init(currentTime: Double, isPlaying: Bool) {
+        self.currentTime = currentTime
+        self.isPlaying = isPlaying
+    }
+
+    func selectTrack(_ track: MediaTrack?) {}
+    func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? { nil }
+    func setExternalSubtitle(_ url: URL?) {}
+    func startPictureInPicture() {}
+    func stopPictureInPicture() {}
+    func canPlay(_ option: PlaybackOption) -> Bool { true }
+    func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
+        loadedResumeTime = resumeAt
+        loadedAutoplay = autoplay
+        if let resumeAt { currentTime = resumeAt }
+        isPlaying = autoplay
+    }
+    func play() { isPlaying = true }
+    func pause() { isPlaying = false }
+    func setPlaybackRate(_ rate: Float) {}
+    func seek(to seconds: Double) { currentTime = seconds }
+    func stop() { isPlaying = false }
 }
 
 @MainActor

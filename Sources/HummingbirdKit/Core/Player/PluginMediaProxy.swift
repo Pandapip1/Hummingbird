@@ -97,7 +97,7 @@ actor PluginMediaProxy {
             do {
                 let data = try await presentation.runtime.callHandleBytes(
                     presentation.executor, "executeRequest",
-                    [upstream, [String: String](), "GET", NSNull()]
+                    [upstream, [String: String]()]
                 )
                 let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
                 return (.ok, contentType, data)

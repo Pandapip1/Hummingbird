@@ -51,7 +51,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
                 let initialization = try await runtime.callHandleBytes(
                     executor.handle,
                     "executeRequest",
-                    ["https://grayjay.internal/video/internal/init.mp4", [String: String](), "GET", NSNull()]
+                    ["https://grayjay.internal/video/internal/init.mp4", [String: String]()]
                 )
                 XCTAssertEqual(String(decoding: initialization.dropFirst(4).prefix(4), as: UTF8.self), "ftyp")
                 print("[youtube init] \(initialization.count) bytes")

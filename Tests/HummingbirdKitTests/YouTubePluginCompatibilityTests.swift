@@ -24,6 +24,8 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         let script = try String(contentsOf: root.appendingPathComponent("YoutubeScript.js"), encoding: .utf8)
         let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
+        XCTAssertNotNil(config.authentication)
+        XCTAssertNotNil(config.captcha)
         try await runtime.validate()
     }
 
@@ -43,6 +45,13 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         for source in details.videoSources where source.pluginType == "DashManifestRawSource" {
             XCTAssertNotNil(source.handle)
             XCTAssertTrue(source.hasGenerate)
+        }
+        if details.hasTracker {
+            let tracker = try await runtime.handleFromCall(details.handle, "getPlaybackTracker")
+            XCTAssertNil(tracker)
+        }
+        if runtime.has("getContentChapters") {
+            _ = try await runtime.call("getContentChapters", [url, NSNull()], as: [CompatibilityChapter].self)
         }
         if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1",
            let source = details.videoSources.first(where: { $0.container == "video/mp4" }),
@@ -246,4 +255,11 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         }
         return details
     }
+}
+
+private struct CompatibilityChapter: Decodable {
+    var name: String
+    var timeStart: Double
+    var timeEnd: Double
+    var type: Int
 }

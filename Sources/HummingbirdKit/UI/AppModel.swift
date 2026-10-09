@@ -70,6 +70,8 @@ final class AppModel {
         return player
     }
 
+    var activePlayerForDebug: PlayerModel? { tabPlayers[activeTabID] }
+
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
     init() {

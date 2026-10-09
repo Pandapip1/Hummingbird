@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import SwiftOpenUI
 import AdvancedVideoPlayerKit
+import DebugKit
 
 enum SubtitleColorChoice: String, CaseIterable, Sendable {
     case white, yellow, green, cyan
@@ -85,6 +86,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     // MARK: loading
 
     func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore, sourceURL: String) async {
+        DebugServer.record("player", "load_started", fields: ["plugin": runtime.id, "host": URL(string: sourceURL)?.host ?? "unknown"])
         teardown()
         loadedURL = sourceURL
         self.details = details
@@ -108,6 +110,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         options = PlaybackSelector.options(for: details, preferredLanguage: preferredLanguage)
             .filter { _ in true }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
+            DebugServer.record("player", "no_playable_source", fields: ["options": String(options.count)])
             errorMessage = options.isEmpty
                 ? "This video has no source this device can play (it offers only formats the player does not support, such as WebM, DASH or DRM-protected streams)."
                 : "No playable source found."
@@ -260,6 +263,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         isPreparing = true
         defer { isPreparing = false }
         do {
+            DebugServer.record("player", "source_selected", fields: [
+                "kind": String(describing: option.kind),
+                "videoType": option.video.pluginType,
+                "videoHost": URL(string: option.video.url)?.host ?? "generated",
+                "audioHost": option.audio.flatMap { URL(string: $0.url)?.host } ?? "none",
+            ])
             let request = PlayRequest(video: try await resolve(option.video),
                                       audio: try await option.audio.asyncMap { try await resolve($0) },
                                       isLive: option.kind == .live)
@@ -281,12 +290,17 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             playbackTime = backend.currentTime
             self.duration = backend.duration
             isPlaying = backend.isPlaying
+            DebugServer.record("player", "load_completed", fields: ["playing": String(isPlaying)])
             return true
         } catch MediaBackendLoadError.superseded {
             return false
         } catch is CancellationError {
             return false
         } catch {
+            DebugServer.record("player", "load_failed", fields: [
+                "errorType": String(reflecting: type(of: error)),
+                "message": error.localizedDescription,
+            ])
             errorMessage = (error as? PluginError)?.localizedDescription ?? error.localizedDescription
             return false
         }
@@ -300,6 +314,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
 
     private func resolve(_ source: MediaSource) async throws -> ResolvedMedia {
+        DebugServer.record("player", "resolve_source", fields: [
+            "type": source.pluginType,
+            "host": URL(string: source.url)?.host ?? "generated",
+            "hasModifier": String(source.requestModifier != nil),
+        ])
         if source.pluginType == "DashManifestRawSource", let handle = source.handle, let runtime {
             let manifestData = try await runtime.callHandle(handle, "generate")
             let manifest = try PluginRuntime.decode(String.self, from: manifestData)

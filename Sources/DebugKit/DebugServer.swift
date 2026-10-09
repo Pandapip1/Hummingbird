@@ -14,6 +14,8 @@ public final class DebugServer {
     private var probes: [String: @MainActor () -> String] = [:]
     private var actions: [String: @MainActor () -> Void] = [:]
     private var listener: NWListener?
+    private var events: [[String: Any]] = []
+    private let maximumEventCount = 300
 
     private init() {}
 
@@ -23,6 +25,24 @@ public final class DebugServer {
 
     public func registerAction(_ name: String, _ action: @escaping @MainActor () -> Void) {
         actions[name] = action
+    }
+
+    /// Adds a structured, bounded diagnostic event. Values should already be
+    /// redacted; callers should record URL hosts rather than signed URLs.
+    public nonisolated static func record(_ category: String, _ name: String, fields: [String: String] = [:]) {
+        Task { @MainActor in shared.appendEvent(category: category, name: name, fields: fields) }
+    }
+
+    private func appendEvent(category: String, name: String, fields: [String: String]) {
+        events.append([
+            "time": ISO8601DateFormatter().string(from: Date()),
+            "category": category,
+            "name": name,
+            "fields": fields,
+        ])
+        if events.count > maximumEventCount {
+            events.removeFirst(events.count - maximumEventCount)
+        }
     }
 
     public func startFromEnvironment() {
@@ -69,6 +89,9 @@ public final class DebugServer {
             let values = probes.mapValues { $0() }
             return http(status: "200 OK", json: values)
         }
+        if method == "GET", path == "/events" {
+            return http(status: "200 OK", object: ["events": events])
+        }
         if method == "GET", path == "/" {
             return http(status: "200 OK", json: [
                 "probes": probes.keys.sorted().joined(separator: ","),
@@ -87,7 +110,11 @@ public final class DebugServer {
     }
 
     private func http(status: String, json: [String: String]) -> Data {
-        let body = (try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])) ?? Data("{}".utf8)
+        http(status: status, object: json)
+    }
+
+    private func http(status: String, object: Any) -> Data {
+        let body = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
         var response = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
         response.append(body)
         return response
@@ -102,6 +129,7 @@ public final class DebugServer {
     private init() {}
     public func registerProbe(_ name: String, _ probe: @escaping @MainActor () -> String) {}
     public func registerAction(_ name: String, _ action: @escaping @MainActor () -> Void) {}
+    public nonisolated static func record(_ category: String, _ name: String, fields: [String: String] = [:]) {}
     public func startFromEnvironment() {}
 }
 

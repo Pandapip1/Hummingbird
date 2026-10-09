@@ -25,6 +25,7 @@ public struct HummingbirdRoot: View {
         RootView()
             .environment(model)
             .task { await model.plugins.checkForUpdates() }
+            .task { configureDebugServer() }
             .onOpenURL { model.handleIncomingURL($0) }
         #endif
     }
@@ -34,12 +35,22 @@ public struct HummingbirdRoot: View {
         RootView()
             .environment(model)
             .task { await model.plugins.checkForUpdates() }
+            .task { configureDebugServer() }
             .onOpenURL { model.handleIncomingURL($0) }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { model.library.flushHistory(); model.library.persistSubscriptionState() }
             }
     }
     #endif
+
+    private func configureDebugServer() {
+        DebugServer.shared.registerProbe("activeTab") { model.activeTabID.uuidString }
+        DebugServer.shared.registerProbe("playing") { String(model.activePlayerForDebug?.isPlaying ?? false) }
+        DebugServer.shared.registerProbe("preparing") { String(model.activePlayerForDebug?.isPreparing ?? false) }
+        DebugServer.shared.registerProbe("playerError") { model.activePlayerForDebug?.errorMessage ?? "" }
+        DebugServer.shared.registerAction("togglePlayback") { model.activePlayerForDebug?.togglePlayback() }
+        DebugServer.shared.startFromEnvironment()
+    }
 }
 
 #if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)

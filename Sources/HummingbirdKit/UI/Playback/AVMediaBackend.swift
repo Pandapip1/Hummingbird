@@ -3,6 +3,7 @@ import Foundation
 import AVFoundation
 import SwiftOpenUI
 import AdvancedVideoPlayerKit
+import DebugKit
 #if canImport(AVKit)
 import AVKit
 #endif
@@ -19,6 +20,8 @@ final class AVMediaBackend: MediaBackend {
     var onFailure: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
     private var itemObserver: NSObjectProtocol?
+    private var itemFailureObserver: NSObjectProtocol?
+    private var itemStatusObserver: NSKeyValueObservation?
     private var mediaSelectionGroups: [AVMediaCharacteristic: AVMediaSelectionGroup] = [:]
     private var loadGeneration = 0
     private var activeLoadGenerations: Set<Int> = []
@@ -85,6 +88,11 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
+        DebugServer.record("avplayer", "load_started", fields: [
+            "videoHost": request.video.url.host ?? "unknown",
+            "audioHost": request.audio?.url.host ?? "none",
+            "separateAudio": String(request.audio != nil),
+        ])
         loadGeneration &+= 1
         let generation = loadGeneration
         activeLoadGenerations.insert(generation)
@@ -109,6 +117,7 @@ final class AVMediaBackend: MediaBackend {
         removeObservers()
         let p = player ?? AVPlayer()
         p.replaceCurrentItem(with: item)
+        observeStatus(of: item)
         player = p
         committedLoadGeneration = generation
         committedAsset = item.asset
@@ -173,6 +182,49 @@ final class AVMediaBackend: MediaBackend {
     private func removeObservers() {
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
         if let o = itemObserver { NotificationCenter.default.removeObserver(o); itemObserver = nil }
+        if let o = itemFailureObserver { NotificationCenter.default.removeObserver(o); itemFailureObserver = nil }
+        itemStatusObserver?.invalidate()
+        itemStatusObserver = nil
+    }
+
+    private func observeStatus(of item: AVPlayerItem) {
+        itemStatusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self, weak item] _, change in
+            guard let status = change.newValue else { return }
+            let name: String = switch status {
+            case .unknown: "status_unknown"
+            case .readyToPlay: "status_ready"
+            case .failed: "status_failed"
+            @unknown default: "status_other"
+            }
+            var fields: [String: String] = [:]
+            if let error = item?.error {
+                fields["errorType"] = String(reflecting: type(of: error))
+                fields["message"] = error.localizedDescription
+                fields["code"] = String((error as NSError).code)
+                fields["domain"] = (error as NSError).domain
+            }
+            if let event = item?.errorLog()?.events.last {
+                fields["httpStatus"] = String(event.errorStatusCode)
+                fields["server"] = event.serverAddress ?? ""
+                fields["uriHost"] = event.uri.flatMap { URL(string: $0)?.host } ?? ""
+                fields["comment"] = event.errorComment ?? ""
+            }
+            DebugServer.record("avplayer", name, fields: fields)
+            if status == .failed, let message = item?.error?.localizedDescription {
+                Task { @MainActor in self?.onFailure?(message) }
+            }
+        }
+        itemFailureObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: nil
+        ) { notification in
+            let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            DebugServer.record("avplayer", "failed_to_end", fields: [
+                "message": error?.localizedDescription ?? "unknown",
+                "code": error.map { String(($0 as NSError).code) } ?? "",
+            ])
+        }
     }
 
     private func isCurrentLoad(_ generation: Int, asset: AVAsset) -> Bool {

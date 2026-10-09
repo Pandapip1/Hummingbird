@@ -305,6 +305,17 @@ final class PluginRuntime: @unchecked Sendable {
         return try await unwrapAwaiting(result)
     }
 
+    func callHandleBytes(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> Data {
+        let result = try await perform {
+            try self.evalResult("__jb.callHandleBytes(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))")
+        }
+        let encoded = try Self.decode(String.self, from: try await unwrapAwaiting(result))
+        guard let bytes = Data(base64Encoded: encoded) else {
+            throw PluginError.execution("The plugin returned invalid base64 media data")
+        }
+        return bytes
+    }
+
     func handlePager<Item: Decodable & Sendable>(_ handle: Int, _ method: String, _ args: [Any] = [], as item: Item.Type) async throws -> PluginPager<Item> {
         let data = try await perform {
             try self.unwrap(try self.evalResult("__jb.callHandleForPager(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"))

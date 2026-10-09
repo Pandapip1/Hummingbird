@@ -248,6 +248,17 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
 
     private func resolve(_ source: MediaSource) async throws -> ResolvedMedia {
+        if source.pluginType == "DashManifestRawSource", let handle = source.handle, let runtime {
+            let manifestData = try await runtime.callHandle(handle, "generate")
+            let manifest = try PluginRuntime.decode(String.self, from: manifestData)
+            guard let executor = try await runtime.handleFromCall(handle, "getRequestExecutor") else {
+                throw PluginError.execution("The generated media source did not provide a request executor")
+            }
+            let url = try await PluginMediaProxy.shared.register(
+                manifest: manifest, runtime: runtime, executor: executor.handle
+            )
+            return ResolvedMedia(url: url, headers: [:])
+        }
         guard var url = URL(string: source.url) else { throw PluginError.execution("Invalid media URL") }
         var headers: [String: String] = [:]
         if let ref = source.requestModifier, let runtime {

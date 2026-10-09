@@ -894,6 +894,11 @@
   }
 
   function preparedValue(v, kind) {
+    if (kind === "bytes") {
+      if (typeof v === "string") return v;
+      if (v && typeof v.length === "number") return global.__b64encode(v);
+      throw new global.ScriptImplementationException("Byte-producing method returned an unsupported value");
+    }
     if (kind === "pager") {
       if (!isPager(v)) return { pager: 0, results: [], hasMore: false };
       return pagerPayload(v, putHandle(v));
@@ -971,6 +976,22 @@
         var waiting = awaitValue(v, "value");
         if (waiting) return waiting;
         return JSON.stringify({ ok: true, value: v === undefined ? null : v });
+      } catch (e) {
+        return JSON.stringify({ ok: false, error: describeError(e) });
+      }
+    },
+    callHandleBytes: function (id, method, argsJson) {
+      try {
+        var o = handles[id];
+        if (!o) return JSON.stringify({ ok: false, error: { type: "ScriptExecutionException", msg: "Stale handle " + id } });
+        var fn = o[method];
+        if (typeof fn !== "function") return JSON.stringify({ ok: false, error: { type: "ScriptImplementationException", msg: "Missing " + method } });
+        var v = fn.apply(o, argsJson ? JSON.parse(argsJson) : []);
+        var waiting = awaitValue(v, "bytes");
+        if (waiting) return waiting;
+        if (typeof v === "string") return JSON.stringify({ ok: true, value: v });
+        if (v && typeof v.length === "number") return JSON.stringify({ ok: true, value: global.__b64encode(v) });
+        throw new global.ScriptImplementationException("Byte-producing method returned an unsupported value");
       } catch (e) {
         return JSON.stringify({ ok: false, error: describeError(e) });
       }

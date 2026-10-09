@@ -2,7 +2,7 @@ import Foundation
 
 /// One way to play a video on iOS.
 struct PlaybackOption: Identifiable, Hashable {
-    enum Kind: Hashable { case live, hls, progressive }
+    enum Kind: Hashable { case live, hls, progressive, generated }
     var id: String
     var label: String
     var kind: Kind
@@ -31,6 +31,11 @@ enum PlaybackSelector {
         }
 
         let audio = bestAudio(d.audioSources, language: preferredLanguage)
+        for v in d.videoSources where v.pluginType == "DashManifestRawSource" && v.hasGenerate && v.handle != nil && !v.isWidevine && isPlayableVideoContainer(v) {
+            let identity = "generated|\(v.height)|\(v.container.lowercased())|\(v.codec.lowercased())"
+            add(PlaybackOption(id: identity, label: label(for: v), kind: .generated,
+                               video: v, audio: nil, height: v.height))
+        }
         for v in d.videoSources where !v.isHLS && !v.isDash && !v.isWidevine && !v.url.isEmpty && isPlayableVideo(v) {
             if d.isUnmuxed {
                 guard let audio else { continue }
@@ -46,7 +51,7 @@ enum PlaybackSelector {
     static func best(_ options: [PlaybackOption], maxHeight: Int, preferAdaptive: Bool) -> PlaybackOption? {
         if let live = options.first(where: { $0.kind == .live }) { return live }
         if preferAdaptive, let hls = options.first(where: { $0.kind == .hls }) { return hls }
-        let files = options.filter { $0.kind == .progressive }
+        let files = options.filter { $0.kind == .progressive || $0.kind == .generated }
         let capped = files.filter { $0.height <= maxHeight || $0.height == 0 }
         if let pick = capped.max(by: { $0.height < $1.height }) { return pick }
         if let pick = files.min(by: { $0.height < $1.height }) { return pick }
@@ -58,6 +63,10 @@ enum PlaybackSelector {
         if !c.isEmpty { return videoContainers.contains(c) }
         let path = URL(string: s.url)?.pathExtension.lowercased() ?? ""
         return ["mp4", "m4v", "mov"].contains(path)
+    }
+
+    private static func isPlayableVideoContainer(_ source: MediaSource) -> Bool {
+        videoContainers.contains(source.container.lowercased())
     }
 
     private static func bestAudio(_ sources: [MediaSource], language: String?) -> MediaSource? {

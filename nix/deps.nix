@@ -18,6 +18,13 @@ let
     # The backend falls back to appsink on hosts without a usable GTK GL context.
     gst-plugins-rs
   ];
+  # The full gst-plugins-bad directory hangs GStreamer's Darwin plugin scanner.
+  # Hummingbird only needs its HLS demuxer, so expose that plugin on its own.
+  darwinGstHLS = pkgs.runCommand "gstreamer-hls-plugin-${pkgs.gst_all_1.gst-plugins-bad.version}" { } ''
+    mkdir -p "$out/lib/gstreamer-1.0"
+    ln -s "${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0/libgsthls.dylib" \
+      "$out/lib/gstreamer-1.0/libgsthls.dylib"
+  '';
 in
 rec {
   inherit gstPlugins webkitGTK;
@@ -102,6 +109,9 @@ rec {
     gst_all_1.gstreamer.dev
     gst_all_1.gst-plugins-base
     gst_all_1.gst-plugins-base.dev
+    gst_all_1.gst-plugins-good
+    gst_all_1.gst-libav
+    darwinGstHLS
     iconTheme
     (pkgs.callPackage ./sysprof-capture-stub.nix { })
     (pkgs.callPackage ./libunwind-pc-stub.nix { })

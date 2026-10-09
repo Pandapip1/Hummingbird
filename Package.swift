@@ -89,7 +89,8 @@ var targets: [Target] = [
             .product(name: "BackendGTK4", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
             .product(name: "CAdwaita", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
         ],
-        path: "Tests/HummingbirdKitTests"
+        path: "Tests/HummingbirdKitTests",
+        swiftSettings: backendSwiftSettings
     ),
 ]
 

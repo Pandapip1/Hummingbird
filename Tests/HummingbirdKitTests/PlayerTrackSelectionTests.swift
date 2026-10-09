@@ -117,6 +117,14 @@ final class PlayerTrackSelectionTests: XCTestCase {
         XCTAssertEqual(backend.loadedResumeTime, 57)
         XCTAssertEqual(backend.loadedAutoplay, true)
         XCTAssertTrue(model.isPlaying)
+
+        backend.currentTime = 3
+        backend.isPlaying = false
+        let nearStart = playbackOption(id: "480p", url: "https://example.com/480.mp4")
+        await model.select(nearStart)
+
+        XCTAssertEqual(backend.loadedResumeTime, 3, "an in-session quality change must not apply saved-history restart rules")
+        XCTAssertEqual(backend.loadedAutoplay, false)
     }
 
     func testSuccessfulQualityRetryClearsPreviousError() async {

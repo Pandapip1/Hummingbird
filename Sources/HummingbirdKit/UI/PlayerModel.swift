@@ -122,7 +122,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     func select(_ option: PlaybackOption) async {
         let position = backend?.currentTime
         let autoplay = backend?.isPlaying ?? true
-        _ = await play(option, resumeAt: position, duration: details?.item.duration, autoplay: autoplay)
+        _ = await play(option, resumeAt: position, duration: details?.item.duration,
+                       autoplay: autoplay, normalizeSavedPosition: false)
     }
 
     func selectTrack(_ track: MediaTrack?) {
@@ -207,7 +208,13 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         isPlaying = true
     }
 
-    private func play(_ option: PlaybackOption, resumeAt: Double?, duration: Int?, autoplay: Bool = true) async -> Bool {
+    private func play(
+        _ option: PlaybackOption,
+        resumeAt: Double?,
+        duration: Int?,
+        autoplay: Bool = true,
+        normalizeSavedPosition: Bool = true
+    ) async -> Bool {
         guard let backend else { return false }
         playGeneration &+= 1
         let generation = playGeneration
@@ -220,8 +227,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             var start = resumeAt
             if let r = resumeAt {
                 // Restart from the beginning if the viewer was already near the end, or has barely started.
-                if r <= 5 || option.kind == .live { start = nil }
-                else if let duration, Double(duration) - r < 15 { start = nil }
+                if option.kind == .live { start = nil }
+                else if normalizeSavedPosition, r <= 5 { start = nil }
+                else if normalizeSavedPosition, let duration, Double(duration) - r < 15 { start = nil }
             }
             try await backend.load(request, resumeAt: start, autoplay: autoplay)
             backend.setPlaybackRate(playbackRate)

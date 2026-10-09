@@ -178,6 +178,7 @@ struct RouteContent: View {
             case .channel(let url): ChannelView(url: url)
             case .playlist(let url): PlaylistView(url: url)
             case .plugin(let id): PluginDetailView(pluginID: id)
+            case .settings: AppSettingsView()
             }
         }
     }

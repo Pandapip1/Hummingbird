@@ -213,6 +213,7 @@ private extension BrowserTab {
         case .channel: return "person.crop.circle"
         case .playlist: return "list.bullet.rectangle"
         case .plugin: return "puzzlepiece.extension"
+        case .settings: return "gearshape"
         case .content: return "play.rectangle"
         case nil: return "house"
         }

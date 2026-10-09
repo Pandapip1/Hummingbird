@@ -216,6 +216,7 @@ enum Route: Hashable {
     case channel(String)
     case playlist(String)
     case plugin(String)
+    case settings
 }
 
 // MARK: - Merged feeds

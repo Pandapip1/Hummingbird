@@ -78,6 +78,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
     @ObservationIgnored private var didFinishCurrentItem = false
     @ObservationIgnored private var playGeneration = 0
+    @ObservationIgnored private var requestedPluginReload: (message: String, data: String?)?
 
     init(backend: MediaBackend? = nil) {
         self.backend = backend
@@ -86,6 +87,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     // MARK: loading
 
     func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore, sourceURL: String) async {
+        await load(details: details, runtime: runtime, library: library, sourceURL: sourceURL, reloadAttempt: 0)
+    }
+
+    private func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore, sourceURL: String, reloadAttempt: Int) async {
         DebugServer.record("player", "load_started", fields: ["plugin": runtime.id, "host": URL(string: sourceURL)?.host ?? "unknown"])
         teardown()
         loadedURL = sourceURL
@@ -124,7 +129,26 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         let saved = SavedVideo(details.item)
         let resume = library.position(for: saved)
-        guard await play(choice, resumeAt: resume, duration: details.item.duration) else { return }
+        requestedPluginReload = nil
+        guard await play(choice, resumeAt: resume, duration: details.item.duration) else {
+            if let reload = requestedPluginReload, reloadAttempt < 2 {
+                DebugServer.record("player", "plugin_reload", fields: ["attempt": String(reloadAttempt + 1), "message": reload.message])
+                await runtime.reload(reloadData: reload.data)
+                do {
+                    let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
+                    guard case .video(let refreshed) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
+                        errorMessage = "The plugin stopped returning video details after its playback workaround."
+                        return
+                    }
+                    await load(details: refreshed, runtime: runtime, library: library,
+                               sourceURL: sourceURL, reloadAttempt: reloadAttempt + 1)
+                } catch {
+                    errorMessage = error.localizedDescription
+                    DebugServer.record("player", "plugin_reload_failed", fields: ["message": error.localizedDescription])
+                }
+            }
+            return
+        }
 
         if let first = details.subtitles.first(where: { $0.language?.hasPrefix(Locale.current.language.languageCode?.identifier ?? "en") == true }),
            UserDefaults.standard.bool(forKey: "showSubtitlesByDefault") {
@@ -292,6 +316,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             isPlaying = backend.isPlaying
             DebugServer.record("player", "load_completed", fields: ["playing": String(isPlaying)])
             return true
+        } catch let PluginError.reloadRequired(message, reloadData) {
+            requestedPluginReload = (message, reloadData)
+            return false
         } catch MediaBackendLoadError.superseded {
             return false
         } catch is CancellationError {

@@ -3,6 +3,43 @@ import XCTest
 
 /// Runs a small plugin inside a real JavaScriptCore host context (no network involved).
 final class RuntimeTests: XCTestCase {
+    func testRequestExecutorAcceptsJavaScriptBufferTypes() async throws {
+        let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"Byte executor"}"#.utf8))
+        let script = """
+        class Generated extends DashManifestRawSource {
+          generate() { return "<MPD/>"; }
+          getRequestExecutor() {
+            return {
+              typed: function() { return new Uint8Array([0, 1, 127, 255]); },
+              buffer: function() { return new Uint8Array([2, 3, 128, 254]).buffer; },
+              view: function() { return new DataView(new Uint8Array([9, 8, 7, 6]).buffer, 1, 2); },
+              promised: function() { return Promise.resolve(new Uint8Array([4, 5, 6])); }
+            };
+          }
+        }
+        source.getContentDetails = function(url) {
+          return new PlatformVideoDetails({ name: "Bytes", url: url,
+            video: new VideoSourceDescriptor([new Generated({ container: "video/mp4" })]) });
+        };
+        """
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        defer { Task { await runtime.stop() } }
+        let data = try await runtime.callRaw("getContentDetails", ["https://example.test/video"], kind: "details")
+        guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data),
+              let sourceHandle = details.videoSources.first?.handle,
+              let executor = try await runtime.handleFromCall(sourceHandle, "getRequestExecutor") else {
+            return XCTFail("Expected generated source and request executor handles")
+        }
+        let typed = try await runtime.callHandleBytes(executor.handle, "typed")
+        let buffer = try await runtime.callHandleBytes(executor.handle, "buffer")
+        let view = try await runtime.callHandleBytes(executor.handle, "view")
+        let promised = try await runtime.callHandleBytes(executor.handle, "promised")
+        XCTAssertEqual(typed, Data([0, 1, 127, 255]))
+        XCTAssertEqual(buffer, Data([2, 3, 128, 254]))
+        XCTAssertEqual(view, Data([8, 7]))
+        XCTAssertEqual(promised, Data([4, 5, 6]))
+    }
+
     func testCurrentRawDashPrimitivesCanBeSubclassed() async throws {
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"Raw DASH"}"#.utf8))
         let script = """

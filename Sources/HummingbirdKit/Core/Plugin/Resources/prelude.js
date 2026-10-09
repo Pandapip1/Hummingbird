@@ -596,6 +596,22 @@
     }
     return out;
   };
+  function byteView(value) {
+    if (!value) return null;
+    if (typeof ArrayBuffer !== "undefined") {
+      if (value instanceof ArrayBuffer) return new Uint8Array(value);
+      if (typeof ArrayBuffer.isView === "function" && ArrayBuffer.isView(value)) {
+        return new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength);
+      }
+    }
+    return typeof value.length === "number" ? value : null;
+  }
+  function encodedBytes(value) {
+    if (typeof value === "string") return value;
+    var bytes = byteView(value);
+    if (bytes) return global.__b64encode(bytes);
+    throw new global.ScriptImplementationException("Byte-producing method returned an unsupported value");
+  }
   global.__b64decode = function (str) {
     str = String(str).replace(/[^A-Za-z0-9+\/]/g, "");
     var out = [], buffer = 0, bits = 0;
@@ -895,9 +911,7 @@
 
   function preparedValue(v, kind) {
     if (kind === "bytes") {
-      if (typeof v === "string") return v;
-      if (v && typeof v.length === "number") return global.__b64encode(v);
-      throw new global.ScriptImplementationException("Byte-producing method returned an unsupported value");
+      return encodedBytes(v);
     }
     if (kind === "pager") {
       if (!isPager(v)) return { pager: 0, results: [], hasMore: false };
@@ -989,9 +1003,7 @@
         var v = fn.apply(o, argsJson ? JSON.parse(argsJson) : []);
         var waiting = awaitValue(v, "bytes");
         if (waiting) return waiting;
-        if (typeof v === "string") return JSON.stringify({ ok: true, value: v });
-        if (v && typeof v.length === "number") return JSON.stringify({ ok: true, value: global.__b64encode(v) });
-        throw new global.ScriptImplementationException("Byte-producing method returned an unsupported value");
+        return JSON.stringify({ ok: true, value: encodedBytes(v) });
       } catch (e) {
         return JSON.stringify({ ok: false, error: describeError(e) });
       }

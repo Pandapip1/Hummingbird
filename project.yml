@@ -25,11 +25,11 @@ targets:
       path: Apps/iOS/Info.plist
       properties:
         CFBundleDisplayName: Hummingbird
+        CFBundleURLTypes:
+          - CFBundleURLName: app.hummingbird.credential-login
+            CFBundleURLSchemes:
+              - hummingbird
         UILaunchScreen: {}
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
         UIBackgroundModes:
           - audio
         NSCameraUsageDescription: Used to scan QR codes that add plugin sources.
@@ -37,7 +37,13 @@ targets:
         # so plugin traffic cannot be restricted by ATS. The per-plugin allowUrls list is the real gate.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSLocalNetworkUsageDescription: Used to load plugins served from your own computer during development.
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Hummingbird uses your local network to transfer plugin sign-in credentials and load locally hosted plugins.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.Hummingbird
@@ -50,6 +56,8 @@ targets:
         ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES
+        # Used by DebugKit during development and by device sync.
+        ENABLE_INCOMING_NETWORK_CONNECTIONS: YES
         ENABLE_RESOURCE_ACCESS_CAMERA: YES
         REGISTER_APP_GROUPS: YES
         INFOPLIST_KEY_CFBundleDisplayName: Hummingbird

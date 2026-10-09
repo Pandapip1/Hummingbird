@@ -9,7 +9,12 @@ public struct HummingbirdRoot: View {
     #if canImport(SwiftUI) && !BACKEND_GTK
     @Environment(\.scenePhase) private var scenePhase
     #endif
-    public init() {}
+    public init() {
+        // Start the opt-in debug transport as soon as the root is created.
+        // Relying only on a view task made the server unavailable before (and
+        // occasionally throughout) early navigation failures on macOS.
+        DebugServer.shared.startFromEnvironment()
+    }
     public var body: some View {
         #if canImport(SwiftUI) && !BACKEND_GTK
         #if os(tvOS)

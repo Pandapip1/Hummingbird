@@ -1,12 +1,12 @@
 import Foundation
 
-#if DEBUG && canImport(Network)
+#if canImport(Network)
 import Network
 
-/// A tiny, debug-build-only HTTP control plane for simulator automation.
+/// A tiny, explicitly enabled HTTP control plane for development automation.
 ///
-/// The server is opt-in through `HUMMINGBIRD_DEBUG_SERVER_PORT`; release builds
-/// compile a no-op implementation and never open a listener.
+/// The server is opt-in through `HUMMINGBIRD_DEBUG_SERVER_PORT`; without that
+/// environment variable it never opens a listener.
 @MainActor
 public final class DebugServer {
     public static let shared = DebugServer()
@@ -46,8 +46,10 @@ public final class DebugServer {
     }
 
     public func startFromEnvironment() {
+        let configuredPort = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SERVER_PORT"]
+        print("DebugServer startup requested (port: \(configuredPort ?? "unset"))")
         guard listener == nil,
-              let value = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SERVER_PORT"],
+              let value = configuredPort,
               let rawPort = UInt16(value),
               let port = NWEndpoint.Port(rawValue: rawPort) else { return }
 
@@ -58,6 +60,7 @@ public final class DebugServer {
             listener.newConnectionHandler = { [weak self] connection in
                 self?.accept(connection)
             }
+            listener.stateUpdateHandler = { state in print("DebugServer state: \(state)") }
             listener.start(queue: DispatchQueue(label: "Hummingbird.DebugServer"))
             self.listener = listener
         } catch {

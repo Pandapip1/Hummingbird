@@ -114,6 +114,12 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertGreaterThan(player.currentTime().seconds, 5.25, "Generated playback did not resume after seeking")
+        await player.seek(to: CMTime(seconds: 1, preferredTimescale: 600))
+        for _ in 0..<150 where player.currentTime().seconds < 1.25 {
+            if item.status == .failed { throw item.error ?? PluginError.execution("AVPlayer rejected generated backward seek") }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertGreaterThan(player.currentTime().seconds, 1.25, "Generated playback did not resume after seeking backward")
         #endif
     }
 

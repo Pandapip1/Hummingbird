@@ -76,6 +76,14 @@ final class GTKPlaybackTests: XCTestCase {
         }
         XCTAssertNil(failure)
         XCTAssertGreaterThan(backend!.currentTime, 5.25)
+        backend!.seek(to: 1)
+        let backwardSeekDeadline = Date().addingTimeInterval(10)
+        while backend!.currentTime < 1.25, failure == nil, Date() < backwardSeekDeadline {
+            while g_main_context_iteration(nil, 0) != 0 {}
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertNil(failure)
+        XCTAssertGreaterThan(backend!.currentTime, 1.25)
     }
 
     @MainActor

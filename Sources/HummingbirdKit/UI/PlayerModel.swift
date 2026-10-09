@@ -319,6 +319,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         } catch let PluginError.reloadRequired(message, reloadData) {
             requestedPluginReload = (message, reloadData)
             return false
+        } catch UMPSessionError.protectionExpired {
+            requestedPluginReload = ("The playback token expired", nil)
+            return false
         } catch MediaBackendLoadError.superseded {
             return false
         } catch is CancellationError {
@@ -346,6 +349,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             "host": URL(string: source.url)?.host ?? "generated",
             "hasModifier": String(source.requestModifier != nil),
         ])
+        if source.isUMP {
+            let maxHeight = UserDefaults.standard.object(forKey: "maxVideoHeight") as? Int ?? 1080
+            let url = try await UMPMediaProxy.shared.register(source: source, maximumHeight: maxHeight, language: Locale.current.language.languageCode?.identifier)
+            return ResolvedMedia(url: url, headers: [:])
+        }
         if source.pluginType == "DashManifestRawSource", let handle = source.handle, let runtime {
             let manifestData = try await runtime.callHandle(handle, "generate")
             let manifest = try PluginRuntime.decode(String.self, from: manifestData)

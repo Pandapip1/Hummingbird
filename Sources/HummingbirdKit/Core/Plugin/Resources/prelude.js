@@ -440,6 +440,15 @@
   };
   global.DashManifestRawSource.prototype.getRequestExecutor = function () { return null; };
 
+  global.UMPSource = function (obj) {
+    obj = obj || {};
+    this.plugin_type = "UMPSource";
+    Object.assign(this, obj);
+    this.videoFormats = obj.videoFormats || [];
+    this.audioFormats = obj.audioFormats || [];
+    if (this.isLive === undefined) this.isLive = false;
+  };
+
   global.DashManifestRawAudioSource = function (obj) {
     global.AudioUrlSource.call(this, obj || {});
     this.plugin_type = "DashManifestRawAudioSource";
@@ -567,7 +576,7 @@
     supportedContent: [1, 2, 4, 7, 9, 11, 60, 70],
     // This host supports ordinary batched requests, but not the newer dummy
     // slots/session-client contract denoted by HttpBatchClient.
-    supportedFeatures: ["ReloadRequiredException", "Async"],
+    supportedFeatures: ["ReloadRequiredException", "Async", "UMPSource"],
     isLoggedIn: function () { return __native.isLoggedIn(); },
     log: function (s) { __native.log(String(s)); },
     toast: function (s) { __native.toast(String(s)); },

@@ -2,7 +2,7 @@ import Foundation
 
 /// One way to play a video on iOS.
 struct PlaybackOption: Identifiable, Hashable {
-    enum Kind: Hashable { case live, hls, progressive, generated }
+    enum Kind: Hashable { case live, hls, progressive, generated, ump }
     var id: String
     var label: String
     var kind: Kind
@@ -31,6 +31,11 @@ enum PlaybackSelector {
         }
 
         let audio = bestAudio(d.audioSources, language: preferredLanguage)
+        for source in d.videoSources where source.isUMP && !source.isLive && !source.url.isEmpty
+            && !source.videoFormats.isEmpty && !source.audioFormats.isEmpty {
+            let height = source.videoFormats.map(\.height).max() ?? source.height
+            add(PlaybackOption(id: "ump|\(source.url)|\(source.videoId ?? "")", label: height > 0 ? "\(height)p · Adaptive" : "Adaptive", kind: .ump, video: source, audio: nil, height: height))
+        }
         let generated = d.videoSources.filter {
             $0.pluginType == "DashManifestRawSource" && $0.hasGenerate && $0.handle != nil
                 && !$0.isWidevine && isPlayableVideoContainer($0)
@@ -58,7 +63,8 @@ enum PlaybackSelector {
     static func best(_ options: [PlaybackOption], maxHeight: Int, preferAdaptive: Bool) -> PlaybackOption? {
         if let live = options.first(where: { $0.kind == .live }) { return live }
         if preferAdaptive, let hls = options.first(where: { $0.kind == .hls }) { return hls }
-        let files = options.filter { $0.kind == .progressive || $0.kind == .generated }
+        if preferAdaptive, let ump = options.first(where: { $0.kind == .ump }) { return ump }
+        let files = options.filter { $0.kind == .progressive || $0.kind == .generated || $0.kind == .ump }
         let capped = files.filter { $0.height <= maxHeight || $0.height == 0 }
         if let pick = capped.max(by: { $0.height < $1.height }) { return pick }
         if let pick = files.min(by: { $0.height < $1.height }) { return pick }

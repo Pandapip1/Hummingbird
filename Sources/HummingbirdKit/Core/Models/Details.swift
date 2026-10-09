@@ -7,6 +7,38 @@ struct RequestModifierRef: Sendable, Decodable, Hashable {
     var allowByteSkip: Bool = true
 }
 
+struct UMPFormat: Sendable, Decodable, Hashable {
+    var itag: Int
+    var lastModified: UInt64
+    var mimeType: String
+    var xtags: String?
+    var codecs: String?
+    var bitrate = 0
+    var width = 0
+    var height = 0
+    var fps = 0
+    var audioChannels = 0
+    var audioSampleRate = 0
+    var language: String?
+    var original = false
+    var isDrc = false
+
+    enum CodingKeys: String, CodingKey { case itag, lastModified, mimeType, xtags, codecs, bitrate, width, height, fps, audioChannels, audioSampleRate, language, original, isDrc }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        itag = c.looseInt(.itag) ?? 0
+        lastModified = UInt64(c.looseString(.lastModified) ?? String(c.looseInt(.lastModified) ?? 0)) ?? 0
+        mimeType = c.looseString(.mimeType) ?? ""
+        xtags = c.looseString(.xtags); codecs = c.looseString(.codecs)
+        bitrate = c.looseInt(.bitrate) ?? 0; width = c.looseInt(.width) ?? 0
+        height = c.looseInt(.height) ?? 0; fps = c.looseInt(.fps) ?? 0
+        audioChannels = c.looseInt(.audioChannels) ?? 0; audioSampleRate = c.looseInt(.audioSampleRate) ?? 0
+        language = c.looseString(.language); original = c.looseBool(.original) ?? false
+        isDrc = c.looseBool(.isDrc) ?? false
+    }
+    var identity: String { "\(itag):\(lastModified):\(xtags ?? "")" }
+}
+
 /// A playable stream description. `pluginType` is the plugin's source class name, e.g. "VideoUrlSource", "HLSSource".
 struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
     var pluginType: String = ""
@@ -25,15 +57,27 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
     var handle: Int?
     var hasGenerate: Bool = false
     var hasRequestExecutor: Bool = false
+    var ustreamerConfig: String?
+    var poToken: String?
+    var videoId: String?
+    var videoFormats: [UMPFormat] = []
+    var audioFormats: [UMPFormat] = []
+    var clientName: Int?
+    var clientVersion: String?
+    var osName: String?
+    var osVersion: String?
+    var isLive: Bool = false
 
     var id: String { "\(pluginType)|\(url)|\(handle ?? 0)|\(language)|\(name)" }
     var isHLS: Bool { pluginType.hasPrefix("HLS") }
     var isDash: Bool { pluginType.hasPrefix("Dash") }
     var isWidevine: Bool { pluginType.contains("Widevine") }
+    var isUMP: Bool { pluginType == "UMPSource" }
 
     enum CodingKeys: String, CodingKey {
         case plugin_type, name, url, width, height, container, codec, bitrate, duration, language, priority, original, requestModifier
-        case __handle, hasGenerate, hasRequestExecutor
+        case __handle, hasGenerate, hasRequestExecutor, ustreamerConfig, poToken, videoId
+        case videoFormats, audioFormats, clientName, clientVersion, osName, osVersion, isLive
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -53,6 +97,13 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
         handle = c.looseInt(.__handle)
         hasGenerate = c.looseBool(.hasGenerate) ?? false
         hasRequestExecutor = c.looseBool(.hasRequestExecutor) ?? false
+        ustreamerConfig = c.looseString(.ustreamerConfig); poToken = c.looseString(.poToken)
+        videoId = c.looseString(.videoId)
+        videoFormats = (try? c.decodeIfPresent([UMPFormat].self, forKey: .videoFormats)) ?? []
+        audioFormats = (try? c.decodeIfPresent([UMPFormat].self, forKey: .audioFormats)) ?? []
+        clientName = c.looseInt(.clientName); clientVersion = c.looseString(.clientVersion)
+        osName = c.looseString(.osName); osVersion = c.looseString(.osVersion)
+        isLive = c.looseBool(.isLive) ?? false
     }
 }
 

@@ -12,10 +12,27 @@ final class PlatformService {
     private var capabilityCache: [String: ResultCapabilities] = [:]
     private var routeCache: [String: String] = [:]
     private var detailsCache: [String: Data]
+    private var detailsCacheWasUsed = false
+    private var detailsCacheSaveTask: Task<Void, Never>?
+    private static let detailsCacheLimit = 20
+    private static let maximumCachedDetailBytes = 2 * 1_024 * 1_024
 
     init(plugins: PluginManager) {
         self.plugins = plugins
-        detailsCache = Storage.load([String: Data].self, name: "details_cache") ?? [:]
+        detailsCache = [:]
+        // This cache can contain large plugin responses. Loading and decoding it
+        // synchronously delayed iOS's first frame by several seconds.
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .utility) {
+                Storage.load([String: Data].self, name: "details_cache") ?? [:]
+            }.value
+            guard let self, !self.detailsCacheWasUsed else { return }
+            let trimmed = Self.trimmedDetailsCache(loaded)
+            self.detailsCache = trimmed
+            if trimmed.count != loaded.count || trimmed.values.reduce(0, { $0 + $1.count }) != loaded.values.reduce(0, { $0 + $1.count }) {
+                self.scheduleDetailsCacheSave()
+            }
+        }
     }
 
     // MARK: errors
@@ -64,11 +81,32 @@ final class PlatformService {
         guard let rt = await route(url: url, check: "isContentDetailsUrl") else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getContentDetails", [url], kind: "details") }
-            detailsCache[url] = data
-            if detailsCache.count > 250, let oldest = detailsCache.keys.first { detailsCache[oldest] = nil }
-            Storage.save(detailsCache, name: "details_cache")
+            detailsCacheWasUsed = true
+            if data.count <= Self.maximumCachedDetailBytes { detailsCache[url] = data }
+            detailsCache = Self.trimmedDetailsCache(detailsCache)
+            scheduleDetailsCacheSave()
             return (rt, try PluginRuntime.decode(ContentDetails.self, from: data))
         } catch { _ = surface(error, pluginID: rt.id); throw error }
+    }
+
+    private static func trimmedDetailsCache(_ cache: [String: Data]) -> [String: Data] {
+        let eligible = cache.filter { $0.value.count <= maximumCachedDetailBytes }
+        guard eligible.count > detailsCacheLimit else { return eligible }
+        return Dictionary(uniqueKeysWithValues: eligible.suffix(detailsCacheLimit))
+    }
+
+    /// Coalesce bursts of detail requests into one bounded background write.
+    /// Previously every request rewrote and checkpointed the entire cache.
+    private func scheduleDetailsCacheSave() {
+        detailsCacheSaveTask?.cancel()
+        let cacheSnapshot = detailsCache
+        detailsCacheSaveTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await Task.detached(priority: .utility) {
+                Storage.save(cacheSnapshot, name: "details_cache")
+            }.value
+        }
     }
 
     /// Returns display/playback data from the last successful fetch. Runtime-bound

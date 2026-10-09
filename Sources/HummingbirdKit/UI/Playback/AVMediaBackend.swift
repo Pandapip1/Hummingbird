@@ -12,6 +12,7 @@ import UIKit
 
 @MainActor
 final class AVMediaBackend: MediaBackend {
+    private static let audioSessionQueue = DispatchQueue(label: "Hummingbird.AudioSession", qos: .userInitiated)
     private(set) var player: AVPlayer?
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
@@ -193,14 +194,16 @@ final class AVMediaBackend: MediaBackend {
     /// media or blank the display after user inactivity.
     private func activatePlaybackEnvironment() {
         #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .moviePlayback)
-            try session.setActive(true)
-        } catch {
-            onFailure?("Could not activate background audio: \(error.localizedDescription)")
-        }
         UIApplication.shared.isIdleTimerDisabled = true
+        Self.audioSessionQueue.async { [weak self] in
+            let session = AVAudioSession.sharedInstance()
+            do {
+                try session.setCategory(.playback, mode: .moviePlayback)
+                try session.setActive(true)
+            } catch {
+                Task { @MainActor in self?.onFailure?("Could not activate background audio: \(error.localizedDescription)") }
+            }
+        }
         #elseif os(macOS)
         guard playbackActivity == nil else { return }
         playbackActivity = ProcessInfo.processInfo.beginActivity(
@@ -213,7 +216,11 @@ final class AVMediaBackend: MediaBackend {
     private func deactivatePlaybackEnvironment() {
         #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // setActive performs a synchronous XPC round-trip and was repeatedly
+        // blocking pause-button handling for 600+ ms on real hardware.
+        Self.audioSessionQueue.async {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         #elseif os(macOS)
         if let playbackActivity {
             ProcessInfo.processInfo.endActivity(playbackActivity)

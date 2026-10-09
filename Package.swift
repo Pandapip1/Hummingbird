@@ -72,7 +72,10 @@ var targets: [Target] = [
             .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
         ],
         path: "Sources/HummingbirdKit",
-        resources: [.copy("Core/Plugin/Resources/prelude.js")],
+        resources: [
+            .copy("Core/Plugin/Resources/prelude.js"),
+            .copy("Core/Plugin/Resources/CompatibilityPatches"),
+        ],
         swiftSettings: backendSwiftSettings,
         linkerSettings: [
             // The Swift 6.1 Linux toolchain's libswiftObservation.so references a runtime symbol that libswiftCore.so

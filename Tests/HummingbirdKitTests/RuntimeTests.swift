@@ -3,6 +3,81 @@ import XCTest
 
 /// Runs a small plugin inside a real JavaScriptCore host context (no network involved).
 final class RuntimeTests: XCTestCase {
+    func testYouTubeNativeUMPCompatibilityPatchTargetsLegacyContentDetails() {
+        let script = """
+        source.getContentDetails = (url, useAuth, simplify, forceUmp, options) => {
+        \tlog("extractVideoPage_VideoDetails (start)");
+        \tconst videoDetails = extractVideoPage_VideoDetails(urlFiltered, initialData, initialPlayerData, {
+        \t\tbgData: bgData,
+        \t\tpot: options?.pot,
+        \t\thttpClient: overrideHttpClient,
+        \t\turl: urlFiltered,
+        \t\tnoSources: !!(options?.noSources)
+        \t}, jsUrl, useLogin, defaultUMP, clientConfig, usedLogin);
+        \tlog("extractVideoPage_VideoDetails (fin)");
+        \tif (videoDetails == null) {
+        \t}
+        };
+        """
+        let patched = PluginCompatibilityPatches.apply(
+            pluginID: "35ae969a-a7db-11ed-afa1-0242ac120002",
+            version: 366,
+            original: script
+        )
+        XCTAssertTrue(patched.script.contains("source.getContentDetails = async (url"))
+        XCTAssertTrue(patched.script.contains("const nativeUMP = await extractUMP_VideoDescriptor"))
+        XCTAssertTrue(patched.script.contains("if (nativeUMP) videoDetails.video = nativeUMP"))
+        XCTAssertEqual(patched.applied, ["youtube-native-ump-legacy-path"])
+        XCTAssertTrue(patched.failed.isEmpty)
+        XCTAssertEqual(
+            PluginCompatibilityPatches.apply(pluginID: "another-plugin", version: 366, original: script).script,
+            script
+        )
+        XCTAssertEqual(
+            PluginCompatibilityPatches.apply(
+                pluginID: "35ae969a-a7db-11ed-afa1-0242ac120002",
+                version: 367,
+                original: script
+            ).script,
+            script
+        )
+    }
+
+    func testYouTubeNativeUMPCompatibilityPatchIsAtomic() {
+        let incomplete = "source.getContentDetails = (url, useAuth, simplify, forceUmp, options) => {}"
+        let result = PluginCompatibilityPatches.apply(
+            pluginID: "35ae969a-a7db-11ed-afa1-0242ac120002",
+            version: 366,
+            original: incomplete
+        )
+        XCTAssertEqual(result.script, incomplete)
+        XCTAssertTrue(result.applied.isEmpty)
+        XCTAssertEqual(result.failed, ["youtube-native-ump-legacy-path:contextNotFound"])
+    }
+
+    func testUnifiedDiffPreservesCRLF() throws {
+        let diff = "--- old\n+++ new\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+bravo"
+        XCTAssertEqual(try UnifiedDiff.apply(diff, to: "alpha\r\nbeta"), "alpha\r\nbravo")
+    }
+
+    func testUnifiedDiffAppliesMultipleHunks() throws {
+        let diff = """
+        --- old
+        +++ new
+        @@ -1,2 +1,2 @@
+         alpha
+        -beta
+        +bravo
+        @@ -4,1 +4,2 @@
+         delta
+        +echo
+        """
+        XCTAssertEqual(
+            try UnifiedDiff.apply(diff, to: "alpha\nbeta\ngamma\ndelta"),
+            "alpha\nbravo\ngamma\ndelta\necho"
+        )
+    }
+
     func testAsyncFeatureAndBrowserFallbackEvaluation() async throws {
         let config = try JSONDecoder().decode(
             PluginConfig.self,

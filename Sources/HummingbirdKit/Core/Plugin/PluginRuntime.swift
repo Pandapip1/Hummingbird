@@ -1,4 +1,5 @@
 import Foundation
+import DebugKit
 
 /// Hosts one plugin in its own JavaScript context (JavaScriptCore, see `JSEngines`).
 ///
@@ -34,13 +35,32 @@ final class PluginRuntime: @unchecked Sendable {
     var id: String { config.id }
 
     init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?, savedState: String? = nil) {
+        let compatibility = PluginCompatibilityPatches.apply(
+            pluginID: config.id,
+            version: config.version,
+            original: script
+        )
         self.config = config
-        self.script = script
+        self.script = compatibility.script
         self.storedSettings = settings
         self.auth = auth
         self.captcha = captcha
         self.savedState = savedState
         self.queue = DispatchQueue(label: "app.hummingbird.plugin.\(config.id)", qos: .userInitiated)
+        if !compatibility.applied.isEmpty {
+            DebugServer.record("plugin", "compatibility_patches", fields: [
+                "plugin": config.id,
+                "version": String(config.version),
+                "patches": compatibility.applied.joined(separator: ","),
+            ])
+        }
+        if !compatibility.failed.isEmpty {
+            DebugServer.record("plugin", "compatibility_patch_failures", fields: [
+                "plugin": config.id,
+                "version": String(config.version),
+                "failures": compatibility.failed.joined(separator: ","),
+            ])
+        }
     }
 
     // MARK: settings

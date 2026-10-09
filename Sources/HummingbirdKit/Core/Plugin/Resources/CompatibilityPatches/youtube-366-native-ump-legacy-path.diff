@@ -1,0 +1,15 @@
+--- youtube-366.js
++++ youtube-366-patched.js
+@@ -1685,1 +1685,1 @@
+-source.getContentDetails = (url, useAuth, simplify, forceUmp, options) => {
++source.getContentDetails = async (url, useAuth, simplify, forceUmp, options) => {
+@@ -1914,2 +1914,10 @@
+ 	log("extractVideoPage_VideoDetails (fin)");
++	if (videoDetails != null && !videoDetails.live && !options?.noSources && canUseNativeUMP()) {
++		const nativeUMP = await extractUMP_VideoDescriptor(initialPlayerData, jsUrl, clientConfig, urlFiltered, usedLogin, {
++			videoId: videoId,
++			playerConfig: initialPlayerData?.playerConfig
++		});
++		if (nativeUMP) videoDetails.video = nativeUMP;
++	}
+ 	if (videoDetails == null) {

@@ -229,6 +229,22 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 480, preferAdaptive: true)?.height, 720, "falls back to the smallest if all are too tall")
     }
 
+    func testAudioSelectionPrefersViewerLanguageBeforeOriginalTrack() throws {
+        let d = try decode(VideoDetails.self, """
+        {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},
+         "video":{"isUnMuxed":true,
+           "videoSources":[{"plugin_type":"VideoUrlSource","url":"https://x/v.mp4","height":1080,"container":"video/mp4"}],
+           "audioSources":[
+             {"plugin_type":"AudioUrlSource","url":"https://x/es.m4a","container":"audio/mp4","bitrate":192000,"language":"es","original":true},
+             {"plugin_type":"AudioUrlSource","url":"https://x/en-low.m4a","container":"audio/mp4","bitrate":64000,"language":"en"},
+             {"plugin_type":"AudioUrlSource","url":"https://x/en-high.m4a","container":"audio/mp4","bitrate":192000,"language":"en"}]}}
+        """)
+        let audio = try XCTUnwrap(PlaybackSelector.bestAudio(d.audioSources, language: "en-US"))
+        XCTAssertEqual(audio.url, "https://x/en-high.m4a")
+        XCTAssertEqual(PlaybackSelector.playableAudioSources(d.audioSources).count, 3)
+        XCTAssertEqual(PlaybackSelector.audioChoices(d.audioSources).count, 2)
+    }
+
     func testHLSPreferredWhenAdaptive() throws {
         let d = try decode(VideoDetails.self, """
         {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},"description":"",
@@ -255,6 +271,24 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertTrue(options.allSatisfy { $0.kind == .generated })
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720, preferAdaptive: true)?.height, 720)
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true)?.height, 1080)
+    }
+
+    func testGeneratedPlaybackKeepsLanguagesAndDefaultsToViewerLanguage() throws {
+        let d = try decode(VideoDetails.self, """
+        {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},
+         "video":{"isUnMuxed":false,"videoSources":[
+            {"plugin_type":"DashManifestRawSource","__handle":1,"hasGenerate":true,"height":1080,"container":"video/mp4","codec":"avc1","language":"es","original":true},
+            {"plugin_type":"DashManifestRawSource","__handle":2,"hasGenerate":true,"height":1080,"container":"video/mp4","codec":"avc1","language":"en"},
+            {"plugin_type":"DashManifestRawSource","__handle":3,"hasGenerate":true,"height":720,"container":"video/mp4","codec":"avc1","language":"es","original":true},
+            {"plugin_type":"DashManifestRawSource","__handle":4,"hasGenerate":true,"height":720,"container":"video/mp4","codec":"avc1","language":"en"}]}}
+        """)
+        let options = PlaybackSelector.options(for: d, preferredLanguage: "en-US")
+        XCTAssertEqual(options.count, 2)
+        XCTAssertTrue(options.allSatisfy { $0.video.language == "en" })
+        let selected = try XCTUnwrap(options.first(where: { $0.height == 1080 }))
+        let audio = PlaybackSelector.generatedAudioChoices(for: selected.video, in: d.videoSources)
+        XCTAssertEqual(audio.count, 2)
+        XCTAssertEqual(Set(audio.map(\.language)), ["en", "es"])
     }
 
     func testGeneratedDashTimelineConvertsToSeekableHLS() throws {

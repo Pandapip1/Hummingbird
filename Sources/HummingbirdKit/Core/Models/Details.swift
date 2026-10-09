@@ -26,7 +26,7 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
     var hasGenerate: Bool = false
     var hasRequestExecutor: Bool = false
 
-    var id: String { "\(pluginType)|\(url)" }
+    var id: String { "\(pluginType)|\(url)|\(handle ?? 0)|\(language)|\(name)" }
     var isHLS: Bool { pluginType.hasPrefix("HLS") }
     var isDash: Bool { pluginType.hasPrefix("Dash") }
     var isWidevine: Bool { pluginType.contains("Widevine") }

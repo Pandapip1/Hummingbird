@@ -42,6 +42,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var loadedURL: String?
     private(set) var options: [PlaybackOption] = []
     private(set) var selected: PlaybackOption?
+    private(set) var audioSources: [MediaSource] = []
+    private(set) var selectedAudioSource: MediaSource?
     private(set) var errorMessage: String?
     private(set) var isPreparing = false
     private(set) var subtitleText: String?
@@ -100,13 +102,22 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         engine.onTick = { [weak self] seconds in self?.tick(seconds) }
         engine.onEnded = { [weak self] in self?.finished() }
         engine.onFailure = { [weak self] message in self?.errorMessage = message }
-        options = PlaybackSelector.options(for: details, preferredLanguage: Locale.current.language.languageCode?.identifier)
+        let preferredLanguage = Locale.current.language.languageCode?.identifier
+        let splitAudioSources = PlaybackSelector.audioChoices(details.audioSources)
+        selectedAudioSource = PlaybackSelector.bestAudio(details.audioSources, language: preferredLanguage)
+        options = PlaybackSelector.options(for: details, preferredLanguage: preferredLanguage)
             .filter { _ in true }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
             errorMessage = options.isEmpty
                 ? "This video has no source this device can play (it offers only formats the player does not support, such as WebM, DASH or DRM-protected streams)."
                 : "No playable source found."
             return
+        }
+        if choice.kind == .generated {
+            audioSources = PlaybackSelector.generatedAudioChoices(for: choice.video, in: details.videoSources)
+            selectedAudioSource = choice.video
+        } else {
+            audioSources = splitAudioSources
         }
         let saved = SavedVideo(details.item)
         let resume = library.position(for: saved)
@@ -122,8 +133,36 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     func select(_ option: PlaybackOption) async {
         let position = backend?.currentTime
         let autoplay = backend?.isPlaying ?? true
-        _ = await play(option, resumeAt: position, duration: details?.item.duration,
-                       autoplay: autoplay, normalizeSavedPosition: false)
+        var choice = option
+        if choice.audio != nil, let selectedAudioSource { choice.audio = selectedAudioSource }
+        guard await play(choice, resumeAt: position, duration: details?.item.duration,
+                         autoplay: autoplay, normalizeSavedPosition: false) else { return }
+        refreshAudioSources(for: choice)
+    }
+
+    func selectAudioSource(_ source: MediaSource) async {
+        guard var choice = selected else { return }
+        let position = backend?.currentTime
+        let autoplay = backend?.isPlaying ?? true
+        if choice.kind == .generated { choice.video = source }
+        else {
+            guard choice.audio != nil else { return }
+            choice.audio = source
+        }
+        guard await play(choice, resumeAt: position, duration: details?.item.duration,
+                         autoplay: autoplay, normalizeSavedPosition: false) else { return }
+        selectedAudioSource = source
+    }
+
+    private func refreshAudioSources(for choice: PlaybackOption) {
+        guard let details else { return }
+        if choice.kind == .generated {
+            audioSources = PlaybackSelector.generatedAudioChoices(for: choice.video, in: details.videoSources)
+            selectedAudioSource = choice.video
+        } else {
+            audioSources = PlaybackSelector.audioChoices(details.audioSources)
+            selectedAudioSource = choice.audio
+        }
     }
 
     func selectTrack(_ track: MediaTrack?) {
@@ -383,6 +422,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         backend = nil
         loadedURL = nil
         selected = nil
+        audioSources = []
+        selectedAudioSource = nil
         playbackTime = 0; duration = 0; isPlaying = false; isFullscreen = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil
         didFinishCurrentItem = false

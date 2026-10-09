@@ -727,6 +727,13 @@ private struct AudioMenu: View {
     let interacted: () -> Void
     var body: some View {
         let tracks = model.tracks.filter { $0.kind == .audio }
+        if !model.audioSources.isEmpty {
+            VideoSourceControl(title: "Audio", options: model.audioSources,
+                               selectedID: model.selectedAudioSource?.id,
+                               label: PlaybackSelector.audioLabel,
+                               onSelect: { source in Task { await model.selectAudioSource(source) } },
+                               interacted: interacted)
+        }
         MediaTrackControl(title: "Audio", tracks: tracks,
                           selectedID: model.selectedTrack(ofKind: .audio)?.id, fallbackLabel: "Audio",
                           onSelect: model.selectTrack, interacted: interacted)

@@ -16,7 +16,7 @@ final class PlayerLayoutTests: XCTestCase {
     }
 }
 
-#if canImport(BackendGTK4)
+#if canImport(BackendGTK4) && canImport(CGTK) && canImport(CGTKBridge)
 import CGTK
 import CGTKBridge
 import SwiftOpenUI

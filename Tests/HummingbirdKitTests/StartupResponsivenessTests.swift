@@ -1,4 +1,4 @@
-#if canImport(BackendGTK4)
+#if canImport(BackendGTK4) && canImport(CGTK) && canImport(CGTKBridge) && canImport(CAdwaita)
 import XCTest
 import Foundation
 import CGTK

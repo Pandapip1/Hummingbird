@@ -22,6 +22,12 @@ struct RootView: View {
             MobileTabOverview(isPresented: $showingTabOverview)
                 .environment(model)
         }
+        #else
+        .sheet(isPresented: $showingTabOverview) {
+            MobileTabOverview(isPresented: $showingTabOverview)
+                .environment(model)
+                .frame(minWidth: 720, minHeight: 520)
+        }
         #endif
         .navigationTitle(windowTitle)
         // Browser-style tab chrome: native toolbar navigation controls at the
@@ -30,12 +36,7 @@ struct RootView: View {
         // other desktop platforms keep tabs in the .principal toolbar slot.
         .toolbar {
             #if !os(iOS) && !os(tvOS)
-            ToolbarItem(placement: .navigation) {
-                AppSectionMenu()
-            }
-            ToolbarItemGroup(placement: .navigation) {
-                BrowserHistoryControls(tab: app.activeTab)
-            }
+            BrowserTopToolbar(tab: app.activeTab) { showingTabOverview = true }
             #endif
         }
         #if !os(iOS) && !os(tvOS)
@@ -126,6 +127,10 @@ struct BrowserTabContentView: View {
                 RouteContent(
                     route: route,
                     player: app.player(forTab: tab.id),
+                    browserToolbar: BrowserToolbarContext(
+                        tab: tab,
+                        showTabOverview: { showingTabOverview = true }
+                    ),
                     shouldKeepPlaybackWhenHidden: {
                         tab.current == route && app.contentTabs.contains { $0.id == tab.id }
                     }
@@ -149,62 +154,103 @@ struct BrowserTabContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        #if os(tvOS)
-        .overlay(alignment: .top) {
-            TVBrowserToolbar(tab: tab, showingTabOverview: $showingTabOverview)
-        }
-        #endif
         .environment(\.openRoute, OpenRouteAction { route, title in tab.push(route, title: title) })
     }
 }
 
-#if os(tvOS)
+#if !os(iOS)
 @MainActor
-private struct TVBrowserToolbar: View {
-    @Environment(AppModel.self) private var app
+struct BrowserTopToolbar: ToolbarContent {
     let tab: BrowserTab
-    @Binding var showingTabOverview: Bool
+    let showTabOverview: () -> Void
+
+    var body: some ToolbarContent {
+        #if os(tvOS)
+        ToolbarItemGroup(placement: .navigation) {
+            AppSectionMenu()
+            BrowserBackButton(tab: tab)
+            BrowserForwardButton(tab: tab)
+        }
+        ToolbarItem(placement: .primaryAction) {
+            BrowserTabOverviewButton(action: showTabOverview)
+        }
+        #else
+        ToolbarItemGroup(placement: .navigation) {
+            AppSectionMenu()
+            BrowserBackButton(tab: tab)
+            BrowserForwardButton(tab: tab)
+        }
+        ToolbarItem(placement: .primaryAction) {
+            BrowserTabOverviewButton(action: showTabOverview)
+        }
+        #endif
+    }
+}
+#endif
+
+@MainActor
+struct BrowserBackButton: View {
+    let tab: BrowserTab
 
     var body: some View {
-        HStack(spacing: 18) {
-            AppSectionMenu()
-            Button { tab.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(!tab.canGoBack)
-                .accessibilityLabel("Back")
-            Button { tab.goForward() } label: { Image(systemName: "chevron.right") }
-                .disabled(!tab.canGoForward)
-                .accessibilityLabel("Forward")
-            Spacer()
-            Button { showingTabOverview = true } label: {
-                Label(tabCountLabel, systemImage: "square.on.square")
-            }
-            .accessibilityLabel("Show \(tabCountLabel)")
+        Button { tab.goBack() } label: { Image(systemName: "chevron.left") }
+            .disabled(!tab.canGoBack)
+            .accessibilityLabel("Back")
+    }
+}
+
+@MainActor
+struct BrowserForwardButton: View {
+    let tab: BrowserTab
+
+    var body: some View {
+        Button { tab.goForward() } label: { Image(systemName: "chevron.right") }
+            .disabled(!tab.canGoForward)
+            .accessibilityLabel("Forward")
+    }
+}
+
+@MainActor
+struct BrowserTabOverviewButton: View {
+    @Environment(AppModel.self) private var app
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(tabCountLabel, systemImage: "square.on.square")
         }
-        .padding(.horizontal, 48)
-        .padding(.vertical, 12)
+        .accessibilityLabel("Show \(tabCountLabel)")
     }
 
     private var tabCountLabel: String {
         "\(app.contentTabs.count) \(app.contentTabs.count == 1 ? "tab" : "tabs")"
     }
 }
-#endif
 
-/// The current browser tab's own history, placed in the desktop window
-/// toolbar rather than repeated inside every route's content.
-@MainActor
-private struct BrowserHistoryControls: View {
+struct BrowserToolbarContext {
     let tab: BrowserTab
+    let showTabOverview: () -> Void
+}
 
-    var body: some View {
-        HStack(spacing: 4) {
-            Button { tab.goBack() } label: { Image(systemName: "chevron.left") }
-                .disabled(!tab.canGoBack)
-                .accessibilityLabel("Back")
-            Button { tab.goForward() } label: { Image(systemName: "chevron.right") }
-                .disabled(!tab.canGoForward)
-                .accessibilityLabel("Forward")
+private struct BrowserTopToolbarModifier: ViewModifier {
+    let context: BrowserToolbarContext?
+
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        content.toolbar {
+            if let context {
+                BrowserTopToolbar(tab: context.tab, showTabOverview: context.showTabOverview)
+            }
         }
+        #else
+        content
+        #endif
+    }
+}
+
+extension View {
+    func browserTopToolbar(_ context: BrowserToolbarContext?) -> some View {
+        modifier(BrowserTopToolbarModifier(context: context))
     }
 }
 

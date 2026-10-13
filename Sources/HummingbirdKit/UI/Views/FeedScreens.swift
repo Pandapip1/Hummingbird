@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 @MainActor
 struct HomeView: View {
     @Environment(AppModel.self) private var app
+    let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
         NavigationStack {
@@ -21,6 +22,7 @@ struct HomeView: View {
                 } else { ProgressView() }
             }
             .navigationTitle("Home")
+            .browserTopToolbar(browserToolbar)
         }
         .task(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
     }
@@ -40,6 +42,7 @@ struct SearchView: View {
     @State private var searchGeneration = 0
     @State private var notice: String?
     @State private var pendingURL: String?
+    let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
         NavigationStack {
@@ -99,8 +102,27 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
+            #if os(tvOS)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                TextField("Search or paste a link", text: $query)
+                    .padding(.horizontal, 80)
+                    .padding(.bottom, 12)
+            }
+            #else
             .searchable(text: $query, prompt: "Search or paste a link")
+            #endif
+            .toolbar {
+                #if os(tvOS)
+                if let browserToolbar {
+                    BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
+                }
+                #endif
+            }
+            #if os(tvOS)
+            .onSubmit { Task { await submit() } }
+            #else
             .onSubmit(of: .search) { Task { await submit() } }
+            #endif
             .task(id: query) { await updateSuggestions() }
             .overlay(alignment: .bottom) {
                 if let notice { Text(notice).font(.footnote).padding(10).background(.thinMaterial, in: Capsule()).padding() }
@@ -181,6 +203,7 @@ struct SearchView: View {
 @MainActor
 struct SubscriptionsView: View {
     @Environment(AppModel.self) private var app
+    let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
         NavigationStack {
@@ -213,6 +236,11 @@ struct SubscriptionsView: View {
             }
             .navigationTitle("Subscriptions")
             .toolbar {
+                #if os(tvOS)
+                if let browserToolbar {
+                    BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
+                }
+                #endif
                 ToolbarItem(placement: .primaryAction) {
                     NavigationLink { ManageSubscriptionsView() } label: { Image(systemName: "person.2") }
                 }
@@ -261,6 +289,7 @@ struct LibraryView: View {
     @State private var showNewPlaylist = false
     @State private var showImporter = false
     @State private var importMessage: String?
+    let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
         NavigationStack {
@@ -312,6 +341,7 @@ struct LibraryView: View {
                 } else { importMessage = "That file is not a Hummingbird library export." }
             }
             #endif
+            .browserTopToolbar(browserToolbar)
         }
     }
 

@@ -162,15 +162,16 @@ struct NoSourcesView: View {
 struct RouteContent: View {
     let route: Route
     let player: PlayerModel
+    let browserToolbar: BrowserToolbarContext?
     let shouldKeepPlaybackWhenHidden: () -> Bool
     var body: some View {
         Group {
             switch route {
-            case .home: HomeView()
-            case .subscriptions: SubscriptionsView()
-            case .search: SearchView()
-            case .library: LibraryView()
-            case .sources: SourcesView()
+            case .home: HomeView(browserToolbar: browserToolbar)
+            case .subscriptions: SubscriptionsView(browserToolbar: browserToolbar)
+            case .search: SearchView(browserToolbar: browserToolbar)
+            case .library: LibraryView(browserToolbar: browserToolbar)
+            case .sources: SourcesView(browserToolbar: browserToolbar)
             case .content(let url):
                 VideoDetailView(url: url, preview: nil, player: player,
                                 shouldKeepPlaybackWhenHidden: shouldKeepPlaybackWhenHidden)
@@ -185,7 +186,10 @@ struct RouteContent: View {
             case .channel(let url): ChannelView(url: url)
             case .playlist(let url): PlaylistView(url: url)
             case .plugin(let id): PluginDetailView(pluginID: id)
-            case .settings: AppSettingsView()
+            case .settings:
+                NavigationStack {
+                    AppSettingsView(browserToolbar: browserToolbar)
+                }
             }
         }
     }

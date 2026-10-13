@@ -10,41 +10,22 @@ struct MobileBrowserToolbar: View {
 
     var body: some View {
         HStack {
-            Button { app.activeTab.goBack() } label: {
-                tabBarButtonLabel { Image(systemName: "chevron.left") }
-            }
-                .disabled(!app.activeTab.canGoBack)
-                .accessibilityLabel("Back")
-            Button { app.activeTab.goForward() } label: {
-                tabBarButtonLabel { Image(systemName: "chevron.right") }
-            }
-                .disabled(!app.activeTab.canGoForward)
-                .accessibilityLabel("Forward")
+            BrowserBackButton(tab: app.activeTab)
+                .frame(width: 44, height: 44)
+            BrowserForwardButton(tab: app.activeTab)
+                .frame(width: 44, height: 44)
             Spacer()
             AppSectionMenu()
                 .frame(width: 44, height: 44)
-            Button { showingTabOverview = true } label: {
-                tabBarButtonLabel {
-                    ZStack {
-                        Image(systemName: "square.on.square")
-                        Text("\(app.contentTabs.count)")
-                            .font(.system(size: 9, weight: .semibold))
-                            .offset(y: -1)
-                    }
-                }
-            }
-            .accessibilityLabel("Show \(app.contentTabs.count) tabs")
+            BrowserTabOverviewButton { showingTabOverview = true }
+                .labelStyle(.iconOnly)
+                .frame(width: 44, height: 44)
         }
         .font(.headline)
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
     }
 
-    private func tabBarButtonLabel<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-    }
 }
 
 @MainActor

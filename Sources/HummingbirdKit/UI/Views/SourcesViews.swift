@@ -9,6 +9,7 @@ import AVFoundation
 @MainActor
 struct SourcesView: View {
     @Environment(AppModel.self) private var app
+    let browserToolbar: BrowserToolbarContext?
     @State private var showAdd = false
     @State private var removeTarget: String?
 
@@ -26,6 +27,11 @@ struct SourcesView: View {
             }
             .navigationTitle("Sources")
             .toolbar {
+                #if os(tvOS)
+                if let browserToolbar {
+                    BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
+                }
+                #endif
                 #if os(iOS)
                 ToolbarItem(placement: .topBarLeading) { settingsButton }
                 ToolbarItem(placement: .topBarTrailing) { Button { showAdd = true } label: { Image(systemName: "plus") } }
@@ -473,6 +479,7 @@ struct AppSettingsView: View {
     @AppStorage("preferAdaptive") private var preferAdaptive = true
     @AppStorage("showSubtitlesByDefault") private var subtitlesDefault = false
     @AppStorage("subscriptionFetchLimit") private var fetchLimit = 0
+    let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
         Form {
@@ -499,6 +506,13 @@ struct AppSettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .toolbar {
+            #if os(tvOS)
+            if let browserToolbar {
+                BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
+            }
+            #endif
+        }
     }
 }
 

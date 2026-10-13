@@ -43,12 +43,32 @@ public struct HummingbirdRoot: View {
     private var appRoot: some View {
         RootView()
             .environment(model)
+            #if DEBUG && os(tvOS)
+            .task { configureVisualAuditRoute() }
+            #endif
             .task { await model.plugins.checkForUpdates() }
             .task { configureDebugServer() }
             .onOpenURL { model.handleIncomingURL($0) }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .background { model.library.flushHistory(); model.library.persistSubscriptionState() }
             }
+    }
+    #endif
+
+    #if DEBUG && os(tvOS)
+    private func configureVisualAuditRoute() {
+        guard let name = ProcessInfo.processInfo.environment["HUMMINGBIRD_VISUAL_AUDIT_ROUTE"] else { return }
+        let route: Route
+        switch name {
+        case "subscriptions": route = .subscriptions
+        case "search": route = .search
+        case "library": route = .library
+        case "sources": route = .sources
+        case "settings": route = .settings
+        default: return
+        }
+        guard model.activeTab.current != route else { return }
+        model.activeTab.push(route, title: name.capitalized)
     }
     #endif
 

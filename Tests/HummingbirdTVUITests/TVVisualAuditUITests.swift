@@ -39,7 +39,7 @@ final class TVVisualAuditUITests: XCTestCase {
     @MainActor
     func testSearchIncludesSharedBrowserToolbar() {
         launch("search")
-        XCTAssertTrue(app.buttons["1 tab"].waitForExistence(timeout: 3))
+        XCTAssertTrue(tabOverviewButton.waitForExistence(timeout: 3))
         XCTAssertLessThan(app.buttons["Back"].frame.midX, app.frame.midX)
         XCTAssertLessThan(app.buttons["Forward"].frame.midX, app.frame.midX)
     }
@@ -48,7 +48,7 @@ final class TVVisualAuditUITests: XCTestCase {
     private func audit(_ name: String) throws {
         waitForAnimations()
         XCTAssertTrue(
-            app.buttons["1 tab"].waitForExistence(timeout: 2),
+            tabOverviewButton.waitForExistence(timeout: 2),
             "\(name) is missing the shared browser toolbar"
         )
         XCTContext.runActivity(named: "Visual audit: \(name)") { activity in
@@ -66,6 +66,10 @@ final class TVVisualAuditUITests: XCTestCase {
             XCTAssertLessThan(control.frame.midX, app.frame.midX, "\(name) \(label) must remain on the leading side")
         }
 
+    }
+
+    private var tabOverviewButton: XCUIElement {
+        app.buttons["Tabs"]
     }
 
     @MainActor

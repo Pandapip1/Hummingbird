@@ -5,7 +5,7 @@ import SwiftOpenUI
 #if os(macOS) && !BACKEND_GTK
 import AppKit
 #endif
-#if canImport(UIKit) && !BACKEND_GTK
+#if os(tvOS)
 import UIKit
 #endif
 
@@ -95,7 +95,7 @@ struct AppSectionMenu: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        #if canImport(UIKit) && !BACKEND_GTK
+        #if os(tvOS)
         NativeSectionMenuButton { route, title in
             app.openSection(route, title: title)
         }
@@ -118,7 +118,7 @@ struct AppSectionMenu: View {
     }
 }
 
-#if canImport(UIKit) && !BACKEND_GTK
+#if os(tvOS)
 @MainActor
 private struct NativeSectionMenuButton: UIViewRepresentable {
     let open: @MainActor (Route, String) -> Void
@@ -262,9 +262,11 @@ struct BrowserTabOverviewButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label(tabCountLabel, systemImage: "square.on.square")
+            Label("Tabs", systemImage: "square.on.square")
+                .labelStyle(.iconOnly)
         }
-        .accessibilityLabel("Show \(tabCountLabel)")
+        .accessibilityLabel("Tabs")
+        .accessibilityValue(tabCountLabel)
     }
 
     private var tabCountLabel: String {

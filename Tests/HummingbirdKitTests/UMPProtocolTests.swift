@@ -2,6 +2,13 @@ import XCTest
 @testable import HummingbirdKit
 
 final class UMPProtocolTests: XCTestCase {
+    func testOnlyRefreshableSessionFailuresTriggerPlaybackRecovery() {
+        XCTAssertTrue(UMPSessionError.reloadRequired.isRefreshRequired)
+        XCTAssertTrue(UMPSessionError.protectionExpired.isRefreshRequired)
+        XCTAssertFalse(UMPSessionError.noProgress.isRefreshRequired)
+        XCTAssertFalse(UMPSessionError.incomplete.isRefreshRequired)
+    }
+
     func testCompactIntegerBoundariesRoundTrip() throws {
         for value: UInt64 in [0, 0x7f, 0x80, 0x3fff, 0x4000, 0x1f_ffff, 0x20_0000, 0x0fff_ffff, 0x1000_0000, UInt64(UInt32.max)] {
             let encoded = try UMPFraming.encodeCompact(value)

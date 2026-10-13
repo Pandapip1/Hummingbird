@@ -90,10 +90,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     // MARK: loading
 
     func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore, sourceURL: String) async {
-        await load(details: details, runtime: runtime, library: library, sourceURL: sourceURL, reloadAttempt: 0)
+        await load(details: details, runtime: runtime, library: library, sourceURL: sourceURL,
+                   reloadAttempt: 0, resumeOverride: nil, autoplay: true)
     }
 
-    private func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore, sourceURL: String, reloadAttempt: Int) async {
+    private func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore,
+                      sourceURL: String, reloadAttempt: Int, resumeOverride: Double?, autoplay: Bool) async {
         DebugServer.record("player", "load_started", fields: ["plugin": runtime.id, "host": URL(string: sourceURL)?.host ?? "unknown"])
         teardown()
         loadedURL = sourceURL
@@ -146,9 +148,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             audioSources = splitAudioSources
         }
         let saved = SavedVideo(details.item)
-        let resume = library.position(for: saved)
+        let resume = resumeOverride ?? library.position(for: saved)
         requestedPluginReload = nil
-        guard await play(choice, resumeAt: resume, duration: details.item.duration) else {
+        guard await play(choice, resumeAt: resume, duration: details.item.duration, autoplay: autoplay,
+                         normalizeSavedPosition: resumeOverride == nil) else {
             if let reload = requestedPluginReload, reloadAttempt < 2 {
                 DebugServer.record("player", "plugin_reload", fields: ["attempt": String(reloadAttempt + 1), "message": reload.message])
                 await runtime.reload(reloadData: reload.data)
@@ -159,7 +162,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                         return
                     }
                     await load(details: refreshed, runtime: runtime, library: library,
-                               sourceURL: sourceURL, reloadAttempt: reloadAttempt + 1)
+                               sourceURL: sourceURL, reloadAttempt: reloadAttempt + 1,
+                               resumeOverride: resumeOverride, autoplay: autoplay)
                 } catch {
                     errorMessage = error.localizedDescription
                     DebugServer.record("player", "plugin_reload_failed", fields: ["message": error.localizedDescription])
@@ -325,8 +329,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 "videoHost": URL(string: option.video.url)?.host ?? "generated",
                 "audioHost": option.audio.flatMap { URL(string: $0.url)?.host } ?? "none",
             ])
-            let request = PlayRequest(video: try await resolve(option.video),
-                                      audio: try await option.audio.asyncMap { try await resolve($0) },
+            let request = PlayRequest(video: try await resolve(option.video, generation: generation),
+                                      audio: try await option.audio.asyncMap { try await resolve($0, generation: generation) },
                                       isLive: option.kind == .live)
             var start = resumeAt
             if let r = resumeAt {
@@ -378,7 +382,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         var headers: [String: String]?
     }
 
-    private func resolve(_ source: MediaSource) async throws -> ResolvedMedia {
+    private func resolve(_ source: MediaSource, generation: Int) async throws -> ResolvedMedia {
         DebugServer.record("player", "resolve_source", fields: [
             "type": source.pluginType,
             "host": URL(string: source.url)?.host ?? "generated",
@@ -392,6 +396,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 language: Locale.current.language.languageCode?.identifier
             ) { [weak self] progress in
                 Task { @MainActor in self?.preparationMessage = progress.message }
+            } failure: { [weak self] error in
+                Task { @MainActor in await self?.handleUMPFailure(error, generation: generation) }
             }
             return ResolvedMedia(url: url, headers: [:])
         }
@@ -417,6 +423,42 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             }
         }
         return ResolvedMedia(url: url, headers: headers)
+    }
+
+    private func handleUMPFailure(_ error: UMPSessionError, generation: Int) async {
+        guard generation == playGeneration else { return }
+        let position = backend?.currentTime ?? playbackTime
+        let autoplay = backend?.isPlaying ?? isPlaying
+        DebugServer.record("player", "ump_terminal_failure", fields: [
+            "message": error.localizedDescription,
+            "position": String(position),
+        ])
+        guard error.isRefreshRequired,
+              let details, let runtime, let library, let sourceURL = loadedURL else {
+            errorMessage = error.localizedDescription
+            return
+        }
+        playGeneration &+= 1
+        if position.isFinite, position > 1 {
+            library.recordProgress(SavedVideo(details.item), seconds: position)
+            library.flushHistory()
+        }
+        isPreparing = true
+        preparationMessage = "Refreshing YouTube playback details"
+        await runtime.reload(reloadData: nil)
+        do {
+            let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
+            guard case .video(let refreshed) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
+                throw PluginError.execution("The plugin stopped returning video details after refreshing playback")
+            }
+            await load(details: refreshed, runtime: runtime, library: library, sourceURL: sourceURL,
+                       reloadAttempt: 1, resumeOverride: position, autoplay: autoplay)
+        } catch {
+            isPreparing = false
+            preparationMessage = nil
+            errorMessage = error.localizedDescription
+            DebugServer.record("player", "ump_refresh_failed", fields: ["message": error.localizedDescription])
+        }
     }
 
     // MARK: ticking

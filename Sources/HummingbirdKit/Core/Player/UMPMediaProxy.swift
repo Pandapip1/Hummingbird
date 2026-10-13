@@ -6,7 +6,11 @@ import NIOPosix
 
 actor UMPMediaProxy {
     static let shared = UMPMediaProxy()
-    private struct Presentation { let session: UMPSession }
+    private struct Presentation {
+        let session: UMPSession
+        let failure: @Sendable (UMPSessionError) -> Void
+        var reportedFailure = false
+    }
     private var items: [String: Presentation] = [:]
     private var order: [String] = []
     private var group: MultiThreadedEventLoopGroup?
@@ -14,11 +18,14 @@ actor UMPMediaProxy {
     private var starting: Task<Channel, Error>?
 
     func register(source: MediaSource, maximumHeight: Int = 1080, language: String? = nil,
-                  progress: (@Sendable (UMPPreparationProgress) -> Void)? = nil) async throws -> URL {
+                  progress: (@Sendable (UMPPreparationProgress) -> Void)? = nil,
+                  failure: @escaping @Sendable (UMPSessionError) -> Void = { _ in }) async throws -> URL {
         let session = try UMPSession(source: source, maximumHeight: maximumHeight, language: language, progress: progress)
         try await session.prepare()
         let channel = try await serverChannel(); guard let port = channel.localAddress?.port else { throw UMPSessionError.invalidSource }
-        let id = UUID().uuidString.lowercased(); items[id] = .init(session: session); order.append(id)
+        let id = UUID().uuidString.lowercased()
+        items[id] = .init(session: session, failure: failure)
+        order.append(id)
         while order.count > 4 { items[order.removeFirst()] = nil }
         let url = URL(string: "http://127.0.0.1:\(port)/\(id)/master.m3u8")!
         DebugServer.record("ump_proxy", "registered", fields: ["url": url.absoluteString])
@@ -47,7 +54,9 @@ actor UMPMediaProxy {
             DebugServer.record("ump_proxy", "master", fields: ["playlist": text])
             return (.ok, "application/vnd.apple.mpegurl", Data(text.utf8))
         case "video.m3u8", "audio.m3u8":
-            do { try await item.session.pump() } catch { /* Existing buffered media remains playable. */ }
+            do { try await item.session.pump() }
+            catch let error as UMPSessionError { reportFailure(for: parts[0], error: error) }
+            catch { /* Existing buffered media remains playable. */ }
             let current = await item.session.snapshots(), video = parts[1] == "video.m3u8"
             let track = video ? current.video : current.audio
             DebugServer.record("ump_proxy", "playlist", fields: [
@@ -77,9 +86,22 @@ actor UMPMediaProxy {
                 let data = try await item.session.segment(video: video, sequence: n)
                 DebugServer.record("ump_proxy", "segment", fields: ["kind": video ? "video" : "audio", "sequence": String(n), "bytes": String(data.count)])
                 return (.ok, track.format.mimeType, data)
-            } catch { return (.badGateway, "text/plain", Data(error.localizedDescription.utf8)) }
+            } catch let error as UMPSessionError {
+                reportFailure(for: parts[0], error: error)
+                return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
+            } catch {
+                return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
+            }
         default: return (.notFound, "text/plain", Data())
         }
+    }
+
+    private func reportFailure(for id: String, error: UMPSessionError) {
+        guard var item = items[id], !item.reportedFailure else { return }
+        item.reportedFailure = true
+        items[id] = item
+        DebugServer.record("ump_proxy", "terminal_failure", fields: ["message": error.localizedDescription])
+        item.failure(error)
     }
 
     static func playlist(_ track: UMPSession.TrackSnapshot, base: String, kind: String) -> Data {

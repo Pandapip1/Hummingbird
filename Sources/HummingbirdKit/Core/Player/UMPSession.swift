@@ -18,6 +18,13 @@ enum UMPSessionError: LocalizedError, Sendable {
         case .incomplete: "The UMP presentation was incomplete"
         }
     }
+
+    var isRefreshRequired: Bool {
+        switch self {
+        case .protectionExpired, .reloadRequired: true
+        default: false
+        }
+    }
 }
 
 private struct UMPPending { let header: UMPMediaHeader; var bytes = Data() }

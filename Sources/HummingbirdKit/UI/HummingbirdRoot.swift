@@ -82,6 +82,11 @@ public struct HummingbirdRoot: View {
         DebugServer.shared.registerAction("togglePlayback") { model.activePlayerForDebug?.togglePlayback() }
         DebugServer.shared.registerAction("seekForward60") { model.activePlayerForDebug?.skip(by: 60) }
         DebugServer.shared.registerAction("seekBackward30") { model.activePlayerForDebug?.skip(by: -30) }
+        if let url = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_CONTENT_URL"], !url.isEmpty {
+            DebugServer.shared.registerAction("openDebugContent") {
+                model.openInNewTab(.content(url), title: "Debug Video")
+            }
+        }
         DebugServer.shared.startFromEnvironment()
     }
 }

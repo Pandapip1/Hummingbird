@@ -79,7 +79,7 @@ struct HistoryEntry: Codable, Hashable, Identifiable, Sendable {
 }
 
 /// Everything the user owns, in one export file. This is Hummingbird's own format.
-struct LibraryBackup: Codable {
+struct LibraryBackup: Codable, Sendable {
     var version: Int = 1
     var subscriptions: [Subscription]
     var playlists: [Playlist]

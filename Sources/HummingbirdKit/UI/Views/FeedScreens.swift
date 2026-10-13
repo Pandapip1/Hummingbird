@@ -310,6 +310,7 @@ struct LibraryView: View {
     @State private var showNewPlaylist = false
     @State private var showImporter = false
     @State private var importMessage: String?
+    @State private var backupURL: URL?
     let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
@@ -333,8 +334,11 @@ struct LibraryView: View {
                 }
                 #if !os(tvOS)
                 Section("Backup") {
-                    if let url = backupFile() {
+                    if let url = backupURL {
                         ShareLink(item: url) { Label("Export library", systemImage: "square.and.arrow.up") }
+                    } else {
+                        Label("Preparing export…", systemImage: "square.and.arrow.up")
+                            .foregroundStyle(.secondary)
                     }
                     Button { showImporter = true } label: { Label("Import library", systemImage: "square.and.arrow.down") }
                     if let importMessage { Text(importMessage).font(.footnote).foregroundStyle(.secondary) }
@@ -354,27 +358,48 @@ struct LibraryView: View {
             #if !os(tvOS)
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
                 guard case .success(let url) = result else { return }
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                if let data = try? Data(contentsOf: url), let backup = try? JSONDecoder().decode(LibraryBackup.self, from: data) {
-                    app.library.merge(backup)
-                    importMessage = "Imported \(backup.subscriptions.count) subscriptions, \(backup.playlists.count) playlists. Plugins listed in the backup must be added from Sources."
-                } else { importMessage = "That file is not a Hummingbird library export." }
+                Task { await importBackup(from: url) }
             }
             #endif
             .browserTopToolbar(browserToolbar)
         }
+        #if !os(tvOS)
+        .task(id: backupRevision) { await prepareBackup() }
+        #endif
     }
 
-    private func backupFile() -> URL? {
-        let backup = app.library.makeBackup(pluginSources: app.plugins.sourceMap)
-        let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? enc.encode(backup) else { return nil }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Hummingbird Library.json")
-        try? data.write(to: url, options: .atomic)
-        return url
+    #if !os(tvOS)
+    private var backupRevision: String {
+        "\(app.library.subscriptions.count)|\(app.library.playlists.map(\.updated).max()?.timeIntervalSince1970 ?? 0)|\(app.library.watchLater.count)|\(app.library.history.count)|\(app.plugins.sourceMap.count)"
     }
+
+    private func prepareBackup() async {
+        let backup = app.library.makeBackup(pluginSources: app.plugins.sourceMap)
+        backupURL = await Task.detached(priority: .utility) {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            guard let data = try? encoder.encode(backup) else { return nil }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Hummingbird Library.json")
+            do { try data.write(to: url, options: .atomic); return url }
+            catch { return nil }
+        }.value
+    }
+
+    private func importBackup(from url: URL) async {
+        let backup = await Task.detached(priority: .userInitiated) { () -> LibraryBackup? in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return try? JSONDecoder().decode(LibraryBackup.self, from: data)
+        }.value
+        guard let backup else {
+            importMessage = "That file is not a Hummingbird library export."
+            return
+        }
+        app.library.merge(backup)
+        importMessage = "Imported \(backup.subscriptions.count) subscriptions, \(backup.playlists.count) playlists. Plugins listed in the backup must be added from Sources."
+    }
+    #endif
 }
 
 @MainActor

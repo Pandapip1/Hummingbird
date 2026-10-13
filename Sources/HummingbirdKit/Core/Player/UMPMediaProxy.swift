@@ -58,7 +58,7 @@ actor UMPMediaProxy {
                 "firstDuration": String(track.segments.first?.duration ?? -1),
                 "hasInit": String(track.hasInitialization),
             ])
-            let data = playlist(track, base: base, kind: video ? "video" : "audio")
+            let data = Self.playlist(track, base: base, kind: video ? "video" : "audio")
             DebugServer.record("ump_proxy", "playlist_text", fields: [
                 "kind": video ? "video" : "audio",
                 "playlist": String(data: data, encoding: .utf8) ?? "",
@@ -82,10 +82,19 @@ actor UMPMediaProxy {
         }
     }
 
-    private func playlist(_ track: UMPSession.TrackSnapshot, base: String, kind: String) -> Data {
+    static func playlist(_ track: UMPSession.TrackSnapshot, base: String, kind: String) -> Data {
         let target = max(1, Int(ceil(track.segments.map(\.duration).max() ?? 1))); let first = track.segments.first?.sequence ?? 0
         var text = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(target)\n#EXT-X-MEDIA-SEQUENCE:\(first)\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-MAP:URI=\"\(base)/\(kind)/init.mp4\"\n"
-        for segment in track.segments { text += "#EXTINF:\(String(format: "%.6f", segment.duration)),\n\(base)/\(kind)/\(segment.sequence).m4s\n" }
+        let known = Dictionary(uniqueKeysWithValues: track.segments.map { ($0.sequence, $0.duration) })
+        let last = track.finalSegment ?? track.segments.last?.sequence ?? first - 1
+        let estimated = track.presentationDuration.map { $0 / Double(max(1, last - first + 1)) }
+            ?? track.segments.map(\.duration).reduce(0, +) / Double(max(1, track.segments.count))
+        if last >= first {
+            for sequence in first...last {
+                let duration = known[sequence] ?? estimated
+                text += "#EXTINF:\(String(format: "%.6f", max(0.001, duration))),\n\(base)/\(kind)/\(sequence).m4s\n"
+            }
+        }
         if track.isComplete { text += "#EXT-X-ENDLIST\n" }
         return Data(text.utf8)
     }
@@ -96,7 +105,7 @@ actor UMPMediaProxy {
         final class Box: @unchecked Sendable { let context: ChannelHandlerContext; init(_ context: ChannelHandlerContext) { self.context = context } }
         func channelRead(context: ChannelHandlerContext, data: NIOAny) {
             switch unwrapInboundIn(data) { case .head(let h): uri = h.uri; case .body: break; case .end:
-                let uri = uri, box = Box(context); Task { let (status, type, body) = await proxy.response(uri); box.context.eventLoop.execute { var headers = HTTPHeaders(); headers.add(name: "Content-Type", value: type); headers.add(name: "Content-Length", value: String(body.count)); box.context.write(self.wrapOutboundOut(.head(.init(version: .http1_1, status: status, headers: headers))), promise: nil); var buffer = box.context.channel.allocator.buffer(capacity: body.count); buffer.writeBytes(body); box.context.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil); box.context.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil) } }
+                let uri = uri, box = Box(context); Task { let (status, type, body) = await proxy.response(uri); box.context.eventLoop.execute { var headers = HTTPHeaders(); headers.add(name: "Content-Type", value: type); headers.add(name: "Content-Length", value: String(body.count)); headers.add(name: "Cache-Control", value: "no-store, no-cache, must-revalidate"); headers.add(name: "Pragma", value: "no-cache"); box.context.write(self.wrapOutboundOut(.head(.init(version: .http1_1, status: status, headers: headers))), promise: nil); var buffer = box.context.channel.allocator.buffer(capacity: body.count); buffer.writeBytes(body); box.context.write(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil); box.context.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil) } }
             }
         }
     }

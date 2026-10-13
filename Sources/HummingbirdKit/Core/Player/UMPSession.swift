@@ -36,6 +36,7 @@ private struct UMPTrackStore {
     var initialization: Data?
     var segments: [Int: UMPMediaChunk] = [:]
     var finalSegment: Int?
+    var presentationDurationMS: Int64?
     var contiguousEnd: Int { var n = segments.keys.min() ?? 0; while segments[n] != nil { n += 1 }; return n - 1 }
     var complete: Bool { guard let finalSegment else { return false }; return initialization != nil && contiguousEnd >= finalSegment }
 }
@@ -46,6 +47,7 @@ actor UMPSession {
         let hasInitialization: Bool
         let segments: [UMPMediaChunk]
         let finalSegment: Int?
+        let presentationDuration: Double?
         let isComplete: Bool
     }
 
@@ -62,6 +64,7 @@ actor UMPSession {
     private var emptyResponses = 0
     private var redirects = 0
     private var backoffMS: UInt64 = 0
+    private var controlRevision = 0
     private var terminalError: UMPSessionError?
     private var playbackPositionMS: UInt64 = 0
     private let progress: (@Sendable (UMPPreparationProgress) -> Void)?
@@ -93,10 +96,10 @@ actor UMPSession {
     func pump(requests: Int = 1) async throws {
         if let terminalError { throw terminalError }
         for _ in 0..<max(1, min(requests, 4)) {
-            let before = progressCount
+            let before = progressMarker
             do { try await fetch() }
             catch let error as UMPSessionError { terminalError = error; throw error }
-            emptyResponses = progressCount == before ? emptyResponses + 1 : 0
+            emptyResponses = progressMarker == before ? emptyResponses + 1 : 0
             if emptyResponses >= 4 { terminalError = .noProgress; throw UMPSessionError.noProgress }
         }
     }
@@ -123,16 +126,21 @@ actor UMPSession {
 
     func notePlaybackRequest(video isVideo: Bool, sequence: Int) {
         let format = isVideo ? video : audio
-        if let chunk = tracks[UMPFormatID(format)]?.segments[sequence] {
+        let store = tracks[UMPFormatID(format)]
+        if let chunk = store?.segments[sequence] {
             playbackPositionMS = UInt64(max(0, chunk.start * 1_000))
+        } else if let first = store?.segments.keys.min(), let final = store?.finalSegment,
+                  let duration = store?.presentationDurationMS, final >= first {
+            let offset = max(0, min(sequence - first, final - first))
+            playbackPositionMS = UInt64(max(0, duration * Int64(offset) / Int64(max(1, final - first + 1))))
         }
     }
 
     private var minimallyReady: Bool {
         tracks.values.allSatisfy { $0.initialization != nil && !$0.segments.isEmpty }
     }
-    private var progressCount: Int {
-        tracks.values.reduce(0) { $0 + $1.segments.count + ($1.initialization == nil ? 0 : 1) }
+    private var progressMarker: Int {
+        tracks.values.reduce(controlRevision) { $0 + $1.segments.count + ($1.initialization == nil ? 0 : 1) }
     }
     private func snapshot(_ format: UMPFormat) -> TrackSnapshot {
         let store = tracks[UMPFormatID(format)] ?? UMPTrackStore()
@@ -141,7 +149,9 @@ actor UMPSession {
             while let chunk = store.segments[sequence] { ordered.append(chunk); sequence += 1 }
         }
         return .init(format: format, hasInitialization: store.initialization != nil,
-                     segments: ordered, finalSegment: store.finalSegment, isComplete: store.complete)
+                     segments: ordered, finalSegment: store.finalSegment,
+                     presentationDuration: store.presentationDurationMS.map { Double($0) / 1_000 },
+                     isComplete: store.complete)
     }
 
     private func fetch() async throws {
@@ -230,26 +240,57 @@ actor UMPSession {
                 var o = 0; let id = try UMPFraming.decodeCompact(part.payload, &o); guard let item = pending.removeValue(forKey: id) else { continue }; if let expected = item.header.expectedLength, expected != item.bytes.count { continue }; store(item)
             case 35:
                 let f = try ProtoReader(part.payload).fields()
-                if let replacement = f.first(where: { $0.number == 7 })?.bytes, !replacement.isEmpty { cookie = replacement }
+                if let replacement = f.first(where: { $0.number == 7 })?.bytes, !replacement.isEmpty, replacement != cookie {
+                    cookie = replacement
+                    controlRevision &+= 1
+                }
                 backoffMS = f.first { $0.number == 4 }?.varint ?? 0
             case 42:
-                let metadata = try UMPInitMetadata(part.payload); guard tracks[metadata.format] != nil else { throw UMPProtocolError.invalidFormat }; tracks[metadata.format]?.finalSegment = metadata.finalSegment
+                let metadata = try UMPInitMetadata(part.payload)
+                guard let previous = tracks[metadata.format] else { throw UMPProtocolError.invalidFormat }
+                if previous.finalSegment != metadata.finalSegment
+                    || previous.presentationDurationMS != metadata.mediaEndMS {
+                    tracks[metadata.format]?.finalSegment = metadata.finalSegment
+                    tracks[metadata.format]?.presentationDurationMS = metadata.mediaEndMS
+                    controlRevision &+= 1
+                }
             case 43:
-                let f = try ProtoReader(part.payload).fields(); if let b = f.first(where: { $0.number == 1 })?.bytes, let s = String(data: b, encoding: .utf8), let url = URL(string: s) { redirects += 1; guard redirects <= 5 else { throw UMPSessionError.noProgress }; endpoint = url }
+                let fields = try ProtoReader(part.payload).fields()
+                if let bytes = fields.first(where: { $0.number == 1 })?.bytes,
+                   let string = String(data: bytes, encoding: .utf8), let url = URL(string: string) {
+                    redirects += 1
+                    guard redirects <= 5 else { throw UMPSessionError.noProgress }
+                    if endpoint != url { endpoint = url; controlRevision &+= 1 }
+                }
             case 44:
                 let f = try ProtoReader(part.payload).fields()
                 let type = f.first { $0.number == 1 }?.bytes.flatMap { String(data: $0, encoding: .utf8) } ?? "Unknown"
                 throw UMPSessionError.protocolFailure(type, Int(f.first { $0.number == 2 }?.varint ?? 0))
             case 46: throw UMPSessionError.reloadRequired
             case 57:
-                let f = try ProtoReader(part.payload).fields(); let type = Int(f.first { $0.number == 1 }?.varint ?? 0); if let value = f.first(where: { $0.number == 3 })?.bytes { contexts[type] = value }; if (f.first { $0.number == 4 }?.varint ?? 0) != 0 { activeContexts.insert(type) }
+                let fields = try ProtoReader(part.payload).fields()
+                let type = Int(fields.first { $0.number == 1 }?.varint ?? 0)
+                if let value = fields.first(where: { $0.number == 3 })?.bytes, contexts[type] != value {
+                    contexts[type] = value
+                    controlRevision &+= 1
+                }
+                if (fields.first { $0.number == 4 }?.varint ?? 0) != 0,
+                   activeContexts.insert(type).inserted {
+                    controlRevision &+= 1
+                }
             case 58:
                 let f = try ProtoReader(part.payload).fields(); if f.first(where: { $0.number == 1 })?.varint == 3 { throw UMPSessionError.protectionExpired }
             case 59:
                 let policy = try ProtoReader(part.payload).fields()
-                policy.filter { $0.number == 1 }.forEach { if let v = $0.varint { activeContexts.insert(Int(v)) } }
-                policy.filter { $0.number == 2 }.forEach { if let v = $0.varint { activeContexts.remove(Int(v)) } }
-                policy.filter { $0.number == 3 }.forEach { if let v = $0.varint { contexts[Int(v)] = nil; activeContexts.remove(Int(v)) } }
+                policy.filter { $0.number == 1 }.forEach { if let v = $0.varint, activeContexts.insert(Int(v)).inserted { controlRevision &+= 1 } }
+                policy.filter { $0.number == 2 }.forEach { if let v = $0.varint, activeContexts.remove(Int(v)) != nil { controlRevision &+= 1 } }
+                policy.filter { $0.number == 3 }.forEach {
+                    if let value = $0.varint {
+                        let type = Int(value)
+                        if contexts.removeValue(forKey: type) != nil { controlRevision &+= 1 }
+                        if activeContexts.remove(type) != nil { controlRevision &+= 1 }
+                    }
+                }
             case 67:
                 let f = try ProtoReader(part.payload).fields()
                 if f.first(where: { $0.number == 1 })?.varint == 1 {

@@ -354,6 +354,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         } catch UMPSessionError.protectionExpired {
             requestedPluginReload = ("The playback token expired", nil)
             return false
+        } catch UMPSessionError.reloadRequired {
+            requestedPluginReload = ("YouTube requested refreshed playback details", nil)
+            return false
         } catch MediaBackendLoadError.superseded {
             return false
         } catch is CancellationError {

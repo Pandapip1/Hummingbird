@@ -49,4 +49,26 @@ final class UMPProtocolTests: XCTestCase {
         XCTAssertTrue(source.isUMP)
         XCTAssertEqual(PlaybackSelector.options(for: details).first?.kind, .ump)
     }
+
+    func testPlaylistAdvertisesUnbufferedPresentationForSeeking() throws {
+        let json = #"{"itag":137,"lastModified":"7","mimeType":"video/mp4","codecs":"avc1.640028","width":1920,"height":1080,"bitrate":2000000}"#
+        let format = try JSONDecoder().decode(UMPFormat.self, from: Data(json.utf8))
+        let track = UMPSession.TrackSnapshot(
+            format: format,
+            hasInitialization: true,
+            segments: [UMPMediaChunk(sequence: 4, start: 0, duration: 5, data: Data())],
+            finalSegment: 15,
+            presentationDuration: 60,
+            isComplete: false
+        )
+
+        let playlist = String(
+            data: UMPMediaProxy.playlist(track, base: "/session", kind: "video"),
+            encoding: .utf8
+        )
+        XCTAssertNotNil(playlist)
+        XCTAssertTrue(playlist?.contains("/session/video/15.m4s") == true)
+        XCTAssertEqual(playlist?.components(separatedBy: "#EXTINF:").count, 13)
+        XCTAssertFalse(playlist?.contains("#EXT-X-ENDLIST") == true)
+    }
 }

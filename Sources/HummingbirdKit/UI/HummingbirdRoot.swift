@@ -77,7 +77,11 @@ public struct HummingbirdRoot: View {
         DebugServer.shared.registerProbe("playing") { String(model.activePlayerForDebug?.isPlaying ?? false) }
         DebugServer.shared.registerProbe("preparing") { String(model.activePlayerForDebug?.isPreparing ?? false) }
         DebugServer.shared.registerProbe("playerError") { model.activePlayerForDebug?.errorMessage ?? "" }
+        DebugServer.shared.registerProbe("playerTime") { String(model.activePlayerForDebug?.playbackTime ?? 0) }
+        DebugServer.shared.registerProbe("playerDuration") { String(model.activePlayerForDebug?.duration ?? 0) }
         DebugServer.shared.registerAction("togglePlayback") { model.activePlayerForDebug?.togglePlayback() }
+        DebugServer.shared.registerAction("seekForward60") { model.activePlayerForDebug?.skip(by: 60) }
+        DebugServer.shared.registerAction("seekBackward30") { model.activePlayerForDebug?.skip(by: -30) }
         DebugServer.shared.startFromEnvironment()
     }
 }

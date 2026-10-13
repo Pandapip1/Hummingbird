@@ -1,5 +1,6 @@
 import Foundation
 import DebugKit
+import Crypto
 
 /// Hosts one plugin in its own JavaScript context (JavaScriptCore, see `JSEngines`).
 ///
@@ -16,14 +17,21 @@ final class PluginRuntime: @unchecked Sendable {
     private var context: JSContextHost?
     private let dom = DOMStore()
     private var http: HostHTTP?
+    private var browser: PluginBrowserPackage?
     private var started = false
     private var enabled = false
     private var savedState: String?
     private var reloadData: String?
     private var installedPackages = Set<String>()
+    private var reportedUnsupportedCapabilities = Set<String>()
     private var timerSeq = 0
     private var cancelledTimers = Set<Int>()
+    /// Identifies the JavaScript context that owns queued native callbacks.
+    /// A callback created by a stopped context must never be delivered to its replacement.
+    private var contextGeneration: UInt64 = 0
     private(set) var capabilities: [String: Bool] = [:]
+    let appliedCompatibilityPatches: [String]
+    let failedCompatibilityPatches: [String]
 
     var onToast: (@Sendable (String) -> Void)?
     var onLog: (@Sendable (String) -> Void)?
@@ -34,6 +42,32 @@ final class PluginRuntime: @unchecked Sendable {
     var isLoggedIn: Bool { auth != nil }
     var id: String { config.id }
 
+    /// Identifies every input that may change persisted content details or the
+    /// host-side capabilities embedded in their playback sources.
+    var detailsCacheFingerprint: String {
+        var inputs = [
+            "host-details-abi:2",
+            "plugin:\(config.id):\(config.version)",
+            "script:\(script)",
+            "settings:\(storedSettings.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&"))",
+            "patches:\(appliedCompatibilityPatches.joined(separator: ","))",
+            "patch-failures:\(failedCompatibilityPatches.joined(separator: ","))",
+        ]
+        if let auth, let data = try? JSONEncoder().encode(auth) {
+            inputs.append("auth:\(data.base64EncodedString())")
+        } else {
+            inputs.append("auth:none")
+        }
+        if let captcha, let data = try? JSONEncoder().encode(captcha) {
+            inputs.append("captcha:\(data.base64EncodedString())")
+        } else {
+            inputs.append("captcha:none")
+        }
+        return SHA256.hash(data: Data(inputs.joined(separator: "\n").utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?, savedState: String? = nil) {
         let compatibility = PluginCompatibilityPatches.apply(
             pluginID: config.id,
@@ -42,6 +76,8 @@ final class PluginRuntime: @unchecked Sendable {
         )
         self.config = config
         self.script = compatibility.script
+        self.appliedCompatibilityPatches = compatibility.applied
+        self.failedCompatibilityPatches = compatibility.failed
         self.storedSettings = settings
         self.auth = auth
         self.captcha = captcha
@@ -79,6 +115,7 @@ final class PluginRuntime: @unchecked Sendable {
 
     private func startLocked() throws {
         if started { return }
+        contextGeneration &+= 1
         let host = HostHTTP(config: config, auth: auth, captcha: captcha)
         http = host
         let ctx: JSContextHost
@@ -91,6 +128,7 @@ final class PluginRuntime: @unchecked Sendable {
 
         do {
             try eval(Self.loadPrelude(), name: "prelude.js")
+            try eval("bridge.buildPlatform = \(jsString(Self.buildPlatform));", name: "host-platform")
 
             for p in config.packages {
                 guard installPackage(p) else { throw PluginError.compilation("Unsupported plugin package \"\(p)\" on this platform") }
@@ -139,20 +177,39 @@ final class PluginRuntime: @unchecked Sendable {
         }
     }
 
+    private static var buildPlatform: String {
+#if os(macOS) || os(Linux) || os(Windows)
+        "desktop"
+#elseif os(Android)
+        "android"
+#else
+        "ios"
+#endif
+    }
+
     /// The single native entry point plugin code can reach (`__hostCall` in the prelude). Runs on `queue`.
     private func handleHostCall(_ name: String, _ a: String, _ b: String) -> String {
         switch name {
         case "log": onLog?(a); return ""
         case "toast": onToast?(a); return ""
         case "isLoggedIn": return isLoggedIn ? "1" : "0"
-        case "hasPackage": return installedPackages.contains(a) ? "1" : "0"
+        case "hasPackage":
+            let supported = installedPackages.contains(a)
+            if !supported { reportUnsupportedCapability(kind: "package", name: a) }
+            return supported ? "1" : "0"
+        case "unsupportedFeature":
+            reportUnsupportedCapability(kind: "feature", name: a)
+            return ""
         case "sleep": Thread.sleep(forTimeInterval: max(0, Double(a) ?? 0) / 1000); return ""
         case "http": return http?.execute(json: a, parallel: b == "1") ?? "[]"
+        case let operation where operation.hasPrefix("browser."):
+            return browser?.call(String(operation.dropFirst(8)), payload: a) ?? ""
         case "setTimeout":
             guard let id = Int(a) else { return "" }
             let ms = max(0, Double(b) ?? 0)
+            let generation = contextGeneration
             queue.asyncAfter(deadline: .now() + ms / 1000) { [weak self] in
-                guard let self, let ctx = self.context else { return }
+                guard let self, self.contextGeneration == generation, let ctx = self.context else { return }
                 do {
                     _ = try ctx.evaluate("__jb.fireTimer(\(id))", name: "timer")
                 } catch {
@@ -170,6 +227,20 @@ final class PluginRuntime: @unchecked Sendable {
         }
     }
 
+    private func reportUnsupportedCapability(kind: String, name: String) {
+#if DEBUG
+        let key = "\(kind):\(name)"
+        guard reportedUnsupportedCapabilities.insert(key).inserted else { return }
+        let message = "Plugin \(config.id) requested unsupported \(kind) \"\(name)\""
+        onLog?("Warning: \(message)")
+        DebugServer.record("plugin", "unsupported_capability", fields: [
+            "plugin": config.id,
+            "kind": kind,
+            "name": name,
+        ])
+#endif
+    }
+
     private func installPackage(_ name: String) -> Bool {
         guard let ctx = context else { return false }
         let script: String
@@ -179,6 +250,28 @@ final class PluginRuntime: @unchecked Sendable {
         case "HttpImp": script = "var httpimp = __makeHttp();"
         case "DOMParser": script = "var domParser = __makeDomParser();"
         case "Utilities": script = "var utility = __makeUtility();"
+        case "Browser":
+            guard PluginBrowserPackage.isSupported else { return false }
+#if DEBUG
+            guard ProcessInfo.processInfo.environment["HUMMINGBIRD_DISABLE_PLUGIN_BROWSER"] != "1" else {
+                return false
+            }
+#endif
+            browser = PluginBrowserPackage { [weak self] id, value in
+                guard let self else { return }
+                self.queue.async { [weak self] in
+                    guard let self, let context = self.context else { return }
+                    do {
+                        _ = try context.evaluate(
+                            "__jb.browserCallback(\(jsString(id)), \(jsString(value)))",
+                            name: "browser-callback"
+                        )
+                    } catch {
+                        self.onLog?("Browser callback failed: \(error)")
+                    }
+                }
+            }
+            script = "var browser = __makeBrowser();"
         default: return false
         }
         do { _ = try ctx.evaluate(script, name: "package-\(name)") } catch { return false }
@@ -196,8 +289,12 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     private func stopLocked() {
+        contextGeneration &+= 1
         context?.close()
         context = nil
+        http = nil
+        browser?.close()
+        browser = nil
         dom.removeAll()
         started = false
         enabled = false
@@ -243,13 +340,16 @@ final class PluginRuntime: @unchecked Sendable {
         return env["pending"] as? Int
     }
 
-    private func unwrapAwaiting(_ initial: String?) async throws -> Data {
+    private func unwrapAwaiting(_ initial: String?, generation: UInt64, timeout: TimeInterval = 60) async throws -> Data {
         var result = initial
-        let deadline = Date().addingTimeInterval(60)
+        let deadline = Date().addingTimeInterval(timeout)
         while let id = pendingPromise(in: result) {
             guard Date() < deadline else { throw PluginError.execution("The plugin's asynchronous operation timed out") }
             try await Task.sleep(for: .milliseconds(10))
-            result = try await perform { try self.evalResult("__jb.pollPromise(\(id))") }
+            result = try await perform {
+                guard self.contextGeneration == generation else { throw CancellationError() }
+                return try self.evalResult("__jb.pollPromise(\(id))")
+            }
         }
         return try unwrap(result)
     }
@@ -320,12 +420,12 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Invokes `source.<name>(...args)`; `kind` is "value", "pager" or "details". Returns the JSON of the result.
     func callRaw(_ name: String, _ args: [Any] = [], kind: String = "value") async throws -> Data {
-        let result = try await perform {
+        let (result, generation) = try await perform {
             try self.enableLocked()
             let js = "__jb.invoke(\(jsString(name)), \(jsString(try self.argsJSON(args))), \(jsString(kind)))"
-            return try self.evalResult(js)
+            return (try self.evalResult(js), self.contextGeneration)
         }
-        return try await unwrapAwaiting(result)
+        return try await unwrapAwaiting(result, generation: generation)
     }
 
     func call<T: Decodable>(_ name: String, _ args: [Any] = [], as type: T.Type = T.self) async throws -> T {
@@ -342,17 +442,19 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     func callHandle(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> Data {
-        let result = try await perform {
-            try self.evalResult("__jb.callHandle(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))")
+        let (result, generation) = try await perform {
+            (try self.evalResult("__jb.callHandle(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"),
+             self.contextGeneration)
         }
-        return try await unwrapAwaiting(result)
+        return try await unwrapAwaiting(result, generation: generation)
     }
 
     func callHandleBytes(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> Data {
-        let result = try await perform {
-            try self.evalResult("__jb.callHandleBytes(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))")
+        let (result, generation) = try await perform {
+            (try self.evalResult("__jb.callHandleBytes(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"),
+             self.contextGeneration)
         }
-        let encoded = try Self.decode(String.self, from: try await unwrapAwaiting(result))
+        let encoded = try Self.decode(String.self, from: try await unwrapAwaiting(result, generation: generation))
         guard let bytes = Data(base64Encoded: encoded) else {
             throw PluginError.execution("The plugin returned invalid base64 media data")
         }

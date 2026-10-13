@@ -9,10 +9,15 @@ private func capture<T>(_ op: () async throws -> T) async -> Result<T, Error> {
 /// Routes URLs and feed requests to the right plugin runtimes.
 @MainActor
 final class PlatformService {
+    private struct CachedDetails: Codable {
+        let payload: Data
+        let runtimeFingerprint: String
+    }
+
     let plugins: PluginManager
     private var capabilityCache: [String: ResultCapabilities] = [:]
     private var routeCache: [String: String] = [:]
-    private var detailsCache: [String: Data]
+    private var detailsCache: [String: CachedDetails]
     private var detailsCacheWasUsed = false
     private var detailsCacheSaveTask: Task<Void, Never>?
     private static let detailsCacheLimit = 20
@@ -25,12 +30,12 @@ final class PlatformService {
         // synchronously delayed iOS's first frame by several seconds.
         Task { [weak self] in
             let loaded = await Task.detached(priority: .utility) {
-                Storage.load([String: Data].self, name: "details_cache") ?? [:]
+                Storage.load([String: CachedDetails].self, name: "details_cache") ?? [:]
             }.value
             guard let self, !self.detailsCacheWasUsed else { return }
             let trimmed = Self.trimmedDetailsCache(loaded)
             self.detailsCache = trimmed
-            if trimmed.count != loaded.count || trimmed.values.reduce(0, { $0 + $1.count }) != loaded.values.reduce(0, { $0 + $1.count }) {
+            if trimmed.count != loaded.count || trimmed.values.reduce(0, { $0 + $1.payload.count }) != loaded.values.reduce(0, { $0 + $1.payload.count }) {
                 self.scheduleDetailsCacheSave()
             }
         }
@@ -84,15 +89,17 @@ final class PlatformService {
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getContentDetails", [url], kind: "details") }
             detailsCacheWasUsed = true
-            if data.count <= Self.maximumCachedDetailBytes { detailsCache[url] = data }
+            if data.count <= Self.maximumCachedDetailBytes {
+                detailsCache[url] = CachedDetails(payload: data, runtimeFingerprint: rt.detailsCacheFingerprint)
+            }
             detailsCache = Self.trimmedDetailsCache(detailsCache)
             scheduleDetailsCacheSave()
             return (rt, try PluginRuntime.decode(ContentDetails.self, from: data))
         } catch { _ = surface(error, pluginID: rt.id); throw error }
     }
 
-    private static func trimmedDetailsCache(_ cache: [String: Data]) -> [String: Data] {
-        let eligible = cache.filter { $0.value.count <= maximumCachedDetailBytes }
+    private static func trimmedDetailsCache(_ cache: [String: CachedDetails]) -> [String: CachedDetails] {
+        let eligible = cache.filter { $0.value.payload.count <= maximumCachedDetailBytes }
         guard eligible.count > detailsCacheLimit else { return eligible }
         return Dictionary(uniqueKeysWithValues: eligible.suffix(detailsCacheLimit))
     }
@@ -114,9 +121,14 @@ final class PlatformService {
     /// Returns display/playback data from the last successful fetch. Runtime-bound
     /// handles are cleared because they belong to the JavaScript context that created them.
     func cachedDetails(url: String) async -> (PluginRuntime, ContentDetails)? {
-        guard let data = detailsCache[url],
-              let rt = await route(url: url, check: "isContentDetailsUrl"),
-              var details = try? PluginRuntime.decode(ContentDetails.self, from: data) else { return nil }
+        guard let entry = detailsCache[url],
+              let rt = await route(url: url, check: "isContentDetailsUrl") else { return nil }
+        guard entry.runtimeFingerprint == rt.detailsCacheFingerprint else {
+            detailsCache.removeValue(forKey: url)
+            scheduleDetailsCacheSave()
+            return nil
+        }
+        guard var details = try? PluginRuntime.decode(ContentDetails.self, from: entry.payload) else { return nil }
         if case .video(var video) = details {
             video.handle = 0
             video.hasComments = false

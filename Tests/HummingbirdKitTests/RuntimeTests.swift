@@ -3,56 +3,103 @@ import XCTest
 
 /// Runs a small plugin inside a real JavaScriptCore host context (no network involved).
 final class RuntimeTests: XCTestCase {
-    func testYouTubeNativeUMPCompatibilityPatchTargetsLegacyContentDetails() {
-        let script = """
-        source.getContentDetails = (url, useAuth, simplify, forceUmp, options) => {
-        \tlog("extractVideoPage_VideoDetails (start)");
-        \tconst videoDetails = extractVideoPage_VideoDetails(urlFiltered, initialData, initialPlayerData, {
-        \t\tbgData: bgData,
-        \t\tpot: options?.pot,
-        \t\thttpClient: overrideHttpClient,
-        \t\turl: urlFiltered,
-        \t\tnoSources: !!(options?.noSources)
-        \t}, jsUrl, useLogin, defaultUMP, clientConfig, usedLogin);
-        \tlog("extractVideoPage_VideoDetails (fin)");
-        \tif (videoDetails == null) {
-        \t}
-        };
-        """
-        let patched = PluginCompatibilityPatches.apply(
-            pluginID: "35ae969a-a7db-11ed-afa1-0242ac120002",
-            version: 366,
-            original: script
-        )
-        XCTAssertTrue(patched.script.contains("source.getContentDetails = async (url"))
-        XCTAssertTrue(patched.script.contains("const nativeUMP = await extractUMP_VideoDescriptor"))
-        XCTAssertTrue(patched.script.contains("if (nativeUMP) videoDetails.video = nativeUMP"))
-        XCTAssertEqual(patched.applied, ["youtube-native-ump-legacy-path"])
-        XCTAssertTrue(patched.failed.isEmpty)
-        XCTAssertEqual(
-            PluginCompatibilityPatches.apply(pluginID: "another-plugin", version: 366, original: script).script,
-            script
-        )
-        XCTAssertEqual(
-            PluginCompatibilityPatches.apply(
-                pluginID: "35ae969a-a7db-11ed-afa1-0242ac120002",
-                version: 367,
-                original: script
-            ).script,
-            script
-        )
+    private final class WarningStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+
+        func append(_ value: String) { lock.withLock { values.append(value) } }
+        func snapshot() -> [String] { lock.withLock { values } }
     }
 
-    func testYouTubeNativeUMPCompatibilityPatchIsAtomic() {
-        let incomplete = "source.getContentDetails = (url, useAuth, simplify, forceUmp, options) => {}"
-        let result = PluginCompatibilityPatches.apply(
-            pluginID: "35ae969a-a7db-11ed-afa1-0242ac120002",
-            version: 366,
-            original: incomplete
+    func testDetailsCacheFingerprintTracksRuntimeInputs() throws {
+        let config = try JSONDecoder().decode(
+            PluginConfig.self,
+            from: Data(#"{"name":"Cache","id":"cache-test","scriptUrl":"x.js","version":1}"#.utf8)
         )
-        XCTAssertEqual(result.script, incomplete)
-        XCTAssertTrue(result.applied.isEmpty)
-        XCTAssertEqual(result.failed, ["youtube-native-ump-legacy-path:contextNotFound"])
+        let baseline = PluginRuntime(config: config, script: "one", settings: ["mode": "a"], auth: nil, captcha: nil)
+        let identical = PluginRuntime(config: config, script: "one", settings: ["mode": "a"], auth: nil, captcha: nil)
+        let changedScript = PluginRuntime(config: config, script: "two", settings: ["mode": "a"], auth: nil, captcha: nil)
+        let changedSetting = PluginRuntime(config: config, script: "one", settings: ["mode": "b"], auth: nil, captcha: nil)
+        let changedAuth = PluginRuntime(
+            config: config,
+            script: "one",
+            settings: ["mode": "a"],
+            auth: SourceAuth(cookieMap: ["example.com": ["SID": "value"]]),
+            captcha: nil
+        )
+
+        XCTAssertEqual(baseline.detailsCacheFingerprint, identical.detailsCacheFingerprint)
+        XCTAssertNotEqual(baseline.detailsCacheFingerprint, changedScript.detailsCacheFingerprint)
+        XCTAssertNotEqual(baseline.detailsCacheFingerprint, changedSetting.detailsCacheFingerprint)
+        XCTAssertNotEqual(baseline.detailsCacheFingerprint, changedAuth.detailsCacheFingerprint)
+    }
+
+    func testReloadDoesNotDeliverOldTimerIntoNewContext() async throws {
+        let script = """
+        source.enable = function () {
+            source.marker = "clean";
+            if (typeof __reloadData === "undefined") {
+                setTimeout(function () { source.marker = "stale"; }, 50);
+            } else {
+                setTimeout(function () { source.marker = "new timer fired early"; }, 10000);
+            }
+        };
+        source.readMarker = function () { return source.marker; };
+        source.getHome = function () { return new ContentPager([], false); };
+        source.search = function () { return new ContentPager([], false); };
+        source.isChannelUrl = function () { return false; };
+        source.getChannel = function () { return null; };
+        source.getChannelContents = function () { return new ContentPager([], false); };
+        source.isContentDetailsUrl = function () { return false; };
+        source.getContentDetails = function () { return null; };
+        """
+        let config = try JSONDecoder().decode(
+            PluginConfig.self,
+            from: Data(#"{"name":"Timer isolation","id":"timer-isolation","scriptUrl":"x.js","version":1}"#.utf8)
+        )
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        defer { Task { await runtime.stop() } }
+
+        _ = try await runtime.enable()
+        await runtime.reload(reloadData: "new")
+        let initialMarker = try await runtime.call("readMarker", as: String.self)
+        XCTAssertEqual(initialMarker, "clean")
+        try await Task.sleep(for: .milliseconds(150))
+        let markerAfterOldTimer = try await runtime.call("readMarker", as: String.self)
+        XCTAssertEqual(markerAfterOldTimer, "clean")
+    }
+
+    func testReloadDoesNotLetOldPromisePollNewContext() async throws {
+        let script = """
+        source.enable = function () {};
+        source.delayed = function () {
+            var value = typeof __reloadData === "undefined" ? "old" : "new";
+            return new Promise(function (resolve) { setTimeout(function () { resolve(value); }, 50); });
+        };
+        source.getHome = function () { return new ContentPager([], false); };
+        source.search = function () { return new ContentPager([], false); };
+        source.isChannelUrl = function () { return false; };
+        source.getChannel = function () { return null; };
+        source.getChannelContents = function () { return new ContentPager([], false); };
+        source.isContentDetailsUrl = function () { return false; };
+        source.getContentDetails = function () { return null; };
+        """
+        let config = try JSONDecoder().decode(
+            PluginConfig.self,
+            from: Data(#"{"name":"Promise isolation","id":"promise-isolation","scriptUrl":"x.js","version":1}"#.utf8)
+        )
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        defer { Task { await runtime.stop() } }
+
+        let oldCall = Task { try await runtime.call("delayed", as: String.self) }
+        try await Task.sleep(for: .milliseconds(10))
+        await runtime.reload(reloadData: "new")
+        let newValue = try await runtime.call("delayed", as: String.self)
+        XCTAssertEqual(newValue, "new")
+        do {
+            _ = try await oldCall.value
+            XCTFail("The old context's promise should be cancelled by reload")
+        } catch is CancellationError {}
     }
 
     func testUnifiedDiffPreservesCRLF() throws {
@@ -93,6 +140,65 @@ final class RuntimeTests: XCTestCase {
         XCTAssertTrue(features.contains("Async"))
         let value: Int = try await runtime.call("dynamic")
         XCTAssertEqual(value, 42)
+    }
+
+    func testUnsupportedCapabilityProbesWarnOnce() async throws {
+        let config = try JSONDecoder().decode(
+            PluginConfig.self,
+            from: Data(#"{"name":"Capability warnings","id":"capability-warnings"}"#.utf8)
+        )
+        let script = """
+        source.probe = function() {
+            bridge.supportedFeatures.includes("MissingFeature");
+            bridge.supportedFeatures.indexOf("MissingFeature");
+            bridge.hasPackage("MissingPackage");
+            bridge.hasPackage("MissingPackage");
+            return true;
+        };
+        """
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        defer { Task { await runtime.stop() } }
+        let warningStore = WarningStore()
+        runtime.onLog = { warningStore.append($0) }
+
+        let probed: Bool = try await runtime.call("probe")
+        XCTAssertTrue(probed)
+        let warnings = warningStore.snapshot()
+
+#if DEBUG
+        XCTAssertEqual(warnings.filter { $0.contains("MissingFeature") }.count, 1)
+        XCTAssertEqual(warnings.filter { $0.contains("MissingPackage") }.count, 1)
+#else
+        XCTAssertTrue(warnings.isEmpty)
+#endif
+    }
+
+    func testHTTPBatchDummyPreservesResultPositions() async throws {
+        let config = try JSONDecoder().decode(
+            PluginConfig.self,
+            from: Data(#"{"name":"HTTP batch","packages":["Http"]}"#.utf8)
+        )
+        let script = """
+        source.batchDummy = function() {
+            const batch = http.batch();
+            const supported = typeof batch.DUMMY === "function";
+            const chained = batch.DUMMY().DUMMY();
+            return { supported: supported, chained: chained === batch, positions: batch.execute() };
+        };
+        """
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        defer { Task { await runtime.stop() } }
+
+        struct Result: Decodable {
+            let supported: Bool
+            let chained: Bool
+            let positions: [String?]
+        }
+        let value: Result = try await runtime.call("batchDummy")
+        XCTAssertTrue(value.supported)
+        XCTAssertTrue(value.chained)
+        XCTAssertEqual(value.positions.count, 2)
+        XCTAssertTrue(value.positions.allSatisfy { $0 == nil })
     }
 
     func testDirectEvalRemainsUnavailableWithoutPermissionOrBrowserFallback() async throws {

@@ -34,6 +34,7 @@
     },
     clearTimeout: function (id) { delete timers[id]; },
     http: function (requestsJson, parallel) { return hostCall("http", requestsJson, parallel ? "1" : "0"); },
+    browser: function (operation, payload) { return hostCall("browser." + operation, payload || "", ""); },
     fireTimer: function (id) {
       var fn = timers[id];
       if (!fn) return;
@@ -42,6 +43,37 @@
         __native.log("Timer callback failed: " + (e && e.message ? e.message : e) + (e && e.stack ? "\n" + e.stack : ""));
       }
     }
+  };
+
+  global.__makeBrowser = function () {
+    var callbacks = {};
+    var callbackSeq = 0;
+    function remember(id, callback) {
+      if (typeof callback === "function") callbacks[id] = callback;
+    }
+    global.__browserCallback = function (id, value) {
+      var callback = callbacks[id];
+      if (!callback) return;
+      delete callbacks[id];
+      callback(value);
+    };
+    return {
+      initialize: function () { __native.browser("initialize", ""); },
+      addScriptOnLoad: function (script) { __native.browser("addScriptOnLoad", String(script)); },
+      load: function (url) { __native.browser("load", String(url)); },
+      waitTillLoaded: function (timeout) {
+        return __native.browser("waitTillLoaded", String(timeout || 0)) === "1";
+      },
+      run: function (script, callbackId, callback) {
+        remember(String(callbackId), callback);
+        __native.browser("run", JSON.stringify({ script: String(script), id: String(callbackId) }));
+      },
+      runWithReturn: function (script, callback) {
+        var id = "return-" + (++callbackSeq);
+        remember(id, callback);
+        __native.browser("runWithReturn", JSON.stringify({ script: String(script), id: id }));
+      }
+    };
   };
 
   // ------------------------------------------------------------------ DOMParser and Utilities packages
@@ -569,6 +601,16 @@
   // Current official plugins branch on it during normal feed parsing.
   if (global.IS_TESTING === undefined) global.IS_TESTING = false;
 
+  var supportedFeatures = ["ReloadRequiredException", "Async", "UMPSource"];
+  supportedFeatures.indexOf = function (feature, fromIndex) {
+    var result = Array.prototype.indexOf.call(this, feature, fromIndex);
+    if (result < 0) hostCall("unsupportedFeature", String(feature), "");
+    return result;
+  };
+  supportedFeatures.includes = function (feature, fromIndex) {
+    return this.indexOf(feature, fromIndex) >= 0;
+  };
+
   global.bridge = global.bridge || {};
   Object.assign(global.bridge, {
     buildPlatform: "ios",
@@ -576,7 +618,7 @@
     supportedContent: [1, 2, 4, 7, 9, 11, 60, 70],
     // This host supports ordinary batched requests, but not the newer dummy
     // slots/session-client contract denoted by HttpBatchClient.
-    supportedFeatures: ["ReloadRequiredException", "Async", "UMPSource"],
+    supportedFeatures: supportedFeatures,
     isLoggedIn: function () { return __native.isLoggedIn(); },
     log: function (s) { __native.log(String(s)); },
     toast: function (s) { __native.toast(String(s)); },
@@ -892,10 +934,11 @@
       if (!s || typeof s !== "object") return s;
       var c = Object.assign({}, s);
       if (s.requestModifier) { c.requestModifier = { handle: putHandle(s.requestModifier), allowByteSkip: s.requestModifier.allowByteSkip !== false }; }
-      if (typeof s.generate === "function" || typeof s.getRequestExecutor === "function") {
+      if (typeof s.generate === "function" || typeof s.getRequestExecutor === "function" || typeof s.refreshUMPToken === "function") {
         c.__handle = putHandle(s);
         c.hasGenerate = typeof s.generate === "function";
         c.hasRequestExecutor = typeof s.getRequestExecutor === "function";
+        c.hasRefreshUMPToken = typeof s.refreshUMPToken === "function";
       }
       return c;
     }
@@ -1090,6 +1133,11 @@
       return JSON.stringify(out);
     },
     fireTimer: function (id) { global.__native.fireTimer(id); },
+    browserCallback: function (id, value) {
+      if (typeof global.__browserCallback === "function") {
+        global.__browserCallback(String(id), String(value));
+      }
+    },
     releaseHandles: function () { handles = {}; }
   };
 

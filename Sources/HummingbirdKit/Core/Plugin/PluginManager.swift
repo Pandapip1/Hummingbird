@@ -2,6 +2,24 @@ import Foundation
 import Observation
 import DebugKit
 
+#if DEBUG
+private final class PluginDebugLogger: @unchecked Sendable {
+    static let shared = PluginDebugLogger()
+    private let lock = NSLock()
+    private let writer = DispatchQueue(label: "app.hummingbird.plugin.debug-log", qos: .utility)
+    private var nextSequence: UInt64 = 0
+
+    func submit(pluginID: String, message: String) {
+        lock.lock()
+        nextSequence &+= 1
+        let sequence = nextSequence
+        lock.unlock()
+        let bounded = message.count > 2_000 ? String(message.prefix(2_000)) + "… [truncated]" : message
+        writer.async { print("[plugin \(pluginID) #\(sequence)] \(bounded)") }
+    }
+}
+#endif
+
 /// A plugin as stored on this device.
 struct InstalledPlugin: Codable, Identifiable, Hashable {
     var config: PluginConfig
@@ -116,7 +134,9 @@ final class PluginManager {
                 ])
             }
             #if DEBUG
-            print("[plugin \(id)] \(msg)")
+            // Plugins can log complete HTML/API responses. Keep console I/O off
+            // their serial runtime queues while retaining deterministic log order.
+            PluginDebugLogger.shared.submit(pluginID: id, message: msg)
             #endif
         }
         runtimes[id] = r

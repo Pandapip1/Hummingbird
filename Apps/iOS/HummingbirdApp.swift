@@ -6,6 +6,12 @@ import AVKit
 
 @main
 struct HummingbirdApp: App {
+    init() {
+        #if DEBUG && os(iOS)
+        RenderHangDiagnostics.start()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             LaunchGate()

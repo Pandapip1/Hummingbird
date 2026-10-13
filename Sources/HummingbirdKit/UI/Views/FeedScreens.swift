@@ -34,6 +34,7 @@ struct HomeView: View {
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.openRoute) private var openRoute
+    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
     @State private var query = ""
     @State private var submittedQuery = ""
     @State private var feed: FeedModel?
@@ -102,15 +103,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            #if os(tvOS)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                TextField("Search or paste a link", text: $query)
-                    .padding(.horizontal, 80)
-                    .padding(.bottom, 12)
-            }
-            #else
-            .searchable(text: $query, prompt: "Search or paste a link")
-            #endif
+            .modifier(SearchInputModifier(query: $query, hidden: isOverviewPreview))
             .toolbar {
                 #if os(tvOS)
                 if let browserToolbar {
@@ -195,6 +188,34 @@ struct SearchView: View {
         guard !Task.isCancelled,
               query.trimmingCharacters(in: .whitespacesAndNewlines) == text else { return }
         suggestions = values
+    }
+}
+
+private struct SearchInputModifier: ViewModifier {
+    @Binding var query: String
+    let hidden: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if hidden {
+            content
+        } else {
+            #if os(tvOS)
+            content.safeAreaInset(edge: .top, spacing: 0) {
+                TextField("Search or paste a link", text: $query)
+                    .padding(.horizontal, 80)
+                    .padding(.bottom, 12)
+            }
+            #elseif os(iOS)
+            content.searchable(
+                text: $query,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Search or paste a link"
+            )
+            #else
+            content.searchable(text: $query, prompt: "Search or paste a link")
+            #endif
+        }
     }
 }
 

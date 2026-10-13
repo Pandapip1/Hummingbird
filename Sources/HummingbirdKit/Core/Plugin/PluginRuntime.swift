@@ -33,6 +33,7 @@ final class PluginRuntime: @unchecked Sendable {
     private(set) var capabilities: [String: Bool] = [:]
     let appliedCompatibilityPatches: [String]
     let failedCompatibilityPatches: [String]
+    let detailsCacheFingerprint: String
 
     var onToast: (@Sendable (String) -> Void)?
     var onLog: (@Sendable (String) -> Void)?
@@ -45,14 +46,17 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Identifies every input that may change persisted content details or the
     /// host-side capabilities embedded in their playback sources.
-    var detailsCacheFingerprint: String {
+    private static func makeDetailsCacheFingerprint(
+        config: PluginConfig, script: String, settings: [String: String],
+        applied: [String], failed: [String], auth: SourceAuth?, captcha: SourceAuth?
+    ) -> String {
         var inputs = [
             "host-details-abi:2",
             "plugin:\(config.id):\(config.version)",
             "script:\(script)",
-            "settings:\(storedSettings.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&"))",
-            "patches:\(appliedCompatibilityPatches.joined(separator: ","))",
-            "patch-failures:\(failedCompatibilityPatches.joined(separator: ","))",
+            "settings:\(settings.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&"))",
+            "patches:\(applied.joined(separator: ","))",
+            "patch-failures:\(failed.joined(separator: ","))",
         ]
         if let auth, let data = try? JSONEncoder().encode(auth) {
             inputs.append("auth:\(data.base64EncodedString())")
@@ -80,6 +84,11 @@ final class PluginRuntime: @unchecked Sendable {
         self.script = compatibility.script
         self.appliedCompatibilityPatches = compatibility.applied
         self.failedCompatibilityPatches = compatibility.failed
+        self.detailsCacheFingerprint = Self.makeDetailsCacheFingerprint(
+            config: config, script: compatibility.script, settings: settings,
+            applied: compatibility.applied, failed: compatibility.failed,
+            auth: auth, captcha: captcha
+        )
         self.storedSettings = settings
         self.auth = auth
         self.captcha = captcha

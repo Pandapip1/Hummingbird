@@ -82,6 +82,7 @@ final class PluginManager {
     private(set) var credentialRevision = 0
 
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
+    @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
     @ObservationIgnored private let urlSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 30
@@ -107,12 +108,33 @@ final class PluginManager {
     var enabledPlugins: [InstalledPlugin] { installed.filter { $0.enabled } }
 
     /// The running runtime for a plugin, created on first use.
-    func runtime(for id: String) -> PluginRuntime? {
+    func runtime(for id: String) async -> PluginRuntime? {
         if let r = runtimes[id] { return r }
         guard let p = plugin(id) else { return nil }
-        let r = PluginRuntime(config: p.config, script: p.script, settings: p.settings,
-                              auth: AuthKeychain.load(pluginID: id, kind: "auth"),
-                              captcha: AuthKeychain.load(pluginID: id, kind: "captcha"))
+        let preparation: Task<PluginRuntime, Never>
+        if let existing = runtimePreparation[id] {
+            preparation = existing
+        } else {
+            let created = Task.detached(priority: .userInitiated) {
+                PluginRuntime(
+                    config: p.config, script: p.script, settings: p.settings,
+                    auth: AuthKeychain.load(pluginID: id, kind: "auth"),
+                    captcha: AuthKeychain.load(pluginID: id, kind: "captcha")
+                )
+            }
+            runtimePreparation[id] = created
+            preparation = created
+        }
+        let r = await preparation.value
+        runtimePreparation[id] = nil
+        guard plugin(id) == p else {
+            await r.stop()
+            return await runtime(for: id)
+        }
+        if let existing = runtimes[id] {
+            await r.stop()
+            return existing
+        }
         r.onToast = { [weak self] msg in
             DebugServer.record("plugin", "alert", fields: [
                 "plugin": id,
@@ -143,12 +165,17 @@ final class PluginManager {
         return r
     }
 
-    func enabledRuntimes(where predicate: (PluginConfig) -> Bool = { _ in true }) -> [PluginRuntime] {
-        enabledPlugins.filter { predicate($0.config) }.compactMap { runtime(for: $0.id) }
+    func enabledRuntimes(where predicate: (PluginConfig) -> Bool = { _ in true }) async -> [PluginRuntime] {
+        var result: [PluginRuntime] = []
+        for plugin in enabledPlugins where predicate(plugin.config) {
+            if let runtime = await runtime(for: plugin.id) { result.append(runtime) }
+        }
+        return result
     }
 
     /// Discards the running runtime so the next call starts a fresh one with current settings and credentials.
     func invalidate(_ id: String) {
+        runtimePreparation.removeValue(forKey: id)?.cancel()
         if let r = runtimes.removeValue(forKey: id) { Task { await r.stop() } }
     }
 

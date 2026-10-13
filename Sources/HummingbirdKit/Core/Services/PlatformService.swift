@@ -70,9 +70,9 @@ final class PlatformService {
 
     private func route(url: String, check: String, requires: [String] = []) async -> PluginRuntime? {
         let key = check + "|" + url
-        if let id = routeCache[key], let rt = plugins.runtime(for: id), plugins.plugin(id)?.enabled == true { return rt }
+        if let id = routeCache[key], let rt = await plugins.runtime(for: id), plugins.plugin(id)?.enabled == true { return rt }
         for p in plugins.enabledPlugins {
-            guard let rt = plugins.runtime(for: p.id) else { continue }
+            guard let rt = await plugins.runtime(for: p.id) else { continue }
             if (try? await rt.enable()) == nil { continue }
             if !requires.allSatisfy({ rt.has($0) }) { continue }
             if let yes = try? await rt.call(check, [url], as: Bool.self), yes {
@@ -185,24 +185,28 @@ final class PlatformService {
 
     // MARK: feeds
 
-    func homeSources() -> [FeedSource] {
-        plugins.enabledPlugins.filter { $0.config.enableInHome }.compactMap { p in
-            guard let rt = plugins.runtime(for: p.id) else { return nil }
-            return FeedSource(runtime: rt, label: p.config.name) { [self] in
+    func homeSources() async -> [FeedSource] {
+        var result: [FeedSource] = []
+        for p in plugins.enabledPlugins where p.config.enableInHome {
+            guard let rt = await plugins.runtime(for: p.id) else { continue }
+            result.append(FeedSource(runtime: rt, label: p.config.name) { [self] in
                 try await withReload(rt) { try await rt.pager("getHome", [], as: ContentItem.self) }
-            }
+            })
         }
+        return result
     }
 
-    func searchSources(query: String, type: String?, order: String?) -> [FeedSource] {
-        plugins.enabledPlugins.filter { $0.config.enableInSearch }.compactMap { p in
-            guard let rt = plugins.runtime(for: p.id) else { return nil }
-            return FeedSource(runtime: rt, label: p.config.name) { [self] in
+    func searchSources(query: String, type: String?, order: String?) async -> [FeedSource] {
+        var result: [FeedSource] = []
+        for p in plugins.enabledPlugins where p.config.enableInSearch {
+            guard let rt = await plugins.runtime(for: p.id) else { continue }
+            result.append(FeedSource(runtime: rt, label: p.config.name) { [self] in
                 try await withReload(rt) {
                     try await rt.pager("search", [query, type ?? NSNull(), order ?? NSNull(), NSNull()], as: ContentItem.self)
                 }
-            }
+            })
         }
+        return result
     }
 
     func channelSource(runtime rt: PluginRuntime, url: String, type: String?, order: String?, filters: [String: [String]]? = nil) -> FeedSource {
@@ -230,7 +234,7 @@ final class PlatformService {
     func searchChannels(query: String) async -> [(PluginRuntime, ContentItem)] {
         var out: [(PluginRuntime, ContentItem)] = []
         for p in plugins.enabledPlugins where p.config.enableInSearch {
-            guard let rt = plugins.runtime(for: p.id), (try? await rt.enable()) != nil, rt.has("searchChannels") else { continue }
+            guard let rt = await plugins.runtime(for: p.id), (try? await rt.enable()) != nil, rt.has("searchChannels") else { continue }
             if let pager = try? await rt.pager("searchChannels", [query], as: ContentItem.self) {
                 // The API method supplies the semantic type even when an older
                 // plugin omits PlatformChannel's contentType discriminator.
@@ -250,7 +254,7 @@ final class PlatformService {
         var seen = Set<String>()
         for plugin in plugins.enabledPlugins where plugin.config.enableInSearch {
             guard !Task.isCancelled else { return [] }
-            guard let runtime = plugins.runtime(for: plugin.id),
+            guard let runtime = await plugins.runtime(for: plugin.id),
                   (try? await runtime.enable()) != nil,
                   runtime.has("searchSuggestions"),
                   let values = try? await runtime.call("searchSuggestions", [query], as: [String].self)

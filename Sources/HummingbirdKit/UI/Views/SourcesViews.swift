@@ -376,7 +376,7 @@ struct PluginDetailView: View {
     }
 
     private func importSubscriptions() async {
-        guard let rt = app.plugins.runtime(for: pluginID) else { return }
+        guard let rt = await app.plugins.runtime(for: pluginID) else { return }
         working = true; libraryMessage = nil
         defer { working = false }
         do {
@@ -395,7 +395,7 @@ struct PluginDetailView: View {
     }
 
     private func importPlaylists() async {
-        guard let rt = app.plugins.runtime(for: pluginID) else { return }
+        guard let rt = await app.plugins.runtime(for: pluginID) else { return }
         working = true; libraryMessage = nil
         defer { working = false }
         do {

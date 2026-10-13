@@ -168,7 +168,7 @@ struct SearchView: View {
         let f = app.makeFeed()
         feed = f
         async let found = app.platform.searchChannels(query: text)
-        await f.reload(sources: app.platform.searchSources(query: text, type: nil, order: nil))
+        await f.reload(sources: await app.platform.searchSources(query: text, type: nil, order: nil))
         let foundChannels = await found.map { $0.1 }
         guard generation == searchGeneration else { return }
         channels = foundChannels

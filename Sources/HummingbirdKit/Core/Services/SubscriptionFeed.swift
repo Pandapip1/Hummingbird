@@ -82,7 +82,7 @@ final class SubscriptionFeed {
 
     /// First page(s) of one channel, newest first. Plugins that cannot mix content types get one call per type.
     private func fetchChannel(_ sub: Subscription) async throws -> [ContentItem] {
-        guard let rt = plugins.runtime(for: sub.pluginId) else { throw PluginError.notInstalled }
+        guard let rt = await plugins.runtime(for: sub.pluginId) else { throw PluginError.notInstalled }
         try await rt.enable()
         let caps = await platform.channelCapabilities(rt)
         let wanted = ["VIDEOS", "STREAMS", "POSTS", "LIVE"]

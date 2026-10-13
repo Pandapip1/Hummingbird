@@ -131,7 +131,7 @@ final class AppModel {
         guard !homeFeed.isLoading else { return }
         guard force || ids != homeFeedPluginIDs || !homeFeed.loadedOnce else { return }
         homeFeedPluginIDs = ids
-        await homeFeed.reload(sources: platform.homeSources())
+        await homeFeed.reload(sources: await platform.homeSources())
         // A source can be enabled or disabled while the previous configuration
         // is still loading. The task for the new id will observe `isLoading` and
         // return; finish that requested transition here once the old load settles.

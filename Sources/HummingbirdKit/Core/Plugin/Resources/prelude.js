@@ -810,6 +810,7 @@
   Batch.prototype.requestWithBody = function (method, url, body, headers, useAuth) { return this._push(this._owner, method, url, body, headers, useAuth); };
   Batch.prototype.GET = function (url, headers, useAuth) { return this._push(this._owner, "GET", url, null, headers, useAuth); };
   Batch.prototype.POST = function (url, body, headers, useAuth) { return this._push(this._owner, "POST", url, body, headers, useAuth); };
+  Batch.prototype.DUMMY = function () { this._items.push(null); return this; };
   Batch.prototype.execute = function () {
     var live = [], index = [];
     this._items.forEach(function (it, i) { if (it !== null) { live.push(it); index.push(i); } });

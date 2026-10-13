@@ -243,6 +243,10 @@ private final class RenderStallMonitor: NSObject {
         event["time"] = ISO8601DateFormatter().string(from: Date())
         event["launchID"] = launchID
         event["gapMilliseconds"] = Int((gap * 1_000).rounded())
+        RollingMainThreadSampler.recordStall(
+            gap: gap,
+            context: event.reduce(into: [:]) { result, pair in result[pair.key] = String(describing: pair.value) }
+        )
         guard var data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
         data.append(0x0a)
         Task { await RenderStallLogWriter.shared.append(data) }

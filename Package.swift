@@ -27,6 +27,11 @@ var products: [Product] = [
 ]
 var targets: [Target] = [
     .target(
+        name: "CMainThreadSampler",
+        path: "Sources/CMainThreadSampler",
+        publicHeadersPath: "include"
+    ),
+    .target(
         name: "DebugKit",
         path: "Sources/DebugKit"
     ),
@@ -59,6 +64,7 @@ var targets: [Target] = [
             "DebugKit",
             "DynamicTabbingKit",
             "AdvancedVideoPlayerKit",
+            .target(name: "CMainThreadSampler", condition: .when(platforms: [.iOS])),
             "CSQLite",
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),

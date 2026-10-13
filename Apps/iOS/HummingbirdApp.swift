@@ -1,5 +1,6 @@
 import SwiftUI
 import HummingbirdKit
+import DebugKit
 #if os(iOS) || os(tvOS)
 import AVKit
 #endif
@@ -9,6 +10,14 @@ struct HummingbirdApp: App {
     init() {
         #if DEBUG && os(iOS)
         RenderHangDiagnostics.start()
+        RollingMainThreadSampler.start()
+        if let root = try? FileManager.default.url(
+            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        ).appendingPathComponent("Hummingbird", isDirectory: true) {
+            DebugServer.shared.registerDiagnosticDirectory("render-stalls", url: root)
+            DebugServer.shared.registerDiagnosticDirectory("metric-hangs", url: root.appendingPathComponent("metric-hangs"))
+            DebugServer.shared.registerDiagnosticDirectory("stall-samples", url: root.appendingPathComponent("stall-samples"))
+        }
         #endif
     }
 

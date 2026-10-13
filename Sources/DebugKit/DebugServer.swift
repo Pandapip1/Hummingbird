@@ -13,6 +13,7 @@ public final class DebugServer {
 
     private var probes: [String: @MainActor () -> String] = [:]
     private var actions: [String: @MainActor () -> Void] = [:]
+    private var diagnosticDirectories: [String: URL] = [:]
     private var listener: NWListener?
     private var events: [[String: Any]] = []
     private let maximumEventCount = 300
@@ -25,6 +26,11 @@ public final class DebugServer {
 
     public func registerAction(_ name: String, _ action: @escaping @MainActor () -> Void) {
         actions[name] = action
+    }
+
+    /// Publishes diagnostic artifacts through the read-only `/diagnostics` API.
+    public func registerDiagnosticDirectory(_ name: String, url: URL) {
+        diagnosticDirectories[name] = url
     }
 
     /// Adds a structured, bounded diagnostic event. Values should already be
@@ -95,10 +101,17 @@ public final class DebugServer {
         if method == "GET", path == "/events" {
             return http(status: "200 OK", object: ["events": events])
         }
+        if method == "GET", path == "/diagnostics" {
+            return diagnosticIndex()
+        }
+        if method == "GET", path.hasPrefix("/diagnostics/") {
+            return diagnosticFile(path: path)
+        }
         if method == "GET", path == "/" {
             return http(status: "200 OK", json: [
                 "probes": probes.keys.sorted().joined(separator: ","),
                 "actions": actions.keys.sorted().joined(separator: ","),
+                "diagnostics": diagnosticDirectories.keys.sorted().joined(separator: ","),
             ])
         }
         if method == "POST", path.hasPrefix("/actions/") {
@@ -112,13 +125,45 @@ public final class DebugServer {
         return http(status: "404 Not Found", json: ["error": "not found"])
     }
 
+    private func diagnosticIndex() -> Data {
+        var result: [String: [String]] = [:]
+        for (name, directory) in diagnosticDirectories {
+            result[name] = ((try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []).filter { !$0.hasDirectoryPath }.map(\.lastPathComponent).sorted()
+        }
+        return http(status: "200 OK", object: ["diagnostics": result])
+    }
+
+    private func diagnosticFile(path: String) -> Data {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count == 3,
+              let directory = diagnosticDirectories[String(parts[1])] else {
+            return http(status: "404 Not Found", json: ["error": "unknown diagnostic"])
+        }
+        let filename = String(parts[2]).removingPercentEncoding ?? String(parts[2])
+        guard !filename.isEmpty, filename == URL(fileURLWithPath: filename).lastPathComponent else {
+            return http(status: "400 Bad Request", json: ["error": "invalid filename"])
+        }
+        let file = directory.appendingPathComponent(filename)
+        guard let body = try? Data(contentsOf: file, options: [.mappedIfSafe]) else {
+            return http(status: "404 Not Found", json: ["error": "not found"])
+        }
+        return http(status: "200 OK", body: body, contentType: "application/json")
+    }
+
     private func http(status: String, json: [String: String]) -> Data {
         http(status: status, object: json)
     }
 
     private func http(status: String, object: Any) -> Data {
         let body = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
-        var response = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+        return http(status: status, body: body, contentType: "application/json")
+    }
+
+    private func http(status: String, body: Data, contentType: String) -> Data {
+        var response = Data("HTTP/1.1 \(status)\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
         response.append(body)
         return response
     }
@@ -132,6 +177,7 @@ public final class DebugServer {
     private init() {}
     public func registerProbe(_ name: String, _ probe: @escaping @MainActor () -> String) {}
     public func registerAction(_ name: String, _ action: @escaping @MainActor () -> Void) {}
+    public func registerDiagnosticDirectory(_ name: String, url: URL) {}
     public nonisolated static func record(_ category: String, _ name: String, fields: [String: String] = [:]) {}
     public func startFromEnvironment() {}
 }

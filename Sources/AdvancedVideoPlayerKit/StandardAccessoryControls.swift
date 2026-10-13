@@ -1,5 +1,43 @@
 import SwiftOpenUI
 
+private struct PlayerMenuPresentationChangedKey: EnvironmentKey {
+    static let defaultValue: (Bool) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var playerMenuPresentationChanged: (Bool) -> Void {
+        get { self[PlayerMenuPresentationChangedKey.self] }
+        set { self[PlayerMenuPresentationChangedKey.self] = newValue }
+    }
+}
+
+@MainActor
+struct PlayerMenu<Label: View, Content: View>: View {
+    @Environment(\.playerMenuPresentationChanged) private var presentationChanged
+    @State private var isPresented = false
+    @ViewBuilder let label: () -> Label
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        #if os(iOS)
+        Button { isPresented = true } label: { label() }
+            .popover(isPresented: $isPresented) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) { content() }
+                        .buttonStyle(.plain)
+                        .padding()
+                }
+                .onTapGesture { isPresented = false }
+                .presentationCompactAdaptation(.popover)
+            }
+            .onChange(of: isPresented) { _, presented in presentationChanged(presented) }
+            .onDisappear { if isPresented { presentationChanged(false) } }
+        #else
+        Menu(content: content, label: label)
+        #endif
+    }
+}
+
 /// An opt-in source/quality selector. The option type remains application-defined,
 /// allowing URLs, DRM metadata, request modifiers, and similar policy to stay outside the kit.
 @MainActor
@@ -29,14 +67,16 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
 
     public var body: some View {
         if !options.isEmpty {
-            Menu {
+            PlayerMenu {
+                Text(title)
+            } content: {
                 ForEach(options) { option in
                     Button { interacted(); select(option) } label: {
                         if option.id == selectedID { Label(label(option), systemImage: "checkmark") }
                         else { Text(label(option)) }
                     }
                 }
-            } label: { Text(title) }
+            }
         }
     }
 }
@@ -69,7 +109,9 @@ public struct MediaTrackControl: View {
 
     public var body: some View {
         if !tracks.isEmpty {
-            Menu {
+            PlayerMenu {
+                Text(title)
+            } content: {
                 ForEach(tracks, id: \.id) { track in
                     Button { interacted(); select(track) } label: {
                         let text = track.label ?? track.language ?? fallbackLabel
@@ -77,7 +119,7 @@ public struct MediaTrackControl: View {
                         else { Text(text) }
                     }
                 }
-            } label: { Text(title) }
+            }
         }
     }
 }
@@ -128,7 +170,9 @@ public struct SubtitleControl<AppearanceControls: View>: View {
 
     public var body: some View {
         if !embedded.isEmpty || !external.isEmpty {
-            Menu {
+            PlayerMenu {
+                Text("Subtitles")
+            } content: {
                 Button { interacted(); selectExternal(nil) } label: {
                     if selectedEmbeddedID == nil && selectedExternalID == nil { Label("Off", systemImage: "checkmark") }
                     else { Text("Off") }
@@ -147,7 +191,7 @@ public struct SubtitleControl<AppearanceControls: View>: View {
                     }
                 }
                 appearanceControls()
-            } label: { Text("Subtitles") }
+            }
         }
     }
 }

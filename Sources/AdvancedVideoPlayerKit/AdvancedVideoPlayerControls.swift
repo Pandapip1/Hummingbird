@@ -33,6 +33,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     public var availableWidth: CGFloat
     private let accessories: (@escaping () -> Void) -> Accessories
     @State private var controlsVisible = true
+    @State private var menuPresented = false
     @State private var autoHide = ControlsAutoHide()
     #if os(tvOS)
     @Namespace private var focusNamespace
@@ -58,6 +59,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 .opacity(showingControls ? 1 : 0)
                 .allowsHitTesting(showingControls)
                 .accessibilityHidden(!showingControls)
+                .environment(\.playerMenuPresentationChanged, menuPresentationChanged)
             #if os(tvOS)
             if !showingControls { hiddenFocusTarget }
             #endif
@@ -144,14 +146,16 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                 .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
         }
-        Menu {
+        PlayerMenu {
+            Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×").foregroundStyle(.white)
+        } content: {
             ForEach([Float(0.25), 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in
                 Button { interacted(); model.setPlaybackRate(rate) } label: {
                     let label = rate == 1 ? "Normal" : "\(rate.formatted())×"
                     if rate == model.playbackRate { Label(label, systemImage: "checkmark") } else { Text(label) }
                 }
             }
-        } label: { Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×").foregroundStyle(.white) }
+        }
     }
 
     #if os(tvOS)
@@ -169,11 +173,21 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     private func interacted() {
         controlsVisible = true
         autoHide.task?.cancel()
-        guard model.isPlaying else { return }
+        guard model.isPlaying, !menuPresented else { return }
         autoHide.task = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled, model.isPlaying else { return }
             controlsVisible = false
+        }
+    }
+
+    private func menuPresentationChanged(_ presented: Bool) {
+        menuPresented = presented
+        if presented {
+            controlsVisible = true
+            autoHide.task?.cancel()
+        } else {
+            interacted()
         }
     }
 }

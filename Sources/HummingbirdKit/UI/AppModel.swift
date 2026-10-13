@@ -192,10 +192,7 @@ private actor RenderStallLogWriter {
 
     func append(_ data: Data) {
         do {
-            let root = try FileManager.default.url(
-                for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-            ).appendingPathComponent("Hummingbird", isDirectory: true)
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let root = try RenderDiagnosticsStorage.root()
             let url = root.appendingPathComponent("render-stalls.jsonl")
             if !FileManager.default.fileExists(atPath: url.path) {
                 FileManager.default.createFile(atPath: url.path, contents: nil)

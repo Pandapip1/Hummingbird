@@ -76,7 +76,7 @@ private final class MainThreadSampleRecorder: @unchecked Sendable {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return }
         do {
-            let directory = try DiagnosticsDirectories.sampler()
+            let directory = try RenderDiagnosticsStorage.sampler()
             let filename = "stall-\(Int(detected.timeIntervalSince1970 * 1_000)).json"
             try data.write(to: directory.appendingPathComponent(filename), options: .atomic)
         } catch {
@@ -108,12 +108,20 @@ private final class MainThreadSampleRecorder: @unchecked Sendable {
     }
 }
 
-enum DiagnosticsDirectories {
-    static func root() throws -> URL {
-        let caches = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
-                                                 appropriateFor: nil, create: true)
-        let root = caches.appendingPathComponent("Hummingbird", isDirectory: true)
+public enum RenderDiagnosticsStorage {
+    public static func root() throws -> URL {
+        let applicationSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let root = applicationSupport
+            .appendingPathComponent("Hummingbird", isDirectory: true)
+            .appendingPathComponent("Diagnostics", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutableRoot = root
+        try? mutableRoot.setResourceValues(values)
         return root
     }
 

@@ -49,11 +49,7 @@ private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @un
     }
 
     private static func directory() throws -> URL {
-        let caches = try FileManager.default.url(
-            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        )
-        let directory = caches
-            .appendingPathComponent("Hummingbird", isDirectory: true)
+        let directory = try RenderDiagnosticsStorage.root()
             .appendingPathComponent("metric-hangs", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory

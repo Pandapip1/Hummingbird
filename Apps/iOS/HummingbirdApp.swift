@@ -11,9 +11,7 @@ struct HummingbirdApp: App {
         #if DEBUG && os(iOS)
         RenderHangDiagnostics.start()
         RollingMainThreadSampler.start()
-        if let root = try? FileManager.default.url(
-            for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        ).appendingPathComponent("Hummingbird", isDirectory: true) {
+        if let root = try? RenderDiagnosticsStorage.root() {
             DebugServer.shared.registerDiagnosticDirectory("render-stalls", url: root)
             DebugServer.shared.registerDiagnosticDirectory("metric-hangs", url: root.appendingPathComponent("metric-hangs"))
             DebugServer.shared.registerDiagnosticDirectory("stall-samples", url: root.appendingPathComponent("stall-samples"))

@@ -100,12 +100,14 @@ struct AppSectionMenu: View {
             app.openSection(route, title: title)
         }
         #else
-        Menu("New Tab", systemImage: "plus.square") {
+        Menu {
             sectionButton("Home", systemImage: "house", route: .home)
             sectionButton("Subscriptions", systemImage: "rectangle.stack.person.crop", route: .subscriptions)
             sectionButton("Search", systemImage: "magnifyingglass", route: .search)
             sectionButton("Library", systemImage: "books.vertical", route: .library)
             sectionButton("Sources", systemImage: "puzzlepiece.extension", route: .sources)
+        } label: {
+            Image(systemName: "plus.square")
         }
         .accessibilityLabel("Open section in new tab")
         #endif

@@ -11,8 +11,14 @@ final class PlayerLayoutTests: XCTestCase {
     func testSmallPlayerReservesBothControlBarsAndTheirPadding() {
         XCTAssertEqual(PlayerLayout.height(width: 200, viewportHeight: 600), 326)
         XCTAssertEqual(PlayerLayout.height(width: 320, viewportHeight: 600), 276)
-        XCTAssertEqual(PlayerLayout.height(width: 390, viewportHeight: 600), 276)
+        XCTAssertEqual(PlayerLayout.height(width: 390, viewportHeight: 600), 226)
         XCTAssertEqual(PlayerLayout.height(width: 1600, viewportHeight: 100), PlayerLayout.minimumHeight(width: 1600))
+    }
+
+    func testPortraitPhoneKeepsTransportControlsOnOneRow() {
+        XCTAssertTrue(PlayerLayout.usesStackedTransport(width: 339))
+        XCTAssertFalse(PlayerLayout.usesStackedTransport(width: 340))
+        XCTAssertFalse(PlayerLayout.usesStackedTransport(width: 390))
     }
 
     @MainActor

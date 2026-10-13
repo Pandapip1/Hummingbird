@@ -9,7 +9,7 @@ public enum AdvancedVideoPlayerLayout {
     public static let minimumBarSeparation: CGFloat = 24
     public static let minimumHeight = 2 * (controlBarMinimumHeight + 2 * 9) + 2 * 8 + 2 * 6 + minimumBarSeparation
 
-    public static func usesStackedTransport(width: CGFloat) -> Bool { width < 600 }
+    public static func usesStackedTransport(width: CGFloat) -> Bool { width < 340 }
     public static func usesStackedAccessoryControls(width: CGFloat) -> Bool { width < 280 }
 
     public static func minimumHeight(width: CGFloat) -> CGFloat {

@@ -24,5 +24,11 @@ struct MobileBrowserToolbar: View {
         .font(.headline)
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background {
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea(edges: .bottom)
+        }
     }
 }

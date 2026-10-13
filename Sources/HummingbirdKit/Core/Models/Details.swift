@@ -14,6 +14,7 @@ struct UMPFormat: Sendable, Decodable, Hashable {
     var xtags: String?
     var codecs: String?
     var bitrate = 0
+    var contentLength: Int64?
     var width = 0
     var height = 0
     var fps = 0
@@ -23,14 +24,17 @@ struct UMPFormat: Sendable, Decodable, Hashable {
     var original = false
     var isDrc = false
 
-    enum CodingKeys: String, CodingKey { case itag, lastModified, mimeType, xtags, codecs, bitrate, width, height, fps, audioChannels, audioSampleRate, language, original, isDrc }
+    enum CodingKeys: String, CodingKey { case itag, lastModified, mimeType, xtags, codecs, bitrate, contentLength, width, height, fps, audioChannels, audioSampleRate, language, original, isDrc }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         itag = c.looseInt(.itag) ?? 0
         lastModified = UInt64(c.looseString(.lastModified) ?? String(c.looseInt(.lastModified) ?? 0)) ?? 0
         mimeType = c.looseString(.mimeType) ?? ""
         xtags = c.looseString(.xtags); codecs = c.looseString(.codecs)
-        bitrate = c.looseInt(.bitrate) ?? 0; width = c.looseInt(.width) ?? 0
+        bitrate = c.looseInt(.bitrate) ?? 0
+        contentLength = c.looseString(.contentLength).flatMap(Int64.init)
+            ?? c.looseInt(.contentLength).map(Int64.init)
+        width = c.looseInt(.width) ?? 0
         height = c.looseInt(.height) ?? 0; fps = c.looseInt(.fps) ?? 0
         audioChannels = c.looseInt(.audioChannels) ?? 0; audioSampleRate = c.looseInt(.audioSampleRate) ?? 0
         language = c.looseString(.language); original = c.looseBool(.original) ?? false
@@ -57,6 +61,7 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
     var handle: Int?
     var hasGenerate: Bool = false
     var hasRequestExecutor: Bool = false
+    var hasRefreshUMPToken: Bool = false
     var ustreamerConfig: String?
     var poToken: String?
     var videoId: String?
@@ -76,7 +81,7 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case plugin_type, name, url, width, height, container, codec, bitrate, duration, language, priority, original, requestModifier
-        case __handle, hasGenerate, hasRequestExecutor, ustreamerConfig, poToken, videoId
+        case __handle, hasGenerate, hasRequestExecutor, hasRefreshUMPToken, ustreamerConfig, poToken, videoId
         case videoFormats, audioFormats, clientName, clientVersion, osName, osVersion, isLive
     }
     init(from decoder: Decoder) throws {
@@ -97,6 +102,7 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
         handle = c.looseInt(.__handle)
         hasGenerate = c.looseBool(.hasGenerate) ?? false
         hasRequestExecutor = c.looseBool(.hasRequestExecutor) ?? false
+        hasRefreshUMPToken = c.looseBool(.hasRefreshUMPToken) ?? false
         ustreamerConfig = c.looseString(.ustreamerConfig); poToken = c.looseString(.poToken)
         videoId = c.looseString(.videoId)
         videoFormats = (try? c.decodeIfPresent([UMPFormat].self, forKey: .videoFormats)) ?? []

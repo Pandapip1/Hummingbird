@@ -8,6 +8,7 @@ actor UMPMediaProxy {
     static let shared = UMPMediaProxy()
     private struct Presentation {
         let session: UMPSession
+        let cache: UMPMediaCache.Handle
         let failure: @Sendable (UMPSessionError) -> Void
         var reportedFailure = false
     }
@@ -19,12 +20,28 @@ actor UMPMediaProxy {
 
     func register(source: MediaSource, maximumHeight: Int = 1080, language: String? = nil,
                   progress: (@Sendable (UMPPreparationProgress) -> Void)? = nil,
+                  refreshToken: (@Sendable () async throws -> String)? = nil,
+                  reloadOnBlockedBootstrap: Bool = false,
                   failure: @escaping @Sendable (UMPSessionError) -> Void = { _ in }) async throws -> URL {
-        let session = try UMPSession(source: source, maximumHeight: maximumHeight, language: language, progress: progress)
+        let session = try UMPSession(source: source, maximumHeight: maximumHeight, language: language,
+                                     progress: progress, reloadOnBlockedBootstrap: reloadOnBlockedBootstrap)
+        // The initial POT bootstraps the executor, while YouTube may require a
+        // freshly minted continuation POT before it releases media. Start that
+        // mint alongside preparation so a blocked bootstrap retry can use it;
+        // waiting until prepare() returns creates a circular wait.
+        let tokenRefreshTask = refreshToken.map { refreshToken in
+            Task {
+                let token = try await refreshToken()
+                await session.replacePoToken(token)
+            }
+        }
+        defer { tokenRefreshTask?.cancel() }
         try await session.prepare()
+        try await tokenRefreshTask?.value
+        let cache = try await UMPMediaCache.shared.open(await session.cacheDescriptor())
         let channel = try await serverChannel(); guard let port = channel.localAddress?.port else { throw UMPSessionError.invalidSource }
         let id = UUID().uuidString.lowercased()
-        items[id] = .init(session: session, failure: failure)
+        items[id] = .init(session: session, cache: cache, failure: failure)
         order.append(id)
         while order.count > 4 { items[order.removeFirst()] = nil }
         let url = URL(string: "http://127.0.0.1:\(port)/\(id)/master.m3u8")!
@@ -54,10 +71,18 @@ actor UMPMediaProxy {
             DebugServer.record("ump_proxy", "master", fields: ["playlist": text])
             return (.ok, "application/vnd.apple.mpegurl", Data(text.utf8))
         case "video.m3u8", "audio.m3u8":
-            do { try await item.session.pump() }
-            catch let error as UMPSessionError { reportFailure(for: parts[0], error: error) }
-            catch { /* Existing buffered media remains playable. */ }
-            let current = await item.session.snapshots(), video = parts[1] == "video.m3u8"
+            let video = parts[1] == "video.m3u8"
+            let initialTrack = video ? snapshots.video : snapshots.audio
+            // A known-final VOD playlist already exposes its stable timeline;
+            // media requests drive lazy SABR fetching. Polling here can produce
+            // valid empty responses and must not poison the session before the
+            // player asks for its next segment.
+            if initialTrack.finalSegment == nil {
+                do { try await item.session.pump() }
+                catch let error as UMPSessionError { reportFailure(for: parts[0], error: error) }
+                catch { /* Existing buffered media remains playable. */ }
+            }
+            let current = await item.session.snapshots()
             let track = video ? current.video : current.audio
             DebugServer.record("ump_proxy", "playlist", fields: [
                 "kind": video ? "video" : "audio",
@@ -77,16 +102,40 @@ actor UMPMediaProxy {
             guard parts.count == 3 else { return (.notFound, "text/plain", Data()) }; let video = parts[1] == "video", track = video ? snapshots.video : snapshots.audio
             do {
                 if parts[2] == "init.mp4" {
+                    let cacheName = video ? "video-init" : "audio-init"
+                    if let cached = try? await UMPMediaCache.shared.read(item.cache, name: cacheName) {
+                        return (.ok, track.format.mimeType, cached)
+                    }
                     let data = try await item.session.initialization(video: video)
+                    try? await UMPMediaCache.shared.write(data, to: item.cache, name: cacheName)
                     DebugServer.record("ump_proxy", "init", fields: ["kind": video ? "video" : "audio", "bytes": String(data.count)])
                     return (.ok, track.format.mimeType, data)
                 }
                 guard parts[2].hasSuffix(".m4s"), let n = Int(parts[2].dropLast(4)) else { return (.notFound, "text/plain", Data()) }
-                await item.session.notePlaybackRequest(video: video, sequence: n)
+                if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
+                    print("[native ump proxy] request kind=\(video ? "video" : "audio") sequence=\(n)")
+                }
+                let cacheName = "\(video ? "video" : "audio")-\(n)"
+                if let cached = try? await UMPMediaCache.shared.read(item.cache, name: cacheName) {
+                    DebugServer.record("ump_proxy", "cache_hit", fields: ["kind": video ? "video" : "audio", "sequence": String(n)])
+                    return (.ok, track.format.mimeType, cached)
+                }
+                let cachedRange = await UMPMediaCache.shared.contiguousRange(
+                    item.cache,
+                    namePrefix: video ? "video-" : "audio-"
+                )
+                await item.session.noteCachedRange(video: video, range: cachedRange)
                 let data = try await item.session.segment(video: video, sequence: n)
+                try? await UMPMediaCache.shared.write(data, to: item.cache, name: cacheName)
+                if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
+                    print("[native ump proxy] response kind=\(video ? "video" : "audio") sequence=\(n) bytes=\(data.count)")
+                }
                 DebugServer.record("ump_proxy", "segment", fields: ["kind": video ? "video" : "audio", "sequence": String(n), "bytes": String(data.count)])
                 return (.ok, track.format.mimeType, data)
             } catch let error as UMPSessionError {
+                if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
+                    print("[native ump proxy] failure path=\(parts.dropFirst().joined(separator: "/")) error=\(error.localizedDescription)")
+                }
                 reportFailure(for: parts[0], error: error)
                 return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
             } catch {
@@ -106,18 +155,27 @@ actor UMPMediaProxy {
 
     static func playlist(_ track: UMPSession.TrackSnapshot, base: String, kind: String) -> Data {
         let target = max(1, Int(ceil(track.segments.map(\.duration).max() ?? 1))); let first = track.segments.first?.sequence ?? 0
-        var text = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(target)\n#EXT-X-MEDIA-SEQUENCE:\(first)\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-MAP:URI=\"\(base)/\(kind)/init.mp4\"\n"
+        let playlistType = track.finalSegment == nil ? "EVENT" : "VOD"
+        var text = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(target)\n#EXT-X-MEDIA-SEQUENCE:\(first)\n#EXT-X-PLAYLIST-TYPE:\(playlistType)\n#EXT-X-MAP:URI=\"\(base)/\(kind)/init.mp4\"\n"
         let known = Dictionary(uniqueKeysWithValues: track.segments.map { ($0.sequence, $0.duration) })
         let last = track.finalSegment ?? track.segments.last?.sequence ?? first - 1
         let estimated = track.presentationDuration.map { $0 / Double(max(1, last - first + 1)) }
             ?? track.segments.map(\.duration).reduce(0, +) / Double(max(1, track.segments.count))
         if last >= first {
+            // VOD clients need the complete known timeline in order to seek
+            // beyond the initial SABR buffer. Missing segments are fetched on
+            // demand by `UMPSession.segment`; the corrected buffered-range
+            // request then advances the server to the requested window.
             for sequence in first...last {
                 let duration = known[sequence] ?? estimated
                 text += "#EXTINF:\(String(format: "%.6f", max(0.001, duration))),\n\(base)/\(kind)/\(sequence).m4s\n"
             }
         }
-        if track.isComplete { text += "#EXT-X-ENDLIST\n" }
+        // Once SABR has declared the final segment the complete addressable VOD
+        // timeline is stable, even though individual fragments remain lazily
+        // fetched. Mark it final so AVFoundation does not wait for playlist
+        // updates before starting or seeking.
+        if track.finalSegment != nil { text += "#EXT-X-ENDLIST\n" }
         return Data(text.utf8)
     }
 

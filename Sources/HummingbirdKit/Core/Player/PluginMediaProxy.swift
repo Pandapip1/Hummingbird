@@ -15,6 +15,9 @@ actor PluginMediaProxy {
         let master: String
         let video: String
         let audio: String?
+        let cache: UMPMediaCache.Handle?
+        let resources: [DashToHLS.Resource]
+        let failure: @Sendable (PluginError) -> Void
     }
 
     private var presentations: [String: Presentation] = [:]
@@ -22,10 +25,13 @@ actor PluginMediaProxy {
     private var group: MultiThreadedEventLoopGroup?
     private var channel: Channel?
     private var starting: Task<Channel, Error>?
+    private var foregroundRequests = 0
 
     private init() {}
 
-    func register(manifest: String, runtime: PluginRuntime, executor: Int) async throws -> URL {
+    func register(manifest: String, runtime: PluginRuntime, executor: Int, prefetch: Bool = true,
+                  useCache: Bool = true,
+                  failure: @escaping @Sendable (PluginError) -> Void = { _ in }) async throws -> URL {
         let channel = try await serverChannel()
         guard let address = channel.localAddress, let port = address.port else {
             throw PluginError.execution("The media proxy did not receive a loopback port")
@@ -33,9 +39,13 @@ actor PluginMediaProxy {
         let id = UUID().uuidString.lowercased()
         let base = "http://127.0.0.1:\(port)/\(id)"
         let playlists = try DashToHLS.convert(manifest, baseURL: base)
+        let cache = try await useCache ? UMPMediaCache.shared.open(.init(
+            key: "generated-dash:\(manifest)", allocationBytes: playlists.estimatedBytes, isExact: false
+        )) : nil
         presentations[id] = Presentation(runtime: runtime, executor: executor,
                                            master: playlists.master, video: playlists.video,
-                                           audio: playlists.audio)
+                                           audio: playlists.audio, cache: cache,
+                                           resources: playlists.resources, failure: failure)
         order.append(id)
         while order.count > 8, let expired = order.first {
             order.removeFirst()
@@ -44,7 +54,37 @@ actor PluginMediaProxy {
         guard let url = URL(string: "\(base)/master.m3u8") else {
             throw PluginError.execution("Could not construct the generated media URL")
         }
+        if prefetch { Task { await self.prefetch(id: id) } }
         return url
+    }
+
+    private func prefetch(id: String) async {
+        guard let presentation = presentations[id] else { return }
+        for resource in presentation.resources {
+            guard presentations[id] != nil, !Task.isCancelled else { return }
+            while foregroundRequests > 0 {
+                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            if let cache = presentation.cache,
+               (try? await UMPMediaCache.shared.read(cache, name: resource.upstream)) != nil {
+                continue
+            }
+            do {
+                let data = try await presentation.runtime.callHandleBytes(
+                    presentation.executor, "executeRequest",
+                    [resource.upstream, [String: String]()]
+                )
+                if let cache = presentation.cache {
+                    try await UMPMediaCache.shared.write(data, to: cache, name: resource.upstream)
+                }
+            } catch let error as PluginError {
+                presentation.failure(error)
+                return
+            } catch {
+                return
+            }
+        }
     }
 
     private func serverChannel() async throws -> Channel {
@@ -95,12 +135,25 @@ actor PluginMediaProxy {
             var upstream = "https://grayjay.internal/" + parts.dropFirst().joined(separator: "/")
             if let query = components.percentEncodedQuery { upstream += "?" + query }
             do {
+                if let cache = presentation.cache,
+                   let cached = try await UMPMediaCache.shared.read(cache, name: upstream) {
+                    let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
+                    return (.ok, contentType, cached)
+                }
+                foregroundRequests += 1
+                defer { foregroundRequests -= 1 }
                 let data = try await presentation.runtime.callHandleBytes(
                     presentation.executor, "executeRequest",
                     [upstream, [String: String]()]
                 )
+                if let cache = presentation.cache {
+                    try await UMPMediaCache.shared.write(data, to: cache, name: upstream)
+                }
                 let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
                 return (.ok, contentType, data)
+            } catch let error as PluginError {
+                presentation.failure(error)
+                return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
             } catch {
                 return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
             }
@@ -148,7 +201,14 @@ actor PluginMediaProxy {
 }
 
 enum DashToHLS {
-    struct Result { let master: String; let video: String; let audio: String? }
+    struct Resource: Sendable { let upstream: String }
+    struct Result {
+        let master: String
+        let video: String
+        let audio: String?
+        let resources: [Resource]
+        let estimatedBytes: Int64
+    }
     private struct Track {
         let kind: String
         let codec: String
@@ -163,8 +223,18 @@ enum DashToHLS {
     }
 
     static func convert(_ mpd: String, baseURL: String) throws -> Result {
-        let sets = matches(#"<AdaptationSet\b[^>]*contentType="([^"]+)"[^>]*>([\s\S]*?)</AdaptationSet>"#, in: mpd)
-        let tracks = sets.compactMap { parseTrack(kind: $0[0], body: $0[1]) }
+        let sets = matches(#"<AdaptationSet\b([^>]*)>([\s\S]*?)</AdaptationSet>"#, in: mpd)
+        let tracks = sets.compactMap { values -> Track? in
+            let attributes = values[0]
+            let body = values[1]
+            let representationAttributes = firstMatch(#"<Representation\b([^>]*)>"#, in: body)?.first
+            let kind = attribute("contentType", in: attributes)
+                ?? attribute("mimeType", in: attributes)?.split(separator: "/").first.map(String.init)
+                ?? representationAttributes.flatMap { attribute("mimeType", in: $0) }?
+                    .split(separator: "/").first.map(String.init)
+            guard let kind else { return nil }
+            return parseTrack(kind: kind, body: body)
+        }
         guard let video = tracks.first(where: { $0.kind == "video" }) else {
             throw PluginError.execution("The generated DASH manifest has no video track")
         }
@@ -179,7 +249,20 @@ enum DashToHLS {
         master += "#EXT-X-STREAM-INF:BANDWIDTH=\(max(1, video.bandwidth + (audio?.bandwidth ?? 0))),CODECS=\"\(codecs)\",RESOLUTION=\(video.width)x\(video.height)"
         if audio != nil { master += ",AUDIO=\"audio\"" }
         master += "\n\(baseURL)/video.m3u8\n"
-        return Result(master: master, video: videoPlaylist, audio: audioPlaylist)
+        let selectedTracks = [video] + [audio].compactMap { $0 }
+        let resources = selectedTracks.flatMap { track -> [Resource] in
+            [Resource(upstream: track.initialization)] + track.durations.indices.map { offset in
+                Resource(upstream: track.media.replacingOccurrences(
+                    of: "$Number$", with: String(track.startNumber + offset)
+                ))
+            }
+        }
+        let estimatedBytes = selectedTracks.reduce(Int64(0)) { total, track in
+            let seconds = track.durations.reduce(0, +)
+            return total + Int64(ceil(Double(max(track.bandwidth, 1)) * seconds / 8 * 2.0))
+        }
+        return Result(master: master, video: videoPlaylist, audio: audioPlaylist,
+                      resources: resources, estimatedBytes: max(estimatedBytes, 16 * 1_024 * 1_024))
     }
 
     private static func parseTrack(kind: String, body: String) -> Track? {

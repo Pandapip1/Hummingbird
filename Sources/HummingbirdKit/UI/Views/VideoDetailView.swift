@@ -91,11 +91,14 @@ struct VideoDetailView: View {
         let playerAlreadyLoaded = player.hasMedia && player.loadedURL == activeURL
         if let (runtime, cached) = await app.platform.cachedDetails(url: activeURL) {
             displayedCache = true
-            await display(cached, runtime: runtime, loadPlayer: !playerAlreadyLoaded)
+            // Persisted details are only a fast UI placeholder. Playback sources can
+            // contain host ABI capabilities and JavaScript handles from the runtime
+            // that created them, so they must never be used to construct a player.
+            await display(cached, runtime: runtime, loadPlayer: false)
         }
         do {
             let (rt, details) = try await app.platform.details(url: activeURL)
-            await display(details, runtime: rt, loadPlayer: !displayedCache)
+            await display(details, runtime: rt, loadPlayer: !playerAlreadyLoaded)
         } catch {
             if !displayedCache { state = .failed(error.localizedDescription) }
         }
@@ -740,10 +743,11 @@ private struct AudioMenu: View {
                                label: PlaybackSelector.audioLabel,
                                onSelect: { source in Task { await model.selectAudioSource(source) } },
                                interacted: interacted)
+        } else if !tracks.isEmpty {
+            MediaTrackControl(title: "Audio", tracks: tracks,
+                              selectedID: model.selectedTrack(ofKind: .audio)?.id, fallbackLabel: "Audio",
+                              onSelect: model.selectTrack, interacted: interacted)
         }
-        MediaTrackControl(title: "Audio", tracks: tracks,
-                          selectedID: model.selectedTrack(ofKind: .audio)?.id, fallbackLabel: "Audio",
-                          onSelect: model.selectTrack, interacted: interacted)
     }
 }
 

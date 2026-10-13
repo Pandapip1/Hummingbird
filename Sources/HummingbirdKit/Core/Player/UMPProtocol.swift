@@ -18,6 +18,20 @@ struct ProtoWriter {
 
 struct ProtoField { let number: Int; let wire: Int; let varint: UInt64?; let bytes: Data? }
 
+extension ProtoField {
+    /// Protobuf repeated integer fields may appear either once per value or in
+    /// their canonical length-delimited packed form.
+    func repeatedVarints() throws -> [UInt64] {
+        if let varint { return [varint] }
+        guard wire == 2, let bytes else { return [] }
+        let data = Array(bytes)
+        var offset = 0
+        var values: [UInt64] = []
+        while offset < data.count { values.append(try ProtoReader.varint(data, &offset)) }
+        return values
+    }
+}
+
 struct ProtoReader {
     // Data slices retain their original indices. Protocol payloads are often
     // slices of a framed response, so rebase them before offset-based parsing.

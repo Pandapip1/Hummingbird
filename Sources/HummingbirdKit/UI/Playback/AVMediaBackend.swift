@@ -486,6 +486,11 @@ struct PlayerSurface: UIViewControllerRepresentable {
                 model?.fullscreenDidChange(false)
                 return
             }
+            // AVPlayerViewController may pause its player while it tears down.
+            // Transfer ownership back to the inline controller before dismissal
+            // so late AVKit cleanup cannot pause the shared player after restore.
+            detachFullscreenPlayer()
+            inlineController?.player = (model?.backend as? AVMediaBackend)?.player
             controller.dismiss(animated: animated) { [weak self] in self?.finishDismissal() }
         }
 
@@ -502,6 +507,14 @@ struct PlayerSurface: UIViewControllerRepresentable {
             inlineController?.player = (model?.backend as? AVMediaBackend)?.player
             model?.fullscreenDidChange(false)
             model?.restorePlaybackAfterSurfaceTransfer()
+        }
+
+        private func detachFullscreenPlayer() {
+            #if os(tvOS)
+            (fullscreenController as? FullscreenPlayerViewController)?.playerController.player = nil
+            #else
+            (fullscreenController as? AVPlayerViewController)?.player = nil
+            #endif
         }
 
         private func presentingController(from controller: UIViewController) -> UIViewController? {

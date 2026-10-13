@@ -73,21 +73,19 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
     }
 
     func testCurrentOfficialPluginDetailsSurviveCleanRuntimeReload() async throws {
-        let runtime = try makeRuntime(settingsOverride: ["useUMP": "true"])
+        let runtime = try makeRuntime(settingsOverride: ["useUMP": "true", "use_native_ump": "false"])
         defer { Task { await runtime.stop() } }
 
         let firstStart = ContinuousClock.now
         let first = try await videoDetails(runtime)
         let firstDuration = ContinuousClock.now - firstStart
-        let firstUMP = try XCTUnwrap(first.videoSources.first(where: { $0.pluginType == "UMPSource" }))
-        XCTAssertTrue((firstUMP.videoFormats + firstUMP.audioFormats).allSatisfy { ($0.contentLength ?? 0) > 0 })
+        XCTAssertNotNil(first.videoSources.first(where: { $0.pluginType == "DashManifestRawSource" }))
 
         await runtime.reload(reloadData: nil)
         let secondStart = ContinuousClock.now
         let second = try await videoDetails(runtime)
         let secondDuration = ContinuousClock.now - secondStart
-        let secondUMP = try XCTUnwrap(second.videoSources.first(where: { $0.pluginType == "UMPSource" }))
-        XCTAssertTrue((secondUMP.videoFormats + secondUMP.audioFormats).allSatisfy { ($0.contentLength ?? 0) > 0 })
+        XCTAssertNotNil(second.videoSources.first(where: { $0.pluginType == "DashManifestRawSource" }))
         print("[youtube reload timing] initial=\(firstDuration) cleanReload=\(secondDuration)")
     }
 
@@ -288,100 +286,6 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             )
             XCTAssertGreaterThan(bytes.count, 1_000, "Non-native UMP segment \(segment) was empty")
         }
-    }
-
-    func testCurrentOfficialPluginNativeUMPTransport() async throws {
-        let runtime = try makeRuntime(settingsOverride: ["useUMP": "true"])
-        defer { Task { await runtime.stop() } }
-        XCTAssertEqual(runtime.appliedCompatibilityPatches, ["youtube-generated-ump-pot-readiness"])
-        XCTAssertTrue(runtime.failedCompatibilityPatches.isEmpty)
-        let details = try await videoDetails(runtime, url: fixtureVideoURL)
-        let sourceSummary = details.videoSources.map {
-            "type=\($0.pluginType) container=\($0.container) name=\($0.name)"
-        }.joined(separator: ", ")
-        let source = try XCTUnwrap(
-            details.videoSources.first(where: \.isUMP),
-            "Expected a native UMP source; received [\(sourceSummary)]"
-        )
-        XCTAssertNotNil(source.poToken, "Native UMP must provide the bootstrap POT")
-        // The current plugin's native UMP descriptor intentionally exposes the
-        // initial token only. Token renewal is therefore presentation-level
-        // recovery, not a source-handle callback.
-        XCTAssertFalse(source.hasRefreshUMPToken)
-        XCTAssertNil(source.handle)
-        let playbackURL = try await UMPMediaProxy.shared.register(source: source)
-
-        let (masterData, masterResponse) = try await URLSession.shared.data(from: playbackURL)
-        XCTAssertEqual((masterResponse as? HTTPURLResponse)?.statusCode, 200)
-        let master = String(decoding: masterData, as: UTF8.self)
-        XCTAssertTrue(master.contains("#EXT-X-STREAM-INF"))
-        XCTAssertTrue(master.contains("audio.m3u8"))
-
-        let base = playbackURL.deletingLastPathComponent()
-        for kind in ["video", "audio"] {
-            let playlistURL = base.appendingPathComponent("\(kind).m3u8")
-            let (playlistData, playlistResponse) = try await URLSession.shared.data(from: playlistURL)
-            XCTAssertEqual((playlistResponse as? HTTPURLResponse)?.statusCode, 200)
-            let playlist = String(decoding: playlistData, as: UTF8.self)
-            XCTAssertGreaterThanOrEqual(playlist.components(separatedBy: "#EXTINF:").count - 1, 3)
-
-            let (initData, initResponse) = try await URLSession.shared.data(
-                from: base.appendingPathComponent("\(kind)/init.mp4")
-            )
-            XCTAssertEqual((initResponse as? HTTPURLResponse)?.statusCode, 200)
-            XCTAssertEqual(String(decoding: initData.dropFirst(4).prefix(4), as: UTF8.self), "ftyp")
-
-            let firstMediaPath = try XCTUnwrap(
-                playlist.split(separator: "\n").map(String.init).first(where: { $0.hasSuffix(".m4s") })
-            )
-            let firstMediaURL = try XCTUnwrap(URL(string: firstMediaPath, relativeTo: playbackURL))
-            let (mediaData, mediaResponse) = try await URLSession.shared.data(from: firstMediaURL)
-            XCTAssertEqual((mediaResponse as? HTTPURLResponse)?.statusCode, 200)
-            XCTAssertGreaterThan(mediaData.count, 1_000)
-            if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
-                print("[native ump \(kind) playlist] segments=\(playlist.components(separatedBy: "#EXTINF:").count - 1) vod=\(playlist.contains("#EXT-X-PLAYLIST-TYPE:VOD")) endlist=\(playlist.contains("#EXT-X-ENDLIST"))")
-                print("[native ump \(kind) media] init=\(initData.count) first=\(mediaData.count)")
-            }
-        }
-
-        #if canImport(AVFoundation)
-        let asset = AVURLAsset(url: playbackURL)
-        let isPlayable = try await asset.load(.isPlayable)
-        XCTAssertTrue(isPlayable)
-        let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 15
-        let player = AVPlayer(playerItem: item)
-        player.automaticallyWaitsToMinimizeStalling = false
-        player.isMuted = true
-        player.play()
-        defer { player.pause() }
-
-        for _ in 0..<200 where player.currentTime().seconds < 0.25 {
-            if item.status == .failed {
-                throw item.error ?? PluginError.execution("AVPlayer rejected native UMP playback")
-            }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        XCTAssertGreaterThan(player.currentTime().seconds, 0.25, "Native UMP playback did not start")
-
-        let seekTarget = 120.0
-        await player.seek(to: CMTime(seconds: seekTarget, preferredTimescale: 600))
-        for _ in 0..<200 where player.currentTime().seconds < seekTarget + 0.25 {
-            if item.status == .failed {
-                throw item.error ?? PluginError.execution("AVPlayer rejected native UMP seek")
-            }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        XCTAssertGreaterThan(
-            player.currentTime().seconds,
-            seekTarget + 0.25,
-            "Native UMP playback did not resume after seeking beyond the initial one-minute buffer"
-        )
-        if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
-            print("[native ump player] status=\(item.status.rawValue) error=\(String(describing: item.error))")
-            print("[native ump player error log] \(String(describing: item.errorLog()?.events))")
-        }
-        #endif
     }
 
     private func makeRuntime(settingsOverride: [String: String] = [:]) throws -> PluginRuntime {

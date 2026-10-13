@@ -601,7 +601,7 @@
   // Current official plugins branch on it during normal feed parsing.
   if (global.IS_TESTING === undefined) global.IS_TESTING = false;
 
-  var supportedFeatures = ["ReloadRequiredException", "Async", "UMPSource"];
+  var supportedFeatures = ["ReloadRequiredException", "Async"];
   supportedFeatures.indexOf = function (feature, fromIndex) {
     var result = Array.prototype.indexOf.call(this, feature, fromIndex);
     if (result < 0) hostCall("unsupportedFeature", String(feature), "");

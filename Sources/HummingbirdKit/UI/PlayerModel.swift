@@ -130,13 +130,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             .map { "\($0.key):\($0.value.count)" }
             .sorted()
             .joined(separator: ",")
-        let umpSources = details.videoSources.filter(\.isUMP)
         DebugServer.record("player", "source_inventory", fields: [
             "types": sourceTypes,
-            "umpCount": String(umpSources.count),
-            "umpHasURL": String(umpSources.contains { !$0.url.isEmpty }),
-            "umpVideoFormats": String(umpSources.reduce(0) { $0 + $1.videoFormats.count }),
-            "umpAudioFormats": String(umpSources.reduce(0) { $0 + $1.audioFormats.count }),
         ])
         options = PlaybackSelector.options(for: details, preferredLanguage: preferredLanguage)
             .filter { _ in true }
@@ -368,16 +363,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         } catch let PluginError.reloadRequired(message, reloadData) {
             requestedPluginReload = (message, reloadData)
             return false
-        } catch UMPSessionError.protectionExpired {
-            requestedPluginReload = ("The playback token expired", nil)
-            return false
-        } catch UMPSessionError.reloadRequired {
-            // Match the plugin executor's reload contract. The recreated runtime
-            // reads this short-lived counter from __reloadData and permits the
-            // context-carrying bootstrap retry instead of requesting another
-            // immediate full reload.
-            requestedPluginReload = ("YouTube requested refreshed playback details", #"{"dashReloads":1}"#)
-            return false
         } catch MediaBackendLoadError.superseded {
             return false
         } catch is CancellationError {
@@ -406,34 +391,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             "host": URL(string: source.url)?.host ?? "generated",
             "hasModifier": String(source.requestModifier != nil),
         ])
-        if source.isUMP {
-            let maxHeight = UserDefaults.standard.object(forKey: "maxVideoHeight") as? Int ?? 1080
-            let refreshToken: (@Sendable () async throws -> String)?
-            if source.hasRefreshUMPToken, let handle = source.handle, let runtime {
-                refreshToken = {
-                    try PluginRuntime.decode(
-                        String.self,
-                        from: try await runtime.callHandle(handle, "refreshUMPToken")
-                    )
-                }
-            } else {
-                refreshToken = nil
-            }
-            let url = try await UMPMediaProxy.shared.register(
-                source: source,
-                maximumHeight: maxHeight,
-                language: Locale.current.language.languageCode?.identifier,
-                progress: { [weak self] progress in
-                    Task { @MainActor in self?.preparationMessage = progress.message }
-                },
-                refreshToken: refreshToken,
-                reloadOnBlockedBootstrap: reloadOnBlockedBootstrap,
-                failure: { [weak self] error in
-                Task { @MainActor in await self?.handleUMPFailure(error, generation: generation) }
-                }
-            )
-            return ResolvedMedia(url: url, headers: [:])
-        }
         if source.pluginType == "DashManifestRawSource", let handle = source.handle, let runtime {
             let manifestData = try await runtime.callHandle(handle, "generate")
             let manifest = try PluginRuntime.decode(String.self, from: manifestData)
@@ -485,20 +442,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             }
         }
         return ResolvedMedia(url: url, headers: headers)
-    }
-
-    private func handleUMPFailure(_ error: UMPSessionError, generation: Int) async {
-        guard generation == playGeneration else { return }
-        let position = backend?.currentTime ?? playbackTime
-        DebugServer.record("player", "ump_terminal_failure", fields: [
-            "message": error.localizedDescription,
-            "position": String(position),
-        ])
-        guard error.isRefreshRequired else {
-            errorMessage = error.localizedDescription
-            return
-        }
-        await refreshPlayback(reason: error.localizedDescription, reloadData: nil, generation: generation)
     }
 
     private func handlePluginMediaFailure(_ error: PluginError, generation: Int) async {

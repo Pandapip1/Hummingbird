@@ -289,6 +289,13 @@ final class ModelAndLogicTests: XCTestCase {
         let audio = PlaybackSelector.generatedAudioChoices(for: selected.video, in: d.videoSources)
         XCTAssertEqual(audio.count, 2)
         XCTAssertEqual(Set(audio.map(\.language)), ["en", "es"])
+        let equivalent = d.videoSources.filter { PlaybackSelector.isSameGeneratedSource($0, as: selected.video) }
+        XCTAssertEqual(equivalent.count, 1)
+        XCTAssertEqual(equivalent.first?.language, "en")
+        var clonedSource = selected.video
+        clonedSource.handle = 99
+        XCTAssertTrue(PlaybackSelector.isSameGeneratedSource(clonedSource, as: selected.video),
+                      "runtime-local handles are not part of source identity")
     }
 
     func testGeneratedDashTimelineConvertsToSeekableHLS() throws {
@@ -312,6 +319,21 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertTrue(playlists.video.contains("segIndex=7"))
         XCTAssertTrue(playlists.video.contains("segIndex=10"))
         XCTAssertTrue(playlists.video.hasSuffix("#EXT-X-ENDLIST\n"))
+    }
+
+    func testUMPCacheVersionCleanupRemovesOnlyOlderCacheDirectories() throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        for name in ["UMP", "UMP-v1", "UMP-v2", "unrelated"] {
+            try FileManager.default.createDirectory(
+                at: parent.appendingPathComponent(name), withIntermediateDirectories: true
+            )
+        }
+
+        try UMPMediaCache.removeObsoleteCacheDirectories(in: parent, keeping: "UMP-v2")
+
+        let remaining = try Set(FileManager.default.contentsOfDirectory(atPath: parent.path))
+        XCTAssertEqual(remaining, ["UMP-v2", "unrelated"])
     }
 
     func testSubtitleParsing() {

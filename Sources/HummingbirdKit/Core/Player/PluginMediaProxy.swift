@@ -45,7 +45,9 @@ actor PluginMediaProxy {
         let id = UUID().uuidString.lowercased()
         let base = "http://127.0.0.1:\(port)/\(id)"
         let playlists = try DashToHLS.convert(manifest, baseURL: base)
-        let cacheKey = "generated-dash:\(manifest)" + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
+        // v2 invalidates entries that may have been populated by an isolated
+        // executor belonging to a different generated source rendition.
+        let cacheKey = "generated-dash-v2:\(manifest)" + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
         let cache = try await useCache ? UMPMediaCache.shared.open(.init(
             key: cacheKey,
             allocationBytes: cacheAllocationBytes ?? playlists.estimatedBytes,

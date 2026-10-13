@@ -11,6 +11,7 @@ import Glibc
 /// addressed by an atomic sidecar index.
 actor UMPMediaCache {
     static let shared = UMPMediaCache()
+    private static let cacheDirectoryName = "UMP-v2"
 
     struct Handle: Hashable, Sendable { fileprivate let id: String }
     struct Descriptor: Sendable {
@@ -105,9 +106,24 @@ actor UMPMediaCache {
     private static func cacheRoot() throws -> URL {
         let base = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
                                                appropriateFor: nil, create: true)
-        let root = base.appendingPathComponent("Hummingbird/UMP", isDirectory: true)
+        let parent = base.appendingPathComponent("Hummingbird", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try removeObsoleteCacheDirectories(in: parent, keeping: cacheDirectoryName)
+        let root = parent.appendingPathComponent(cacheDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    static func removeObsoleteCacheDirectories(in parent: URL, keeping currentName: String) throws {
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: parent, includingPropertiesForKeys: [.isDirectoryKey]
+        )
+        for url in contents where url.lastPathComponent != currentName {
+            let name = url.lastPathComponent
+            guard name == "UMP" || name.hasPrefix("UMP-v") else { continue }
+            guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
+            try FileManager.default.removeItem(at: url)
+        }
     }
 
     private static func digest(_ value: String) -> String {

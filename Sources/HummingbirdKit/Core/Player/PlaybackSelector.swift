@@ -113,6 +113,23 @@ enum PlaybackSelector {
         return languageChoices(matches)
     }
 
+    /// Handles are runtime-local, so an isolated runtime must identify the
+    /// equivalent generated source from its stable media metadata. Matching
+    /// only resolution/container can silently bind prefetch to another audio
+    /// language or rendition.
+    static func isSameGeneratedSource(_ candidate: MediaSource, as selected: MediaSource) -> Bool {
+        candidate.pluginType == selected.pluginType
+            && candidate.name == selected.name
+            && candidate.width == selected.width
+            && candidate.height == selected.height
+            && candidate.container == selected.container
+            && candidate.codec == selected.codec
+            && candidate.bitrate == selected.bitrate
+            && candidate.language == selected.language
+            && candidate.priority == selected.priority
+            && candidate.original == selected.original
+    }
+
     /// Presents one useful stream per language instead of exposing every codec/bitrate
     /// rendition the plugin returned for that language.
     static func audioChoices(_ sources: [MediaSource]) -> [MediaSource] {

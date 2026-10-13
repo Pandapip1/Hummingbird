@@ -413,8 +413,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                         let data = try await clone.callRaw("getContentDetails", [sourceURL], kind: "details")
                         guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data),
                               let cloneSource = details.videoSources.first(where: {
-                                  $0.pluginType == source.pluginType && $0.container == source.container
-                                      && $0.height == source.height && $0.handle != nil
+                                  PlaybackSelector.isSameGeneratedSource($0, as: source) && $0.handle != nil
                               }), let handle = cloneSource.handle else {
                             throw PluginError.execution("The isolated prefetch runtime did not return the selected source")
                         }

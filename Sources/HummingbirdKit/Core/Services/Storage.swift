@@ -5,7 +5,14 @@ import Foundation
 /// imported lazily, so upgrades retain user data without a separate migration.
 public enum Storage {
     public static let directory: URL = {
+        #if os(tvOS)
+        // tvOS does not provide durable application-managed local storage.
+        // Its Caches directory is the supported local home for downloaded data
+        // and, unlike Application Support on tvOS, is present in the app container.
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        #else
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        #endif
         let dir = base.appendingPathComponent("Hummingbird", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir

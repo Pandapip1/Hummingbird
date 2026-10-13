@@ -271,8 +271,121 @@ private struct BrowserTabStrip: View {
 }
 
 #if os(macOS) && !BACKEND_GTK
-/// Mounts `BrowserTabStrip` as an `NSTitlebarAccessoryViewController` so it
-/// occupies its own row below the window toolbar, matching Safari's layout.
+private final class HummingbirdTabBarAccessoryViewController: NSTitlebarAccessoryViewController {}
+
+/// Owns the tab strip as window chrome. SwiftUI representables can be rebuilt
+/// or briefly overlap during navigation, so installation is reconciled at the
+/// NSWindow level rather than treating each representable as the accessory's
+/// owner.
+@MainActor
+final class WindowTabBarAccessoryManager {
+    // BrowserTabBar's label, tab padding, capsule padding, and outer padding
+    // require about 37 points at the default macOS font size. Leave one point
+    // for pixel rounding rather than clipping the capsule's lower edge.
+    static let height: CGFloat = 38
+
+    private weak var window: NSWindow?
+    private let accessory = HummingbirdTabBarAccessoryViewController()
+    private let hosting: NSHostingController<AnyView>
+    private var owners = Set<UUID>()
+    private var observers: [NSObjectProtocol] = []
+
+    init(window: NSWindow, app: AppModel) {
+        self.window = window
+        hosting = NSHostingController(rootView: AnyView(BrowserTabStrip().environment(app)))
+        accessory.view = hosting.view
+        accessory.layoutAttribute = .bottom
+        accessory.fullScreenMinHeight = 0
+        hosting.view.autoresizingMask = [.width]
+
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) {
+                [weak self] _ in MainActor.assumeIsolated { self?.reconcile() }
+            },
+            center.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) {
+                [weak self] _ in self?.reconcileAfterFullScreenTransition()
+            },
+            center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) {
+                [weak self] _ in self?.reconcileAfterFullScreenTransition()
+            },
+        ]
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    var isUnused: Bool { owners.isEmpty }
+
+    func attach(owner: UUID, app: AppModel) {
+        owners.insert(owner)
+        hosting.rootView = AnyView(BrowserTabStrip().environment(app))
+        reconcile()
+    }
+
+    func detach(owner: UUID) {
+        owners.remove(owner)
+        guard owners.isEmpty, let window else { return }
+        if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
+            window.removeTitlebarAccessoryViewController(at: index)
+        }
+    }
+
+    func reconcile() {
+        guard !owners.isEmpty, let window, window.styleMask.contains(.titled) else { return }
+        // Remove abandoned Hummingbird accessories left by a replaced SwiftUI
+        // coordinator before ensuring this manager's accessory is installed.
+        for index in window.titlebarAccessoryViewControllers.indices.reversed() {
+            let candidate = window.titlebarAccessoryViewControllers[index]
+            if candidate is HummingbirdTabBarAccessoryViewController, candidate !== accessory {
+                window.removeTitlebarAccessoryViewController(at: index)
+            }
+        }
+        let width = max(0, window.contentLayoutRect.width)
+        hosting.view.frame = NSRect(x: 0, y: 0, width: width, height: Self.height)
+        accessory.view.frame = hosting.view.frame
+        if !window.titlebarAccessoryViewControllers.contains(where: { $0 === accessory }) {
+            window.addTitlebarAccessoryViewController(accessory)
+        }
+        window.contentView?.needsLayout = true
+    }
+
+    private nonisolated func reconcileAfterFullScreenTransition() {
+        // AppKit can report its old content-layout rect until the following
+        // main-run-loop turn after a fullscreen transition.
+        DispatchQueue.main.async { [weak self] in self?.reconcile() }
+    }
+}
+
+@MainActor
+private final class WindowTabBarAccessoryRegistry {
+    static let shared = WindowTabBarAccessoryRegistry()
+    private struct Entry { weak var window: NSWindow?; let manager: WindowTabBarAccessoryManager }
+    private var entries: [ObjectIdentifier: Entry] = [:]
+
+    func manager(for window: NSWindow, app: AppModel) -> WindowTabBarAccessoryManager {
+        purgeReleasedWindows()
+        let key = ObjectIdentifier(window)
+        if let entry = entries[key], entry.window === window { return entry.manager }
+        let manager = WindowTabBarAccessoryManager(window: window, app: app)
+        entries[key] = Entry(window: window, manager: manager)
+        return manager
+    }
+
+    func releaseManager(for window: NSWindow) {
+        let key = ObjectIdentifier(window)
+        if entries[key]?.manager.isUnused == true { entries[key] = nil }
+        purgeReleasedWindows()
+    }
+
+    private func purgeReleasedWindows() {
+        entries = entries.filter { $0.value.window != nil }
+    }
+}
+
+/// Mounts `BrowserTabStrip` as a window-managed titlebar accessory so it
+/// occupies its own row below the toolbar, matching Safari and iTerm2.
 @MainActor
 private struct TabBarAccessoryInstaller: NSViewRepresentable {
     let app: AppModel
@@ -284,38 +397,36 @@ private struct TabBarAccessoryInstaller: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: _WindowObserverView, context: Context) {
-        if let window = nsView.window {
-            context.coordinator.installIfNeeded(in: window)
-        }
+        context.coordinator.app = app
+        context.coordinator.move(to: nsView.window)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(app: app) }
 
+    static func dismantleNSView(_ nsView: _WindowObserverView, coordinator: Coordinator) {
+        coordinator.move(to: nil)
+        nsView.coordinator = nil
+    }
+
     @MainActor
     final class Coordinator {
-        let app: AppModel
+        var app: AppModel
+        private let owner = UUID()
         private weak var installedWindow: NSWindow?
-        private var accessory: NSTitlebarAccessoryViewController?
-        private var retainedHosting: AnyObject?
 
         init(app: AppModel) { self.app = app }
 
-        func installIfNeeded(in window: NSWindow) {
-            guard installedWindow !== window else { return }
-            let hc = NSHostingController(rootView: AnyView(
-                BrowserTabStrip().environment(app)
-            ))
-            // Fix the height so GeometryReader inside TabStripView gets a
-            // finite vertical proposal. The accessory VC manages width itself.
-            hc.view.frame = NSRect(x: 0, y: 0, width: window.frame.width, height: 28)
-            let vc = NSTitlebarAccessoryViewController()
-            vc.view = hc.view
-            vc.layoutAttribute = .bottom
-            vc.fullScreenMinHeight = 0
-            window.addTitlebarAccessoryViewController(vc)
+        func move(to window: NSWindow?) {
+            if installedWindow !== window, let old = installedWindow {
+                let registry = WindowTabBarAccessoryRegistry.shared
+                let manager = registry.manager(for: old, app: app)
+                manager.detach(owner: owner)
+                registry.releaseManager(for: old)
+            }
+            guard let window else { installedWindow = nil; return }
+            let manager = WindowTabBarAccessoryRegistry.shared.manager(for: window, app: app)
+            manager.attach(owner: owner, app: app)
             installedWindow = window
-            accessory = vc
-            retainedHosting = hc
         }
     }
 
@@ -324,7 +435,7 @@ private struct TabBarAccessoryInstaller: NSViewRepresentable {
         weak var coordinator: Coordinator?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let window { coordinator?.installIfNeeded(in: window) }
+            coordinator?.move(to: window)
         }
     }
 }

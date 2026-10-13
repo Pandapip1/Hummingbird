@@ -82,10 +82,65 @@ public final class DebugServer {
                 return
             }
             Task { @MainActor in
+                if Self.isDiagnosticRequest(request) {
+                    let directories = self.diagnosticDirectories
+                    DispatchQueue.global(qos: .utility).async {
+                        let response = Self.diagnosticResponse(to: request, directories: directories)
+                        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+                    }
+                    return
+                }
                 let response = self.response(to: request)
                 connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
             }
         }
+    }
+
+    private nonisolated static func isDiagnosticRequest(_ request: String) -> Bool {
+        request.split(separator: "\n", maxSplits: 1).first?.hasPrefix("GET /diagnostics") == true
+    }
+
+    private nonisolated static func diagnosticResponse(to request: String, directories: [String: URL]) -> Data {
+        let firstLine = request.split(separator: "\n", maxSplits: 1).first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let fields = firstLine.split(separator: " ")
+        let path = fields.count > 1 ? String(fields[1]) : "/"
+        guard fields.first == "GET" else { return backgroundHTTP(status: "405 Method Not Allowed", json: ["error": "method not allowed"]) }
+        if path == "/diagnostics" {
+            var result: [String: [String]] = [:]
+            for (name, directory) in directories {
+                result[name] = ((try? FileManager.default.contentsOfDirectory(
+                    at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+                )) ?? []).filter { !$0.hasDirectoryPath }.map(\.lastPathComponent).sorted()
+            }
+            return backgroundHTTP(status: "200 OK", object: ["diagnostics": result])
+        }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard parts.count == 3, let directory = directories[String(parts[1])] else {
+            return backgroundHTTP(status: "404 Not Found", json: ["error": "unknown diagnostic"])
+        }
+        let filename = String(parts[2]).removingPercentEncoding ?? String(parts[2])
+        guard !filename.isEmpty, filename == URL(fileURLWithPath: filename).lastPathComponent else {
+            return backgroundHTTP(status: "400 Bad Request", json: ["error": "invalid filename"])
+        }
+        guard let body = try? Data(contentsOf: directory.appendingPathComponent(filename), options: [.mappedIfSafe]) else {
+            return backgroundHTTP(status: "404 Not Found", json: ["error": "not found"])
+        }
+        return backgroundHTTP(status: "200 OK", body: body)
+    }
+
+    private nonisolated static func backgroundHTTP(status: String, json: [String: String]) -> Data {
+        backgroundHTTP(status: status, object: json)
+    }
+
+    private nonisolated static func backgroundHTTP(status: String, object: Any) -> Data {
+        let body = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return backgroundHTTP(status: status, body: body)
+    }
+
+    private nonisolated static func backgroundHTTP(status: String, body: Data) -> Data {
+        var response = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+        response.append(body)
+        return response
     }
 
     private func response(to request: String) -> Data {
@@ -100,12 +155,6 @@ public final class DebugServer {
         }
         if method == "GET", path == "/events" {
             return http(status: "200 OK", object: ["events": events])
-        }
-        if method == "GET", path == "/diagnostics" {
-            return diagnosticIndex()
-        }
-        if method == "GET", path.hasPrefix("/diagnostics/") {
-            return diagnosticFile(path: path)
         }
         if method == "GET", path == "/" {
             return http(status: "200 OK", json: [
@@ -123,34 +172,6 @@ public final class DebugServer {
             return http(status: "200 OK", json: ["action": name, "status": "ok"])
         }
         return http(status: "404 Not Found", json: ["error": "not found"])
-    }
-
-    private func diagnosticIndex() -> Data {
-        var result: [String: [String]] = [:]
-        for (name, directory) in diagnosticDirectories {
-            result[name] = ((try? FileManager.default.contentsOfDirectory(
-                at: directory, includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? []).filter { !$0.hasDirectoryPath }.map(\.lastPathComponent).sorted()
-        }
-        return http(status: "200 OK", object: ["diagnostics": result])
-    }
-
-    private func diagnosticFile(path: String) -> Data {
-        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
-        guard parts.count == 3,
-              let directory = diagnosticDirectories[String(parts[1])] else {
-            return http(status: "404 Not Found", json: ["error": "unknown diagnostic"])
-        }
-        let filename = String(parts[2]).removingPercentEncoding ?? String(parts[2])
-        guard !filename.isEmpty, filename == URL(fileURLWithPath: filename).lastPathComponent else {
-            return http(status: "400 Bad Request", json: ["error": "invalid filename"])
-        }
-        let file = directory.appendingPathComponent(filename)
-        guard let body = try? Data(contentsOf: file, options: [.mappedIfSafe]) else {
-            return http(status: "404 Not Found", json: ["error": "not found"])
-        }
-        return http(status: "200 OK", body: body, contentType: "application/json")
     }
 
     private func http(status: String, json: [String: String]) -> Data {

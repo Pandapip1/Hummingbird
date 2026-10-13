@@ -24,15 +24,36 @@ public enum Storage {
         backend.load(type, name: name)
     }
 
-    static func save<T: Encodable>(_ value: T, name: String) {
-        backend.save(value, name: name)
+    static func save<T: Encodable & Sendable>(_ value: T, name: String) {
+        StorageWriter.shared.save(value, name: name, backend: backend)
+    }
+
+    static func flush() async {
+        await StorageWriter.shared.flush()
+    }
+}
+
+/// Encodes and writes immutable model snapshots in submission order without
+/// making the main actor wait for JSON or SQLite.
+final class StorageWriter: @unchecked Sendable {
+    static let shared = StorageWriter()
+    private let queue = DispatchQueue(label: "app.hummingbird.storage", qos: .utility)
+
+    func save<T: Encodable & Sendable>(_ value: T, name: String, backend: StorageBackend) {
+        queue.async { backend.save(value, name: name) }
+    }
+
+    func flush() async {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume() }
+        }
     }
 }
 
 /// Serializes migration and ordinary reads/writes as one operation. A legacy
 /// file is authoritative while present: it either predates first import or is
 /// the durable fallback from a failed SQLite write.
-final class StorageBackend {
+final class StorageBackend: @unchecked Sendable {
     private let lock = NSLock()
     private let directory: URL
     private let database: StorageDatabase

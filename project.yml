@@ -18,6 +18,9 @@ targets:
     platform: iOS
     sources:
       - path: Apps/iOS
+        excludes:
+          - Hummingbird.icon
+      - path: Apps/iOS/Hummingbird.icon
     dependencies:
       - package: Hummingbird
         product: HummingbirdKit
@@ -63,6 +66,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Hummingbird
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.video"
         GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: Hummingbird
   HummingbirdTVUITests:
     type: bundle.ui-testing
     platform: tvOS

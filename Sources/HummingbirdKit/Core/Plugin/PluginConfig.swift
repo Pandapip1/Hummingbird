@@ -1,7 +1,7 @@
 import Foundation
 
 /// A setting declared in a plugin config. Values are stored as strings that the script receives after JSON parsing.
-struct PluginSetting: Codable, Identifiable, Hashable {
+struct PluginSetting: Codable, Identifiable, Hashable, Sendable {
     var name: String
     var description: String?
     var type: String?
@@ -40,7 +40,7 @@ struct PluginSetting: Codable, Identifiable, Hashable {
     }
 }
 
-struct PluginAuthConfig: Codable, Hashable {
+struct PluginAuthConfig: Codable, Hashable, Sendable {
     var loginUrl: String
     var completionUrl: String?
     var allowedDomains: [String]?
@@ -53,7 +53,7 @@ struct PluginAuthConfig: Codable, Hashable {
     var loginWarning: String?
 }
 
-struct PluginCaptchaConfig: Codable, Hashable {
+struct PluginCaptchaConfig: Codable, Hashable, Sendable {
     var captchaUrl: String?
     var completionUrl: String?
     var cookiesToFind: [String]?
@@ -62,7 +62,7 @@ struct PluginCaptchaConfig: Codable, Hashable {
 }
 
 /// The plugin config JSON. Every key besides `name` is optional; defaults follow the plugin documentation.
-struct PluginConfig: Codable, Hashable, Identifiable {
+struct PluginConfig: Codable, Hashable, Identifiable, Sendable {
     var name: String
     var description: String = ""
     var author: String = ""

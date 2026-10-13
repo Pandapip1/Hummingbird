@@ -14,13 +14,13 @@ final class LibraryStore {
 
     static let historyLimit = 2000
 
-    init() {
-        subscriptions = Storage.load([Subscription].self, name: "subscriptions") ?? []
-        playlists = Storage.load([Playlist].self, name: "playlists") ?? []
-        watchLater = Storage.load([SavedVideo].self, name: "watch_later") ?? []
-        history = Storage.load([HistoryEntry].self, name: "history") ?? []
-        feedCache = Storage.load([String: [SavedVideo]].self, name: "feed_cache") ?? [:]
-        homeCache = Storage.load([SavedVideo].self, name: "home_cache") ?? []
+    init(snapshot: LibraryPersistenceSnapshot = .empty) {
+        subscriptions = snapshot.subscriptions
+        playlists = snapshot.playlists
+        watchLater = snapshot.watchLater
+        history = snapshot.history
+        feedCache = snapshot.feedCache
+        homeCache = snapshot.homeCache
     }
 
     // MARK: subscriptions

@@ -5,15 +5,28 @@ import SwiftOpenUI
 /// The app's root view with its model, for platform entry points (`Apps/iOS`, `Sources/HummingbirdGTK`).
 @MainActor
 public struct HummingbirdRoot: View {
-    @State private var model = AppModel()
+    @State private var model: AppModel
     #if canImport(SwiftUI) && !BACKEND_GTK
     @Environment(\.scenePhase) private var scenePhase
     #endif
     public init() {
+        _model = State(initialValue: AppModel())
         // Start the opt-in debug transport as soon as the root is created.
         // Relying only on a view task made the server unavailable before (and
         // occasionally throughout) early navigation failures on macOS.
         DebugServer.shared.startFromEnvironment()
+    }
+
+    private init(persistence: AppPersistenceSnapshot) {
+        _model = State(initialValue: AppModel(persistence: persistence))
+        DebugServer.shared.startFromEnvironment()
+    }
+
+    /// Loads and decodes persisted state away from the main actor before any
+    /// observable model is constructed.
+    public static func prepared() async -> HummingbirdRoot {
+        let persistence = await AppPersistenceSnapshot.load()
+        return HummingbirdRoot(persistence: persistence)
     }
     public var body: some View {
         #if canImport(SwiftUI) && !BACKEND_GTK
@@ -50,7 +63,11 @@ public struct HummingbirdRoot: View {
             .task { configureDebugServer() }
             .onOpenURL { model.handleIncomingURL($0) }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .background { model.library.flushHistory(); model.library.persistSubscriptionState() }
+                if phase == .background {
+                    model.library.flushHistory()
+                    model.library.persistSubscriptionState()
+                    Task.detached { await Storage.flush() }
+                }
             }
     }
     #endif

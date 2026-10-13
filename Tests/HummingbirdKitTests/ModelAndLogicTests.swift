@@ -108,6 +108,60 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("history.json").path))
     }
 
+    func testStorageWriterEncodesOffMainAndPreservesSubmissionOrder() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HummingbirdStorageWriter-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let backend = StorageBackend(directory: directory)
+        let writer = StorageWriter()
+        let encoded = expectation(description: "encoded away from main thread")
+
+        struct Value: Encodable, Sendable {
+            let number: Int
+            let encoded: @Sendable () -> Void
+            enum CodingKeys: String, CodingKey { case number }
+            func encode(to encoder: Encoder) throws {
+                XCTAssertFalse(Thread.isMainThread)
+                encoded()
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encode(number, forKey: .number)
+            }
+        }
+
+        writer.save(Value(number: 1, encoded: { encoded.fulfill() }), name: "ordered", backend: backend)
+        writer.save(Value(number: 2, encoded: {}), name: "ordered", backend: backend)
+        await fulfillment(of: [encoded], timeout: 1)
+        await writer.flush()
+
+        let restored: [String: Int]? = backend.load([String: Int].self, name: "ordered")
+        XCTAssertEqual(restored?["number"], 2)
+    }
+
+    @MainActor
+    func testAppModelHydratesFromPreparedSnapshot() throws {
+        let video = SavedVideo(try decode(ContentItem.self,
+            #"{"contentType":1,"id":{"pluginId":"test","value":"saved"},"name":"Saved","url":"https://test/saved"}"#))
+        let snapshot = AppPersistenceSnapshot(
+            plugins: [],
+            library: LibraryPersistenceSnapshot(
+                subscriptions: [], playlists: [], watchLater: [video], history: [],
+                feedCache: [:], homeCache: [video]
+            ),
+            playbackQueue: PersistedPlaybackQueue(
+                items: [video], currentID: video.id, repeatMode: .all, nextIndexHint: nil
+            ),
+            searchHistory: ["prepared query"]
+        )
+
+        let model = AppModel(persistence: snapshot)
+
+        XCTAssertEqual(model.library.watchLater, [video])
+        XCTAssertEqual(model.library.homeCache, [video])
+        XCTAssertEqual(model.playbackQueue.current, video)
+        XCTAssertEqual(model.playbackQueue.repeatMode, .all)
+        XCTAssertEqual(model.searchHistory.queries, ["prepared query"])
+    }
+
     @MainActor
     func testPlaybackQueuePersistsOrderingAndRepeatState() throws {
         let directory = FileManager.default.temporaryDirectory

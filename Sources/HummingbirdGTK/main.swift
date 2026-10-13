@@ -11,7 +11,7 @@ import Foundation
 @MainActor
 struct HummingbirdGTKApp: App {
     var body: some Scene {
-        WindowGroup("Hummingbird") { HummingbirdRoot() }
+        WindowGroup("Hummingbird") { PreparedHummingbirdRoot() }
     }
 }
 

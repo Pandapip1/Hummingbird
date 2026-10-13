@@ -15,7 +15,7 @@ enum QueueRepeatMode: String, Codable, CaseIterable, Sendable {
     var systemImage: String { self == .one ? "repeat.1" : "repeat" }
 }
 
-private struct PersistedPlaybackQueue: Codable {
+struct PersistedPlaybackQueue: Codable, Sendable {
     var items: [SavedVideo]
     var currentID: String?
     var repeatMode: QueueRepeatMode
@@ -33,12 +33,14 @@ final class PlaybackQueue {
     @ObservationIgnored private let backend: StorageBackend?
     @ObservationIgnored private let storageName: String
 
-    init(backend: StorageBackend? = nil, storageName: String = "playback_queue") {
+    init(backend: StorageBackend? = nil, storageName: String = "playback_queue",
+         restored: PersistedPlaybackQueue? = nil) {
         self.backend = backend
         self.storageName = storageName
         let saved: PersistedPlaybackQueue?
-        if let backend { saved = backend.load(PersistedPlaybackQueue.self, name: storageName) }
-        else { saved = Storage.load(PersistedPlaybackQueue.self, name: storageName) }
+        if let restored { saved = restored }
+        else if let backend { saved = backend.load(PersistedPlaybackQueue.self, name: storageName) }
+        else { saved = nil }
         items = saved?.items ?? []
         currentID = saved?.currentID
         repeatMode = saved?.repeatMode ?? .off

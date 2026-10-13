@@ -21,7 +21,7 @@ private final class PluginDebugLogger: @unchecked Sendable {
 #endif
 
 /// A plugin as stored on this device.
-struct InstalledPlugin: Codable, Identifiable, Hashable {
+struct InstalledPlugin: Codable, Identifiable, Hashable, Sendable {
     var config: PluginConfig
     var script: String
     /// Stored setting values (JSON text as the script will see it before parsing). Missing keys use the declared default.
@@ -95,8 +95,8 @@ final class PluginManager {
         let body: String?
     }
 
-    init() {
-        installed = Storage.load([InstalledPlugin].self, name: "plugins") ?? []
+    init(installed: [InstalledPlugin] = []) {
+        self.installed = installed
     }
 
     private func persist() { Storage.save(installed, name: "plugins") }

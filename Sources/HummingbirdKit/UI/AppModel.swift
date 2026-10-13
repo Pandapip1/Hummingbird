@@ -77,15 +77,15 @@ final class AppModel {
 
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
-    init() {
-        let plugins = PluginManager()
-        let library = LibraryStore()
+    init(persistence: AppPersistenceSnapshot = .empty) {
+        let plugins = PluginManager(installed: persistence.plugins)
+        let library = LibraryStore(snapshot: persistence.library)
         let platform = PlatformService(plugins: plugins)
         self.plugins = plugins
         self.library = library
         self.platform = platform
-        self.playbackQueue = PlaybackQueue()
-        self.searchHistory = SearchHistory()
+        self.playbackQueue = PlaybackQueue(restored: persistence.playbackQueue)
+        self.searchHistory = SearchHistory(load: { persistence.searchHistory })
         let initialTab = BrowserTab.hummingbirdTab()
         initialTab.push(.home, title: "Home")
         self.contentTabs = [initialTab]
@@ -144,6 +144,45 @@ final class AppModel {
         if let request = CredentialPairingRequest(url: url) {
             incomingCredentialPairing = request
         }
+    }
+}
+
+struct LibraryPersistenceSnapshot: Sendable {
+    var subscriptions: [Subscription]
+    var playlists: [Playlist]
+    var watchLater: [SavedVideo]
+    var history: [HistoryEntry]
+    var feedCache: [String: [SavedVideo]]
+    var homeCache: [SavedVideo]
+
+    static let empty = Self(subscriptions: [], playlists: [], watchLater: [], history: [],
+                            feedCache: [:], homeCache: [])
+}
+
+struct AppPersistenceSnapshot: Sendable {
+    var plugins: [InstalledPlugin]
+    var library: LibraryPersistenceSnapshot
+    var playbackQueue: PersistedPlaybackQueue?
+    var searchHistory: [String]
+
+    static let empty = Self(plugins: [], library: .empty, playbackQueue: nil, searchHistory: [])
+
+    static func load() async -> Self {
+        await Task.detached(priority: .userInitiated) {
+            Self(
+                plugins: Storage.load([InstalledPlugin].self, name: "plugins") ?? [],
+                library: LibraryPersistenceSnapshot(
+                    subscriptions: Storage.load([Subscription].self, name: "subscriptions") ?? [],
+                    playlists: Storage.load([Playlist].self, name: "playlists") ?? [],
+                    watchLater: Storage.load([SavedVideo].self, name: "watch_later") ?? [],
+                    history: Storage.load([HistoryEntry].self, name: "history") ?? [],
+                    feedCache: Storage.load([String: [SavedVideo]].self, name: "feed_cache") ?? [:],
+                    homeCache: Storage.load([SavedVideo].self, name: "home_cache") ?? []
+                ),
+                playbackQueue: Storage.load(PersistedPlaybackQueue.self, name: "playback_queue"),
+                searchHistory: Storage.load([String].self, name: "search_history") ?? []
+            )
+        }.value
     }
 }
 

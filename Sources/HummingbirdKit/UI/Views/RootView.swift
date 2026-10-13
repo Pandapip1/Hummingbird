@@ -19,12 +19,6 @@ struct RootView: View {
                             onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview) { item in
             BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
         }
-        #if !os(macOS)
-        .fullScreenCover(isPresented: $showingTabOverview) {
-            MobileTabOverview(isPresented: $showingTabOverview)
-                .environment(model)
-        }
-        #endif
         .navigationTitle(windowTitle)
         // Browser-style tab chrome: native toolbar navigation controls at the
         // leading edge on desktop. macOS seats the tab strip below the toolbar
@@ -32,13 +26,15 @@ struct RootView: View {
         // other desktop platforms keep tabs in the .principal toolbar slot.
         .toolbar {
             #if !os(iOS) && !os(tvOS)
-            BrowserTopToolbar(tab: app.activeTab) { showingTabOverview = true }
+            if !showingTabOverview {
+                BrowserTopToolbar(tab: app.activeTab) { showingTabOverview = true }
+            }
             #endif
         }
         #if !os(iOS) && !os(tvOS)
         .background {
             #if os(macOS) && !BACKEND_GTK
-            TabBarAccessoryInstaller(app: model).frame(width: 0, height: 0)
+            TabBarAccessoryInstaller(app: model, isHidden: showingTabOverview).frame(width: 0, height: 0)
             #endif
         }
         #endif
@@ -122,6 +118,7 @@ struct AppSectionMenu: View {
 @MainActor
 struct BrowserTabContentView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
     let tab: BrowserTab
     @Binding var showingTabOverview: Bool
 
@@ -142,7 +139,9 @@ struct BrowserTabContentView: View {
                     .id(tab.historyIndexIdentity)
                     #if os(iOS)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
-                        MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+                        if !isOverviewPreview {
+                            MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+                        }
                     }
                     #endif
             } else {
@@ -152,7 +151,9 @@ struct BrowserTabContentView: View {
                 }
                 #if os(iOS)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+                    if !isOverviewPreview {
+                        MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
+                    }
                 }
                 #endif
             }
@@ -241,12 +242,13 @@ struct BrowserToolbarContext {
 }
 
 private struct BrowserTopToolbarModifier: ViewModifier {
+    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
     let context: BrowserToolbarContext?
 
     func body(content: Content) -> some View {
         #if os(tvOS)
         content.toolbar {
-            if let context {
+            if let context, !isOverviewPreview {
                 BrowserTopToolbar(tab: context.tab, showTabOverview: context.showTabOverview)
             }
         }
@@ -295,7 +297,7 @@ final class WindowTabBarAccessoryManager {
     private weak var window: NSWindow?
     private let accessory = HummingbirdTabBarAccessoryViewController()
     private let hosting: NSHostingController<AnyView>
-    private var owners = Set<UUID>()
+    private var owners: [UUID: Bool] = [:]
     private var observers: [NSObjectProtocol] = []
 
     init(window: NSWindow, app: AppModel) {
@@ -326,14 +328,14 @@ final class WindowTabBarAccessoryManager {
 
     var isUnused: Bool { owners.isEmpty }
 
-    func attach(owner: UUID, app: AppModel) {
-        owners.insert(owner)
+    func attach(owner: UUID, app: AppModel, isHidden: Bool = false) {
+        owners[owner] = isHidden
         hosting.rootView = AnyView(BrowserTabStrip().environment(app))
         reconcile()
     }
 
     func detach(owner: UUID) {
-        owners.remove(owner)
+        owners[owner] = nil
         guard owners.isEmpty, let window else { return }
         if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
             window.removeTitlebarAccessoryViewController(at: index)
@@ -342,6 +344,12 @@ final class WindowTabBarAccessoryManager {
 
     func reconcile() {
         guard !owners.isEmpty, let window, window.styleMask.contains(.titled) else { return }
+        guard owners.values.contains(false) else {
+            if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
+                window.removeTitlebarAccessoryViewController(at: index)
+            }
+            return
+        }
         // Remove abandoned Hummingbird accessories left by a replaced SwiftUI
         // coordinator before ensuring this manager's accessory is installed.
         for index in window.titlebarAccessoryViewControllers.indices.reversed() {
@@ -397,6 +405,7 @@ private final class WindowTabBarAccessoryRegistry {
 @MainActor
 private struct TabBarAccessoryInstaller: NSViewRepresentable {
     let app: AppModel
+    let isHidden: Bool
 
     func makeNSView(context: Context) -> _WindowObserverView {
         let v = _WindowObserverView()
@@ -406,10 +415,11 @@ private struct TabBarAccessoryInstaller: NSViewRepresentable {
 
     func updateNSView(_ nsView: _WindowObserverView, context: Context) {
         context.coordinator.app = app
+        context.coordinator.isHidden = isHidden
         context.coordinator.move(to: nsView.window)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(app: app) }
+    func makeCoordinator() -> Coordinator { Coordinator(app: app, isHidden: isHidden) }
 
     static func dismantleNSView(_ nsView: _WindowObserverView, coordinator: Coordinator) {
         coordinator.move(to: nil)
@@ -419,10 +429,14 @@ private struct TabBarAccessoryInstaller: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var app: AppModel
+        var isHidden: Bool
         private let owner = UUID()
         private weak var installedWindow: NSWindow?
 
-        init(app: AppModel) { self.app = app }
+        init(app: AppModel, isHidden: Bool) {
+            self.app = app
+            self.isHidden = isHidden
+        }
 
         func move(to window: NSWindow?) {
             if installedWindow !== window, let old = installedWindow {
@@ -433,7 +447,7 @@ private struct TabBarAccessoryInstaller: NSViewRepresentable {
             }
             guard let window else { installedWindow = nil; return }
             let manager = WindowTabBarAccessoryRegistry.shared.manager(for: window, app: app)
-            manager.attach(owner: owner, app: app)
+            manager.attach(owner: owner, app: app, isHidden: isHidden)
             installedWindow = window
         }
     }

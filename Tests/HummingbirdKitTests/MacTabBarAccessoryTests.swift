@@ -53,5 +53,28 @@ final class MacTabBarAccessoryTests: XCTestCase {
         XCTAssertEqual(original.view.frame.width, window.contentLayoutRect.width, accuracy: 1)
         manager.detach(owner: owner)
     }
+
+    @MainActor
+    func testHiddenOwnerRemovesAccessoryAndShowingItRestoresAccessory() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let app = AppModel()
+        let manager = WindowTabBarAccessoryManager(window: window, app: app)
+        let owner = UUID()
+
+        manager.attach(owner: owner, app: app)
+        XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+
+        manager.attach(owner: owner, app: app, isHidden: true)
+        XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
+
+        manager.attach(owner: owner, app: app, isHidden: false)
+        XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+        manager.detach(owner: owner)
+    }
 }
 #endif

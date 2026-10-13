@@ -51,15 +51,20 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     }
 
     public var body: some View {
+        let showingControls = controlsVisible || !model.isPlaying
         ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.modifier(NonFocusable())
+            bars
+                .opacity(showingControls ? 1 : 0)
+                .allowsHitTesting(showingControls)
+                .accessibilityHidden(!showingControls)
             #if os(tvOS)
-            if controlsVisible || !model.isPlaying { bars.onMoveCommand { _ in interacted() } }
-            else { hiddenFocusTarget }
-            #else
-            if controlsVisible || !model.isPlaying { bars }
+            if !showingControls { hiddenFocusTarget }
             #endif
         }
+        #if os(tvOS)
+        .onMoveCommand { _ in interacted() }
+        #endif
         .onContinuousHover { if case .active = $0 { interacted() } }
         #if os(tvOS)
         .focusScope(focusNamespace)

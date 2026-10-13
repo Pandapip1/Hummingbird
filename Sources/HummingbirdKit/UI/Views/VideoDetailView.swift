@@ -458,6 +458,7 @@ struct LegacyPlayerControls: View {
     @Namespace private var playerFocusNamespace
 
     var body: some View {
+        let showingControls = controlsVisible || !model.isPlaying
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
@@ -476,17 +477,13 @@ struct LegacyPlayerControls: View {
                     .padding(.bottom, controlsVisible ? (PlayerLayout.usesStackedTransport(width: availableWidth) ? 178 : 128) : 16)
             }
 
+            controlBars
+                .opacity(showingControls ? 1 : 0)
+                .allowsHitTesting(showingControls)
+                .accessibilityHidden(!showingControls)
+
             #if os(tvOS)
-            if controlsVisible || !model.isPlaying {
-                controlBars
-                    .onMoveCommand { _ in interacted() }
-            } else {
-                hiddenControlsFocusTarget
-            }
-            #else
-            if controlsVisible || !model.isPlaying {
-                controlBars
-            }
+            if !showingControls { hiddenControlsFocusTarget }
             #endif
         }
         .onContinuousHover { phase in
@@ -494,6 +491,7 @@ struct LegacyPlayerControls: View {
         }
         #if os(tvOS)
         .focusScope(playerFocusNamespace)
+        .onMoveCommand { _ in interacted() }
         #endif
         .task { interacted() }
         .onChange(of: model.isPlaying) { _, playing in

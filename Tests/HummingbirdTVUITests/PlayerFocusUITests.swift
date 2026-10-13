@@ -89,6 +89,33 @@ final class PlayerFocusUITests: XCTestCase {
     }
 
     @MainActor
+    func testPlaybackMenuSurvivesControlsAutoHideDeadline() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-seek"
+        app.launch()
+
+        let play = app.buttons["Play"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        XCUIRemote.shared.press(.down)
+        for _ in 0..<4 where !play.hasFocus {
+            XCUIRemote.shared.press(.left)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTAssertTrue(play.hasFocus)
+        XCUIRemote.shared.press(.select)
+
+        for _ in 0..<3 {
+            XCUIRemote.shared.press(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCUIRemote.shared.press(.select)
+        let normal = app.descendants(matching: .any)["Normal"]
+        XCTAssertTrue(normal.waitForExistence(timeout: 2))
+        RunLoop.current.run(until: Date().addingTimeInterval(4))
+        XCTAssertTrue(normal.exists, "an open player menu must outlive the controls auto-hide deadline")
+    }
+
+    @MainActor
     func testInstallPreviewCanFocusLastAllowedURL() throws {
         let app = XCUIApplication()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "install-preview"

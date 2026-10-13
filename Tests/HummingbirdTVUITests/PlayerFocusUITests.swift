@@ -2,6 +2,27 @@ import XCTest
 
 final class PlayerFocusUITests: XCTestCase {
     @MainActor
+    func testNewTabMenuOpensFromToolbar() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let newTab = app.buttons["Open section in new tab"]
+        XCTAssertTrue(newTab.waitForExistence(timeout: 10))
+        XCUIRemote.shared.press(.up)
+        for _ in 0..<4 where !newTab.hasFocus {
+            XCUIRemote.shared.press(.right)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+        }
+        let focusedButtons = app.buttons.allElementsBoundByIndex
+            .filter(\.hasFocus).map { $0.label }
+        XCTAssertTrue(newTab.hasFocus,
+                      "the toolbar new-tab menu must be focusable; focused buttons: \(focusedButtons)")
+        XCUIRemote.shared.press(.select)
+        XCTAssertTrue(app.descendants(matching: .any)["Search"].waitForExistence(timeout: 5),
+                      "selecting the new-tab menu must present its section actions")
+    }
+
+    @MainActor
     func testFullscreenKeepsFocusAndCanExit() throws {
         let app = XCUIApplication()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player"

@@ -5,6 +5,9 @@ import SwiftOpenUI
 #if os(macOS) && !BACKEND_GTK
 import AppKit
 #endif
+#if canImport(UIKit) && !BACKEND_GTK
+import UIKit
+#endif
 
 @MainActor
 struct RootView: View {
@@ -16,7 +19,8 @@ struct RootView: View {
         @Bindable var app = model
         @Bindable var plugins = model.plugins
         BrowserTabContainer(items: browserTabItems, selection: activeTabBinding,
-                            onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview) { item in
+                            onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview,
+                            newTabControl: { AppSectionMenu() }) { item in
             BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
         }
         .navigationTitle(windowTitle)
@@ -91,16 +95,20 @@ struct AppSectionMenu: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        Menu {
+        #if canImport(UIKit) && !BACKEND_GTK
+        NativeSectionMenuButton { route, title in
+            app.openSection(route, title: title)
+        }
+        #else
+        Menu("New Tab", systemImage: "plus.square") {
             sectionButton("Home", systemImage: "house", route: .home)
             sectionButton("Subscriptions", systemImage: "rectangle.stack.person.crop", route: .subscriptions)
             sectionButton("Search", systemImage: "magnifyingglass", route: .search)
             sectionButton("Library", systemImage: "books.vertical", route: .library)
             sectionButton("Sources", systemImage: "puzzlepiece.extension", route: .sources)
-        } label: {
-            Image(systemName: "plus.square")
         }
         .accessibilityLabel("Open section in new tab")
+        #endif
     }
 
     private func sectionButton(_ title: String, systemImage: String, route: Route) -> some View {
@@ -109,6 +117,42 @@ struct AppSectionMenu: View {
         }
     }
 }
+
+#if canImport(UIKit) && !BACKEND_GTK
+@MainActor
+private struct NativeSectionMenuButton: UIViewRepresentable {
+    let open: @MainActor (Route, String) -> Void
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: "plus.square"), for: .normal)
+        button.accessibilityLabel = "Open section in new tab"
+        button.showsMenuAsPrimaryAction = true
+        button.menu = makeMenu()
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        button.menu = makeMenu()
+    }
+
+    private func makeMenu() -> UIMenu {
+        UIMenu(title: "New Tab", children: [
+            action("Home", image: "house", route: .home),
+            action("Subscriptions", image: "rectangle.stack.person.crop", route: .subscriptions),
+            action("Search", image: "magnifyingglass", route: .search),
+            action("Library", image: "books.vertical", route: .library),
+            action("Sources", image: "puzzlepiece.extension", route: .sources),
+        ])
+    }
+
+    private func action(_ title: String, image: String, route: Route) -> UIAction {
+        UIAction(title: title, image: UIImage(systemName: image)) { _ in
+            Task { @MainActor in open(route, title) }
+        }
+    }
+}
+#endif
 
 /// An ordinary browser tab's content: whatever `Route` it's currently showing,
 /// with its own back/forward (this tab's own linear history, not a
@@ -170,28 +214,20 @@ struct BrowserTopToolbar: ToolbarContent {
     let showTabOverview: () -> Void
 
     var body: some ToolbarContent {
-        #if os(tvOS)
         ToolbarItemGroup(placement: .navigation) {
-            AppSectionMenu()
             BrowserBackButton(tab: tab)
             BrowserForwardButton(tab: tab)
+            #if os(macOS)
+            AppSectionMenu()
+            #endif
         }
         #if !os(macOS)
         ToolbarItem(placement: .primaryAction) {
-            BrowserTabOverviewButton(action: showTabOverview)
-        }
-        #endif
-        #else
-        ToolbarItemGroup(placement: .navigation) {
             AppSectionMenu()
-            BrowserBackButton(tab: tab)
-            BrowserForwardButton(tab: tab)
         }
-        #if !os(macOS)
         ToolbarItem(placement: .primaryAction) {
             BrowserTabOverviewButton(action: showTabOverview)
         }
-        #endif
         #endif
     }
 }

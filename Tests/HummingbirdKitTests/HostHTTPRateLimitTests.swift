@@ -102,6 +102,45 @@ final class HostHTTPRateLimitTests: XCTestCase {
         #"[{"method":"\#(method)","url":"https://example.test/resource"}]"#
     }
 
+    func testStringBodyDefaultsToTextPlain() throws {
+        let clock = Clock(Date(timeIntervalSince1970: 1_700_000_000))
+        var contentType: String?
+        StubProtocol.reset(handler: { request in
+            contentType = request.value(forHTTPHeaderField: "Content-Type")
+            return (200, [:], "ok")
+        })
+        let bodyRequest = #"[{"method":"POST","url":"https://example.test/resource","body":{"text":"{}"}}]"#
+
+        _ = try makeHost(clock: clock).execute(json: bodyRequest, parallel: false)
+
+        XCTAssertEqual(contentType, "text/plain")
+    }
+
+    func testExpiredSetCookieRemovesStoredCookie() throws {
+        let clock = Clock(Date(timeIntervalSince1970: 1_700_000_000))
+        var observedCookies: [String?] = []
+        StubProtocol.reset(handler: { request in
+            observedCookies.append(request.value(forHTTPHeaderField: "Cookie"))
+            switch observedCookies.count {
+            case 1:
+                return (200, ["Set-Cookie": "session=present; Domain=.example.test; Path=/"], "ok")
+            case 2:
+                return (200, ["Set-Cookie": "session=; Max-Age=0; Domain=.example.test; Path=/"], "ok")
+            default:
+                return (200, [:], "ok")
+            }
+        })
+        let host = try makeHost(clock: clock)
+
+        _ = host.execute(json: request(), parallel: false)
+        _ = host.execute(json: request(), parallel: false)
+        _ = host.execute(json: request(), parallel: false)
+
+        XCTAssertNil(observedCookies[0])
+        XCTAssertEqual(observedCookies[1], "session=present")
+        XCTAssertNil(observedCookies[2])
+    }
+
     func testRetryAfterSecondsDelaysAndRetriesSafeRequestOnce() throws {
         let clock = Clock(Date(timeIntervalSince1970: 1_700_000_000))
         StubProtocol.reset([

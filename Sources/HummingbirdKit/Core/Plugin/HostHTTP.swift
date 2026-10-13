@@ -141,7 +141,10 @@ final class HostHTTP: NSObject {
         for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
 
         if let body = req["body"] as? [String: Any] {
-            if let text = body["text"] as? String { request.httpBody = Data(text.utf8) }
+            if let text = body["text"] as? String {
+                request.httpBody = Data(text.utf8)
+                if !has("Content-Type") { request.setValue("text/plain", forHTTPHeaderField: "Content-Type") }
+            }
             else if let b64 = body["b64"] as? String { request.httpBody = Data(base64Encoded: b64) }
         }
 
@@ -183,6 +186,28 @@ final class HostHTTP: NSObject {
         wantsBytes: Bool
     ) -> [String: Any] {
 
+        let traceYouTubeAPI = ProcessInfo.processInfo.environment["HUMMINGBIRD_HTTP_TRACE"] == "1"
+            && request.url?.host?.caseInsensitiveCompare("www.youtube.com") == .orderedSame
+            && ["/youtubei/v1/player", "/youtubei/v1/next"].contains(request.url?.path)
+        if traceYouTubeAPI {
+            let headers = (request.allHTTPHeaderFields ?? [:])
+                .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+                .map { "\($0.key): \($0.value)" }.joined(separator: "\\n")
+            let body = request.httpBody.map { String(decoding: $0, as: UTF8.self) } ?? ""
+            print("[youtube api request] method=\(request.httpMethod ?? "") url=\(request.url?.absoluteString ?? urlString) headers=\(headers) body=\(body)")
+        }
+
+        let traceUMP = ["1", "response"].contains(ProcessInfo.processInfo.environment["HUMMINGBIRD_UMP_TRACE"])
+            && request.url?.host?.contains("googlevideo.com") == true
+            && request.url?.query?.contains("sabr=1") == true
+        let traceUMPRequest = ProcessInfo.processInfo.environment["HUMMINGBIRD_UMP_TRACE"] == "1"
+        if traceUMPRequest && traceUMP {
+            let headers = (request.allHTTPHeaderFields ?? [:])
+                .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+                .map { "\($0.key): \($0.value)" }.joined(separator: "\\n")
+            print("[ump http request] url=\(request.url?.absoluteString ?? urlString) headers=\(headers) bodyBase64=\(request.httpBody?.base64EncodedString() ?? "")")
+        }
+
         let redirectGuard = RedirectGuard(owner: self, clientId: clientId, applyCookies: applyCookies,
                                           updateCookies: updateCookies, allowNewCookies: allowNewCookies, useAuth: useAuth)
         let semaphore = DispatchSemaphore(value: 0)
@@ -209,6 +234,25 @@ final class HostHTTP: NSObject {
             return ["error": failure.localizedDescription]
         }
         guard let http = response as? HTTPURLResponse else { return ["error": "No HTTP response"] }
+
+        if traceYouTubeAPI {
+            let responseHeaders = http.allHeaderFields.map { "\($0.key): \($0.value)" }.sorted().joined(separator: "\\n")
+            let body = String(decoding: responseData ?? Data(), as: UTF8.self)
+            print("[youtube api response] url=\(http.url?.absoluteString ?? urlString) status=\(http.statusCode) headers=\(responseHeaders) body=\(body)")
+        }
+
+        if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1",
+           !(200..<300).contains(http.statusCode) {
+            let body = String(decoding: (responseData ?? Data()).prefix(2_048), as: UTF8.self)
+                .replacingOccurrences(of: "\n", with: "\\n")
+            print("[plugin http failure] method=\(request.httpMethod ?? "") url=\(http.url?.absoluteString ?? urlString) status=\(http.statusCode) body=\(body)")
+        }
+
+        if traceUMP {
+            let responseHeaders = http.allHeaderFields.map { "\($0.key): \($0.value)" }.sorted().joined(separator: "\\n")
+            let prefix = (responseData ?? Data()).prefix(512).base64EncodedString()
+            print("[ump http response] url=\(http.url?.absoluteString ?? urlString) status=\(http.statusCode) headers=\(responseHeaders) bodyBytes=\(responseData?.count ?? 0) bodyPrefixBase64=\(prefix)")
+        }
 
         var rawHeaders: [String: String] = [:]
         var headerMap: [String: [String]] = [:]
@@ -345,10 +389,19 @@ final class HostHTTP: NSObject {
                 let base = labels.count >= 2 ? labels.suffix(2).joined(separator: ".") : host
                 domain = "." + base
             }
+            let isDeletion = c.value.isEmpty || (c.expiresDate.map { $0 <= now() } ?? false)
             if loggedIn || !st.currentCookies.isEmpty {
-                if allowNew || st.currentCookies[domain]?[c.name] != nil { st.currentCookies[domain, default: [:]][c.name] = c.value }
+                if isDeletion {
+                    st.currentCookies[domain]?.removeValue(forKey: c.name)
+                } else if allowNew || st.currentCookies[domain]?[c.name] != nil {
+                    st.currentCookies[domain, default: [:]][c.name] = c.value
+                }
             } else {
-                if allowNew || st.otherCookies[domain]?[c.name] != nil { st.otherCookies[domain, default: [:]][c.name] = c.value }
+                if isDeletion {
+                    st.otherCookies[domain]?.removeValue(forKey: c.name)
+                } else if allowNew || st.otherCookies[domain]?[c.name] != nil {
+                    st.otherCookies[domain, default: [:]][c.name] = c.value
+                }
             }
         }
         clients[clientId] = st

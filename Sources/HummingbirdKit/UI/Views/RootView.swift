@@ -22,12 +22,6 @@ struct RootView: View {
             MobileTabOverview(isPresented: $showingTabOverview)
                 .environment(model)
         }
-        #else
-        .sheet(isPresented: $showingTabOverview) {
-            MobileTabOverview(isPresented: $showingTabOverview)
-                .environment(model)
-                .frame(minWidth: 720, minHeight: 520)
-        }
         #endif
         .navigationTitle(windowTitle)
         // Browser-style tab chrome: native toolbar navigation controls at the
@@ -171,18 +165,22 @@ struct BrowserTopToolbar: ToolbarContent {
             BrowserBackButton(tab: tab)
             BrowserForwardButton(tab: tab)
         }
+        #if !os(macOS)
         ToolbarItem(placement: .primaryAction) {
             BrowserTabOverviewButton(action: showTabOverview)
         }
+        #endif
         #else
         ToolbarItemGroup(placement: .navigation) {
             AppSectionMenu()
             BrowserBackButton(tab: tab)
             BrowserForwardButton(tab: tab)
         }
+        #if !os(macOS)
         ToolbarItem(placement: .primaryAction) {
             BrowserTabOverviewButton(action: showTabOverview)
         }
+        #endif
         #endif
     }
 }

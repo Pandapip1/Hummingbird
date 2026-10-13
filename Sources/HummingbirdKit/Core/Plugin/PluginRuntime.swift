@@ -528,6 +528,10 @@ final class PluginRuntime: @unchecked Sendable {
         do { return try JSONDecoder().decode(T.self, from: data) }
         catch { throw PluginError.execution("Unexpected data from the plugin: \(error.localizedDescription)") }
     }
+
+    static func decodeOffMain<T: Decodable & Sendable>(_ type: T.Type, from data: Data) async throws -> T {
+        try await Task.detached(priority: .userInitiated) { try decode(type, from: data) }.value
+    }
 }
 
 // MARK: - JS literal helpers

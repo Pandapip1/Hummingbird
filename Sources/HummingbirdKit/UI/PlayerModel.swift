@@ -161,7 +161,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 await runtime.reload(reloadData: reload.data)
                 do {
                     let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
-                    guard case .video(let refreshed) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
+                    guard case .video(let refreshed) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
                         errorMessage = "The plugin stopped returning video details after its playback workaround."
                         return
                     }
@@ -384,7 +384,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     // MARK: resolving sources
 
-    private struct ModifiedRequest: Decodable {
+    private struct ModifiedRequest: Decodable, Sendable {
         var url: String?
         var headers: [String: String]?
     }
@@ -398,7 +398,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         ])
         if source.pluginType == "DashManifestRawSource", let handle = source.handle, let runtime {
             let manifestData = try await runtime.callHandle(handle, "generate")
-            let manifest = try PluginRuntime.decode(String.self, from: manifestData)
+            let manifest = try await PluginRuntime.decodeOffMain(String.self, from: manifestData)
             guard let executor = try await runtime.handleFromCall(handle, "getRequestExecutor") else {
                 throw PluginError.execution("The generated media source did not provide a request executor")
             }
@@ -411,7 +411,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                     let clone = runtime.isolatedClone()
                     do {
                         let data = try await clone.callRaw("getContentDetails", [sourceURL], kind: "details")
-                        guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data),
+                        guard case .video(let details) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data),
                               let cloneSource = details.videoSources.first(where: {
                                   PlaybackSelector.isSameGeneratedSource($0, as: source) && $0.handle != nil
                               }), let handle = cloneSource.handle else {
@@ -440,7 +440,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         if let ref = source.requestModifier, let runtime {
             // The modifier runs once, for the initial request. The player then reuses its headers for later range requests.
             let data = try await runtime.callHandle(ref.handle, "modifyRequest", [source.url, [String: String]()])
-            if let mod = try? JSONDecoder().decode(ModifiedRequest.self, from: data) {
+            if let mod = try? await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data) {
                 if let u = mod.url, let nu = URL(string: u) { url = nu }
                 headers = mod.headers ?? [:]
             }
@@ -488,7 +488,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         await runtime.reload(reloadData: reloadData)
         do {
             let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
-            guard case .video(let refreshed) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
+            guard case .video(let refreshed) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
                 throw PluginError.execution("The plugin stopped returning video details after refreshing playback")
             }
             let latestPosition = max(position, backend?.currentTime ?? 0)
@@ -543,8 +543,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         if let h = sub.getSubtitlesHandle, let runtime {
             for attempt in 0..<3 where text?.isEmpty ?? true {
                 if attempt > 0 { try? await Task.sleep(for: .milliseconds(500)) }
-                text = (try? await runtime.callHandle(h, "getSubtitles"))
-                    .flatMap { try? JSONDecoder().decode(String.self, from: $0) }
+                if let data = try? await runtime.callHandle(h, "getSubtitles") {
+                    text = try? await PluginRuntime.decodeOffMain(String.self, from: data)
+                }
             }
         }
         // Some plugins expose both a convenience loader and the underlying URL.
@@ -552,7 +553,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         if (text?.isEmpty ?? true), let u = sub.url, let url = URL(string: u) {
             text = (try? await URLSession.shared.data(from: url)).flatMap { String(data: $0.0, encoding: .utf8) }
         }
-        if let text { cues = SubtitleParser.parse(text) }
+        if let text {
+            cues = await Task.detached(priority: .userInitiated) { SubtitleParser.parse(text) }.value
+        }
     }
 
     // MARK: playback tracker

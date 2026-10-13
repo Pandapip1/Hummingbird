@@ -94,7 +94,7 @@ final class PlatformService {
             }
             detailsCache = Self.trimmedDetailsCache(detailsCache)
             scheduleDetailsCacheSave()
-            return (rt, try PluginRuntime.decode(ContentDetails.self, from: data))
+            return (rt, try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data))
         } catch { _ = surface(error, pluginID: rt.id); throw error }
     }
 
@@ -128,7 +128,7 @@ final class PlatformService {
             scheduleDetailsCacheSave()
             return nil
         }
-        guard var details = try? PluginRuntime.decode(ContentDetails.self, from: entry.payload) else { return nil }
+        guard var details = try? await PluginRuntime.decodeOffMain(ContentDetails.self, from: entry.payload) else { return nil }
         if case .video(var video) = details {
             video.handle = 0
             video.hasComments = false
@@ -153,7 +153,7 @@ final class PlatformService {
         guard let rt = await route(url: url, check: "isPlaylistUrl", requires: ["getPlaylist", "isPlaylistUrl"]) else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getPlaylist", [url], kind: "playlist") }
-            let payload = try PluginRuntime.decode(PlaylistDetailsPayload.self, from: data)
+            let payload = try await PluginRuntime.decodeOffMain(PlaylistDetailsPayload.self, from: data)
             return (rt, payload, PluginPager(runtime: rt, payload: payload.contents))
         } catch { _ = surface(error, pluginID: rt.id); throw error }
     }

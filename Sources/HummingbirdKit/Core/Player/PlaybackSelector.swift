@@ -166,7 +166,7 @@ enum PlaybackSelector {
 
 // MARK: - Subtitles
 
-struct SubtitleCue: Hashable { var start: Double; var end: Double; var text: String }
+struct SubtitleCue: Hashable, Sendable { var start: Double; var end: Double; var text: String }
 
 enum SubtitleParser {
     /// Parses WebVTT and SubRip text into cues.

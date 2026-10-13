@@ -21,8 +21,8 @@ enum PluginCompatibilityPatches {
         Patch(
             pluginID: "35ae969a-a7db-11ed-afa1-0242ac120002",
             version: 366,
-            name: "youtube-native-ump-legacy-path",
-            resource: "youtube-366-native-ump-legacy-path"
+            name: "youtube-generated-ump-pot-readiness",
+            resource: "youtube-366-generated-ump-pot-readiness"
         ),
     ]
 

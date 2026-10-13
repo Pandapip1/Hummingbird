@@ -2,12 +2,14 @@ import Foundation
 import NIOCore
 import NIOHTTP1
 import NIOPosix
+import DebugKit
 
 /// Exposes plugin-generated DASH media as a loopback fMP4 HLS presentation.
 /// The player requests ordinary HLS URLs while segment bytes remain owned by
 /// the plugin's request executor.
 actor PluginMediaProxy {
     static let shared = PluginMediaProxy()
+    typealias PrefetchExecutorFactory = @Sendable () async throws -> (PluginRuntime, Int)
 
     private struct Presentation: Sendable {
         let runtime: PluginRuntime
@@ -17,6 +19,7 @@ actor PluginMediaProxy {
         let audio: String?
         let cache: UMPMediaCache.Handle?
         let resources: [DashToHLS.Resource]
+        let prefetchExecutorFactory: PrefetchExecutorFactory?
         let failure: @Sendable (PluginError) -> Void
     }
 
@@ -26,11 +29,14 @@ actor PluginMediaProxy {
     private var channel: Channel?
     private var starting: Task<Channel, Error>?
     private var foregroundRequests = 0
+    private var lastForegroundRequest: Date?
 
     private init() {}
 
     func register(manifest: String, runtime: PluginRuntime, executor: Int, prefetch: Bool = true,
                   useCache: Bool = true,
+                  cacheAllocationBytes: Int64? = nil,
+                  prefetchExecutorFactory: PrefetchExecutorFactory? = nil,
                   failure: @escaping @Sendable (PluginError) -> Void = { _ in }) async throws -> URL {
         let channel = try await serverChannel()
         guard let address = channel.localAddress, let port = address.port else {
@@ -39,13 +45,18 @@ actor PluginMediaProxy {
         let id = UUID().uuidString.lowercased()
         let base = "http://127.0.0.1:\(port)/\(id)"
         let playlists = try DashToHLS.convert(manifest, baseURL: base)
+        let cacheKey = "generated-dash:\(manifest)" + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
         let cache = try await useCache ? UMPMediaCache.shared.open(.init(
-            key: "generated-dash:\(manifest)", allocationBytes: playlists.estimatedBytes, isExact: false
+            key: cacheKey,
+            allocationBytes: cacheAllocationBytes ?? playlists.estimatedBytes,
+            isExact: false
         )) : nil
         presentations[id] = Presentation(runtime: runtime, executor: executor,
                                            master: playlists.master, video: playlists.video,
                                            audio: playlists.audio, cache: cache,
-                                           resources: playlists.resources, failure: failure)
+                                           resources: playlists.resources,
+                                           prefetchExecutorFactory: prefetchExecutorFactory,
+                                           failure: failure)
         order.append(id)
         while order.count > 8, let expired = order.first {
             order.removeFirst()
@@ -54,15 +65,43 @@ actor PluginMediaProxy {
         guard let url = URL(string: "\(base)/master.m3u8") else {
             throw PluginError.execution("Could not construct the generated media URL")
         }
-        if prefetch { Task { await self.prefetch(id: id) } }
+        if prefetch {
+            Task(priority: .utility) {
+                // Let AVPlayer establish its initial or resumed foreground
+                // working set before saturating the serial plugin executor.
+                try? await Task.sleep(for: .seconds(3))
+                await self.prefetch(id: id)
+            }
+        }
         return url
     }
 
     private func prefetch(id: String) async {
         guard let presentation = presentations[id] else { return }
+        let prefetchRuntime: PluginRuntime
+        let prefetchExecutor: Int
+        if let factory = presentation.prefetchExecutorFactory {
+            do {
+                (prefetchRuntime, prefetchExecutor) = try await factory()
+            } catch let error as PluginError {
+                presentation.failure(error)
+                return
+            } catch {
+                return
+            }
+        } else {
+            prefetchRuntime = presentation.runtime
+            prefetchExecutor = presentation.executor
+        }
+        let sharesPlaybackExecutor = prefetchRuntime === presentation.runtime
+        defer {
+            if prefetchRuntime !== presentation.runtime {
+                Task { await prefetchRuntime.stop() }
+            }
+        }
         for resource in presentation.resources {
             guard presentations[id] != nil, !Task.isCancelled else { return }
-            while foregroundRequests > 0 {
+            while sharesPlaybackExecutor && (foregroundRequests > 0 || foregroundWasRecentlyActive) {
                 await Task.yield()
                 try? await Task.sleep(for: .milliseconds(10))
             }
@@ -71,12 +110,20 @@ actor PluginMediaProxy {
                 continue
             }
             do {
-                let data = try await presentation.runtime.callHandleBytes(
-                    presentation.executor, "executeRequest",
+                let data = try await prefetchRuntime.callHandleBytes(
+                    prefetchExecutor, "executeRequest",
                     [resource.upstream, [String: String]()]
                 )
                 if let cache = presentation.cache {
-                    try await UMPMediaCache.shared.write(data, to: cache, name: resource.upstream)
+                    do {
+                        try await UMPMediaCache.shared.write(data, to: cache, name: resource.upstream)
+                    } catch {
+                        DebugServer.record("plugin_media_proxy", "cache_write_failed", fields: [
+                            "message": error.localizedDescription,
+                            "prefetch": "true",
+                        ])
+                        return
+                    }
                 }
             } catch let error as PluginError {
                 presentation.failure(error)
@@ -132,6 +179,7 @@ actor PluginMediaProxy {
             guard parts.count >= 4, ["video", "audio"].contains(parts[1]) else {
                 return (.notFound, "text/plain", Data())
             }
+            lastForegroundRequest = Date()
             var upstream = "https://grayjay.internal/" + parts.dropFirst().joined(separator: "/")
             if let query = components.percentEncodedQuery { upstream += "?" + query }
             do {
@@ -147,7 +195,17 @@ actor PluginMediaProxy {
                     [upstream, [String: String]()]
                 )
                 if let cache = presentation.cache {
-                    try await UMPMediaCache.shared.write(data, to: cache, name: upstream)
+                    // Cache exhaustion must never turn successfully fetched media
+                    // into a 502 response. The cache is an optimization; AVPlayer
+                    // still needs the bytes the plugin already returned.
+                    do {
+                        try await UMPMediaCache.shared.write(data, to: cache, name: upstream)
+                    } catch {
+                        DebugServer.record("plugin_media_proxy", "cache_write_failed", fields: [
+                            "message": error.localizedDescription,
+                            "prefetch": "false",
+                        ])
+                    }
                 }
                 let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
                 return (.ok, contentType, data)
@@ -158,6 +216,14 @@ actor PluginMediaProxy {
                 return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
             }
         }
+    }
+
+    /// AVPlayer issues startup and seek requests as short bursts with tiny gaps.
+    /// Treat those gaps as foreground activity so whole-file prefetch cannot
+    /// repeatedly take the serial JavaScript executor between adjacent segments.
+    private var foregroundWasRecentlyActive: Bool {
+        guard let lastForegroundRequest else { return false }
+        return Date().timeIntervalSince(lastForegroundRequest) < 2
     }
 
     private final class HTTPHandler: ChannelInboundHandler, @unchecked Sendable {

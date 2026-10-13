@@ -39,7 +39,11 @@ enum SubtitleSizeChoice: Double, CaseIterable, Sendable {
 final class PlayerModel: AdvancedVideoPlayerControlling {
     /// The platform player. The view layer reads it to draw the video surface (see `PlayerSurface`).
     private(set) var backend: MediaBackend?
-    var hasMedia: Bool { backend != nil && selected != nil }
+    // Keep the rendering surface attached while AVFoundation prepares the item.
+    // Generated video-only assets can require a rendering consumer before an
+    // exact initial seek completes, and `selected` is intentionally committed
+    // only after `backend.load` returns.
+    var hasMedia: Bool { backend != nil }
     private(set) var loadedURL: String?
     private(set) var options: [PlaybackOption] = []
     private(set) var selected: PlaybackOption?
@@ -438,6 +442,30 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             }
             let url = try await PluginMediaProxy.shared.register(
                 manifest: manifest, runtime: runtime, executor: executor.handle,
+                prefetchExecutorFactory: { [source, sourceURL = loadedURL] in
+                    guard let sourceURL else {
+                        throw PluginError.execution("The generated prefetch source URL is unavailable")
+                    }
+                    let clone = runtime.isolatedClone()
+                    do {
+                        let data = try await clone.callRaw("getContentDetails", [sourceURL], kind: "details")
+                        guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data),
+                              let cloneSource = details.videoSources.first(where: {
+                                  $0.pluginType == source.pluginType && $0.container == source.container
+                                      && $0.height == source.height && $0.handle != nil
+                              }), let handle = cloneSource.handle else {
+                            throw PluginError.execution("The isolated prefetch runtime did not return the selected source")
+                        }
+                        _ = try await clone.callHandle(handle, "generate")
+                        guard let executor = try await clone.handleFromCall(handle, "getRequestExecutor") else {
+                            throw PluginError.execution("The isolated prefetch source did not provide an executor")
+                        }
+                        return (clone, executor.handle)
+                    } catch {
+                        await clone.stop()
+                        throw error
+                    }
+                },
                 failure: { [weak self] error in
                     Task { @MainActor in
                         await self?.handlePluginMediaFailure(error, generation: generation)

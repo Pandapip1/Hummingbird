@@ -8,6 +8,7 @@ import Crypto
 /// HTTP calls), which is why calls from the UI are exposed as async wrappers around that queue.
 final class PluginRuntime: @unchecked Sendable {
     let config: PluginConfig
+    private let originalScript: String
     private let script: String
     private let storedSettings: [String: String]
     private let auth: SourceAuth?
@@ -75,6 +76,7 @@ final class PluginRuntime: @unchecked Sendable {
             original: script
         )
         self.config = config
+        self.originalScript = script
         self.script = compatibility.script
         self.appliedCompatibilityPatches = compatibility.applied
         self.failedCompatibilityPatches = compatibility.failed
@@ -399,6 +401,16 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     func stop() async { await withCheckedContinuation { c in queue.async { self.stopLocked(); c.resume() } } }
+
+    /// Creates a fresh JavaScript context with the same immutable plugin inputs.
+    /// Handles and mutable executor state are intentionally not shared.
+    func isolatedClone() -> PluginRuntime {
+        let clone = PluginRuntime(config: config, script: originalScript, settings: storedSettings,
+                                  auth: auth, captcha: captcha, savedState: savedState)
+        clone.onLog = onLog
+        clone.onToast = onToast
+        return clone
+    }
 
     /// Restarts the runtime; `reloadData` becomes the global `__reloadData` seen by the script (ReloadRequiredException).
     func reload(reloadData: String?) async {

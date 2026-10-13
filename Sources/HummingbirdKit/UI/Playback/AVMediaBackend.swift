@@ -14,7 +14,10 @@ import UIKit
 @MainActor
 final class AVMediaBackend: MediaBackend {
     private static let audioSessionQueue = DispatchQueue(label: "Hummingbird.AudioSession", qos: .userInitiated)
-    private(set) var player: AVPlayer?
+    // The view must be able to attach a rendering surface before the first item
+    // has finished loading. Replacing the item on a stable player also avoids
+    // making view attachment depend on completion of the initial seek.
+    private(set) var player: AVPlayer? = AVPlayer()
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?

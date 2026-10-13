@@ -189,7 +189,18 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         let url = fixtureVideoURL
         let (manifest, executor) = try await generatedPresentation(runtime, url: url)
         let playbackURL = try await PluginMediaProxy.shared.register(
-            manifest: manifest, runtime: runtime, executor: executor, prefetch: false, useCache: false
+            manifest: manifest, runtime: runtime, executor: executor, prefetch: true,
+            useCache: true, cacheAllocationBytes: 1,
+            prefetchExecutorFactory: {
+                let clone = runtime.isolatedClone()
+                do {
+                    let (_, executor) = try await self.generatedPresentation(clone, url: url)
+                    return (clone, executor)
+                } catch {
+                    await clone.stop()
+                    throw error
+                }
+            }
         )
         let (masterData, masterResponse) = try await URLSession.shared.data(from: playbackURL)
         XCTAssertEqual((masterResponse as? HTTPURLResponse)?.statusCode, 200)
@@ -220,29 +231,20 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         playerLayer.frame = CGRect(x: 0, y: 0, width: 640, height: 360)
         player.isMuted = true
         defer { player.pause() }
-        player.play()
-        for _ in 0..<100 where player.currentTime().seconds < 0.25 {
-            if item.status == .failed { throw item.error ?? PluginError.execution("AVPlayer rejected generated playback") }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        guard player.currentTime().seconds > 0.25 else {
-            XCTFail("Generated playback did not start")
-            return
-        }
         let seekTarget = min(60, max(5, duration - 15))
-        player.seek(
+        await player.seek(
             to: CMTime(seconds: seekTarget, preferredTimescale: 600),
             toleranceBefore: .zero,
-            toleranceAfter: .zero,
-            completionHandler: { _ in }
+            toleranceAfter: .zero
         )
+        player.play()
         for _ in 0..<300 where player.currentTime().seconds < seekTarget + 0.25 {
-            if item.status == .failed { throw item.error ?? PluginError.execution("AVPlayer rejected generated seek") }
+            if item.status == .failed { throw item.error ?? PluginError.execution("AVPlayer rejected generated playback") }
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertGreaterThan(
             player.currentTime().seconds, seekTarget + 0.25,
-            "Generated playback did not resume at the one-minute UMP boundary"
+            "Generated playback did not start directly at the one-minute UMP boundary"
         )
         guard player.currentTime().seconds > seekTarget + 0.25 else { return }
         let longSeekTarget = min(120, max(5, duration - 15))

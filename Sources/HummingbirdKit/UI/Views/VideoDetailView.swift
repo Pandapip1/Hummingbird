@@ -12,6 +12,7 @@ struct VideoDetailView: View {
     let shouldKeepPlaybackWhenHidden: () -> Bool
 
     @Environment(AppModel.self) private var app
+    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
     @State private var player: PlayerModel
     @State private var state: LoadState = .loading
     @State private var tab: DetailTab = .about
@@ -63,10 +64,11 @@ struct VideoDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         #endif
         .task(id: activeURL) {
-            player.onPlaybackEnded = advanceQueue
+            if !isOverviewPreview { player.onPlaybackEnded = advanceQueue }
             await load()
         }
         .onDisappear {
+            guard !isOverviewPreview else { return }
             let disappearingURL = activeURL
             Task { @MainActor in
                 // Let tab navigation update its route before deciding whether
@@ -98,7 +100,7 @@ struct VideoDetailView: View {
         }
         do {
             let (rt, details) = try await app.platform.details(url: activeURL)
-            await display(details, runtime: rt, loadPlayer: !playerAlreadyLoaded)
+            await display(details, runtime: rt, loadPlayer: !isOverviewPreview && !playerAlreadyLoaded)
         } catch {
             if !displayedCache { state = .failed(error.localizedDescription) }
         }
@@ -141,13 +143,21 @@ private struct VideoBody: View {
     let playerHeight: CGFloat
     @Environment(AppModel.self) private var app
     @Environment(\.openRoute) private var openRoute
+    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
     @State private var descriptionExpanded = false
 
     var body: some View {
         let item = details.item
         let saved = SavedVideo(item)
         VStack(alignment: .leading, spacing: 12) {
-            PlayerSection(model: player, width: playerWidth, height: playerHeight)
+            if isOverviewPreview {
+                Rectangle()
+                    .fill(.black)
+                    .overlay { Image(systemName: "play.fill").font(.largeTitle).foregroundStyle(.white.opacity(0.7)) }
+                    .frame(width: playerWidth, height: playerHeight)
+            } else {
+                PlayerSection(model: player, width: playerWidth, height: playerHeight)
+            }
 
             VStack(alignment: .leading, spacing: 10) {
                 Text(item.name).font(.title3.bold()).lineLimit(nil)

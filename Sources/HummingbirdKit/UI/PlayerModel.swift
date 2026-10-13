@@ -87,6 +87,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var requestedPluginReload: (message: String, data: String?)?
     @ObservationIgnored private var declaredDuration: Double = 0
     @ObservationIgnored private var pendingSeekTask: Task<Void, Never>?
+    @ObservationIgnored private var playbackRequested = false
 
     init(backend: MediaBackend? = nil) {
         self.backend = backend
@@ -262,10 +263,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         if isPlaying {
             backend.pause()
             isPlaying = false
+            playbackRequested = false
         } else {
             backend.play()
             backend.setPlaybackRate(playbackRate)
             isPlaying = true
+            playbackRequested = true
         }
     }
     func setPlaybackRate(_ rate: Float) {
@@ -311,6 +314,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         backend.setPlaybackRate(playbackRate)
         playbackTime = 0
         isPlaying = true
+        playbackRequested = true
     }
 
     private func play(
@@ -358,6 +362,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             playbackTime = backend.currentTime
             self.duration = backend.duration
             isPlaying = backend.isPlaying
+            playbackRequested = autoplay
             DebugServer.record("player", "load_completed", fields: ["playing": String(isPlaying)])
             return true
         } catch let PluginError.reloadRequired(message, reloadData) {
@@ -516,6 +521,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard !didFinishCurrentItem else { return }
         didFinishCurrentItem = true
         isPlaying = false
+        playbackRequested = false
         if let details, let library { library.recordProgress(SavedVideo(details.item), seconds: 0); library.flushHistory() }
         onPlaybackEnded?()
     }
@@ -579,6 +585,13 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     // MARK: teardown
 
+    func restorePlaybackAfterSurfaceTransfer() {
+        guard playbackRequested, let backend else { return }
+        backend.play()
+        backend.setPlaybackRate(playbackRate)
+        isPlaying = true
+    }
+
     func teardown() {
         pendingSeekTask?.cancel()
         pendingSeekTask = nil
@@ -601,6 +614,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         audioSources = []
         selectedAudioSource = nil
         playbackTime = 0; duration = 0; declaredDuration = 0; isPlaying = false; isFullscreen = false
+        playbackRequested = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil
         didFinishCurrentItem = false
     }

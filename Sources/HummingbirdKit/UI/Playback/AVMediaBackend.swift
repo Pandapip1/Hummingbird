@@ -474,6 +474,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
             inlineController.player = nil
             model.fullscreenDidChange(true)
             presenter.present(controller, animated: true) {
+                model.restorePlaybackAfterSurfaceTransfer()
                 controller.setNeedsFocusUpdate()
                 controller.updateFocusIfNeeded()
             }
@@ -500,6 +501,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
             fullscreenController = nil
             inlineController?.player = (model?.backend as? AVMediaBackend)?.player
             model?.fullscreenDidChange(false)
+            model?.restorePlaybackAfterSurfaceTransfer()
         }
 
         private func presentingController(from controller: UIViewController) -> UIViewController? {

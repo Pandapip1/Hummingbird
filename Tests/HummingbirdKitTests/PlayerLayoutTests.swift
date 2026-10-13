@@ -14,6 +14,40 @@ final class PlayerLayoutTests: XCTestCase {
         XCTAssertEqual(PlayerLayout.height(width: 390, viewportHeight: 600), 276)
         XCTAssertEqual(PlayerLayout.height(width: 1600, viewportHeight: 100), PlayerLayout.minimumHeight(width: 1600))
     }
+
+    @MainActor
+    func testSurfaceTransferRestoresPlaybackIntentWithoutOverridingUserPause() {
+        let backend = SurfaceTransferBackend()
+        let model = PlayerModel(backend: backend)
+
+        model.togglePlayback()
+        backend.pause()
+        model.restorePlaybackAfterSurfaceTransfer()
+        XCTAssertTrue(backend.isPlaying)
+        XCTAssertEqual(backend.playCount, 2)
+
+        model.togglePlayback()
+        model.restorePlaybackAfterSurfaceTransfer()
+        XCTAssertFalse(backend.isPlaying)
+        XCTAssertEqual(backend.playCount, 2)
+    }
+}
+
+@MainActor
+private final class SurfaceTransferBackend: MediaBackend {
+    var currentTime = 0.0
+    var duration = 60.0
+    var isPlaying = false
+    var playCount = 0
+    var onTick: (@MainActor (Double) -> Void)?
+    var onEnded: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (String) -> Void)?
+    func canPlay(_ option: PlaybackOption) -> Bool { true }
+    func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {}
+    func play() { isPlaying = true; playCount += 1 }
+    func pause() { isPlaying = false }
+    func seek(to seconds: Double) { currentTime = seconds }
+    func stop() { isPlaying = false }
 }
 
 #if canImport(BackendGTK4) && canImport(CGTK) && canImport(CGTKBridge)

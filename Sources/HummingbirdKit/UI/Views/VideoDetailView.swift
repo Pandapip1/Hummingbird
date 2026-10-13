@@ -664,19 +664,15 @@ private struct PlayerTimeline: View {
         HStack(spacing: 14) {
             Text(playbackTime).font(.caption.monospacedDigit())
             if model.duration > 0 {
-                #if os(tvOS)
-                ProgressView(value: min(model.playbackTime, model.duration), total: model.duration)
-                    .frame(minWidth: 80, maxWidth: .infinity)
-                #else
-                Slider(value: Binding(
-                    get: { min(model.playbackTime, model.duration) },
-                    set: {
+                AdvancedVideoPlayerSlider(
+                    value: min(model.playbackTime, model.duration),
+                    range: 0...model.duration,
+                    onChange: {
                         interacted()
                         model.seek(to: $0)
                     }
-                ), in: 0...model.duration, onEditingChanged: { _ in interacted() })
+                )
                 .frame(minWidth: 80, maxWidth: .infinity)
-                #endif
             } else {
                 Spacer()
             }

@@ -202,7 +202,7 @@ struct AddSourceSheet: View {
 }
 
 @MainActor
-private struct PreviewView: View {
+struct PreviewView: View {
     let preview: InstallPreview
 
     var body: some View {
@@ -216,8 +216,9 @@ private struct PreviewView: View {
                         Text("v\(c.version) · \(c.author)").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if !c.description.isEmpty { Text(c.description).font(.subheadline) }
-                if preview.existing != nil { Label("Replaces your installed version", systemImage: "arrow.triangle.2.circlepath").font(.footnote) }
+                .modifier(TVPreviewFocus())
+                if !c.description.isEmpty { Text(c.description).font(.subheadline).modifier(TVPreviewFocus()) }
+                if preview.existing != nil { Label("Replaces your installed version", systemImage: "arrow.triangle.2.circlepath").font(.footnote).modifier(TVPreviewFocus()) }
             }
             if !preview.warnings.isEmpty {
                 Section("Review before installing") {
@@ -226,13 +227,35 @@ private struct PreviewView: View {
                             Label(w.title, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.subheadline.bold())
                             Text(w.detail).font(.footnote).foregroundStyle(.secondary)
                         }
+                        .modifier(TVPreviewFocus())
                     }
                 }
             }
             if !c.allowUrls.isEmpty {
-                Section("Can contact") { ForEach(c.allowUrls, id: \.self) { Text($0).font(.footnote.monospaced()) } }
+                Section("Can contact") {
+                    ForEach(Array(c.allowUrls.enumerated()), id: \.offset) { index, url in
+                        #if os(tvOS)
+                        Button {} label: { Text(url).font(.footnote.monospaced()) }
+                            .accessibilityIdentifier("install-preview-url-\(index)")
+                        #else
+                        Text(url).font(.footnote.monospaced())
+                            .accessibilityIdentifier("install-preview-url-\(index)")
+                        #endif
+                    }
+                }
             }
         }
+    }
+}
+
+private struct TVPreviewFocus: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        content.focusable()
+        #else
+        content
+        #endif
     }
 }
 

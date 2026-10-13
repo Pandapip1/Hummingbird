@@ -1,5 +1,8 @@
 import SwiftOpenUI
 import Foundation
+#if os(tvOS)
+import UIKit
+#endif
 
 public enum AdvancedVideoPlayerLayout {
     public static let controlBarMinimumHeight: CGFloat = 44
@@ -107,12 +110,12 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         HStack(spacing: 14) {
             Text(timeLabel).font(.caption.monospacedDigit())
             if model.duration > 0 {
-                #if os(tvOS)
-                ProgressView(value: min(model.playbackTime, model.duration), total: model.duration).frame(minWidth: 80, maxWidth: .infinity)
-                #else
-                Slider(value: Binding(get: { min(model.playbackTime, model.duration) }, set: { interacted(); model.seek(to: $0) }),
-                       in: 0...model.duration, onEditingChanged: { _ in interacted() }).frame(minWidth: 80, maxWidth: .infinity)
-                #endif
+                AdvancedVideoPlayerSlider(
+                    value: min(model.playbackTime, model.duration),
+                    range: 0...model.duration,
+                    onChange: { interacted(); model.seek(to: $0) }
+                )
+                .frame(minWidth: 80, maxWidth: .infinity)
             } else { Spacer() }
         }
     }
@@ -169,6 +172,164 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         }
     }
 }
+
+/// The player timeline's slider on every platform. tvOS uses an explicit
+/// focus/adjust mode for the Siri Remote; pointer and touch platforms retain
+/// continuous native slider interaction behind the same component API.
+@MainActor
+public struct AdvancedVideoPlayerSlider: View {
+    public let value: Double
+    public let range: ClosedRange<Double>
+    public let onChange: (Double) -> Void
+
+    public init(value: Double, range: ClosedRange<Double>, onChange: @escaping (Double) -> Void) {
+        self.value = value
+        self.range = range
+        self.onChange = onChange
+    }
+
+    @ViewBuilder
+    public var body: some View {
+        #if os(tvOS)
+        TVRemoteSlider(value: value, range: range, onChange: onChange)
+        #else
+        Slider(value: Binding(get: { value }, set: { newValue in onChange(newValue) }), in: range)
+        #endif
+    }
+}
+
+#if os(tvOS)
+/// A focusable slider for the Siri Remote. Select enters adjustment mode,
+/// directional presses seek while selected, and Select again releases focus
+/// movement so the user can navigate to the surrounding player controls.
+@MainActor
+private struct TVRemoteSlider: UIViewRepresentable {
+    let value: Double
+    let range: ClosedRange<Double>
+    let onChange: (Double) -> Void
+
+    func makeUIView(context: Context) -> TVRemoteSliderControl {
+        TVRemoteSliderControl()
+    }
+
+    func updateUIView(_ control: TVRemoteSliderControl, context: Context) {
+        control.update(value: value, range: range, onChange: onChange)
+    }
+}
+
+@MainActor
+private final class TVRemoteSliderControl: UIControl {
+    private let progress = UIProgressView(progressViewStyle: .default)
+    private var value: Double = 0
+    private var range: ClosedRange<Double> = 0...1
+    private var onChange: ((Double) -> Void)?
+    private var adjustmentStartValue: Double?
+    private var isCancellingWithMenu = false
+    private var isAdjusting = false { didSet { refreshAppearance() } }
+
+    override var canBecomeFocused: Bool { true }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isAccessibilityElement = true
+        accessibilityIdentifier = "playback-seek-control"
+        accessibilityLabel = "Playback position"
+        accessibilityTraits = [.adjustable]
+        progress.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(progress)
+        NSLayoutConstraint.activate([
+            progress.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+            progress.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
+            progress.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+        layer.cornerRadius = 12
+        refreshAppearance()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    func update(value: Double, range: ClosedRange<Double>, onChange: @escaping (Double) -> Void) {
+        self.value = value
+        self.range = range
+        self.onChange = onChange
+        let length = range.upperBound - range.lowerBound
+        progress.progress = length > 0 ? Float((value - range.lowerBound) / length) : 0
+        accessibilityValue = "\(time(value)) of \(time(range.upperBound))\(isAdjusting ? ", adjusting" : "")"
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if isAdjusting, presses.contains(where: { $0.type == .menu }) {
+            if let adjustmentStartValue { adjust(to: adjustmentStartValue) }
+            adjustmentStartValue = nil
+            isAdjusting = false
+            isCancellingWithMenu = true
+            return
+        }
+        guard isAdjusting, let type = presses.first?.type else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
+        switch type {
+        case .leftArrow: adjust(by: -step)
+        case .rightArrow: adjust(by: step)
+        default: super.pressesBegan(presses, with: event)
+        }
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if isCancellingWithMenu, presses.contains(where: { $0.type == .menu }) {
+            isCancellingWithMenu = false
+            return
+        }
+        if presses.contains(where: { $0.type == .select }) {
+            if isAdjusting {
+                adjustmentStartValue = nil
+                isAdjusting = false
+            } else {
+                adjustmentStartValue = value
+                isAdjusting = true
+            }
+            return
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        if !isFocused { isAdjusting = false }
+        coordinator.addCoordinatedAnimations { self.refreshAppearance() }
+    }
+
+    override func accessibilityIncrement() { adjust(by: step) }
+    override func accessibilityDecrement() { adjust(by: -step) }
+
+    private var step: Double { min(30, max(5, (range.upperBound - range.lowerBound) / 100)) }
+
+    private func adjust(by delta: Double) {
+        adjust(to: value + delta)
+    }
+
+    private func adjust(to proposedValue: Double) {
+        let target = min(max(proposedValue, range.lowerBound), range.upperBound)
+        value = target
+        onChange?(target)
+        update(value: target, range: range, onChange: onChange ?? { _ in })
+    }
+
+    private func refreshAppearance() {
+        progress.progressTintColor = isAdjusting ? tintColor : .white
+        backgroundColor = isFocused ? UIColor.white.withAlphaComponent(0.18) : .clear
+        transform = isFocused ? CGAffineTransform(scaleX: 1.03, y: 1.03) : .identity
+        accessibilityValue = "\(time(value)) of \(time(range.upperBound))\(isAdjusting ? ", adjusting" : "")"
+    }
+
+    private func time(_ value: Double) -> String {
+        let seconds = max(0, Int(value))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+#endif
 
 private struct FocusSection: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {

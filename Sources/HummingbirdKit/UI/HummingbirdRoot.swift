@@ -20,6 +20,10 @@ public struct HummingbirdRoot: View {
         #if os(tvOS)
         if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] == "player" {
             TVPlayerDebugScene()
+        } else if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] == "player-seek" {
+            TVSeekDebugScene()
+        } else if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] == "install-preview" {
+            TVInstallPreviewDebugScene()
         } else {
             appRoot
         }
@@ -94,6 +98,61 @@ private struct TVPlayerDebugScene: View {
         guard let item = window.windowScene?.focusSystem?.focusedItem else { return "none" }
         let label = (item as? UIView)?.accessibilityLabel ?? ""
         return "\(type(of: item)) \(label)".trimmingCharacters(in: .whitespaces)
+    }
+}
+
+@MainActor
+private struct TVSeekDebugScene: View {
+    @State private var player = TVSeekDebugModel()
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            AdvancedVideoPlayerControls(model: player, isFullscreen: false, availableWidth: 1_200) { _ in
+                EmptyView()
+            }
+        }
+    }
+}
+
+@MainActor
+@Observable
+private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
+    let title = "Seek control test"
+    var playbackTime: Double = 60
+    let duration: Double = 600
+    var isPlaying = false
+    var playbackRate: Float = 1
+    let pictureInPictureSupported = false
+
+    func togglePlayback() { isPlaying.toggle() }
+    func skip(by seconds: Double) { seek(to: playbackTime + seconds) }
+    func seek(to seconds: Double) { playbackTime = min(max(0, seconds), duration) }
+    func setPlaybackRate(_ rate: Float) { playbackRate = rate }
+    func startPictureInPicture() {}
+    func toggleFullscreen() {}
+}
+
+@MainActor
+private struct TVInstallPreviewDebugScene: View {
+    private let preview: InstallPreview = {
+        let urls = (0..<30).map { "https://audit-\($0).example.com/path" }
+        let json = """
+        {"name":"Preview scroll test","description":"Every allowed host must remain reachable before installation.","author":"Hummingbird","version":1,"id":"preview-scroll-test","allowUrls":\(try! String(data: JSONEncoder().encode(urls), encoding: .utf8)!)}
+        """
+        let config = try! JSONDecoder().decode(PluginConfig.self, from: Data(json.utf8))
+        return InstallPreview(config: config, script: "", iconURL: nil, warnings: [], existing: nil)
+    }()
+
+    var body: some View {
+        NavigationStack {
+            PreviewView(preview: preview)
+                .navigationTitle("Add source")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") {} }
+                    ToolbarItem(placement: .confirmationAction) { Button("Install") {} }
+                }
+        }
     }
 }
 #endif

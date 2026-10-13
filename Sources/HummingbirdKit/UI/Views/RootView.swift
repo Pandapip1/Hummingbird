@@ -1,4 +1,5 @@
 import Foundation
+import DebugKit
 import DynamicTabbingKit
 import SwiftOpenUI
 #if os(macOS) && !BACKEND_GTK
@@ -14,8 +15,9 @@ struct RootView: View {
     var body: some View {
         @Bindable var app = model
         @Bindable var plugins = model.plugins
-        BrowserTabContainer(items: browserTabItems, selection: activeTabBinding, onClose: { app.closeTab($0) }) {
-            BrowserTabContentView(tab: app.activeTab, showingTabOverview: $showingTabOverview)
+        BrowserTabContainer(items: browserTabItems, selection: activeTabBinding,
+                            onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview) { item in
+            BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
         }
         #if !os(macOS)
         .fullScreenCover(isPresented: $showingTabOverview) {
@@ -61,6 +63,10 @@ struct RootView: View {
         .onChange(of: plugins.pendingDirectLogin) { _, id in
             if let id { loginTarget = LoginTarget(value: id); plugins.pendingDirectLogin = nil }
         }
+        .task {
+            let overview = $showingTabOverview
+            DebugServer.shared.registerAction("toggleTabOverview") { overview.wrappedValue.toggle() }
+        }
     }
 
     private var loginBinding: Binding<Bool> {
@@ -77,6 +83,10 @@ struct RootView: View {
 
     private var activeTabBinding: Binding<UUID> {
         Binding(get: { model.activeTabID }, set: { model.activeTabID = $0 })
+    }
+
+    private func browserTab(for id: UUID) -> BrowserTab {
+        model.contentTabs.first { $0.id == id } ?? model.activeTab
     }
 }
 

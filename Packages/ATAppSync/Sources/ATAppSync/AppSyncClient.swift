@@ -44,6 +44,7 @@ public actor AppSyncClient {
     private let recognizedAppIDs: Set<AppSyncAppID>
     private let journalEngine: SpaceSyncEngine
     private let messaging: InstanceMessagingService?
+    private let lanSync: AppSyncLANClient?
     private var advertisement: InstanceInboxAdvertisement?
     private var cloudMessageIDs = Set<UUID>()
 
@@ -57,6 +58,9 @@ public actor AppSyncClient {
         self.appID = appID
         self.recognizedAppIDs = recognizedAppIDs ?? [appID]
         self.messaging = messaging
+        lanSync = messaging.map {
+            AppSyncLANClient(messaging: $0, journal: mutationLog, appID: appID)
+        }
         journalEngine = SpaceSyncEngine(
             spaces: spaces, journal: mutationLog, repo: repo, space: space,
             journalCollection: AppSyncSchema.journal
@@ -65,6 +69,16 @@ public actor AppSyncClient {
 
     public func pullMutations() async throws -> [JournalMutation] {
         try await journalEngine.pull()
+    }
+
+    /// Pulls every currently reachable trusted LAN peer. This is intentionally
+    /// separate from the Space transport so callers can attempt both and retain
+    /// useful progress when either network path fails.
+    public func pullLANMutations() async -> [JournalMutation] {
+        if let messaging, advertisement == nil {
+            advertisement = try? await messaging.startLANServer(appIDs: recognizedAppIDs)
+        }
+        return await lanSync?.pull() ?? []
     }
 
     public func pushMutations() async throws {
@@ -164,7 +178,9 @@ public actor AppSyncClient {
             throw AppSyncPeerVerificationError.peerNotFound
         }
         _ = try messaging.trust(match.peer)
-        try await syncTrustFacts(using: messaging)
+        // Verification is a durable local action. Cloud publication is an
+        // independent transport and may be unavailable while LAN sync works.
+        try? await syncTrustFacts(using: messaging)
         return .init(
             registration: match.registration,
             state: messaging.trustStore.state(of: match.id)
@@ -249,8 +265,15 @@ public actor AppSyncClient {
         including discovered: [AppSyncInstanceRegistration]
     ) async throws -> [AppSyncInstanceRegistration] {
         var registrations: [AppSyncPeerID: AppSyncInstanceRegistration] = [:]
+        if let messaging {
+            for registration in messaging.discoveredRegistrations() {
+                registrations[registration.stablePeerID] = registration
+            }
+        }
         for registration in discovered { registrations[registration.stablePeerID] = registration }
-        for registration in try await instanceRegistrations() {
+        // Account discovery complements LAN discovery. Losing the PDS must not
+        // hide otherwise reachable local peers.
+        for registration in (try? await instanceRegistrations()) ?? [] {
             registrations[registration.stablePeerID] = registration
         }
         return Array(registrations.values)
@@ -289,14 +312,25 @@ public actor AppSyncClient {
 
     private func sendOverLANIfAvailable(_ envelope: InstanceInboxEnvelope,
                                         recipientID: UUID) async throws -> Bool {
+        if let registration = messaging?.discoveredRegistrations().first(where: {
+            $0.instanceID == recipientID && $0.recognizes(appID)
+        }), try await send(envelope, to: registration) {
+            return true
+        }
         let key = RecordKey(rawValue: recipientID.uuidString.lowercased())!
         guard let response = try? await spaces.getRecord(
             space: space, repo: repo, collection: AppSyncSchema.instance, rkey: key
         ), let record = try? response.value.decode(InstanceRecord.self),
               record.registration.instanceID == recipientID,
               (try? record.registration.verify()) != nil,
-              record.registration.recognizes(appID),
-              let endpoint = record.registration.lanEndpoint else { return false }
+              record.registration.recognizes(appID) else { return false }
+        return try await send(envelope, to: record.registration)
+    }
+
+    private func send(_ envelope: InstanceInboxEnvelope,
+                      to registration: AppSyncInstanceRegistration) async throws -> Bool {
+        guard (try? registration.verify()) != nil,
+              let endpoint = registration.lanEndpoint else { return false }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = try JSONEncoder().encode(envelope)

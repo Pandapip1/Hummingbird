@@ -318,6 +318,78 @@ final class ATAppSyncTests: XCTestCase {
         XCTAssertFalse(code.rawValue.contains(identity.publicIdentity.id.uuidString))
     }
 
+    func testProfileRegistryLoadsDistinctPersistentInstanceIdentities() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ATAppSyncProfiles-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let credentials = MemoryAppSyncCredentialStore()
+        let registry = try AppSyncProfileRegistry(
+            credentialStore: credentials, storageDirectory: root
+        )
+        let first = try registry.createProfile()
+        let second = try registry.createProfile()
+
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertNotEqual(
+            first.peerService.peer.publicIdentity.stableID,
+            second.peerService.peer.publicIdentity.stableID
+        )
+
+        let reopened = try AppSyncProfileRegistry(
+            credentialStore: credentials, storageDirectory: root
+        )
+        let restored = try reopened.profiles()
+        XCTAssertEqual(Set(restored.map(\.id)), [first.id, second.id])
+        XCTAssertEqual(
+            Set(restored.map { $0.peerService.peer.publicIdentity.stableID }),
+            [
+                first.peerService.peer.publicIdentity.stableID,
+                second.peerService.peer.publicIdentity.stableID,
+            ]
+        )
+    }
+
+    func testTrustedProfilesPullSignedJournalOverLANWithoutAccount() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ATAppSyncLAN-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appID = AppSyncAppID(rawValue: "com.example.lan-test")!
+        let a = try makePeer("a", root: root)
+        let b = try makePeer("b", root: root)
+        let aAdvertisement = try await a.startLANServer(appIDs: [appID])
+        let bAdvertisement = try await b.startLANServer(appIDs: [appID])
+        let aRegistration = try a.registration(
+            appIDs: [appID], advertisement: aAdvertisement
+        )
+        let bRegistration = try b.registration(
+            appIDs: [appID], advertisement: bAdvertisement
+        )
+        try a.observeDiscoveredRegistration(bRegistration)
+        try b.observeDiscoveredRegistration(aRegistration)
+        try a.trust(b.peer.publicIdentity)
+        try b.trust(a.peer.publicIdentity)
+
+        let aJournal = try OfflineMutationJournal(
+            fileURL: root.appendingPathComponent("a-journal.json"),
+            signer: a.peer.mutationSigner()
+        )
+        let bJournal = try OfflineMutationJournal(
+            fileURL: root.appendingPathComponent("b-journal.json"),
+            signer: b.peer.mutationSigner()
+        )
+        let event = try aJournal.appendPut(
+            collection: NSID(rawValue: "com.example.profile.value")!,
+            key: RecordKey(rawValue: "item")!, value: .string("offline")
+        )
+        _ = AppSyncLANClient(messaging: a, journal: aJournal, appID: appID)
+        let bClient = AppSyncLANClient(messaging: b, journal: bJournal, appID: appID)
+
+        let pulledEvents = await bClient.pull()
+        XCTAssertEqual(pulledEvents, [event])
+    }
+
     private func makePeer(_ name: String, root: URL) throws -> AppSyncPeerService {
         try AppSyncPeerService(
             credentialStore: MemoryAppSyncCredentialStore(),

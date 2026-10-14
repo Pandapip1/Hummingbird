@@ -16,8 +16,6 @@ final class ProfileAccountService {
     @ObservationIgnored private let authenticator: ATProtoOAuthAuthenticator
     @ObservationIgnored private let credentialStore: OAuthCredentialStore
     @ObservationIgnored private let changes: ProfileChangeStore
-    @ObservationIgnored private weak var library: LibraryStore?
-    @ObservationIgnored private weak var plugins: PluginManager?
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private let peerService: AppSyncPeerService?
 
@@ -43,9 +41,23 @@ final class ProfileAccountService {
             accessGroup: keychainAccessGroup
         )
         self.changes = changes
-        self.library = library
-        self.plugins = plugins
         self.peerService = peerService
+        if let mutationLog = changes.mutationLog {
+            syncService = ProfileSyncService(
+                changes: changes, mutationLog: mutationLog,
+                library: library, plugins: plugins, peerService: peerService
+            )
+            syncService?.bootstrapCurrentProfile()
+            changes.setMutationHandler { [weak self] in
+                Task { @MainActor in await self?.sync() }
+            }
+            retryTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.sync()
+                    try? await Task.sleep(for: .seconds(30))
+                }
+            }
+        }
         restore()
     }
 
@@ -69,18 +81,28 @@ final class ProfileAccountService {
     func sync() async { await syncService?.sync() }
 
     func peers() async throws -> [AppSyncPeerTrustSummary] {
-        guard let syncService else { return [] }
-        return try await syncService.peers()
+        if let syncService { return try await syncService.peers() }
+        return peerService?.peers(appIDs: [HummingbirdProfileSchema.appID]) ?? []
     }
 
     func verifyPeer(_ code: AppSyncPeerVerificationCode) async throws {
-        guard let syncService else { throw PairingError.unavailable }
-        try await syncService.verifyPeer(code)
+        if let syncService {
+            try await syncService.verifyPeer(code)
+        } else if let peerService {
+            _ = try peerService.verifyPeer(code, appIDs: [HummingbirdProfileSchema.appID])
+        } else {
+            throw PairingError.unavailable
+        }
     }
 
     func distrustPeer(_ peer: AppSyncPeer) async throws {
-        guard let syncService else { throw PairingError.unavailable }
-        try await syncService.distrustPeer(peer)
+        if let syncService {
+            try await syncService.distrustPeer(peer)
+        } else if let peerService {
+            _ = try peerService.revokeTrust(with: peer)
+        } else {
+            throw PairingError.unavailable
+        }
     }
 
     func sendCredential(_ auth: SourceAuth, pluginID: String, sourceURL: URL,
@@ -96,42 +118,24 @@ final class ProfileAccountService {
         UserDefaults.standard.removeObject(forKey: "atproto.currentAccount")
         account = nil
         handle = nil
-        syncService = nil
-        retryTask?.cancel()
-        retryTask = nil
-        changes.setMutationHandler(nil)
+        syncService?.disconnectAccount()
     }
 
     private func restore() {
         guard let raw = UserDefaults.standard.string(forKey: "atproto.currentAccount"),
               let did = DID(rawValue: raw), let credential = try? credentialStore.load(account: did) else { return }
         install(credential)
-        syncService?.bootstrapCurrentProfile()
     }
 
     private func install(_ credential: ATProtoOAuthCredential) {
         account = credential.session.account
         handle = credential.session.handle
-        guard let library, let plugins else { return }
-        guard let mutationLog = changes.mutationLog else {
+        guard syncService != nil else {
             errorMessage = "The local profile could not be opened."
-            syncService = nil
             return
         }
-        syncService = ProfileSyncService(
-            credential: credential, oauth: oauth, credentialStore: credentialStore,
-            changes: changes, mutationLog: mutationLog, library: library, plugins: plugins,
-            peerService: peerService
+        syncService?.connect(
+            credential: credential, oauth: oauth, credentialStore: credentialStore
         )
-        changes.setMutationHandler { [weak self] in
-            Task { @MainActor in await self?.sync() }
-        }
-        retryTask?.cancel()
-        retryTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.sync()
-                try? await Task.sleep(for: .seconds(30))
-            }
-        }
     }
 }

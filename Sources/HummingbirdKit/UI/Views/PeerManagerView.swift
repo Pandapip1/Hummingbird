@@ -67,7 +67,7 @@ struct SyncSettingsView: View {
                     Button { isScanning = true } label: {
                         Label("Verify instance", systemImage: "qrcode.viewfinder")
                     }
-                    .disabled(!QRCodeScanning.isAvailable || app.profileAccount.syncService == nil)
+                    .disabled(!QRCodeScanning.isAvailable || app.peerService == nil)
                 }
             }
         }

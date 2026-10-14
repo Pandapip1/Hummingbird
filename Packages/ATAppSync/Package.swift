@@ -11,9 +11,17 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
     ],
     targets: [
+        .systemLibrary(
+            name: "CDNSService",
+            providers: [
+                .apt(["libavahi-compat-libdnssd-dev"]),
+                .brew(["avahi"]),
+            ]
+        ),
         .target(
             name: "ATAppSync",
             dependencies: [
+                "CDNSService",
                 .product(name: "ATProtoKit", package: "ATProtoKit"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),

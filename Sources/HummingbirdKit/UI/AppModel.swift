@@ -21,6 +21,7 @@ final class AppModel {
     let searchHistory: SearchHistory
     let profileChanges: ProfileChangeStore
     let profileAccount: ProfileAccountService
+    let profileRegistry: AppSyncProfileRegistry?
     let peerService: AppSyncPeerService?
     var incomingCredentialPairing: CredentialPairingRequest?
 
@@ -89,13 +90,6 @@ final class AppModel {
             "profile-sync", isDirectory: true
          ),
          localProfileID suppliedLocalProfileID: UUID? = nil) {
-        let peerService = try? AppSyncPeerService(
-            credentialStore: credentialStore, storageDirectory: Storage.directory
-        )
-        let profileChanges = ProfileChangeStore(
-            storageDirectory: profileStorageDirectory,
-            signer: try? peerService?.peer.mutationSigner()
-        )
         let localProfileID: UUID
         if let suppliedLocalProfileID {
             localProfileID = suppliedLocalProfileID
@@ -106,6 +100,17 @@ final class AppModel {
             localProfileID = UUID()
             UserDefaults.standard.set(localProfileID.uuidString, forKey: Self.localProfileIDKey)
         }
+        let profileRegistry = try? AppSyncProfileRegistry(
+            credentialStore: credentialStore, storageDirectory: Storage.directory
+        )
+        let activeProfile = try? profileRegistry?.ensureProfile(
+            id: localProfileID, migrateLegacyIdentity: true
+        )
+        let peerService = activeProfile?.peerService
+        let profileChanges = ProfileChangeStore(
+            storageDirectory: profileStorageDirectory,
+            signer: try? peerService?.peer.mutationSigner()
+        )
         do {
             _ = try profileChanges.activate(localProfileID: localProfileID)
         } catch {
@@ -120,7 +125,11 @@ final class AppModel {
         self.playbackQueue = PlaybackQueue(restored: persistence.playbackQueue)
         self.searchHistory = SearchHistory(load: { persistence.searchHistory })
         self.profileChanges = profileChanges
+        self.profileRegistry = profileRegistry
         self.peerService = peerService
+        if let profileRegistry {
+            Task { await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID]) }
+        }
         self.profileAccount = ProfileAccountService(
             changes: profileChanges, library: library, plugins: plugins,
             peerService: peerService

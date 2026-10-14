@@ -11,19 +11,30 @@ final class ProfileSyncService {
     private(set) var state: State = .idle
     private(set) var lastSyncedAt: Date?
 
-    @ObservationIgnored private let owner: DID
-    @ObservationIgnored private let appSync: AppSyncClient
-    @ObservationIgnored private let spaces: SpacesClient
+    @ObservationIgnored private var appSync: AppSyncClient?
+    @ObservationIgnored private var spaces: SpacesClient?
+    @ObservationIgnored private let lanSync: AppSyncLANClient?
     @ObservationIgnored private let changes: ProfileChangeStore
     @ObservationIgnored private weak var library: LibraryStore?
     @ObservationIgnored private weak var plugins: PluginManager?
+    @ObservationIgnored private let peerService: AppSyncPeerService?
 
-    init(credential: ATProtoOAuthCredential, oauth: ATProtoOAuthClient,
-         credentialStore: OAuthCredentialStore?, changes: ProfileChangeStore,
-         mutationLog: AppSyncMutationLog,
+    init(changes: ProfileChangeStore, mutationLog: AppSyncMutationLog,
          library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?) {
-        owner = credential.session.account
+        lanSync = peerService.map {
+            AppSyncLANClient(
+                messaging: $0, journal: mutationLog, appID: HummingbirdProfileSchema.appID
+            )
+        }
+        self.changes = changes
+        self.library = library
+        self.plugins = plugins
+        self.peerService = peerService
+    }
+
+    func connect(credential: ATProtoOAuthCredential, oauth: ATProtoOAuthClient,
+                 credentialStore: OAuthCredentialStore?) {
         let authorization = DPoPAuthorization(credential: credential, oauth: oauth, store: credentialStore)
         let xrpc = XRPCClient(service: credential.session.pds, authorization: authorization)
         let spaces = SpacesClient(xrpc: xrpc)
@@ -32,14 +43,15 @@ final class ProfileSyncService {
             key: HummingbirdProfileSchema.spaceKey
         )
         self.spaces = spaces
-        appSync = AppSyncClient(
-            spaces: spaces, mutationLog: mutationLog, repo: credential.session.account, space: space,
+        guard let mutationLog = changes.mutationLog else { return }
+        self.appSync = AppSyncClient(
+            spaces: spaces, mutationLog: mutationLog,
+            repo: credential.session.account, space: space,
             appID: HummingbirdProfileSchema.appID, messaging: peerService
         )
-        self.changes = changes
-        self.library = library
-        self.plugins = plugins
     }
+
+    func disconnectAccount() { appSync = nil; spaces = nil }
 
     func bootstrapCurrentProfile() {
         guard let library, let plugins, changes.mutationLog?.isEmpty == true else { return }
@@ -57,12 +69,27 @@ final class ProfileSyncService {
     func sync() async {
         guard state != .syncing else { return }
         state = .syncing
+        var completedTransport = false
+        if let lanSync {
+            let remote = await lanSync.pull()
+            do {
+                try await apply(remote, needsUpload: true)
+                completedTransport = true
+            } catch {
+                state = .failed(error.localizedDescription)
+            }
+        }
+        guard let appSync else {
+            if completedTransport { lastSyncedAt = Date(); state = .idle }
+            else if case .syncing = state { state = .idle }
+            return
+        }
         do {
             try await ensureOwnerSpace()
             // Pull before pushing so a newer edit from another device cannot be
             // overwritten merely because this device happened to reconnect.
             let remote = try await appSync.pullMutations()
-            try await apply(remote)
+            try await apply(remote, needsUpload: false)
             try await appSync.pushMutations()
             let messages = try await appSync.syncMessages()
             try await applyMessages(messages)
@@ -83,23 +110,36 @@ final class ProfileSyncService {
         let payload = PairingPayload.credentials(.init(
             pluginID: pluginID, pluginSourceURL: sourceURL, auth: auth
         ))
-        try await appSync.sendMessage(try .encoding(payload), to: recipient)
+        let encoded = try JSONValue.encoding(payload)
+        if let appSync { try await appSync.sendMessage(encoded, to: recipient) }
+        else if let lanSync { try await lanSync.send(encoded, to: recipient) }
+        else { throw PairingError.unavailable }
     }
 
     func peers() async throws -> [AppSyncPeerTrustSummary] {
-        try await appSync.peers()
+        if let appSync { return try await appSync.peers() }
+        return peerService?.peers(appIDs: [HummingbirdProfileSchema.appID]) ?? []
     }
 
     func verifyPeer(_ code: AppSyncPeerVerificationCode) async throws {
-        _ = try await appSync.completePeerVerification(code)
+        if let appSync {
+            _ = try await appSync.completePeerVerification(code)
+        } else if let peerService {
+            _ = try peerService.verifyPeer(code, appIDs: [HummingbirdProfileSchema.appID])
+        } else { throw PairingError.unavailable }
     }
 
     func distrustPeer(_ peer: AppSyncPeer) async throws {
-        try await appSync.distrust(peer)
-        try await appSync.syncTrustFacts()
+        if let appSync { try await appSync.distrust(peer) }
+        else if let peerService { _ = try peerService.revokeTrust(with: peer) }
+        else { throw PairingError.unavailable }
+        // The local revocation is authoritative even while the account server
+        // is unreachable. A later sync will publish it through ATProto.
+        try? await appSync?.syncTrustFacts()
     }
 
     private func ensureOwnerSpace() async throws {
+        guard let spaces else { return }
         do {
             _ = try await spaces.createOwnerSpace(
                 type: HummingbirdProfileSchema.spaceType, key: HummingbirdProfileSchema.spaceKey
@@ -109,11 +149,11 @@ final class ProfileSyncService {
         }
     }
 
-    private func apply(_ records: [AppSyncMutation]) async throws {
+    private func apply(_ records: [AppSyncMutation], needsUpload: Bool) async throws {
         guard let library, let plugins else { return }
         for event in records {
             guard let mutationLog = changes.mutationLog else { return }
-            guard try mutationLog.merge(event, needsUpload: false) else { continue }
+            guard try mutationLog.merge(event, needsUpload: needsUpload) else { continue }
             if event.operation == .delete {
                 if event.collection == HummingbirdProfileSchema.plugin {
                     plugins.applyRemoteDelete(key: event.recordKey)
@@ -131,7 +171,7 @@ final class ProfileSyncService {
     }
 
     private func applyMessages(_ messages: [AppSyncMessage]) async throws {
-        guard let plugins else { return }
+        guard let plugins, let appSync else { return }
         for message in messages {
             guard case .credentials(let transfer) = try message.payload.decode(PairingPayload.self),
                   !transfer.auth.isEmpty,

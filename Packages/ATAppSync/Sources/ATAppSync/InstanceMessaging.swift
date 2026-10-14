@@ -122,26 +122,40 @@ public struct InstanceIdentity: Sendable {
 }
 
 public final class InstanceIdentityStore: @unchecked Sendable {
-    private static let account = "com.eightybps.appsync.instance-identity.v1"
+    private static let legacyAccount = "com.eightybps.appsync.instance-identity.v1"
     private let credentialStore: any AppSyncCredentialStore
+    private let account: String
+    private let migrateLegacyIdentity: Bool
     private let lock = NSLock()
     private var cached: InstanceIdentity?
 
-    public init(credentialStore: any AppSyncCredentialStore) { self.credentialStore = credentialStore }
+    public init(credentialStore: any AppSyncCredentialStore, profileID: UUID? = nil,
+                migrateLegacyIdentity: Bool = false) {
+        self.credentialStore = credentialStore
+        account = profileID.map {
+            "com.eightybps.appsync.profile.\($0.uuidString.lowercased()).instance-identity.v1"
+        } ?? Self.legacyAccount
+        self.migrateLegacyIdentity = migrateLegacyIdentity
+    }
 
     public func identity() throws -> InstanceIdentity {
         try lock.withLock {
             if let cached { return cached }
-            if let data = credentialStore.load(account: Self.account),
+            let storedData = credentialStore.load(account: account)
+                ?? (migrateLegacyIdentity ? credentialStore.load(account: Self.legacyAccount) : nil)
+            if let data = storedData,
                let stored = try? JSONDecoder().decode(InstanceIdentity.Stored.self, from: data) {
                 let identity = try InstanceIdentity(stored: stored)
+                if credentialStore.load(account: account) == nil {
+                    credentialStore.save(data, account: account)
+                }
                 cached = identity
                 return identity
             }
             let identity = InstanceIdentity.generate()
             let data = try JSONEncoder().encode(identity.stored)
-            credentialStore.save(data, account: Self.account)
-            guard credentialStore.load(account: Self.account) == data else {
+            credentialStore.save(data, account: account)
+            guard credentialStore.load(account: account) == data else {
                 throw InstanceMessagingError.credentialStoreUnavailable
             }
             cached = identity
@@ -308,16 +322,28 @@ public final class InstanceInbox: @unchecked Sendable {
 }
 
 public final class InstanceInboxLANServer: @unchecked Sendable {
+    private let identity: InstanceIdentity
     private let inbox: InstanceInbox
     private let trustStore: AppSyncTrustStore
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     private let lock = NSLock()
     private var channel: Channel?
     private(set) var endpoint: URL?
+    private var registration: AppSyncInstanceRegistration?
+    private var journal: OfflineMutationJournal?
 
-    public init(inbox: InstanceInbox, trustStore: AppSyncTrustStore) {
+    public init(identity: InstanceIdentity, inbox: InstanceInbox, trustStore: AppSyncTrustStore) {
+        self.identity = identity
         self.inbox = inbox
         self.trustStore = trustStore
+    }
+
+    public func publish(_ registration: AppSyncInstanceRegistration) {
+        lock.withLock { self.registration = registration }
+    }
+
+    public func attach(journal: OfflineMutationJournal) {
+        lock.withLock { self.journal = journal }
     }
 
     deinit { stop() }
@@ -326,23 +352,41 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
         if let endpoint = lock.withLock({ endpoint }) { return endpoint }
         let inbox = self.inbox
         let trustStore = self.trustStore
+        let owner = WeakLANServer(self)
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
             .childChannelInitializer { channel in
                 channel.pipeline.configureHTTPServerPipeline().flatMap {
                     channel.pipeline.addHandler(InboxAppendHTTPHandler { head, data in
+                        guard let self = owner.value else {
+                            return .init(status: .serviceUnavailable)
+                        }
+                        if head.method == .GET, head.uri == "/appsync/v1/registration" {
+                            guard let registration = self.lock.withLock({ self.registration }),
+                                  let body = try? JSONEncoder().encode(registration) else {
+                                return .init(status: .serviceUnavailable)
+                            }
+                            return .init(status: .ok, body: body, contentType: "application/json")
+                        }
+                        if head.method == .POST, head.uri == "/appsync/v1/sync" {
+                            return self.syncResponse(data, appIDs: appIDs)
+                        }
                         guard head.method == .POST, head.uri == "/inbox",
                               let envelope = try? JSONDecoder().decode(InstanceInboxEnvelope.self, from: data),
                               appIDs.contains(envelope.appID),
                               trustStore.trusts(envelope.sender.stableID)
-                        else { return .forbidden }
-                        do { try inbox.appendRemote(envelope); return .noContent }
-                        catch { return .badRequest }
+                        else { return .init(status: .forbidden) }
+                        do {
+                            try inbox.appendRemote(envelope)
+                            return .init(status: .noContent)
+                        } catch { return .init(status: .badRequest) }
                     })
                 }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-        let channel = try await bootstrap.bind(host: "0.0.0.0", port: 0).get()
+        // Bind the IPv6 wildcard. Platforms that permit mapped IPv4 retain
+        // dual-stack reachability, while IPv6-only LANs work without fallback.
+        let channel = try await bootstrap.bind(host: "::", port: 0).get()
         guard let port = channel.localAddress?.port else {
             try? await channel.close()
             throw InstanceMessagingError.serverUnavailable
@@ -357,6 +401,30 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
         return endpoint
     }
 
+    private func syncResponse(_ data: Data, appIDs: Set<AppSyncAppID>) -> LANHTTPResponse {
+        guard let envelope = try? JSONDecoder().decode(InstanceInboxEnvelope.self, from: data),
+              appIDs.contains(envelope.appID), trustStore.trusts(envelope.sender.stableID),
+              let request = try? inbox.open(envelope, as: AppSyncLANRequest.self),
+              request.appID == envelope.appID else { return .init(status: .forbidden) }
+        do {
+            let journal = lock.withLock { self.journal }
+            let events = journal?.events() ?? []
+            let batch = try events.isEmpty ? nil : journal?.signedBatch(
+                type: NSID(rawValue: "com.eightybps.appsync.journal")!, mutations: events
+            )
+            let snapshot = AppSyncLANSnapshot(
+                nonce: request.nonce, journal: batch, trustFacts: trustStore.facts()
+            )
+            let response = try InstanceInboxEnvelope.seal(
+                snapshot, appID: request.appID, from: identity, to: envelope.sender
+            )
+            return .init(
+                status: .ok, body: try JSONEncoder().encode(response),
+                contentType: "application/json"
+            )
+        } catch { return .init(status: .internalServerError) }
+    }
+
     public func stop() {
         let channel = lock.withLock { () -> Channel? in
             let value = self.channel
@@ -369,12 +437,18 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
     }
 }
 
+private final class WeakLANServer: @unchecked Sendable {
+    weak var value: InstanceInboxLANServer?
+    init(_ value: InstanceInboxLANServer) { self.value = value }
+}
+
 public struct InstanceInboxAdvertisement: Codable, Hashable, Sendable {
     public let identity: InstancePublicIdentity
     public let endpoint: URL
 }
 
 public final class InstanceMessagingService: @unchecked Sendable {
+    public let profileID: UUID
     public let identity: InstanceIdentity
     public let inbox: InstanceInbox
     public let trustStore: AppSyncTrustStore
@@ -384,25 +458,77 @@ public final class InstanceMessagingService: @unchecked Sendable {
         .init(peerID: identity.publicIdentity.stableID)
     }
     private let server: InstanceInboxLANServer
+    private let discovery = AppSyncLANDiscovery()
     private let trustLock = NSLock()
     private var trustClock: HybridLogicalClock
 
-    public init(credentialStore: any AppSyncCredentialStore, storageDirectory: URL) throws {
-        identity = try InstanceIdentityStore(credentialStore: credentialStore).identity()
+    public init(credentialStore: any AppSyncCredentialStore, storageDirectory: URL,
+                profileID: UUID = UUID(), migrateLegacyIdentity: Bool = false) throws {
+        self.profileID = profileID
+        identity = try InstanceIdentityStore(
+            credentialStore: credentialStore, profileID: profileID,
+            migrateLegacyIdentity: migrateLegacyIdentity
+        ).identity()
         let file = storageDirectory.appendingPathComponent("instance-inbox", isDirectory: true)
             .appendingPathComponent("\(identity.publicIdentity.id.uuidString.lowercased()).json")
         inbox = try InstanceInbox(identity: identity, fileURL: file)
         trustStore = try AppSyncTrustStore(
             observer: identity.publicIdentity,
             fileURL: storageDirectory.appendingPathComponent("peer-trust", isDirectory: true)
+                .appendingPathComponent(profileID.uuidString.lowercased(), isDirectory: true)
                 .appendingPathComponent("facts.json")
         )
         trustClock = HybridLogicalClock(deviceID: identity.publicIdentity.id)
-        server = InstanceInboxLANServer(inbox: inbox, trustStore: trustStore)
+        server = InstanceInboxLANServer(identity: identity, inbox: inbox, trustStore: trustStore)
     }
 
     public func startLANServer(appIDs: Set<AppSyncAppID>) async throws -> InstanceInboxAdvertisement {
-        .init(identity: identity.publicIdentity, endpoint: try await server.start(appIDs: appIDs))
+        let advertisement = InstanceInboxAdvertisement(
+            identity: identity.publicIdentity, endpoint: try await server.start(appIDs: appIDs)
+        )
+        let registration = try registration(
+            appIDs: appIDs, advertisement: advertisement
+        )
+        server.publish(registration)
+        try await discovery.start(advertising: registration)
+        return advertisement
+    }
+
+    /// Recently observed, cryptographically authenticated LAN registrations.
+    /// Presence is advisory and expires quickly; trust remains an independent
+    /// user decision evaluated by `AppSyncTrustStore`.
+    public func discoveredRegistrations() -> [AppSyncInstanceRegistration] {
+        discovery.registrations()
+    }
+
+    /// Accepts a signed registration supplied by another discovery mechanism.
+    /// DNS-SD uses this same verified cache internally; applications may feed
+    /// equivalent nearby transports without weakening identity validation.
+    public func observeDiscoveredRegistration(
+        _ registration: AppSyncInstanceRegistration
+    ) throws {
+        try discovery.observe(registration)
+    }
+
+    public func attach(journal: OfflineMutationJournal) { server.attach(journal: journal) }
+
+    public func peers(appIDs: Set<AppSyncAppID>) -> [AppSyncPeerTrustSummary] {
+        trustStore.peers(among: discovery.registrations(), localAppIDs: appIDs)
+    }
+
+    @discardableResult
+    public func verifyPeer(
+        _ code: AppSyncPeerVerificationCode, appIDs: Set<AppSyncAppID>
+    ) throws -> AppSyncPeerTrustSummary {
+        let compatible = peers(appIDs: appIDs)
+        guard let match = compatible.first(where: { $0.id == code.peerID }) else {
+            throw AppSyncPeerVerificationError.peerNotFound
+        }
+        _ = try trust(match.peer)
+        return .init(
+            registration: match.registration,
+            state: trustStore.state(of: match.id)
+        )
     }
 
     public func registration(appIDs: Set<AppSyncAppID>,
@@ -417,7 +543,7 @@ public final class InstanceMessagingService: @unchecked Sendable {
         )
     }
 
-    public func stopLANServer() { server.stop() }
+    public func stopLANServer() { discovery.stop(); server.stop() }
 
     @discardableResult
     public func trust(_ peer: AppSyncPeer) throws -> AppSyncTrustFact {
@@ -450,14 +576,20 @@ public final class InstanceMessagingService: @unchecked Sendable {
     public func trusts(_ peer: AppSyncPeer) -> Bool { trustStore.trusts(peer.stableID) }
 }
 
+private struct LANHTTPResponse {
+    let status: HTTPResponseStatus
+    var body = Data()
+    var contentType: String?
+}
+
 private final class InboxAppendHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
     private var head: HTTPRequestHead?
     private var body = ByteBuffer()
-    private let response: @Sendable (HTTPRequestHead, Data) -> HTTPResponseStatus
+    private let response: @Sendable (HTTPRequestHead, Data) -> LANHTTPResponse
 
-    init(response: @escaping @Sendable (HTTPRequestHead, Data) -> HTTPResponseStatus) {
+    init(response: @escaping @Sendable (HTTPRequestHead, Data) -> LANHTTPResponse) {
         self.response = response
     }
 
@@ -471,13 +603,21 @@ private final class InboxAppendHTTPHandler: ChannelInboundHandler, @unchecked Se
             body.writeBuffer(&bytes)
         case .end:
             let payload = Data(body.readBytes(length: body.readableBytes) ?? [])
-            let status = head.map { response($0, payload) } ?? .badRequest
+            let response = head.map { response($0, payload) } ?? .init(status: .badRequest)
             var headers = HTTPHeaders()
-            headers.add(name: "Content-Length", value: "0")
+            headers.add(name: "Content-Length", value: "\(response.body.count)")
+            if let contentType = response.contentType {
+                headers.add(name: "Content-Type", value: contentType)
+            }
             headers.add(name: "Connection", value: "close")
             context.write(wrapOutboundOut(.head(.init(
-                version: .http1_1, status: status, headers: headers
+                version: .http1_1, status: response.status, headers: headers
             ))), promise: nil)
+            if !response.body.isEmpty {
+                var bytes = context.channel.allocator.buffer(capacity: response.body.count)
+                bytes.writeBytes(response.body)
+                context.write(wrapOutboundOut(.body(.byteBuffer(bytes))), promise: nil)
+            }
             context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
             context.close(promise: nil)
         }

@@ -19,6 +19,23 @@ if gtkBackendEnabled { backendSwiftSettings.append(.define("BACKEND_GTK_WEBKIT")
 
 let nonApple: [Platform] = [.linux, .android, .windows]
 
+// Apple SDKs ship SQLite and expose its headers through the SDK search paths, so
+// asking pkg-config to locate it there is both unnecessary and noisy in Xcode.
+// Linux still needs pkg-config to contribute the distro-specific include paths.
+#if os(Linux)
+let sqliteTarget: Target = .systemLibrary(
+    name: "CSQLite",
+    path: "Sources/CSQLite",
+    pkgConfig: "sqlite3",
+    providers: [.apt(["libsqlite3-dev"])]
+)
+#else
+let sqliteTarget: Target = .systemLibrary(
+    name: "CSQLite",
+    path: "Sources/CSQLite"
+)
+#endif
+
 var products: [Product] = [
     .library(name: "HummingbirdKit", targets: ["HummingbirdKit"]),
     .library(name: "DebugKit", targets: ["DebugKit"]),
@@ -46,12 +63,7 @@ var targets: [Target] = [
         path: "Sources/AdvancedVideoPlayerKit",
         swiftSettings: backendSwiftSettings
     ),
-    .systemLibrary(
-        name: "CSQLite",
-        path: "Sources/CSQLite",
-        pkgConfig: "sqlite3",
-        providers: [.apt(["libsqlite3-dev"])]
-    ),
+    sqliteTarget,
     .target(
         name: "HummingbirdKit",
         dependencies: [

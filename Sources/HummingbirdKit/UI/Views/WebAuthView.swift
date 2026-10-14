@@ -24,7 +24,7 @@ struct WebAuthSheet: View {
         let _ = session.start()
         NavigationStack {
             VStack(spacing: 0) {
-                WebView(session.page)
+                SwiftOpenUI.WebView(session.page)
                 // A web view has no intrinsic content size. Give presented
                 // windows an initial proposal while still allowing them to
                 // fill whatever space the platform provides.
@@ -64,7 +64,7 @@ struct WebAuthSheet: View {
 @MainActor
 @Observable
 final class WebAuthSession {
-    let page: WebPage
+    let page: SwiftOpenUI.WebPage
     private(set) var credentialsReady = false
     private let dataStore: WKWebsiteDataStore
     private let spec: WebAuthSpec
@@ -82,13 +82,13 @@ final class WebAuthSession {
         self.onFinish = onFinish
         completionSeen = spec.completionURL == nil
         dataStore = .nonPersistent()
-        var configuration = WebPage.Configuration()
+        var configuration = SwiftOpenUI.WebPage.Configuration()
         configuration.websiteDataStore = dataStore
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.captureScript.replacingOccurrences(of: "__CAPTURE_CHANNEL__", with: UUID().uuidString),
             injectionTime: .atDocumentStart, forMainFrameOnly: false
         ))
-        page = WebPage(configuration: configuration)
+        page = SwiftOpenUI.WebPage(configuration: configuration)
         page.customUserAgent = spec.userAgent
         if let html = spec.html {
             page.load(html: html, baseURL: spec.startURL ?? URL(string: "about:blank")!)
@@ -272,6 +272,7 @@ final class WebAuthSession {
     return JSON.stringify({requests, userAgent: navigator.userAgent});
     """#
 }
+
 #endif
 
 // MARK: - QR scanner

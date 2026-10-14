@@ -27,7 +27,7 @@ guard chdir(repository.path) == 0 else {
 // throwaway shell while entering the real environment.
 let arguments = [
     nix, "shell", "nixpkgs#git", "--command",
-    "nix", "develop", "--command", executable,
+    nix, "develop", "--command", executable,
 ]
 var pointers: [UnsafeMutablePointer<CChar>?] = arguments.map { argument in
     argument.withCString { strdup($0) }

@@ -14,7 +14,14 @@ struct RootView: View {
         @Bindable var plugins = model.plugins
         BrowserTabContainer(items: browserTabItems, selection: activeTabBinding,
                             onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview,
-                            newTabControl: { AppSectionMenu() }) { item in
+                            onNewTab: { app.openNewTab() },
+                            newTabControl: {
+                                Button { app.openNewTab() } label: {
+                                    Image(systemName: "plus")
+                                }
+                                .keyboardShortcut("t")
+                                .accessibilityLabel("New Tab")
+                            }) { item in
             BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
         }
         .navigationTitle(windowTitle)
@@ -122,6 +129,7 @@ struct BrowserTabContentView: View {
                     ContentUnavailableView("New Tab", systemImage: "plus.square", description: Text("Choose a section from the menu."))
                         .navigationTitle("New Tab")
                 }
+                .profileSwitcherToolbarItem()
                 .browserTabControls(overviewPresented: $showingTabOverview)
             }
         }

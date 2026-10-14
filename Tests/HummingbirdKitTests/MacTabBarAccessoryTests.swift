@@ -1,4 +1,4 @@
-#if os(macOS) && canImport(SwiftUI)
+#if os(macOS) && canImport(SwiftUI) && !BACKEND_GTK
 import AppKit
 import XCTest
 @testable import HummingbirdKit

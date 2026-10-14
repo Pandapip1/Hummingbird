@@ -1,6 +1,7 @@
 import Foundation
 import SwiftOpenUI
 import ATAppSync
+import DynamicTabbingKit
 #if os(macOS) && !BACKEND_GTK
 import AppKit
 #endif
@@ -457,9 +458,13 @@ struct BrowserTopToolbar: ToolbarContent {
     let showTabOverview: () -> Void
 
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            BrowserBackButton(tab: tab)
-            BrowserForwardButton(tab: tab)
+        ToolbarItem(placement: .navigation) {
+            BrowserHistoryControls(
+                canGoBack: tab.canGoBack,
+                canGoForward: tab.canGoForward,
+                goBack: { tab.goBack() },
+                goForward: { tab.goForward() }
+            )
         }
         #if os(tvOS)
         ToolbarItem(placement: .primaryAction) { AppSectionMenu() }

@@ -10,10 +10,10 @@ public struct PreparedHummingbirdRoot: View {
     @State private var profileID: UUID?
     @State private var credentialsLocked = {
         AuthKeychain.registerVault()
-        // Loading any profile is deliberately gated by a user action. The
-        // manager probes silently after the button is pressed and only asks the
-        // platform to authenticate when protected data is actually locked.
-        return true
+        // The access probe is non-interactive. Only present the explicit
+        // ceremony when protected credentials actually require user presence;
+        // an already-accessible or empty vault can proceed immediately.
+        return CredentialVaultManager.shared.requiresExplicitUnlock
     }()
     @State private var unlockFailure: String?
     @Environment(\.openWindow) private var openWindow

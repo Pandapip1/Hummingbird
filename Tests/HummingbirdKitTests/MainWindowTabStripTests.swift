@@ -1,4 +1,4 @@
-#if !canImport(SwiftUI)
+#if BACKEND_GTK
 import XCTest
 import CGTK
 import CGTKBridge
@@ -19,25 +19,26 @@ final class MainWindowTabStripTests: XCTestCase {
         let root = widgetFromOpaque(gtkRenderView(RootView().environment(model)))
         let window = gtk_window_new()!
         let win = UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self)
-        gtkConfigureSelfContainedWindowChrome(win, content: root)
-        gtk_window_set_child(win, root)
+        let windowContent = gtkAdwaitaWindowContent(root)
+        gtk_window_set_child(win, windowContent)
         gtk_window_set_default_size(win, 1280, 720)
         gtk_widget_set_visible(window, 1)
         defer { gtk_window_destroy(win) }
         pump()
 
         let overview = try XCTUnwrap(findFirst(ofType: "AdwTabOverview", in: root))
-        XCTAssertEqual(gtk_window_get_child(win), root,
+        XCTAssertEqual(gtk_window_get_child(win), windowContent,
                        "the structural root host must remain the window content")
-        let sentinel = try XCTUnwrap(gtk_window_get_titlebar(win))
-        XCTAssertEqual(gtk_widget_get_visible(sentinel), 0,
-                       "GtkWindow's titlebar sentinel must stay invisible")
-        let sentinelObject = UnsafeMutableRawPointer(sentinel).assumingMemoryBound(to: GObject.self)
-        XCTAssertNotNil(g_object_get_data(sentinelObject, "gtk-swift-window-chrome-sentinel"),
-                        "the hidden sentinel must suppress GtkWindow's duplicate decorations")
         let toolbarView = try XCTUnwrap(findFirst(ofType: "AdwToolbarView", in: overview))
+        XCTAssertNotEqual(swift_adw_toolbar_view_get_top_bar_raised(toolbarView), 0,
+                          "browser chrome must use libadwaita's raised tab-toolbar treatment")
         let tabBar = try XCTUnwrap(findFirst(ofType: "AdwTabBar", in: toolbarView))
         let overviewButton = try XCTUnwrap(findFirst(ofType: "AdwTabButton", in: toolbarView))
+        let tabControlGroup = try XCTUnwrap(gtk_widget_get_parent(overviewButton))
+        XCTAssertNotEqual(gtk_widget_has_css_class(tabControlGroup, "linked"), 0,
+                          "new-tab and overview controls must be one joined native control")
+        XCTAssertNotNil(findFirst(ofType: "GtkButton", in: tabControlGroup),
+                        "the joined new-tab control must be a native button")
         XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: root),
                      "top-level sections must no longer render a nested TabView sidebar")
         let tabView = try XCTUnwrap(swift_adw_tab_bar_get_view(tabBar))
@@ -48,11 +49,15 @@ final class MainWindowTabStripTests: XCTestCase {
         XCTAssertEqual(swift_adw_tab_page_get_pinned(contentPage), 0)
         XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(homePage))), "Home")
         XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(contentPage))), "New Tab")
-        XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar",
-                               in: try XCTUnwrap(swift_adw_tab_page_get_child(contentPage))))
+        let selectedContent = try XCTUnwrap(swift_adw_tab_page_get_child(contentPage))
+        XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: selectedContent))
+        let contentButtonCenter = try center(of: selectedContent, in: root)
+        let pickedContent = try XCTUnwrap(
+            gtk_widget_pick(root, contentButtonCenter.x, contentButtonCenter.y, GTK_PICK_DEFAULT),
+            "selected page must be reachable through the full root hierarchy")
+        XCTAssertTrue(isSelfOrDescendant(pickedContent, of: selectedContent),
+                      "window overlays must not intercept selected-page interactions")
         XCTAssertEqual(swift_adw_tab_view_get_selected_page(tabView), contentPage)
-        let principalRow = try XCTUnwrap(ancestor(withCSSClass: "toolbar", from: tabBar))
-        let header = try XCTUnwrap(findFirst(ofType: "GtkHeaderBar", in: toolbarView))
         XCTAssertNotNil(ancestor(ofType: "GtkHeaderBar", from: overviewButton),
                         "the overview button belongs in the embedded top row with the window controls")
         XCTAssertEqual(gtk_widget_activate(overviewButton), 1)
@@ -60,21 +65,19 @@ final class MainWindowTabStripTests: XCTestCase {
         XCTAssertEqual(swift_adw_tab_overview_get_open(overview), 1,
                        "activating AdwTabButton must open the native tab overview")
         swift_adw_tab_overview_set_open(overview, 0)
-        XCTAssertNotNil(findLabel("New Tab", in: header),
-                        "the selected tab title belongs in the native window header")
-        XCTAssertEqual(String(cString: try XCTUnwrap(gtk_window_get_title(win))), "New Tab")
         if let nestedSlot = findNestedTitlebarSlot(in: toolbarView) {
             XCTAssertNil(gtk_widget_get_first_child(nestedSlot),
                          "the page title must not create a row underneath the browser tab bar")
         }
-        XCTAssertGreaterThanOrEqual(gtk_widget_get_height(principalRow), gtk_widget_get_height(header),
-                                    "the native AdwTabBar must retain at least header-bar vertical rhythm")
+        XCTAssertNotNil(ancestor(ofType: "AdwToolbarView", from: tabBar),
+                        "AdwTabBar must be installed as an AdwToolbarView row")
+        XCTAssertNil(ancestor(ofType: "GtkHeaderBar", from: tabBar),
+                     "AdwTabBar must not receive a second header-bar treatment")
         let toolbarHeight = gtk_widget_get_height(toolbarView)
         swift_adw_tab_view_set_selected_page(tabView, homePage)
         pump()
         XCTAssertEqual(model.activeTabID, homePageID(model))
         XCTAssertNotEqual(model.activeTabID, contentID)
-        XCTAssertEqual(String(cString: try XCTUnwrap(gtk_window_get_title(win))), "Home")
 
         let updatedToolbar = try XCTUnwrap(findFirst(ofType: "AdwToolbarView", in: overview))
         if let nestedSlot = findNestedTitlebarSlot(in: updatedToolbar) {
@@ -93,6 +96,32 @@ final class MainWindowTabStripTests: XCTestCase {
         swift_adw_tab_view_close_page(updatedTabView, updatedContentPage)
         pump()
         XCTAssertEqual(model.contentTabs.count, 1, "AdwTabView close requests must reach AppModel")
+
+    }
+
+    @MainActor
+    func testNewTabButtonDirectlyOpensATab() throws {
+        try TestDisplaySession.start()
+        guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
+
+        let model = makeTestAppModel()
+        let root = widgetFromOpaque(gtkRenderView(RootView().environment(model)))
+        let window = gtk_window_new()!
+        let win = UnsafeMutableRawPointer(window).assumingMemoryBound(to: GtkWindow.self)
+        gtk_window_set_child(win, gtkAdwaitaWindowContent(root))
+        gtk_window_set_default_size(win, 1280, 720)
+        gtk_widget_set_visible(window, 1)
+        defer { gtk_window_destroy(win) }
+        pump()
+        let overviewButton = try XCTUnwrap(findFirst(ofType: "AdwTabButton", in: root))
+        let group = try XCTUnwrap(gtk_widget_get_parent(overviewButton))
+        let newTabButton = try XCTUnwrap(gtk_widget_get_first_child(group))
+        XCTAssertEqual(typeName(newTabButton), "GtkButton")
+        let count = model.contentTabs.count
+
+        XCTAssertEqual(gtk_widget_activate(newTabButton), 1)
+        pump()
+        XCTAssertEqual(model.contentTabs.count, count + 1)
     }
 
     @MainActor
@@ -106,18 +135,6 @@ final class MainWindowTabStripTests: XCTestCase {
             while g_main_context_pending(nil) != 0 { _ = g_main_context_iteration(nil, 0) }
             Thread.sleep(forTimeInterval: 0.005)
         }
-    }
-
-    private func findLabel(_ text: String, in widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
-        if typeName(widget) == "GtkLabel", String(cString: gtk_label_get_text(OpaquePointer(widget))) == text {
-            return widget
-        }
-        var child = gtk_widget_get_first_child(widget)
-        while let current = child {
-            if let found = findLabel(text, in: current) { return found }
-            child = gtk_widget_get_next_sibling(current)
-        }
-        return nil
     }
 
     private func ancestor(ofType expected: String, from widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
@@ -148,6 +165,32 @@ final class MainWindowTabStripTests: XCTestCase {
         return nil
     }
 
+    private func center(
+        of child: UnsafeMutablePointer<GtkWidget>,
+        in root: UnsafeMutablePointer<GtkWidget>
+    ) throws -> (x: Double, y: Double) {
+        var source = graphene_point_t()
+        graphene_point_init(&source, Float(gtk_widget_get_width(child)) / 2,
+                            Float(gtk_widget_get_height(child)) / 2)
+        var target = graphene_point_t()
+        guard gtk_widget_compute_point(child, root, &source, &target) != 0 else {
+            throw XCTSkip("could not resolve control coordinates")
+        }
+        return (Double(target.x), Double(target.y))
+    }
+
+    private func isSelfOrDescendant(
+        _ widget: UnsafeMutablePointer<GtkWidget>,
+        of ancestor: UnsafeMutablePointer<GtkWidget>
+    ) -> Bool {
+        var current: UnsafeMutablePointer<GtkWidget>? = widget
+        while let node = current {
+            if node == ancestor { return true }
+            current = gtk_widget_get_parent(node)
+        }
+        return false
+    }
+
     private func findNestedTitlebarSlot(in widget: UnsafeMutablePointer<GtkWidget>) -> UnsafeMutablePointer<GtkWidget>? {
         let object = UnsafeMutableRawPointer(widget).assumingMemoryBound(to: GObject.self)
         if g_object_get_data(object, "gtk-swift-is-nested-titlebar-slot") != nil { return widget }
@@ -162,6 +205,7 @@ final class MainWindowTabStripTests: XCTestCase {
     private func typeName(_ widget: UnsafeMutablePointer<GtkWidget>) -> String {
         String(cString: g_type_name(gtk_swift_get_widget_type(widget)))
     }
+
 
 }
 #endif

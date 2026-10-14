@@ -74,6 +74,7 @@ var targets: [Target] = [
             "CSQLite",
             .product(name: "ATProtoKit", package: "ATProtoKit"),
             .product(name: "ATAppSync", package: "ATAppSync"),
+            .product(name: "CredentialStorage", package: "SwiftOpenUI"),
             .product(name: "Security", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),

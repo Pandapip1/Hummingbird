@@ -14,11 +14,14 @@ let package = Package(
             name: "ATProtoKit",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "CredentialStorage", package: "SwiftOpenUI"),
                 .product(name: "AuthenticationServices", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
-                .product(name: "Security", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
             ]
         ),
-        .testTarget(name: "ATProtoKitTests", dependencies: ["ATProtoKit"]),
+        .testTarget(name: "ATProtoKitTests", dependencies: [
+            "ATProtoKit",
+            .product(name: "CredentialStorage", package: "SwiftOpenUI"),
+        ]),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -35,12 +35,9 @@ final class ProfileAccountService {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
         self.oauth = oauth
         authenticator = ATProtoOAuthAuthenticator(client: oauth)
-        let keychainAccessGroup = Bundle.main.object(
-            forInfoDictionaryKey: "ATProtoKeychainAccessGroup"
-        ) as? String
         credentialStore = OAuthCredentialStore(
             service: "com.eightybps.hummingbird.atproto.\(localProfileID.uuidString.lowercased())",
-            accessGroup: keychainAccessGroup
+            vault: AuthKeychain.store
         )
         currentAccountKey = "profile.\(localProfileID.uuidString.lowercased()).atproto.currentAccount"
         self.changes = changes

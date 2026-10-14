@@ -7,6 +7,7 @@ let package = Package(
     products: [.library(name: "ATAppSync", targets: ["ATAppSync"])],
     dependencies: [
         .package(path: "../ATProtoKit"),
+        .package(path: "../../Vendor/SwiftOpenUI"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
     ],
@@ -23,6 +24,7 @@ let package = Package(
             dependencies: [
                 "CDNSService",
                 .product(name: "ATProtoKit", package: "ATProtoKit"),
+                .product(name: "CredentialStorage", package: "SwiftOpenUI"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),

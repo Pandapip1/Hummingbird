@@ -35,6 +35,7 @@ MainActor.assumeIsolated {
     // to authorize every native-app legacy item against a different executable
     // identity. It remains a real Keychain store, not a plaintext debug store.
     AuthKeychain.store = KeychainCredentialStore(serviceNamespace: "gtk")
+    AuthKeychain.registerVault()
     #endif
     // Register backend fonts before the WebKit bootstrap initializes GTK/Pango's
     // default font map, otherwise symbol labels are permanently resolved through

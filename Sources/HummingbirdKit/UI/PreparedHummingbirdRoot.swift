@@ -1,5 +1,6 @@
 import Foundation
 import SwiftOpenUI
+import CredentialStorage
 
 /// A persistence-aware entry point for platforms that do not provide their
 /// own launch screen. Persisted state is read and decoded off the main actor.
@@ -7,7 +8,13 @@ import SwiftOpenUI
 public struct PreparedHummingbirdRoot: View {
     @State private var root: HummingbirdRoot?
     @State private var profileID: UUID?
-    @State private var credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
+    @State private var credentialsLocked = {
+        AuthKeychain.registerVault()
+        // Loading any profile is deliberately gated by a user action. The
+        // manager probes silently after the button is pressed and only asks the
+        // platform to authenticate when protected data is actually locked.
+        return true
+    }()
     @State private var unlockFailure: String?
     @Environment(\.openWindow) private var openWindow
     private let opensProfilesInNewWindows: Bool
@@ -48,7 +55,7 @@ public struct PreparedHummingbirdRoot: View {
                                 Task {
                                     do {
                                         try await Task.detached {
-                                            try AuthKeychain.store.requestUnlock()
+                                            try CredentialVaultManager.shared.requestUnlock()
                                         }.value
                                         credentialsLocked = false
                                         unlockFailure = nil

@@ -350,6 +350,27 @@ final class ATAppSyncTests: XCTestCase {
         )
     }
 
+    func testStoredProfileIdentityIsReadOnlyOnce() throws {
+        let credentials = MemoryAppSyncCredentialStore()
+        let profileID = UUID()
+        let first = try InstanceIdentityStore(
+            credentialStore: credentials, profileID: profileID
+        ).identity()
+        credentials.resetLoadCounts()
+
+        let restored = try InstanceIdentityStore(
+            credentialStore: credentials, profileID: profileID
+        ).identity()
+
+        XCTAssertEqual(restored.publicIdentity, first.publicIdentity)
+        XCTAssertEqual(
+            credentials.loadCount(
+                account: "com.eightybps.appsync.profile.\(profileID.uuidString.lowercased()).instance-identity.v1"
+            ),
+            1
+        )
+    }
+
     func testTrustedProfilesPullSignedJournalOverLANWithoutAccount() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "ATAppSyncLAN-\(UUID().uuidString)", isDirectory: true
@@ -405,6 +426,14 @@ final class ATAppSyncTests: XCTestCase {
 private final class MemoryAppSyncCredentialStore: AppSyncCredentialStore, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]
-    func load(account: String) -> Data? { lock.withLock { values[account] } }
+    private var loadCounts: [String: Int] = [:]
+    func load(account: String) -> Data? {
+        lock.withLock {
+            loadCounts[account, default: 0] += 1
+            return values[account]
+        }
+    }
     func save(_ data: Data?, account: String) { lock.withLock { values[account] = data } }
+    func loadCount(account: String) -> Int { lock.withLock { loadCounts[account, default: 0] } }
+    func resetLoadCounts() { lock.withLock { loadCounts.removeAll() } }
 }

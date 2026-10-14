@@ -1,6 +1,7 @@
 import Crypto
 import ATProtoKit
 import Foundation
+import CredentialStorage
 import NIOCore
 import NIOHTTP1
 import NIOPosix
@@ -15,10 +16,7 @@ public typealias AppSyncMessageStore = InstanceInbox
 public typealias AppSyncPeerService = InstanceMessagingService
 public typealias AppSyncPeerError = InstanceMessagingError
 
-public protocol AppSyncCredentialStore: Sendable {
-    func load(account: String) -> Data?
-    func save(_ data: Data?, account: String)
-}
+public protocol AppSyncCredentialStore: CredentialDataVault {}
 
 public struct InstancePublicIdentity: Codable, Hashable, Sendable {
     public let id: UUID
@@ -141,12 +139,13 @@ public final class InstanceIdentityStore: @unchecked Sendable {
     public func identity() throws -> InstanceIdentity {
         try lock.withLock {
             if let cached { return cached }
-            let storedData = credentialStore.load(account: account)
+            let profileData = credentialStore.load(account: account)
+            let storedData = profileData
                 ?? (migrateLegacyIdentity ? credentialStore.load(account: Self.legacyAccount) : nil)
             if let data = storedData,
                let stored = try? JSONDecoder().decode(InstanceIdentity.Stored.self, from: data) {
                 let identity = try InstanceIdentity(stored: stored)
-                if credentialStore.load(account: account) == nil {
+                if profileData == nil {
                     credentialStore.save(data, account: account)
                 }
                 cached = identity

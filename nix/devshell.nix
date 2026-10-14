@@ -166,7 +166,7 @@
             # SwiftPM while retaining the system Swift/macOS SDK toolchain.
             # Data-only packages such as the icon theme have no lib output;
             # including them makes SwiftPM pass a nonexistent -L path.
-            export LIBRARY_PATH="${lib.makeLibraryPath (deps.baseLibs ++ lib.filter (dependency: dependency != deps.iconTheme) deps.darwinGtkLibs)}:''${LIBRARY_PATH:-}"
+            export LIBRARY_PATH="${lib.makeLibraryPath (deps.baseLibs ++ [ pkgs.fontconfig ] ++ lib.filter (dependency: dependency != deps.iconTheme) deps.darwinGtkLibs)}:''${LIBRARY_PATH:-}"
           ''}
 
           if [ ! -e Vendor/SwiftOpenUI/Package.swift ]; then

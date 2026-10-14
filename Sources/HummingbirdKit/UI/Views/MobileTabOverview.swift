@@ -18,7 +18,7 @@ struct MobileBrowserToolbar: View {
             AppSectionMenu()
                 .frame(width: 44, height: 44)
             BrowserTabOverviewButton { showingTabOverview = true }
-                .labelStyle(.iconOnly)
+                .labelsHidden()
                 .frame(width: 44, height: 44)
         }
         .font(.headline)

@@ -10,7 +10,7 @@ public struct HummingbirdRoot: View {
     @Environment(\.scenePhase) private var scenePhase
     #endif
     public init() {
-        _model = State(initialValue: AppModel())
+        _model = State(wrappedValue: AppModel())
         // Start the opt-in debug transport as soon as the root is created.
         // Relying only on a view task made the server unavailable before (and
         // occasionally throughout) early navigation failures on macOS.
@@ -18,7 +18,7 @@ public struct HummingbirdRoot: View {
     }
 
     private init(persistence: AppPersistenceSnapshot) {
-        _model = State(initialValue: AppModel(persistence: persistence))
+        _model = State(wrappedValue: AppModel(persistence: persistence))
         DebugServer.shared.startFromEnvironment()
     }
 

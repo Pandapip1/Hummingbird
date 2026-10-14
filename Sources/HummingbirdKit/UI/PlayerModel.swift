@@ -8,7 +8,7 @@ enum SubtitleColorChoice: String, CaseIterable, Sendable {
     case white, yellow, green, cyan
 
     var label: String { rawValue.capitalized }
-    var color: Color {
+    @MainActor var color: Color {
         switch self {
         case .white: .white
         case .yellow: .yellow

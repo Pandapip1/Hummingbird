@@ -58,11 +58,7 @@ struct VideoDetailView: View {
                 }
             }
         }
-        #if os(iOS)
-        .ignoresSafeArea(edges: .top)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        #endif
+        .immersiveVideoDetailStyle()
         .task(id: activeURL) {
             if !isOverviewPreview { player.onPlaybackEnded = advanceQueue }
             await load()
@@ -183,11 +179,9 @@ private struct VideoBody: View {
                             Label(app.library.isInWatchLater(saved) ? "Saved" : "Watch later", systemImage: app.library.isInWatchLater(saved) ? "clock.badge.checkmark" : "clock")
                         }
                         Button { showPlaylistPicker = true } label: { Label("Playlist", systemImage: "text.badge.plus") }
-                        #if !os(tvOS)
-                        if let share = URL(string: item.shareUrl ?? item.url) {
-                            ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
+                        ShareContentAction(item: URL(string: item.shareUrl ?? item.url)) {
+                            Label("Share", systemImage: "square.and.arrow.up")
                         }
-                        #endif
                     }.buttonStyle(.bordered)
                 }
 
@@ -812,7 +806,7 @@ private struct CommentsSection: View {
     @State private var message: String?
 
     var body: some View {
-        PortableLazyVStack(alignment: .leading, spacing: 14) {
+        LazyContentStack(alignment: .leading, spacing: 14) {
             ForEach(comments) { c in
                 CommentRow(runtime: runtime, comment: c)
                     .onAppear { if c.id == comments.last?.id { Task { await more() } } }
@@ -884,7 +878,7 @@ private struct RelatedSection: View {
     @State private var loading = true
 
     var body: some View {
-        PortableLazyVStack(alignment: .leading) {
+        LazyContentStack(alignment: .leading) {
             ForEach(items) { ContentRow(item: $0).padding(.horizontal) }
             if loading { ProgressView().frame(maxWidth: .infinity) }
             if !loading && items.isEmpty { Text("No related videos").foregroundStyle(.secondary).padding(.horizontal) }

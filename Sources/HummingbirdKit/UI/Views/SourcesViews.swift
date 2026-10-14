@@ -1,8 +1,5 @@
 import Foundation
 import SwiftOpenUI
-#if canImport(AVFoundation)
-import AVFoundation
-#endif
 
 // MARK: - Source list
 
@@ -28,16 +25,10 @@ struct SourcesView: View {
             }
             .navigationTitle("Sources")
             .toolbar {
-                #if os(tvOS)
-                if isBrowserTabToolbarActive, let browserToolbar {
-                    BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
+                FocusBrowserToolbar(browserToolbar: isBrowserTabToolbarActive ? browserToolbar : nil)
+                FocusPrimaryAction(isActive: isBrowserTabToolbarActive, action: { showAdd = true }) {
+                    Image(systemName: "square.and.arrow.down")
                 }
-                if isBrowserTabToolbarActive {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button { showAdd = true } label: { Image(systemName: "square.and.arrow.down") }
-                    }
-                }
-                #endif
             }
             .sheet(isPresented: $showAdd) { AddSourceSheet() }
             .confirmationDialog("Remove source?", isPresented: Binding(
@@ -94,13 +85,7 @@ private struct PluginRow: View {
         .buttonStyle(.plain)
 
         row
-            #if !os(tvOS)
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                Button(role: .destructive, action: requestRemove) {
-                    Label("Remove", systemImage: "trash")
-                }
-            }
-            #endif
+            .destructiveRowAction("Remove", action: requestRemove)
             .contextMenu {
                 Button(plugin.enabled ? "Disable" : "Enable") {
                     app.plugins.setEnabled(plugin.id, !plugin.enabled)
@@ -122,31 +107,24 @@ struct AddSourceSheet: View {
     @State private var errorText: String?
     @State private var preview: InstallPreview?
 
-    static let hasCamera: Bool = {
-        #if canImport(AVFoundation)
-        return AVCaptureDevice.default(for: .video) != nil
-        #else
-        return false
-        #endif
-    }()
-
     var body: some View {
         NavigationStack {
             Group {
                 if let preview { PreviewView(preview: preview) }
                 else if scanning {
-                    ScannerPane(onCode: { code in scanning = false; urlText = code; Task { await prepare() } })
+                    QRCodeScanner(instruction: "Point the camera at a plugin QR code") { code in
+                        scanning = false
+                        urlText = code
+                        Task { await prepare() }
+                    }
                 } else {
                     Form {
                         Section("Plugin URL") {
                             TextField("https://…/Config.json", text: $urlText)
                                 .autocorrectionDisabled()
-                                #if os(iOS)
-                                .textInputAutocapitalization(.never)
-                                .keyboardType(.URL)
-                                #endif
+                                .urlEntryStyle()
                         }
-                        if AddSourceSheet.hasCamera {
+                        if QRCodeScanning.isAvailable {
                             Section { Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") } }
                         }
                         if let errorText { Section { Text(errorText).foregroundStyle(.red).font(.footnote) } }
@@ -155,9 +133,7 @@ struct AddSourceSheet: View {
                 }
             }
             .navigationTitle("Add source")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .detailNavigationStyle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -234,13 +210,11 @@ struct PreviewView: View {
             if !c.allowUrls.isEmpty {
                 Section("Can contact") {
                     ForEach(Array(c.allowUrls.enumerated()), id: \.offset) { index, url in
-                        #if os(tvOS)
-                        Button {} label: { Text(url).font(.footnote.monospaced()) }
-                            .accessibilityIdentifier("install-preview-url-\(index)")
-                        #else
-                        Text(url).font(.footnote.monospaced())
-                            .accessibilityIdentifier("install-preview-url-\(index)")
-                        #endif
+                        FocusableReadOnlyValue(
+                            text: url,
+                            monospaced: true,
+                            accessibilityIdentifier: "install-preview-url-\(index)"
+                        )
                     }
                 }
             }
@@ -248,16 +222,7 @@ struct PreviewView: View {
     }
 }
 
-private struct TVPreviewFocus: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.focusable()
-        #else
-        content
-        #endif
-    }
-}
+private typealias TVPreviewFocus = FocusableReadOnlyModifier
 
 // MARK: - Plugin detail
 
@@ -274,19 +239,12 @@ struct PluginDetailView: View {
     var body: some View {
         if let p = app.plugins.plugin(pluginID) {
             Group {
-                #if os(macOS)
-                ScrollView {
-                    pluginForm(for: p)
-                }
-                .defaultScrollAnchor(.top)
-                #else
+                SettingsDetailContainer {
                 pluginForm(for: p)
-                #endif
+                }
             }
             .navigationTitle(p.config.name)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .detailNavigationStyle()
             .confirmationDialog("Remove \(p.config.name)?", isPresented: $confirmRemove, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) { app.plugins.remove(pluginID); dismiss() }
             } message: { Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.") }
@@ -440,9 +398,7 @@ struct SettingRow: View {
             VStack(alignment: .leading) {
                 label
                 TextField(setting.name, text: Binding(get: { Self.decodeText(stored) }, set: { app.plugins.setSetting(pluginID: plugin.id, key: setting.key, value: Self.encodeText($0)) }))
-                    #if !os(tvOS)
-                    .textFieldStyle(.roundedBorder)
-                    #endif
+                    .settingsTextEntryStyle()
             }
         }
     }
@@ -485,14 +441,13 @@ struct AppSettingsView: View {
                 Toggle("Show subtitles by default", isOn: $subtitlesDefault)
             }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
-                #if !os(tvOS)
-                Stepper("Channels per refresh: \(fetchLimit == 0 ? "no limit" : String(fetchLimit))", value: $fetchLimit, in: 0...500, step: 10)
-                #else
-                Picker("Channels per refresh", selection: $fetchLimit) {
-                    Text("No limit").tag(0)
-                    ForEach([10, 25, 50, 100, 200, 500], id: \.self) { Text(String($0)).tag($0) }
-                }
-                #endif
+                RemoteFriendlyBoundedSelection(
+                    title: "Channels per refresh",
+                    value: $fetchLimit,
+                    values: [0, 10, 25, 50, 100, 200, 500],
+                    zeroLabel: "No limit",
+                    step: 10
+                )
             }
             Section("About") {
                 Text("Hummingbird plays content from Grayjay-compatible plugins. It is an independent project and is not affiliated with FUTO.")
@@ -501,28 +456,7 @@ struct AppSettingsView: View {
         }
         .navigationTitle("Settings")
         .toolbar {
-            #if os(tvOS)
-            if let browserToolbar {
-                BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
-            }
-            #endif
+            FocusBrowserToolbar(browserToolbar: browserToolbar)
         }
-    }
-}
-
-/// Camera QR scanner where the platform has one; otherwise a note (the URL can be typed or pasted instead).
-@MainActor
-private struct ScannerPane: View {
-    let onCode: (String) -> Void
-    var body: some View {
-        #if (os(iOS) || os(macOS)) && !BACKEND_GTK
-        QRScannerView(onCode: onCode)
-            #if os(iOS)
-            .ignoresSafeArea()
-            #endif
-            .overlay(alignment: .bottom) { Text("Point the camera at a plugin QR code").padding(10).background(.thinMaterial, in: Capsule()).padding() }
-        #else
-        Text("QR scanning is not available on this platform. Paste the plugin URL instead.")
-        #endif
     }
 }

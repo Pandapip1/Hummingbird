@@ -211,7 +211,7 @@ final class GTKMediaBackend: MediaBackend {
         while activeLoadGenerations.contains(where: { $0 > generation }) {
             try Task.checkCancellation()
             let id = UUID()
-            try await withTaskCancellationHandler {
+            await withTaskCancellationHandler {
                 await withCheckedContinuation { continuation in
                     if Task.isCancelled || !activeLoadGenerations.contains(where: { $0 > generation }) {
                         continuation.resume()

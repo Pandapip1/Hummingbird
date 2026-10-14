@@ -1,9 +1,6 @@
 import Foundation
 import DebugKit
 import SwiftOpenUI
-#if canImport(UniformTypeIdentifiers)
-import UniformTypeIdentifiers
-#endif
 
 // MARK: - Home
 
@@ -104,22 +101,11 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .modifier(SearchInputModifier(
-                query: $query,
-                hidden: isOverviewPreview || !isBrowserTabToolbarActive
-            ))
+            .searchEntry(query: $query, hidden: isOverviewPreview || !isBrowserTabToolbarActive)
             .toolbar {
-                #if os(tvOS)
-                if let browserToolbar {
-                    BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
-                }
-                #endif
+                FocusBrowserToolbar(browserToolbar: browserToolbar)
             }
-            #if os(tvOS)
-            .onSubmit { Task { await submit() } }
-            #else
-            .onSubmit(of: .search) { Task { await submit() } }
-            #endif
+            .searchSubmission { Task { await submit() } }
             .task(id: query) { await updateSuggestions() }
             .overlay(alignment: .bottom) {
                 if let notice { Text(notice).font(.footnote).padding(10).background(.thinMaterial, in: Capsule()).padding() }
@@ -195,40 +181,6 @@ struct SearchView: View {
     }
 }
 
-private struct SearchInputModifier: ViewModifier {
-    @Binding var query: String
-    let hidden: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if hidden {
-            content
-        } else {
-            #if os(tvOS)
-            content.safeAreaInset(edge: .top, spacing: 0) {
-                TextField("Search or paste a link", text: $query)
-                    .padding(.horizontal, 80)
-                    .padding(.bottom, 12)
-            }
-            #elseif os(iOS)
-            content.searchable(
-                text: $query,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search or paste a link"
-            )
-            #elseif os(macOS)
-            content.browserTabToolbarItem(id: "search.field", placement: .principal) {
-                TextField("Search or paste a link", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 260, idealWidth: 420, maxWidth: 560)
-            }
-            #else
-            content.searchable(text: $query, prompt: "Search or paste a link")
-            #endif
-        }
-    }
-}
-
 // MARK: - Subscriptions
 
 @MainActor
@@ -268,16 +220,12 @@ struct SubscriptionsView: View {
             }
             .navigationTitle("Subscriptions")
             .toolbar {
-                #if os(tvOS)
-                if isBrowserTabToolbarActive, let browserToolbar {
-                    BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
+                FocusBrowserToolbar(browserToolbar: isBrowserTabToolbarActive ? browserToolbar : nil)
+                FocusNavigationLink(isActive: isBrowserTabToolbarActive) {
+                    ManageSubscriptionsView()
+                } label: {
+                    Image(systemName: "person.2")
                 }
-                if isBrowserTabToolbarActive {
-                    ToolbarItem(placement: .primaryAction) {
-                        NavigationLink { ManageSubscriptionsView() } label: { Image(systemName: "person.2") }
-                    }
-                }
-                #endif
             }
         }
         .task { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
@@ -312,9 +260,7 @@ struct ManageSubscriptionsView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                #if !os(tvOS)
-                .swipeActions { Button("Unsubscribe", role: .destructive) { app.library.unsubscribe(sub.channelURL) } }
-                #endif
+                .destructiveRowAction("Unsubscribe") { app.library.unsubscribe(sub.channelURL) }
             }
         }
         .navigationTitle("Manage")
@@ -353,18 +299,14 @@ struct LibraryView: View {
                     .onDelete { offsets in offsets.map { app.library.playlists[$0].id }.forEach { app.library.deletePlaylist($0) } }
                     Button { showNewPlaylist = true } label: { Label("New playlist", systemImage: "plus") }
                 }
-                #if !os(tvOS)
-                Section("Backup") {
-                    if let url = backupURL {
-                        ShareLink(item: url) { Label("Export library", systemImage: "square.and.arrow.up") }
-                    } else {
-                        Label("Preparing export…", systemImage: "square.and.arrow.up")
-                            .foregroundStyle(.secondary)
-                    }
-                    Button { showImporter = true } label: { Label("Import library", systemImage: "square.and.arrow.down") }
-                    if let importMessage { Text(importMessage).font(.footnote).foregroundStyle(.secondary) }
-                }
-                #endif
+                DocumentTransferControls(
+                    title: "Backup",
+                    exportURL: backupURL,
+                    exportLabel: "Export library",
+                    importLabel: "Import library",
+                    status: importMessage,
+                    requestImport: { showImporter = true }
+                )
             }
             .navigationTitle("Library")
             .alert("New playlist", isPresented: $showNewPlaylist) {
@@ -376,20 +318,14 @@ struct LibraryView: View {
                 }
                 Button("Cancel", role: .cancel) { newPlaylistName = "" }
             }
-            #if !os(tvOS)
-            .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
-                guard case .success(let url) = result else { return }
+            .jsonDocumentImporter(isPresented: $showImporter) { url in
                 Task { await importBackup(from: url) }
             }
-            #endif
             .browserTopToolbar(browserToolbar)
         }
-        #if !os(tvOS)
-        .task(id: backupRevision) { await prepareBackup() }
-        #endif
+        .preparesDocumentExport(id: backupRevision) { await prepareBackup() }
     }
 
-    #if !os(tvOS)
     private var backupRevision: String {
         "\(app.library.subscriptions.count)|\(app.library.playlists.map(\.updated).max()?.timeIntervalSince1970 ?? 0)|\(app.library.watchLater.count)|\(app.library.history.count)|\(app.plugins.sourceMap.count)"
     }
@@ -420,7 +356,6 @@ struct LibraryView: View {
         app.library.merge(backup)
         importMessage = "Imported \(backup.subscriptions.count) subscriptions, \(backup.playlists.count) playlists. Plugins listed in the backup must be added from Sources."
     }
-    #endif
 }
 
 @MainActor
@@ -465,9 +400,7 @@ struct PlaybackQueueView: View {
             }
             .accessibilityLabel(app.playbackQueue.repeatMode.label)
         }
-        #if os(iOS)
-        .browserTabToolbarItem(id: "queue.edit", placement: .trailing) { EditButton() }
-        #endif
+        .editableCollectionToolbar(id: "queue.edit")
         .overlay {
             if app.playbackQueue.items.isEmpty {
                 ContentUnavailableView("Queue is empty", systemImage: "text.line.first.and.arrowtriangle.forward",
@@ -488,9 +421,7 @@ struct WatchLaterView: View {
         }
         .listStyle(.plain)
         .navigationTitle("Watch later")
-        #if os(iOS)
-        .browserTabToolbarItem(id: "watch-later.edit", placement: .trailing) { EditButton() }
-        #endif
+        .editableCollectionToolbar(id: "watch-later.edit")
         .overlay { if app.library.watchLater.isEmpty { ContentUnavailableView("Nothing saved", systemImage: "clock", description: Text("Use \"Watch later\" on any video.")) } }
     }
 }
@@ -533,9 +464,7 @@ struct LocalPlaylistView: View {
         }
         .listStyle(.plain)
         .navigationTitle(playlist?.name ?? "Playlist")
-        #if os(iOS)
-        .browserTabToolbarItem(id: "playlist.edit", placement: .trailing) { EditButton() }
-        #endif
+        .editableCollectionToolbar(id: "playlist.edit")
         .overlay { if playlist?.videos.isEmpty ?? true { ContentUnavailableView("Empty playlist", systemImage: "music.note.list") } }
     }
 }

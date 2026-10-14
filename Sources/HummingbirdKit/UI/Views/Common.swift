@@ -29,7 +29,7 @@ struct ContentRow: View {
         Group {
             switch item.kind {
             case .locked:
-                if let u = item.unlockUrl.flatMap(URL.init(string:)) { PortableLink(destination: u) { card } } else { card }
+                if let u = item.unlockUrl.flatMap(URL.init(string:)) { ExternalURLLink(destination: u) { card } } else { card }
             case .channel:
                 Button {
                     DebugServer.record("routing", "content_row_open", fields: ["kind": "channel"])
@@ -210,92 +210,5 @@ struct LoadingErrorView: View {
         } actions: {
             if let retry { Button("Try again", action: retry) }
         }
-    }
-}
-
-
-/// `Link` with an arbitrary label. SwiftOpenUI's `Link` only takes a title, so there it is a button that opens the URL.
-@MainActor
-struct PortableLink<Label: View>: View {
-    let destination: URL
-    @ViewBuilder let label: () -> Label
-
-    var body: some View {
-        #if canImport(SwiftUI) && !BACKEND_GTK
-        Link(destination: destination, label: label)
-        #else
-        Button { SystemServices.openURL(destination) } label: { label() }
-        #endif
-    }
-}
-
-/// `LazyVStack` taking arbitrary content. SwiftOpenUI's is data-driven, so there the content is a plain `VStack`
-/// (the parent `ScrollView` still scrolls; only lazy realisation is lost).
-@MainActor
-struct PortableLazyVStack<Content: View>: View {
-    var alignment: HorizontalAlignment = .center
-    var spacing: CGFloat? = nil
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        #if canImport(SwiftUI) && !BACKEND_GTK
-        LazyVStack(alignment: alignment, spacing: spacing ?? 8, content: content)
-        #else
-        VStack(alignment: alignment, spacing: spacing ?? 8, content: content)
-        #endif
-    }
-}
-
-extension View {
-    /// `.listRowSeparator(.hidden)` is unavailable on tvOS; this no-ops there.
-    func hiddenListRowSeparator() -> some View {
-        #if os(tvOS)
-        return self
-        #else
-        return self.listRowSeparator(.hidden)
-        #endif
-    }
-}
-
-// MARK: - Pagination
-
-extension View {
-    /// Loads the next page when `isLast` is the row at the end of the feed.
-    ///
-    /// SwiftUI's `List` realises rows lazily, so a row's `onAppear` means
-    /// "scrolled into view" and the last row appearing is a genuine signal to
-    /// fetch more. SwiftOpenUI's GTK backend realises every row immediately, so
-    /// the same code fetches a page, the append rebuilds the list, a new last
-    /// row is realised, and it fetches again — with nobody touching the app.
-    /// Measured on Home: 35 items grew to 273 in 75 idle seconds before the app
-    /// stopped responding.
-    ///
-    /// So the automatic trigger is used only where the list is lazy. Elsewhere
-    /// the lists offer `LoadMoreButton` instead.
-    func loadsNextPageWhenLast(_ isLast: Bool, _ load: @escaping () async -> Void) -> some View {
-        #if canImport(SwiftUI) && !BACKEND_GTK
-        return onAppear { if isLast { Task { await load() } } }
-        #else
-        return self
-        #endif
-    }
-}
-
-/// Explicit "load the next page" control, for backends whose `List` is not
-/// lazy and therefore cannot drive pagination from `onAppear`. Renders nothing
-/// where the automatic trigger works.
-@MainActor
-struct LoadMoreButton: View {
-    let feed: FeedModel
-
-    var body: some View {
-        #if canImport(SwiftUI) && !BACKEND_GTK
-        EmptyView()
-        #else
-        if feed.hasMore && !feed.isLoading {
-            Button("Load more") { Task { await feed.loadMore() } }
-                .frame(maxWidth: .infinity)
-        }
-        #endif
     }
 }

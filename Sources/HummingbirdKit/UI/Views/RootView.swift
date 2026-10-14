@@ -264,7 +264,7 @@ struct BrowserTabOverviewButton: View {
     var body: some View {
         Button(action: action) {
             Label("Tabs", systemImage: "square.on.square")
-                .labelStyle(.iconOnly)
+                .labelsHidden()
         }
         .accessibilityLabel("Tabs")
         .accessibilityValue(tabCountLabel)

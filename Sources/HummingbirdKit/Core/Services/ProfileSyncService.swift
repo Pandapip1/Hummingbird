@@ -86,6 +86,19 @@ final class ProfileSyncService {
         try await appSync.sendMessage(try .encoding(payload), to: recipient)
     }
 
+    func peers() async throws -> [AppSyncPeerTrustSummary] {
+        try await appSync.peers()
+    }
+
+    func verifyPeer(_ code: AppSyncPeerVerificationCode) async throws {
+        _ = try await appSync.completePeerVerification(code)
+    }
+
+    func distrustPeer(_ peer: AppSyncPeer) async throws {
+        try await appSync.distrust(peer)
+        try await appSync.syncTrustFacts()
+    }
+
     private func ensureOwnerSpace() async throws {
         do {
             _ = try await spaces.createOwnerSpace(

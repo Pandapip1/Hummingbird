@@ -308,6 +308,16 @@ final class ATAppSyncTests: XCTestCase {
         XCTAssertNil(byID[unrelated.peer.publicIdentity.stableID])
     }
 
+    func testPeerVerificationCodeContainsOnlySelfCertifyingID() throws {
+        let identity = AppSyncPeerIdentity.generate()
+        let code = AppSyncPeerVerificationCode(peerID: identity.publicIdentity.stableID)
+
+        XCTAssertEqual(code.rawValue, identity.publicIdentity.stableID.rawValue)
+        XCTAssertEqual(AppSyncPeerVerificationCode(rawValue: code.rawValue), code)
+        XCTAssertNil(AppSyncPeerVerificationCode(rawValue: identity.publicIdentity.id.uuidString))
+        XCTAssertFalse(code.rawValue.contains(identity.publicIdentity.id.uuidString))
+    }
+
     private func makePeer(_ name: String, root: URL) throws -> AppSyncPeerService {
         try AppSyncPeerService(
             credentialStore: MemoryAppSyncCredentialStore(),

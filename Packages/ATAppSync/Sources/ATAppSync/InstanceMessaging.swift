@@ -380,6 +380,9 @@ public final class InstanceMessagingService: @unchecked Sendable {
     public let trustStore: AppSyncTrustStore
     public var peer: AppSyncPeerIdentity { identity }
     public var messageStore: AppSyncMessageStore { inbox }
+    public var verificationCode: AppSyncPeerVerificationCode {
+        .init(peerID: identity.publicIdentity.stableID)
+    }
     private let server: InstanceInboxLANServer
     private let trustLock = NSLock()
     private var trustClock: HybridLogicalClock

@@ -281,6 +281,7 @@ enum Route: Hashable {
     case search
     case library
     case sources
+    case peers
     case content(String)        // content details URL
     case item(ContentItem)      // content we already have partial data for
     case channel(String)

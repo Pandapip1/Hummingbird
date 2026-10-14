@@ -68,6 +68,21 @@ final class ProfileAccountService {
 
     func sync() async { await syncService?.sync() }
 
+    func peers() async throws -> [AppSyncPeerTrustSummary] {
+        guard let syncService else { return [] }
+        return try await syncService.peers()
+    }
+
+    func verifyPeer(_ code: AppSyncPeerVerificationCode) async throws {
+        guard let syncService else { throw PairingError.unavailable }
+        try await syncService.verifyPeer(code)
+    }
+
+    func distrustPeer(_ peer: AppSyncPeer) async throws {
+        guard let syncService else { throw PairingError.unavailable }
+        try await syncService.distrustPeer(peer)
+    }
+
     func sendCredential(_ auth: SourceAuth, pluginID: String, sourceURL: URL,
                         recipient: AppSyncPeer) async throws {
         guard let syncService else { throw PairingError.unavailable }

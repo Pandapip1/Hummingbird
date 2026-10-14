@@ -81,6 +81,7 @@ struct AppSectionMenu: View {
                 AdaptiveMenuItem(id: "search", title: "Search", systemImage: "magnifyingglass", value: Route.search),
                 AdaptiveMenuItem(id: "library", title: "Library", systemImage: "books.vertical", value: Route.library),
                 AdaptiveMenuItem(id: "sources", title: "Sources", systemImage: "puzzlepiece.extension", value: Route.sources),
+                AdaptiveMenuItem(id: "peers", title: "Peers", systemImage: "person.2.badge.gearshape", value: Route.peers),
                 AdaptiveMenuItem(id: "settings", title: "Settings", systemImage: "gearshape", value: Route.settings),
             ]
         ) { route, title in

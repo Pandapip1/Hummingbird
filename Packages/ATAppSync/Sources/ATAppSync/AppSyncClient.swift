@@ -131,14 +131,56 @@ public actor AppSyncClient {
         including discovered: [AppSyncInstanceRegistration] = []
     ) async throws -> [AppSyncPeerTrustSuggestion] {
         guard let messaging else { return [] }
-        var registrations: [AppSyncPeerID: AppSyncInstanceRegistration] = [:]
-        for registration in discovered { registrations[registration.stablePeerID] = registration }
-        for registration in try await instanceRegistrations() {
-            registrations[registration.stablePeerID] = registration
-        }
+        let registrations = try await mergedRegistrations(including: discovered)
         return messaging.trustStore.suggestions(
-            among: Array(registrations.values), localAppIDs: recognizedAppIDs
+            among: registrations, localAppIDs: recognizedAppIDs
         )
+    }
+
+    public func peers(
+        including discovered: [AppSyncInstanceRegistration] = []
+    ) async throws -> [AppSyncPeerTrustSummary] {
+        guard let messaging else { return [] }
+        let registrations = try await mergedRegistrations(including: discovered)
+        return messaging.trustStore.peers(
+            among: registrations, localAppIDs: recognizedAppIDs
+        )
+    }
+
+    /// Completes the verification ceremony represented by a scanned QR code.
+    /// The code contains only a self-certifying signing-key digest. A peer is
+    /// accepted only when a separately resolved, valid signed registration has
+    /// the same digest and shares a recognized application ID.
+    public func completePeerVerification(
+        _ code: AppSyncPeerVerificationCode,
+        including discovered: [AppSyncInstanceRegistration] = []
+    ) async throws -> AppSyncPeerTrustSummary {
+        guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        let registrations = try await mergedRegistrations(including: discovered)
+        let compatible = messaging.trustStore.peers(
+            among: registrations, localAppIDs: recognizedAppIDs
+        )
+        guard let match = compatible.first(where: { $0.id == code.peerID }) else {
+            throw AppSyncPeerVerificationError.peerNotFound
+        }
+        _ = try messaging.trust(match.peer)
+        try await syncTrustFacts(using: messaging)
+        return .init(
+            registration: match.registration,
+            state: messaging.trustStore.state(of: match.id)
+        )
+    }
+
+    @discardableResult
+    public func trust(_ peer: AppSyncPeer) throws -> AppSyncTrustFact {
+        guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        return try messaging.trust(peer)
+    }
+
+    @discardableResult
+    public func distrust(_ peer: AppSyncPeer) throws -> AppSyncTrustFact {
+        guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        return try messaging.revokeTrust(with: peer)
     }
 
     public func acknowledgeMessage(id: UUID) async throws {
@@ -203,6 +245,17 @@ public actor AppSyncClient {
         return registrations
     }
 
+    private func mergedRegistrations(
+        including discovered: [AppSyncInstanceRegistration]
+    ) async throws -> [AppSyncInstanceRegistration] {
+        var registrations: [AppSyncPeerID: AppSyncInstanceRegistration] = [:]
+        for registration in discovered { registrations[registration.stablePeerID] = registration }
+        for registration in try await instanceRegistrations() {
+            registrations[registration.stablePeerID] = registration
+        }
+        return Array(registrations.values)
+    }
+
     private func syncTrustFacts(using messaging: InstanceMessagingService) async throws {
         var remote: [AppSyncTrustFact] = []
         var cursor: String?
@@ -251,5 +304,18 @@ public actor AppSyncClient {
         guard let (_, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 204 else { return false }
         return true
+    }
+}
+
+public enum AppSyncPeerVerificationError: LocalizedError, Equatable {
+    case invalidCode
+    case peerNotFound
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidCode: "The peer verification code is invalid."
+        case .peerNotFound:
+            "No signed instance registration with a shared app ID matches this peer."
+        }
     }
 }

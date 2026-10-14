@@ -20,6 +20,22 @@ public struct AppSyncPeerID: RawRepresentable, Codable, Hashable, Comparable, Se
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
+/// The complete QR payload for peer verification. The signing-key digest is
+/// deliberately the only encoded value; endpoint and key material must be
+/// resolved independently and match this self-certifying identifier.
+public struct AppSyncPeerVerificationCode: RawRepresentable, Codable, Hashable, Sendable {
+    public let peerID: AppSyncPeerID
+    public var rawValue: String { peerID.rawValue }
+
+    public init(peerID: AppSyncPeerID) { self.peerID = peerID }
+    public init?(rawValue: String) {
+        guard let peerID = AppSyncPeerID(rawValue: rawValue.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )) else { return nil }
+        self.peerID = peerID
+    }
+}
+
 public struct AppSyncTrustVersion: Codable, Hashable, Comparable, Sendable {
     public let timestamp: HybridLogicalTimestamp
     public let eventID: UUID
@@ -118,6 +134,21 @@ public struct AppSyncPeerTrustSuggestion: Equatable, Sendable {
     }
 }
 
+public struct AppSyncPeerTrustSummary: Equatable, Sendable, Identifiable {
+    public let registration: AppSyncInstanceRegistration
+    public let state: AppSyncPeerTrustState
+
+    public var id: AppSyncPeerID { registration.stablePeerID }
+    public var peer: AppSyncPeer { registration.peer }
+    public var recommendation: AppSyncTrustRecommendation? {
+        switch state {
+        case .indirectlyTrusted: .verifyDirectly
+        case .implicitlyDistrusted, .unknown: .verifyOrDistrust
+        case .local, .directlyTrusted, .explicitlyDistrusted: nil
+        }
+    }
+}
+
 /// Durable event-ID set CRDT. All valid facts are retained, including facts the
 /// local observer does not accept, so late delivery can reconstruct past views.
 public final class AppSyncTrustStore: @unchecked Sendable {
@@ -170,26 +201,28 @@ public final class AppSyncTrustStore: @unchecked Sendable {
         among registrations: [AppSyncInstanceRegistration],
         localAppIDs: Set<AppSyncAppID>
     ) -> [AppSyncPeerTrustSuggestion] {
+        peers(among: registrations, localAppIDs: localAppIDs).compactMap { summary in
+            guard let recommendation = summary.recommendation else { return nil }
+            return .init(
+                registration: summary.registration, state: summary.state,
+                recommendation: recommendation
+            )
+        }
+    }
+
+    public func peers(
+        among registrations: [AppSyncInstanceRegistration],
+        localAppIDs: Set<AppSyncAppID>
+    ) -> [AppSyncPeerTrustSummary] {
         lock.withLock {
             registrations.compactMap { registration in
                 guard !registration.appIDs.isDisjoint(with: localAppIDs),
                       (try? registration.verify()) != nil,
                       registration.stablePeerID != observer.stableID else { return nil }
                 let state = stateUnlocked(of: registration.stablePeerID)
-                let recommendation: AppSyncTrustRecommendation
-                switch state {
-                case .indirectlyTrusted:
-                    recommendation = .verifyDirectly
-                case .implicitlyDistrusted, .unknown:
-                    recommendation = .verifyOrDistrust
-                case .local, .directlyTrusted, .explicitlyDistrusted:
-                    return nil
-                }
-                return .init(
-                    registration: registration, state: state, recommendation: recommendation
-                )
+                return .init(registration: registration, state: state)
             }
-            .sorted { $0.registration.stablePeerID < $1.registration.stablePeerID }
+            .sorted { $0.id < $1.id }
         }
     }
 

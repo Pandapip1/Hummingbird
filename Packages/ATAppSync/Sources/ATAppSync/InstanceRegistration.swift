@@ -13,6 +13,9 @@ public struct AppSyncInstanceRegistration: Codable, Hashable, Sendable {
     public let signature: Data
 
     public var stablePeerID: AppSyncPeerID { .init(signingKey: signingKey) }
+    public var peer: AppSyncPeer {
+        .init(id: instanceID, signingKey: signingKey, encryptionKey: encryptionKey)
+    }
 
     private struct Unsigned: Codable {
         let instanceID: UUID

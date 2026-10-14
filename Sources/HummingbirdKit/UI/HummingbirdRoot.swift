@@ -32,7 +32,6 @@ public struct HummingbirdRoot: View {
                 .environment(model)
                 .configuresVisualAuditRoute(configureVisualAuditRoute)
                 .task { await model.plugins.checkForUpdates() }
-                .task { _ = try? await model.peerService?.startLANServer() }
                 .task { configureDebugServer() }
                 .onOpenURL { model.handleIncomingURL($0) }
                 .observesApplicationLifecycle(model)

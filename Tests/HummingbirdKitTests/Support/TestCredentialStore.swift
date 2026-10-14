@@ -17,5 +17,12 @@ final class TestCredentialStore: CredentialStore, @unchecked Sendable {
 
 @MainActor
 func makeTestAppModel(persistence: AppPersistenceSnapshot = .empty) -> AppModel {
-    AppModel(persistence: persistence, credentialStore: TestCredentialStore())
+    AppModel(
+        persistence: persistence,
+        credentialStore: TestCredentialStore(),
+        profileStorageDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(
+            "HummingbirdProfileTests-\(UUID())", isDirectory: true
+        ),
+        localProfileID: UUID()
+    )
 }

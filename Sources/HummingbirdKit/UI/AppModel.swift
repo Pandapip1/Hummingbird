@@ -11,6 +11,7 @@ import UIKit
 @MainActor
 @Observable
 final class AppModel {
+    private static let localProfileIDKey = "appsync.localProfileID"
     let plugins: PluginManager
     let library: LibraryStore
     let platform: PlatformService
@@ -83,14 +84,33 @@ final class AppModel {
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
     init(persistence: AppPersistenceSnapshot = .empty,
-         credentialStore: any CredentialStore = AuthKeychain.store) {
+         credentialStore: any CredentialStore = AuthKeychain.store,
+         profileStorageDirectory: URL = Storage.directory.appendingPathComponent(
+            "profile-sync", isDirectory: true
+         ),
+         localProfileID suppliedLocalProfileID: UUID? = nil) {
         let peerService = try? AppSyncPeerService(
             credentialStore: credentialStore, storageDirectory: Storage.directory
         )
         let profileChanges = ProfileChangeStore(
-            storageDirectory: Storage.directory.appendingPathComponent("profile-sync", isDirectory: true),
+            storageDirectory: profileStorageDirectory,
             signer: try? peerService?.peer.mutationSigner()
         )
+        let localProfileID: UUID
+        if let suppliedLocalProfileID {
+            localProfileID = suppliedLocalProfileID
+        } else if let stored = UserDefaults.standard.string(forKey: Self.localProfileIDKey),
+           let restored = UUID(uuidString: stored) {
+            localProfileID = restored
+        } else {
+            localProfileID = UUID()
+            UserDefaults.standard.set(localProfileID.uuidString, forKey: Self.localProfileIDKey)
+        }
+        do {
+            _ = try profileChanges.activate(localProfileID: localProfileID)
+        } catch {
+            assertionFailure("Could not create the local profile: \(error)")
+        }
         let plugins = PluginManager(installed: persistence.plugins, profileChanges: profileChanges)
         let library = LibraryStore(snapshot: persistence.library, profileChanges: profileChanges)
         let platform = PlatformService(plugins: plugins)

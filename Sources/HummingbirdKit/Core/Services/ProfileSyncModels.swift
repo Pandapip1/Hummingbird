@@ -110,13 +110,13 @@ final class ProfileChangeStore: @unchecked Sendable {
     private let lock = NSLock()
     private let storageDirectory: URL?
     private var active: AppSyncMutationLog?
-    private var activeAccount: DID?
+    private var activeProfileID: UUID?
     private var storedError: (any Error)?
     private var mutationHandler: (@Sendable () -> Void)?
     private let signer: AppSyncMutationSigner?
 
-    /// Creates the account-switching change store used by the app. No events are
-    /// recorded before an account is selected; sign-in bootstraps current state.
+    /// Creates the local profile change store. A profile is activated during app
+    /// startup and remains active whether or not it has any synchronization target.
     init(storageDirectory: URL, signer: AppSyncMutationSigner? = nil) {
         self.storageDirectory = storageDirectory
         self.signer = signer
@@ -132,19 +132,21 @@ final class ProfileChangeStore: @unchecked Sendable {
     var lastError: (any Error)? { lock.withLock { storedError } }
     var mutationLog: AppSyncMutationLog? { lock.withLock { active } }
 
-    func activate(account: DID) throws -> AppSyncMutationLog {
-        if let mutationLog = lock.withLock({ activeAccount == account ? active : nil }) { return mutationLog }
+    func activate(localProfileID: UUID) throws -> AppSyncMutationLog {
+        if let mutationLog = lock.withLock({ activeProfileID == localProfileID ? active : nil }) {
+            return mutationLog
+        }
         guard let storageDirectory else {
             throw CocoaError(.fileNoSuchFile)
         }
-        let digest = SHA256.hash(data: Data(account.rawValue.utf8))
-            .map { String(format: "%02x", $0) }.joined()
         let created = try AppSyncMutationLog(
-            fileURL: storageDirectory.appendingPathComponent("\(digest).json"), signer: signer
+            fileURL: storageDirectory.appendingPathComponent(
+                "\(localProfileID.uuidString.lowercased()).json"
+            ), signer: signer
         )
         lock.withLock {
             active = created
-            activeAccount = account
+            activeProfileID = localProfileID
             storedError = nil
         }
         return created
@@ -153,7 +155,7 @@ final class ProfileChangeStore: @unchecked Sendable {
     func deactivate() {
         lock.withLock {
             active = nil
-            activeAccount = nil
+            activeProfileID = nil
         }
     }
 

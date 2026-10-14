@@ -7,6 +7,17 @@ final class ModelAndLogicTests: XCTestCase {
     }
 
     @MainActor
+    func testAppStartsWithDurableLocalProfileBeforeLogin() throws {
+        let model = makeTestAppModel()
+        XCTAssertNil(model.profileAccount.account)
+        let changes = try XCTUnwrap(model.profileChanges.mutationLog)
+
+        _ = model.library.createPlaylist(name: "Local only")
+
+        XCTAssertEqual(changes.pending().last?.collection, HummingbirdProfileSchema.playlist)
+    }
+
+    @MainActor
     func testBrowserTabManagementCreatesSelectsAndClosesTabs() {
         let model = makeTestAppModel()
         let home = model.activeTab

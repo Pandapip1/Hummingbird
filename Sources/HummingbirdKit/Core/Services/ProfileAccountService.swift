@@ -85,24 +85,21 @@ final class ProfileAccountService {
         retryTask?.cancel()
         retryTask = nil
         changes.setMutationHandler(nil)
-        changes.deactivate()
     }
 
     private func restore() {
         guard let raw = UserDefaults.standard.string(forKey: "atproto.currentAccount"),
               let did = DID(rawValue: raw), let credential = try? credentialStore.load(account: did) else { return }
         install(credential)
+        syncService?.bootstrapCurrentProfile()
     }
 
     private func install(_ credential: ATProtoOAuthCredential) {
         account = credential.session.account
         handle = credential.session.handle
         guard let library, let plugins else { return }
-        let mutationLog: AppSyncMutationLog
-        do {
-            mutationLog = try changes.activate(account: credential.session.account)
-        } catch {
-            errorMessage = error.localizedDescription
+        guard let mutationLog = changes.mutationLog else {
+            errorMessage = "The local profile could not be opened."
             syncService = nil
             return
         }

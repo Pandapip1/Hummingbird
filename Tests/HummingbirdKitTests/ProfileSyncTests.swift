@@ -73,23 +73,20 @@ final class ProfileSyncTests: XCTestCase {
         XCTAssertEqual(mutationLog.pending().last?.operation, .delete)
     }
 
-    func testReplicatedChangesAreIsolatedByAccount() throws {
+    func testLocalProfileChangesPersistWithoutAnAccount() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let recorder = ProfileChangeStore(storageDirectory: directory)
-        let firstAccount = DID(rawValue: "did:plc:first")!
-        let secondAccount = DID(rawValue: "did:plc:second")!
-        let first = try recorder.activate(account: firstAccount)
+        let profileID = UUID()
+        let first = try recorder.activate(localProfileID: profileID)
         try first.appendPut(
             collection: HummingbirdProfileSchema.subscription, key: RecordKey(rawValue: "one")!,
             value: .string("first")
         )
 
-        let second = try recorder.activate(account: secondAccount)
-        XCTAssertTrue(second.events().isEmpty)
         recorder.deactivate()
 
-        let reopenedFirst = try recorder.activate(account: firstAccount)
+        let reopenedFirst = try recorder.activate(localProfileID: profileID)
         XCTAssertEqual(reopenedFirst.events().count, 1)
         XCTAssertEqual(reopenedFirst.events().first?.value, .string("first"))
     }

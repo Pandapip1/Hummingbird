@@ -429,13 +429,14 @@ struct AppSettingsView: View {
     @AppStorage("preferAdaptive") private var preferAdaptive = true
     @AppStorage("showSubtitlesByDefault") private var subtitlesDefault = false
     @AppStorage("subscriptionFetchLimit") private var fetchLimit = 0
+    @Environment(\.openRoute) private var openRoute
     let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
         Form {
             Section("Sync") {
-                NavigationLink {
-                    SyncSettingsView()
+                Button {
+                    openRoute(.syncSettings, title: "Sync")
                 } label: {
                     Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                 }

@@ -29,6 +29,7 @@ extension DynamicTab where Page == Route {
         case .playlist: return "Playlist"
         case .plugin: return "Plugin"
         case .settings: return "Settings"
+        case .syncSettings: return "Sync"
         }
     }
 }

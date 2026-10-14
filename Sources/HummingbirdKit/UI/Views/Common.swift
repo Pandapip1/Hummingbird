@@ -191,6 +191,10 @@ struct RouteContent: View {
                 NavigationStack {
                     AppSettingsView(browserToolbar: browserToolbar)
                 }
+            case .syncSettings:
+                NavigationStack {
+                    SyncSettingsView()
+                }
             }
         }
     }

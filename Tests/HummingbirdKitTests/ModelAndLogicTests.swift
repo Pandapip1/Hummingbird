@@ -48,6 +48,21 @@ final class ModelAndLogicTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsSubmenuUsesBrowserHistory() {
+        let tab = BrowserTab.hummingbirdTab()
+        tab.push(.settings, title: "Settings")
+        tab.push(.syncSettings, title: "Sync")
+
+        XCTAssertEqual(tab.current, .syncSettings)
+        XCTAssertTrue(tab.canGoBack)
+        tab.goBack()
+        XCTAssertEqual(tab.current, .settings)
+        XCTAssertTrue(tab.canGoForward)
+        tab.goForward()
+        XCTAssertEqual(tab.current, .syncSettings)
+    }
+
+    @MainActor
     func testSearchHistoryDeduplicatesLimitsAndPersists() {
         var saved: [[String]] = []
         let history = SearchHistory(limit: 3, load: { ["Existing"] }, save: { saved.append($0) })

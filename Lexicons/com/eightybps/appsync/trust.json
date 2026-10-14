@@ -1,0 +1,18 @@
+{
+  "lexicon": 1,
+  "id": "com.eightybps.appsync.trust",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "An immutable signed trust or distrust fact replicated by event ID.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["fact"],
+        "properties": {
+          "fact": { "type": "unknown" }
+        }
+      }
+    }
+  }
+}

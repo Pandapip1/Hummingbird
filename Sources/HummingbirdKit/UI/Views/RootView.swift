@@ -367,11 +367,11 @@ private struct PairedDeviceLoginSheet: View {
             catch { self.error = error.localizedDescription }
         }
         .task {
-            do { senderIdentity = try await request.announceSender() }
+            do { senderIdentity = try await request.announceSender(peerService: app.peerService) }
             catch { self.error = error.localizedDescription; return }
             while !Task.isCancelled && !remoteAccepted && error == nil {
                 do {
-                    switch try await request.remoteStatus() {
+                    switch try await request.remoteStatus(peerService: app.peerService) {
                     case .accepted:
                         remoteAccepted = true
                         return

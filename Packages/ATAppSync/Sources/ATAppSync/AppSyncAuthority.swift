@@ -5,6 +5,7 @@ public enum AppSyncAuthority {
     public static let did = DID(rawValue: "did:plc:ku5k2fkivxead2a3h46pht7x")!
     public static let domain = "appsync.eightybps.com"
     public static let protocolID = NSID(rawValue: "com.eightybps.appsync")!
+    public static let protocolAppID = AppSyncAppID(rawValue: "com.eightybps.appsync")!
 }
 
 /// Reverse-DNS identifiers understood by an instance. Registrations are signed

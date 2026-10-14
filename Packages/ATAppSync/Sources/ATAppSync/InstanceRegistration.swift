@@ -12,6 +12,8 @@ public struct AppSyncInstanceRegistration: Codable, Hashable, Sendable {
     public let lanAppendCapability: Data?
     public let signature: Data
 
+    public var stablePeerID: AppSyncPeerID { .init(signingKey: signingKey) }
+
     private struct Unsigned: Codable {
         let instanceID: UUID
         let signingKey: Data

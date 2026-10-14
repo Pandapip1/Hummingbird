@@ -24,6 +24,7 @@ public struct InstancePublicIdentity: Codable, Hashable, Sendable {
     public let id: UUID
     public let signingKey: Data
     public let encryptionKey: Data
+    public var stableID: AppSyncPeerID { .init(signingKey: signingKey) }
 
     public init(id: UUID, signingKey: Data, encryptionKey: Data) {
         self.id = id
@@ -42,6 +43,14 @@ public struct InstancePublicIdentity: Codable, Hashable, Sendable {
     public func verificationEmoji(sessionSecret: Data) -> String {
         let material = signingKey + encryptionKey + sessionSecret
         return VerificationEmoji.render(Array(SHA256.hash(data: material)))
+    }
+
+    func verify(signature: Data, domain: String, payload: Data) throws {
+        let parsed = try P256.Signing.ECDSASignature(derRepresentation: signature)
+        var transcript = Data(domain.utf8); transcript.append(0); transcript.append(payload)
+        guard try signingPublicKey.isValidSignature(parsed, for: transcript) else {
+            throw AppSyncTrustError.invalidSignature
+        }
     }
 }
 
@@ -98,6 +107,18 @@ public struct InstanceIdentity: Sendable {
     }
 
     public func mutationSigner() throws -> AppSyncMutationSigner { try journalSigner() }
+
+    func sign(domain: String, payload: Data) throws -> Data {
+        var transcript = Data(domain.utf8); transcript.append(0); transcript.append(payload)
+        return try signingKey.signature(for: transcript).derRepresentation
+    }
+
+    public func trustFact(with peer: AppSyncPeer,
+                          timestamp: HybridLogicalTimestamp) throws -> AppSyncTrustFact {
+        try AppSyncTrustFact(
+            timestamp: timestamp, kind: .trust, issuer: publicIdentity, subject: peer
+        ).signed(by: self)
+    }
 }
 
 public final class InstanceIdentityStore: @unchecked Sendable {
@@ -288,31 +309,32 @@ public final class InstanceInbox: @unchecked Sendable {
 
 public final class InstanceInboxLANServer: @unchecked Sendable {
     private let inbox: InstanceInbox
-    private let capability: Data
+    private let trustStore: AppSyncTrustStore
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     private let lock = NSLock()
     private var channel: Channel?
     private(set) var endpoint: URL?
 
-    public init(inbox: InstanceInbox, capability: Data) {
+    public init(inbox: InstanceInbox, trustStore: AppSyncTrustStore) {
         self.inbox = inbox
-        self.capability = capability
+        self.trustStore = trustStore
     }
 
     deinit { stop() }
 
-    public func start() async throws -> URL {
+    public func start(appIDs: Set<AppSyncAppID>) async throws -> URL {
         if let endpoint = lock.withLock({ endpoint }) { return endpoint }
-        let expected = capability.base64URLEncodedString()
         let inbox = self.inbox
+        let trustStore = self.trustStore
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
             .childChannelInitializer { channel in
                 channel.pipeline.configureHTTPServerPipeline().flatMap {
                     channel.pipeline.addHandler(InboxAppendHTTPHandler { head, data in
                         guard head.method == .POST, head.uri == "/inbox",
-                              head.headers.first(name: "Authorization") == "Bearer \(expected)",
-                              let envelope = try? JSONDecoder().decode(InstanceInboxEnvelope.self, from: data)
+                              let envelope = try? JSONDecoder().decode(InstanceInboxEnvelope.self, from: data),
+                              appIDs.contains(envelope.appID),
+                              trustStore.trusts(envelope.sender.stableID)
                         else { return .forbidden }
                         do { try inbox.appendRemote(envelope); return .noContent }
                         catch { return .badRequest }
@@ -350,42 +372,34 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
 public struct InstanceInboxAdvertisement: Codable, Hashable, Sendable {
     public let identity: InstancePublicIdentity
     public let endpoint: URL
-    /// A write-only capability shared only inside the account's permissioned
-    /// profile space or an explicitly verified pairing ceremony.
-    public let appendCapability: Data
 }
 
 public final class InstanceMessagingService: @unchecked Sendable {
-    private static let capabilityAccount = "com.eightybps.appsync.instance-inbox-capability.v1"
     public let identity: InstanceIdentity
     public let inbox: InstanceInbox
+    public let trustStore: AppSyncTrustStore
     public var peer: AppSyncPeerIdentity { identity }
     public var messageStore: AppSyncMessageStore { inbox }
-    private let capability: Data
     private let server: InstanceInboxLANServer
+    private let trustLock = NSLock()
+    private var trustClock: HybridLogicalClock
 
     public init(credentialStore: any AppSyncCredentialStore, storageDirectory: URL) throws {
         identity = try InstanceIdentityStore(credentialStore: credentialStore).identity()
         let file = storageDirectory.appendingPathComponent("instance-inbox", isDirectory: true)
             .appendingPathComponent("\(identity.publicIdentity.id.uuidString.lowercased()).json")
         inbox = try InstanceInbox(identity: identity, fileURL: file)
-        if let stored = credentialStore.load(account: Self.capabilityAccount), stored.count == 32 {
-            capability = stored
-        } else {
-            var generator = SystemRandomNumberGenerator()
-            let created = Data((0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) })
-            credentialStore.save(created, account: Self.capabilityAccount)
-            guard credentialStore.load(account: Self.capabilityAccount) == created else {
-                throw InstanceMessagingError.credentialStoreUnavailable
-            }
-            capability = created
-        }
-        server = InstanceInboxLANServer(inbox: inbox, capability: capability)
+        trustStore = try AppSyncTrustStore(
+            observer: identity.publicIdentity,
+            fileURL: storageDirectory.appendingPathComponent("peer-trust", isDirectory: true)
+                .appendingPathComponent("facts.json")
+        )
+        trustClock = HybridLogicalClock(deviceID: identity.publicIdentity.id)
+        server = InstanceInboxLANServer(inbox: inbox, trustStore: trustStore)
     }
 
-    public func startLANServer() async throws -> InstanceInboxAdvertisement {
-        .init(identity: identity.publicIdentity, endpoint: try await server.start(),
-              appendCapability: capability)
+    public func startLANServer(appIDs: Set<AppSyncAppID>) async throws -> InstanceInboxAdvertisement {
+        .init(identity: identity.publicIdentity, endpoint: try await server.start(appIDs: appIDs))
     }
 
     public func registration(appIDs: Set<AppSyncAppID>,
@@ -395,12 +409,42 @@ public final class InstanceMessagingService: @unchecked Sendable {
             encryptionKey: identity.publicIdentity.encryptionKey,
             appIDs: appIDs,
             lanEndpoint: advertisement?.endpoint,
-            lanAppendCapability: advertisement?.appendCapability,
+            lanAppendCapability: nil,
             signer: identity.journalSigner()
         )
     }
 
     public func stopLANServer() { server.stop() }
+
+    @discardableResult
+    public func trust(_ peer: AppSyncPeer) throws -> AppSyncTrustFact {
+        let fact = try signedTrustFact(with: peer)
+        _ = try trustStore.merge([fact])
+        return fact
+    }
+
+    public func signedTrustFact(with peer: AppSyncPeer) throws -> AppSyncTrustFact {
+        let timestamp = trustLock.withLock { trustClock.tick() }
+        return try identity.trustFact(with: peer, timestamp: timestamp)
+    }
+
+    public func recordTrust(_ completed: AppSyncTrustFact) throws {
+        trustLock.withLock { trustClock.observe(completed.timestamp) }
+        _ = try trustStore.merge([completed])
+    }
+
+    @discardableResult
+    public func revokeTrust(with peer: AppSyncPeer) throws -> AppSyncTrustFact {
+        let timestamp = trustLock.withLock { trustClock.tick() }
+        let fact = try AppSyncTrustFact(
+            timestamp: timestamp, kind: .distrust,
+            issuer: identity.publicIdentity, subject: peer
+        ).signed(by: identity)
+        _ = try trustStore.merge([fact])
+        return fact
+    }
+
+    public func trusts(_ peer: AppSyncPeer) -> Bool { trustStore.trusts(peer.stableID) }
 }
 
 private final class InboxAppendHTTPHandler: ChannelInboundHandler, @unchecked Sendable {

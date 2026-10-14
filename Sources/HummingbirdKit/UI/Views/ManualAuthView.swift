@@ -106,6 +106,7 @@ private final class CredentialPairingModel {
             pluginSourceURL: sourceURL,
             identity: peerService?.peer,
             messageStore: peerService?.messageStore,
+            peerService: peerService,
             onReceive: { [weak self] auth in self?.onFinish(auth) },
             onReject: { [weak self] in self?.error = "The other device reported that the verification emoji did not match." }
         )

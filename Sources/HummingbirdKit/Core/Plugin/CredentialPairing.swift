@@ -161,7 +161,10 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     private var requestValue: CredentialPairingRequest?
     private let identity: AppSyncPeerIdentity?
     private let messageStore: AppSyncMessageStore?
+    private let peerService: AppSyncPeerService?
     private var senderIdentity: AppSyncPeer?
+    private var senderTrustFact: AppSyncTrustFact?
+    private var completedTrustFacts: [AppSyncTrustFact] = []
     private let pluginID: String
     private let pluginSourceURL: URL
     private let onReceive: @MainActor (SourceAuth) -> Void
@@ -170,12 +173,14 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     init(pluginID: String, pluginSourceURL: URL,
          identity: AppSyncPeerIdentity? = nil,
          messageStore suppliedMessageStore: AppSyncMessageStore? = nil,
+         peerService: AppSyncPeerService? = nil,
          onReceive: @escaping @MainActor (SourceAuth) -> Void,
          onReject: @escaping @MainActor () -> Void = {}) {
         self.pluginID = pluginID
         self.pluginSourceURL = pluginSourceURL
         let resolvedIdentity = identity ?? (try? PairingIdentityProvider.store.identity())
         self.identity = resolvedIdentity
+        self.peerService = peerService
         if let suppliedMessageStore {
             messageStore = suppliedMessageStore
         } else if let resolvedIdentity {
@@ -252,7 +257,17 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     func confirmVerification() {
         lock.lock()
         confirmed = senderIdentity != nil
+        let sender = senderIdentity
+        let senderFact = senderTrustFact
         lock.unlock()
+        guard let peerService, let sender, let senderFact else { return }
+        do {
+            try peerService.recordTrust(senderFact)
+            let receiverFact = try peerService.trust(sender)
+            lock.withLock { completedTrustFacts = [senderFact, receiverFact] }
+        } catch {
+            lock.withLock { confirmed = false }
+        }
     }
 
     func rejectVerification() {
@@ -271,7 +286,11 @@ final class CredentialPairingReceiver: @unchecked Sendable {
                 endpoint: URL(string: "http://localhost")!, secret: secret,
                 pluginID: pluginID, pluginSourceURL: pluginSourceURL, receiver: identity.publicIdentity
             )
-            return PairingHTTPResponse(status: status, proof: request.statusProof(Int(status.code)))
+            let trust = lock.withLock { completedTrustFacts }
+            return PairingHTTPResponse(
+                status: status, proof: request.statusProof(Int(status.code)),
+                trustFacts: trust.isEmpty ? nil : try? JSONEncoder().encode(trust).base64URLEncodedString()
+            )
         }
         guard head.method == .POST else { return .init(status: .badRequest) }
         if head.uri == "/hello" {
@@ -324,8 +343,14 @@ final class CredentialPairingReceiver: @unchecked Sendable {
 
     private func acceptHello(_ data: Data, secret: Data) -> Bool {
         guard let hello = try? JSONDecoder().decode(PairingHello.self, from: data),
-              hello.proof == hello.identityProof(secret: secret) else { return false }
-        lock.withLock { senderIdentity = hello.sender }
+              hello.proof == hello.identityProof(secret: secret),
+              hello.trustFact.issuer == hello.sender,
+              hello.trustFact.subject == identity?.publicIdentity,
+              (try? hello.trustFact.verify()) != nil else { return false }
+        lock.withLock {
+            senderIdentity = hello.sender
+            senderTrustFact = hello.trustFact
+        }
         return true
     }
 
@@ -334,10 +359,12 @@ final class CredentialPairingReceiver: @unchecked Sendable {
 
 private struct PairingHello: Codable {
     let sender: AppSyncPeer
+    let trustFact: AppSyncTrustFact
     let proof: Data
 
-    init(sender: AppSyncPeer, secret: Data) {
+    init(sender: AppSyncPeer, trustFact: AppSyncTrustFact, secret: Data) {
         self.sender = sender
+        self.trustFact = trustFact
         proof = Self.proof(sender: sender, secret: secret)
     }
 
@@ -353,6 +380,7 @@ private struct PairingHello: Codable {
 private struct PairingHTTPResponse: Sendable {
     let status: HTTPResponseStatus
     var proof: String? = nil
+    var trustFacts: String? = nil
 }
 
 private final class CredentialPairingHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
@@ -388,6 +416,7 @@ private final class CredentialPairingHTTPHandler: ChannelInboundHandler, @unchec
         headers.add(name: "Content-Length", value: "0")
         headers.add(name: "Connection", value: "close")
         if let proof = result.proof { headers.add(name: "X-Hummingbird-Pairing-Proof", value: proof) }
+        if let trustFacts = result.trustFacts { headers.add(name: "X-AppSync-Trust-Facts", value: trustFacts) }
         context.write(wrapOutboundOut(.head(.init(version: .http1_1, status: result.status, headers: headers))), promise: nil)
         context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
         context.close(promise: nil)
@@ -421,15 +450,24 @@ extension CredentialPairingRequest {
 
 
     func announceSender(_ supplied: AppSyncPeerIdentity? = nil,
+                        peerService: AppSyncPeerService? = nil,
                         session: URLSession = .shared) async throws -> AppSyncPeer {
-        let identity = try supplied ?? PairingIdentityProvider.store.identity()
-        let hello = PairingHello(sender: identity.publicIdentity, secret: secret)
+        let identity = try supplied ?? peerService?.peer ?? PairingIdentityProvider.store.identity()
+        let fact: AppSyncTrustFact
+        if let peerService {
+            fact = try peerService.signedTrustFact(with: receiver)
+        } else {
+            var clock = HybridLogicalClock(deviceID: identity.publicIdentity.id)
+            fact = try identity.trustFact(with: receiver, timestamp: clock.tick())
+        }
+        let hello = PairingHello(sender: identity.publicIdentity, trustFact: fact, secret: secret)
         try await post(try JSONEncoder().encode(hello),
                        to: endpoint.deletingLastPathComponent().appendingPathComponent("hello"), session: session)
         return identity.publicIdentity
     }
 
-    func remoteStatus(session: URLSession = .shared) async throws -> PairingRemoteStatus {
+    func remoteStatus(peerService: AppSyncPeerService? = nil,
+                      session: URLSession = .shared) async throws -> PairingRemoteStatus {
         let statusURL = endpoint.deletingLastPathComponent().appendingPathComponent("status")
         let (_, response) = try await session.data(from: statusURL)
         guard let response = response as? HTTPURLResponse else { throw PairingError.rejected }
@@ -438,7 +476,14 @@ extension CredentialPairingRequest {
             throw PairingError.rejected
         }
         switch status {
-        case 200: return .accepted
+        case 200:
+            if let peerService,
+               let encoded = response.value(forHTTPHeaderField: "X-AppSync-Trust-Facts"),
+               let data = Data(base64URLEncoded: encoded),
+               let facts = try? JSONDecoder().decode([AppSyncTrustFact].self, from: data) {
+                for fact in facts { try peerService.recordTrust(fact) }
+            }
+            return .accepted
         case 204: return .waiting
         case 409: return .rejected
         default: throw PairingError.rejected

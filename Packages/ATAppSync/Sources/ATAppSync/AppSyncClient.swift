@@ -13,6 +13,7 @@ private enum AppSyncSchema {
     static let journal = NSID(rawValue: "com.eightybps.appsync.journal")!
     static let instance = NSID(rawValue: "com.eightybps.appsync.instance")!
     static let inbox = NSID(rawValue: "com.eightybps.appsync.inbox")!
+    static let trust = NSID(rawValue: "com.eightybps.appsync.trust")!
 }
 
 private struct InstanceRecord: Codable, Sendable {
@@ -25,6 +26,12 @@ private struct InboxRecord: Codable, Sendable {
     let type = AppSyncSchema.inbox.rawValue
     let envelope: InstanceInboxEnvelope
     enum CodingKeys: String, CodingKey { case type = "$type"; case envelope }
+}
+
+private struct TrustRecord: Codable, Sendable {
+    let type = AppSyncSchema.trust.rawValue
+    let fact: AppSyncTrustFact
+    enum CodingKeys: String, CodingKey { case type = "$type"; case fact }
 }
 
 /// Generic offline-first replication and instance messaging within one Space.
@@ -66,11 +73,15 @@ public actor AppSyncClient {
 
     public func syncMessages() async throws -> [AppSyncMessage] {
         guard let messaging else { return [] }
-        if advertisement == nil { advertisement = try? await messaging.startLANServer() }
+        try await syncTrustFacts(using: messaging)
+        if advertisement == nil {
+            advertisement = try? await messaging.startLANServer(appIDs: recognizedAppIDs)
+        }
         try await publishInstance(messaging)
         var messages: [AppSyncMessage] = []
         var deliveredIDs = Set<UUID>()
-        for envelope in messaging.inbox.pending() where envelope.appID == appID {
+        for envelope in messaging.inbox.pending()
+        where envelope.appID == appID && messaging.trusts(envelope.sender) {
             deliveredIDs.insert(envelope.id)
             messages.append(.init(
                 id: envelope.id,
@@ -91,7 +102,8 @@ public actor AppSyncClient {
                 }
                 guard let record = try? value.decode(InboxRecord.self),
                       record.envelope.appID == appID,
-                      record.envelope.recipientID == messaging.identity.publicIdentity.id else { continue }
+                      record.envelope.recipientID == messaging.identity.publicIdentity.id,
+                      messaging.trusts(record.envelope.sender) else { continue }
                 try messaging.inbox.appendRemote(record.envelope)
                 cloudMessageIDs.insert(record.envelope.id)
                 guard deliveredIDs.insert(record.envelope.id).inserted else { continue }
@@ -103,6 +115,30 @@ public actor AppSyncClient {
             cursor = page.cursor
         } while cursor != nil
         return messages
+    }
+
+    /// Replicates the complete signed fact set. Facts are immutable and keyed by
+    /// event ID, so repeated/offline delivery is naturally idempotent.
+    public func syncTrustFacts() async throws {
+        guard let messaging else { return }
+        try await syncTrustFacts(using: messaging)
+    }
+
+    /// Actionable trust choices for instances that recognize an application
+    /// this client also recognizes. Callers may add LAN-discovered signed
+    /// registrations; account registrations are included automatically.
+    public func trustSuggestions(
+        including discovered: [AppSyncInstanceRegistration] = []
+    ) async throws -> [AppSyncPeerTrustSuggestion] {
+        guard let messaging else { return [] }
+        var registrations: [AppSyncPeerID: AppSyncInstanceRegistration] = [:]
+        for registration in discovered { registrations[registration.stablePeerID] = registration }
+        for registration in try await instanceRegistrations() {
+            registrations[registration.stablePeerID] = registration
+        }
+        return messaging.trustStore.suggestions(
+            among: Array(registrations.values), localAppIDs: recognizedAppIDs
+        )
     }
 
     public func acknowledgeMessage(id: UUID) async throws {
@@ -118,6 +154,7 @@ public actor AppSyncClient {
 
     public func sendMessage(_ payload: JSONValue, to recipient: InstancePublicIdentity) async throws {
         guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        guard messaging.trusts(recipient) else { throw AppSyncTrustError.incompleteFact }
         let envelope = try InstanceInboxEnvelope.seal(
             payload, appID: appID, from: messaging.identity, to: recipient
         )
@@ -140,6 +177,63 @@ public actor AppSyncClient {
         ))
     }
 
+    private func instanceRegistrations() async throws -> [AppSyncInstanceRegistration] {
+        var registrations: [AppSyncInstanceRegistration] = []
+        var cursor: String?
+        repeat {
+            let page = try await spaces.listRecords(
+                space: space, repo: repo, collection: AppSyncSchema.instance, cursor: cursor
+            )
+            for item in page.records {
+                let value: JSONValue
+                if let listed = item.value {
+                    value = listed
+                } else {
+                    guard let key = RecordKey(rawValue: item.rkey) else { continue }
+                    value = try await spaces.getRecord(
+                        space: space, repo: repo, collection: AppSyncSchema.instance, rkey: key
+                    ).value
+                }
+                guard let record = try? value.decode(InstanceRecord.self),
+                      (try? record.registration.verify()) != nil else { continue }
+                registrations.append(record.registration)
+            }
+            cursor = page.cursor
+        } while cursor != nil
+        return registrations
+    }
+
+    private func syncTrustFacts(using messaging: InstanceMessagingService) async throws {
+        var remote: [AppSyncTrustFact] = []
+        var cursor: String?
+        repeat {
+            let page = try await spaces.listRecords(
+                space: space, repo: repo, collection: AppSyncSchema.trust, cursor: cursor
+            )
+            for item in page.records {
+                let value: JSONValue
+                if let listed = item.value {
+                    value = listed
+                } else {
+                    guard let key = RecordKey(rawValue: item.rkey) else { continue }
+                    value = try await spaces.getRecord(
+                        space: space, repo: repo, collection: AppSyncSchema.trust, rkey: key
+                    ).value
+                }
+                if let record = try? value.decode(TrustRecord.self) { remote.append(record.fact) }
+            }
+            cursor = page.cursor
+        } while cursor != nil
+        _ = try messaging.trustStore.merge(remote)
+        for fact in messaging.trustStore.facts() {
+            _ = try await spaces.putRecord(.init(
+                repo: repo, space: space, collection: AppSyncSchema.trust,
+                rkey: RecordKey(rawValue: fact.id.uuidString.lowercased())!,
+                record: try JSONValue.encoding(TrustRecord(fact: fact)), validate: false
+            ))
+        }
+    }
+
     private func sendOverLANIfAvailable(_ envelope: InstanceInboxEnvelope,
                                         recipientID: UUID) async throws -> Bool {
         let key = RecordKey(rawValue: recipientID.uuidString.lowercased())!
@@ -149,22 +243,13 @@ public actor AppSyncClient {
               record.registration.instanceID == recipientID,
               (try? record.registration.verify()) != nil,
               record.registration.recognizes(appID),
-              let endpoint = record.registration.lanEndpoint,
-              let capability = record.registration.lanAppendCapability else { return false }
+              let endpoint = record.registration.lanEndpoint else { return false }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = try JSONEncoder().encode(envelope)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(capability.base64URL)", forHTTPHeaderField: "Authorization")
         guard let (_, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 204 else { return false }
         return true
-    }
-}
-
-private extension Data {
-    var base64URL: String {
-        base64EncodedString().replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
     }
 }

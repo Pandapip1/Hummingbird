@@ -195,4 +195,130 @@ final class ATAppSyncTests: XCTestCase {
         XCTAssertEqual(session.dpopNonce(for: pds), "resource-nonce")
         XCTAssertEqual(session.dpopNonce(for: issuer), "authorization-nonce")
     }
+
+    func testObserverRelativeRevocationUsesTrustAtEventTime() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ATAppSyncTrustTests-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = try makePeer("a", root: root)
+        let b = try makePeer("b", root: root)
+        let c = try makePeer("c", root: root)
+        let peers = [a, b, c]
+
+        for (left, right) in [(a, b), (a, c), (b, c)] {
+            let facts = [
+                try left.trust(right.peer.publicIdentity),
+                try right.trust(left.peer.publicIdentity),
+            ]
+            for peer in peers { _ = try peer.trustStore.merge(facts) }
+        }
+        XCTAssertTrue(peers.allSatisfy { observer in
+            peers.allSatisfy { candidate in observer.trusts(candidate.peer.publicIdentity) }
+        })
+
+        let aRevokesB = try a.revokeTrust(with: b.peer.publicIdentity)
+        for peer in peers { _ = try peer.trustStore.merge([aRevokesB]) }
+        XCTAssertFalse(c.trusts(b.peer.publicIdentity),
+                       "C trusted A when A revoked B, so C accepts the revocation")
+        XCTAssertEqual(c.trustStore.state(of: b.peer.publicIdentity.stableID), .implicitlyDistrusted)
+        let sharedApp = AppSyncAppID(rawValue: "com.example.shared")!
+        XCTAssertEqual(
+            c.trustStore.suggestions(
+                among: [try b.registration(appIDs: [sharedApp], advertisement: nil)],
+                localAppIDs: [sharedApp]
+            ).first?.recommendation,
+            .verifyOrDistrust
+        )
+        XCTAssertFalse(b.trusts(a.peer.publicIdentity),
+                       "the target derives the reciprocal end of mutual trust")
+
+        let aRevokesC = try a.revokeTrust(with: c.peer.publicIdentity)
+        for peer in peers { _ = try peer.trustStore.merge([aRevokesC]) }
+        XCTAssertFalse(c.trusts(a.peer.publicIdentity))
+        XCTAssertTrue(b.trusts(c.peer.publicIdentity),
+                      "B already distrusted A and therefore ignores A's later revocation of C")
+
+        let bRetrustsA = try b.trust(a.peer.publicIdentity)
+        for peer in peers { _ = try peer.trustStore.merge([bRetrustsA]) }
+        XCTAssertTrue(b.trusts(a.peer.publicIdentity), "B can explicitly restore only B → A")
+        XCTAssertFalse(a.trusts(b.peer.publicIdentity), "A → B remains revoked")
+    }
+
+    func testTrustFactsConvergeAndPersistIndependentOfDeliveryOrder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ATAppSyncTrustPersistenceTests-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = try makePeer("a", root: root)
+        let b = try makePeer("b", root: root)
+        let trust = try a.trust(b.peer.publicIdentity)
+        let revoke = try a.revokeTrust(with: b.peer.publicIdentity)
+        let file = root.appendingPathComponent("replica/facts.json")
+        let replica = try AppSyncTrustStore(observer: a.peer.publicIdentity, fileURL: file)
+
+        _ = try replica.merge([revoke, trust])
+        XCTAssertFalse(replica.trusts(b.peer.publicIdentity.stableID))
+        let reopened = try AppSyncTrustStore(observer: a.peer.publicIdentity, fileURL: file)
+        XCTAssertEqual(Set(reopened.facts()), Set([trust, revoke]))
+        XCTAssertFalse(reopened.trusts(b.peer.publicIdentity.stableID))
+    }
+
+    func testTrustSuggestionsAreActionableAndAppScoped() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ATAppSyncTrustSuggestionTests-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = try makePeer("a", root: root)
+        let b = try makePeer("b", root: root)
+        let c = try makePeer("c", root: root)
+        let unknown = try makePeer("unknown", root: root)
+        let unrelated = try makePeer("unrelated", root: root)
+        let sharedApp = AppSyncAppID(rawValue: "com.example.shared")!
+        let otherApp = AppSyncAppID(rawValue: "com.example.other")!
+
+        let aTrustsB = try a.trust(b.peer.publicIdentity)
+        let bTrustsC = try b.trust(c.peer.publicIdentity)
+        _ = try a.trustStore.merge([aTrustsB, bTrustsC])
+
+        let suggestions = a.trustStore.suggestions(
+            among: [
+                try b.registration(appIDs: [sharedApp], advertisement: nil),
+                try c.registration(appIDs: [sharedApp], advertisement: nil),
+                try unknown.registration(appIDs: [sharedApp], advertisement: nil),
+                try unrelated.registration(appIDs: [otherApp], advertisement: nil),
+            ],
+            localAppIDs: [sharedApp]
+        )
+        let byID = Dictionary(uniqueKeysWithValues: suggestions.map {
+            ($0.registration.stablePeerID, $0)
+        })
+
+        XCTAssertNil(byID[b.peer.publicIdentity.stableID], "direct trust needs no prompt")
+        XCTAssertEqual(byID[c.peer.publicIdentity.stableID]?.recommendation, .verifyDirectly)
+        XCTAssertEqual(
+            byID[c.peer.publicIdentity.stableID]?.state,
+            .indirectlyTrusted(path: [
+                a.peer.publicIdentity.stableID,
+                b.peer.publicIdentity.stableID,
+                c.peer.publicIdentity.stableID,
+            ])
+        )
+        XCTAssertEqual(
+            byID[unknown.peer.publicIdentity.stableID]?.recommendation, .verifyOrDistrust
+        )
+        XCTAssertEqual(byID[unknown.peer.publicIdentity.stableID]?.state, .unknown)
+        XCTAssertNil(byID[unrelated.peer.publicIdentity.stableID])
+    }
+
+    private func makePeer(_ name: String, root: URL) throws -> AppSyncPeerService {
+        try AppSyncPeerService(
+            credentialStore: MemoryAppSyncCredentialStore(),
+            storageDirectory: root.appendingPathComponent(name, isDirectory: true)
+        )
+    }
+}
+
+private final class MemoryAppSyncCredentialStore: AppSyncCredentialStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+    func load(account: String) -> Data? { lock.withLock { values[account] } }
+    func save(_ data: Data?, account: String) { lock.withLock { values[account] = data } }
 }

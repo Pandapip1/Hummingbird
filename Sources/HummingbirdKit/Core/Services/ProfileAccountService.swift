@@ -19,6 +19,7 @@ final class ProfileAccountService {
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private let peerService: AppSyncPeerService?
     @ObservationIgnored private var localNetworkEnabled: Bool
+    @ObservationIgnored private let currentAccountKey: String
 
     static let configuration = OAuthClientConfiguration(
         clientID: URL(string: "https://eightybps.com/oauth-client-metadata.json")!,
@@ -29,7 +30,7 @@ final class ProfileAccountService {
         ]
     )
 
-    init(changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
+    init(localProfileID: UUID, changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, localNetworkEnabled: Bool = false) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
         self.oauth = oauth
@@ -38,9 +39,10 @@ final class ProfileAccountService {
             forInfoDictionaryKey: "ATProtoKeychainAccessGroup"
         ) as? String
         credentialStore = OAuthCredentialStore(
-            service: "com.eightybps.hummingbird.atproto",
+            service: "com.eightybps.hummingbird.atproto.\(localProfileID.uuidString.lowercased())",
             accessGroup: keychainAccessGroup
         )
+        currentAccountKey = "profile.\(localProfileID.uuidString.lowercased()).atproto.currentAccount"
         self.changes = changes
         self.peerService = peerService
         self.localNetworkEnabled = localNetworkEnabled
@@ -72,7 +74,7 @@ final class ProfileAccountService {
         do {
             let credential = try await authenticator.signIn(identifier: identifier)
             try credentialStore.save(credential)
-            UserDefaults.standard.set(credential.session.account.rawValue, forKey: "atproto.currentAccount")
+            UserDefaults.standard.set(credential.session.account.rawValue, forKey: currentAccountKey)
             install(credential)
             syncService?.bootstrapCurrentProfile()
             await syncService?.sync()
@@ -123,14 +125,14 @@ final class ProfileAccountService {
 
     func signOut() {
         if let account { try? credentialStore.remove(account: account) }
-        UserDefaults.standard.removeObject(forKey: "atproto.currentAccount")
+        UserDefaults.standard.removeObject(forKey: currentAccountKey)
         account = nil
         handle = nil
         syncService?.disconnectAccount()
     }
 
     private func restore() {
-        guard let raw = UserDefaults.standard.string(forKey: "atproto.currentAccount"),
+        guard let raw = UserDefaults.standard.string(forKey: currentAccountKey),
               let did = DID(rawValue: raw), let credential = try? credentialStore.load(account: did) else { return }
         install(credential)
     }

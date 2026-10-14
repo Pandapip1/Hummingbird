@@ -20,9 +20,15 @@ struct HummingbirdApp: App {
     }
 
     var body: some Scene {
+        #if os(macOS)
+        WindowGroup(for: UUID.self) { profileID in
+            LaunchGate(profileID: profileID.wrappedValue)
+        }
+        #else
         WindowGroup {
             LaunchGate()
         }
+        #endif
     }
 }
 
@@ -32,10 +38,30 @@ struct HummingbirdApp: App {
 @MainActor
 private struct LaunchGate: View {
     @State private var preparedRoot: HummingbirdRoot?
+    @State private var selectedProfileID: UUID?
+    @Environment(\.openWindow) private var openWindow
+
+    init(profileID: UUID? = nil) {
+        _selectedProfileID = State(initialValue: profileID)
+    }
 
     var body: some View {
         if let preparedRoot {
-            preparedRoot
+            preparedRoot.environment(
+                \.openHummingbirdProfile,
+                OpenHummingbirdProfileAction { id in
+                    #if os(macOS)
+                    openWindow(value: id)
+                    #else
+                    Task {
+                        await Storage.flush()
+                        UserDefaults.standard.set(id.uuidString, forKey: "appsync.localProfileID")
+                        selectedProfileID = id
+                        self.preparedRoot = nil
+                    }
+                    #endif
+                }
+            )
         } else {
             ZStack {
                 Color.black.ignoresSafeArea()
@@ -50,7 +76,7 @@ private struct LaunchGate: View {
                 }
                 .foregroundStyle(.white)
             }
-            .task {
+            .task(id: selectedProfileID) {
                 // Give SwiftUI a frame to put the splash on screen before the
                 // intentionally synchronous AVKit initialization begins.
                 try? await Task.sleep(nanoseconds: 50_000_000)
@@ -58,7 +84,11 @@ private struct LaunchGate: View {
                 #if os(iOS) || os(tvOS)
                 prewarmAVKit()
                 #endif
-                preparedRoot = await HummingbirdRoot.prepared()
+                if let selectedProfileID {
+                    preparedRoot = await HummingbirdRoot.prepared(profileID: selectedProfileID)
+                } else {
+                    preparedRoot = await HummingbirdRoot.prepared()
+                }
             }
         }
     }

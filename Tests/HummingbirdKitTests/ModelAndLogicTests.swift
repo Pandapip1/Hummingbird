@@ -63,6 +63,53 @@ final class ModelAndLogicTests: XCTestCase {
     }
 
     @MainActor
+    func testBrowserSessionRestoresEveryTabAndItsHistoryPosition() {
+        let firstID = UUID(), secondID = UUID()
+        let snapshot = AppPersistenceSnapshot(
+            plugins: [], library: .empty, playbackQueue: nil, searchHistory: [],
+            browserSession: PersistedBrowserSession(
+                tabs: [
+                    .init(
+                        id: firstID, title: "Settings", history: [.home, .settings, .syncSettings],
+                        historyIndex: 1
+                    ),
+                    .init(
+                        id: secondID, title: "Search", history: [.search], historyIndex: 0
+                    ),
+                ],
+                activeTabID: secondID
+            )
+        )
+
+        let model = makeTestAppModel(persistence: snapshot)
+
+        XCTAssertEqual(model.contentTabs.map(\.id), [firstID, secondID])
+        XCTAssertEqual(model.activeTabID, secondID)
+        XCTAssertEqual(model.contentTabs[0].current, .settings)
+        XCTAssertTrue(model.contentTabs[0].canGoBack)
+        XCTAssertTrue(model.contentTabs[0].canGoForward)
+        model.contentTabs[0].goForward()
+        XCTAssertEqual(model.contentTabs[0].current, .syncSettings)
+    }
+
+    @MainActor
+    func testDynamicTabRestorationClampsHistoryIndexAndReportsMutations() {
+        var changes = 0
+        let tab = BrowserTab.hummingbirdTab(
+            history: [.home, .settings], historyIndex: 99,
+            didChange: { changes += 1 }
+        )
+
+        XCTAssertEqual(tab.current, .settings)
+        tab.goBack()
+        tab.goForward()
+        tab.reportTitle("Restored")
+
+        XCTAssertEqual(changes, 3)
+        XCTAssertEqual(tab.title, "Restored")
+    }
+
+    @MainActor
     func testSearchHistoryDeduplicatesLimitsAndPersists() {
         var saved: [[String]] = []
         let history = SearchHistory(limit: 3, load: { ["Existing"] }, save: { saved.append($0) })
@@ -177,7 +224,8 @@ final class ModelAndLogicTests: XCTestCase {
             playbackQueue: PersistedPlaybackQueue(
                 items: [video], currentID: video.id, repeatMode: .all, nextIndexHint: nil
             ),
-            searchHistory: ["prepared query"]
+            searchHistory: ["prepared query"],
+            browserSession: nil
         )
 
         let model = makeTestAppModel(persistence: snapshot)

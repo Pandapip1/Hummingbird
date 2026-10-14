@@ -98,6 +98,29 @@ targets:
         DEVELOPMENT_TEAM: NMM6M6QVAT
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Hummingbird
+aggregateTargets:
+  Hummingbird GTK:
+    buildScripts:
+      - name: Build GTK application
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          nix_bin="$(command -v nix || true)"
+          if [ -z "$nix_bin" ] && [ -x /run/current-system/sw/bin/nix ]; then
+            nix_bin=/run/current-system/sw/bin/nix
+          fi
+          if [ -z "$nix_bin" ] && [ -x /nix/var/nix/profiles/default/bin/nix ]; then
+            nix_bin=/nix/var/nix/profiles/default/bin/nix
+          fi
+          if [ -z "$nix_bin" ]; then
+            echo "error: Nix is required to build Hummingbird GTK" >&2
+            exit 1
+          fi
+          cd "$SRCROOT"
+          exec "$nix_bin" develop --command hb-build-gtk --disable-sandbox
+    settings:
+      base:
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
 schemes:
   Hummingbird:
     build:
@@ -107,3 +130,7 @@ schemes:
       targets:
         - HummingbirdTVUITests
         - HummingbirdIOSUITests
+  Hummingbird GTK:
+    build:
+      targets:
+        Hummingbird GTK: all

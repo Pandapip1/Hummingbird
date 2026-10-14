@@ -18,9 +18,10 @@ final class AppModel {
         case failed(String)
     }
 
-    private static let localProfileIDKey = "appsync.localProfileID"
+    fileprivate static let localProfileIDKey = "appsync.localProfileID"
     private static let localNetworkSyncEnabledKey = "appsync.localNetworkSyncEnabled"
     let plugins: PluginManager
+    let localProfileID: UUID
     let library: LibraryStore
     let platform: PlatformService
     let subscriptionFeed: SubscriptionFeed
@@ -38,7 +39,7 @@ final class AppModel {
     /// Ordinary browser tabs, including app sections opened from the menu.
     /// Order is tab-strip/switcher order.
     var contentTabs: [BrowserTab] = []
-    var activeTabID: BrowserTab.ID
+    var activeTabID: BrowserTab.ID { didSet { persistBrowserSession() } }
 
     @ObservationIgnored private var tabPlayers: [BrowserTab.ID: PlayerModel] = [:]
 
@@ -49,7 +50,7 @@ final class AppModel {
     /// Opens `route` in a new content tab and switches to it. The `openRoute`
     /// environment action resolves to this from anywhere in the pinned tab.
     func openInNewTab(_ route: Route, title: String? = nil) {
-        let tab = BrowserTab.hummingbirdTab()
+        let tab = makeBrowserTab()
         tab.push(route, title: title)
         contentTabs.append(tab)
         activeTabID = tab.id
@@ -58,7 +59,7 @@ final class AppModel {
     /// Opens a blank start-page tab, matching the new-tab action in a browser
     /// tab overview. Its first route replaces the start page in this tab.
     func openNewTab() {
-        let tab = BrowserTab.hummingbirdTab()
+        let tab = makeBrowserTab()
         contentTabs.append(tab)
         activeTabID = tab.id
     }
@@ -72,6 +73,7 @@ final class AppModel {
         guard let index = contentTabs.firstIndex(where: { $0.id == id }) else { return }
         tabPlayers.removeValue(forKey: id)?.teardown()
         contentTabs.remove(at: index)
+        persistBrowserSession()
         guard activeTabID == id else { return }
         if let neighbor = contentTabs[safe: index] ?? contentTabs[safe: index - 1] {
             activeTabID = neighbor.id
@@ -91,6 +93,24 @@ final class AppModel {
     }
 
     var activePlayerForDebug: PlayerModel? { tabPlayers[activeTabID] }
+
+    private func makeBrowserTab() -> BrowserTab {
+        BrowserTab.hummingbirdTab(didChange: { [weak self] in self?.persistBrowserSession() })
+    }
+
+    private func persistBrowserSession() {
+        guard !contentTabs.isEmpty else { return }
+        Storage.save(
+            PersistedBrowserSession(
+                tabs: contentTabs.map {
+                    .init(id: $0.id, title: $0.title,
+                          history: $0.history.map(PersistedRoute.init),
+                          historyIndex: $0.historyIndex)
+                }, activeTabID: activeTabID
+            ),
+            name: "profile.\(localProfileID.uuidString.lowercased()).browser-session"
+        )
+    }
 
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
@@ -120,6 +140,7 @@ final class AppModel {
         let peerService = activeProfile?.peerService
         let localNetworkSyncEnabled = suppliedLocalNetworkSyncEnabled
             ?? UserDefaults.standard.bool(forKey: Self.localNetworkSyncEnabledKey)
+        let storagePrefix = "profile.\(localProfileID.uuidString.lowercased())."
         let profileChanges = ProfileChangeStore(
             storageDirectory: profileStorageDirectory,
             signer: try? peerService?.peer.mutationSigner()
@@ -129,27 +150,53 @@ final class AppModel {
         } catch {
             assertionFailure("Could not create the local profile: \(error)")
         }
-        let plugins = PluginManager(installed: persistence.plugins, profileChanges: profileChanges)
-        let library = LibraryStore(snapshot: persistence.library, profileChanges: profileChanges)
-        let platform = PlatformService(plugins: plugins)
+        let plugins = PluginManager(
+            installed: persistence.plugins, profileChanges: profileChanges,
+            storageName: storagePrefix + "plugins", credentialNamespace: storagePrefix
+        )
+        let library = LibraryStore(
+            snapshot: persistence.library, profileChanges: profileChanges,
+            storagePrefix: storagePrefix
+        )
+        let platform = PlatformService(
+            plugins: plugins, detailsCacheStorageName: storagePrefix + "details_cache"
+        )
         self.plugins = plugins
+        self.localProfileID = localProfileID
         self.library = library
         self.platform = platform
-        self.playbackQueue = PlaybackQueue(restored: persistence.playbackQueue)
-        self.searchHistory = SearchHistory(load: { persistence.searchHistory })
+        self.playbackQueue = PlaybackQueue(
+            storageName: storagePrefix + "playback_queue", restored: persistence.playbackQueue
+        )
+        self.searchHistory = SearchHistory(
+            load: { persistence.searchHistory },
+            save: { Storage.save($0, name: storagePrefix + "search_history") }
+        )
         self.profileChanges = profileChanges
         self.profileRegistry = profileRegistry
         self.peerService = peerService
         self.localNetworkSyncEnabled = localNetworkSyncEnabled
         self.localNetworkSyncState = localNetworkSyncEnabled ? .starting : .disabled
         self.profileAccount = ProfileAccountService(
-            changes: profileChanges, library: library, plugins: plugins,
+            localProfileID: localProfileID, changes: profileChanges, library: library, plugins: plugins,
             peerService: peerService, localNetworkEnabled: localNetworkSyncEnabled
         )
-        let initialTab = BrowserTab.hummingbirdTab()
-        initialTab.push(.home, title: "Home")
-        self.contentTabs = [initialTab]
-        self.activeTabID = initialTab.id
+        if let session = persistence.browserSession, !session.tabs.isEmpty {
+            let tabs = session.tabs.map {
+                BrowserTab.hummingbirdTab(
+                    id: $0.id, title: $0.title, history: $0.history.map(\.route),
+                    historyIndex: $0.historyIndex
+                )
+            }
+            self.contentTabs = tabs
+            self.activeTabID = tabs.contains { $0.id == session.activeTabID }
+                ? session.activeTabID : tabs[0].id
+        } else {
+            let initialTab = BrowserTab.hummingbirdTab()
+            initialTab.push(.home, title: "Home")
+            self.contentTabs = [initialTab]
+            self.activeTabID = initialTab.id
+        }
         self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
         self.homeFeed = FeedModel(
             initialItems: library.homeCache.map(ContentItem.init(saved:)),
@@ -158,6 +205,7 @@ final class AppModel {
             },
             didUpdate: { [weak library] items in library?.updateHomeCache(items) }
         )
+        for tab in contentTabs { tab.onChange { [weak self] in self?.persistBrowserSession() } }
         if localNetworkSyncEnabled { startLocalNetworkSync() }
         #if DEBUG && os(iOS)
         RenderStallMonitor.shared.start { [weak self] in
@@ -206,6 +254,22 @@ final class AppModel {
             incomingCredentialPairing = request
         }
     }
+
+    var localProfiles: [AppSyncLocalProfile] {
+        (try? profileRegistry?.profiles()) ?? []
+    }
+
+    func createLocalProfile() -> UUID? {
+        guard let profile = try? profileRegistry?.createProfile() else { return nil }
+        if localNetworkSyncEnabled {
+            Task { try? await profile.peerService.startLANServer(
+                appIDs: [HummingbirdProfileSchema.appID]
+            ) }
+        }
+        return profile.id
+    }
+
+    func saveBrowserSession() { persistBrowserSession() }
 
     func setLocalNetworkSyncEnabled(_ enabled: Bool) {
         guard enabled != localNetworkSyncEnabled else { return }
@@ -262,23 +326,50 @@ struct AppPersistenceSnapshot: Sendable {
     var library: LibraryPersistenceSnapshot
     var playbackQueue: PersistedPlaybackQueue?
     var searchHistory: [String]
+    var browserSession: PersistedBrowserSession?
 
-    static let empty = Self(plugins: [], library: .empty, playbackQueue: nil, searchHistory: [])
+    static let empty = Self(
+        plugins: [], library: .empty, playbackQueue: nil,
+        searchHistory: [], browserSession: nil
+    )
 
-    static func load() async -> Self {
+    static func load(profileID: UUID? = nil) async -> Self {
         await Task.detached(priority: .userInitiated) {
-            Self(
-                plugins: Storage.load([InstalledPlugin].self, name: "plugins") ?? [],
+            let resolvedProfileID = profileID ?? UserDefaults.standard.string(
+                forKey: "appsync.localProfileID"
+            ).flatMap(UUID.init(uuidString:))
+            let prefix = resolvedProfileID.map {
+                "profile.\($0.uuidString.lowercased())."
+            } ?? ""
+            let legacyOwnerKey = "appsync.legacyStorageProfileID"
+            let defaults = UserDefaults.standard
+            if defaults.string(forKey: legacyOwnerKey) == nil, let resolvedProfileID {
+                defaults.set(resolvedProfileID.uuidString, forKey: legacyOwnerKey)
+            }
+            let mayLoadLegacy = resolvedProfileID?.uuidString
+                == defaults.string(forKey: legacyOwnerKey)
+            func load<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
+                Storage.load(type, name: prefix + name)
+                    ?? (mayLoadLegacy ? Storage.load(type, name: name) : nil)
+            }
+            return Self(
+                plugins: load([InstalledPlugin].self, "plugins") ?? [],
                 library: LibraryPersistenceSnapshot(
-                    subscriptions: Storage.load([Subscription].self, name: "subscriptions") ?? [],
-                    playlists: Storage.load([Playlist].self, name: "playlists") ?? [],
-                    watchLater: Storage.load([SavedVideo].self, name: "watch_later") ?? [],
-                    history: Storage.load([HistoryEntry].self, name: "history") ?? [],
-                    feedCache: Storage.load([String: [SavedVideo]].self, name: "feed_cache") ?? [:],
-                    homeCache: Storage.load([SavedVideo].self, name: "home_cache") ?? []
+                    subscriptions: load([Subscription].self, "subscriptions") ?? [],
+                    playlists: load([Playlist].self, "playlists") ?? [],
+                    watchLater: load([SavedVideo].self, "watch_later") ?? [],
+                    history: load([HistoryEntry].self, "history") ?? [],
+                    feedCache: load([String: [SavedVideo]].self, "feed_cache") ?? [:],
+                    homeCache: load([SavedVideo].self, "home_cache") ?? []
                 ),
-                playbackQueue: Storage.load(PersistedPlaybackQueue.self, name: "playback_queue"),
-                searchHistory: Storage.load([String].self, name: "search_history") ?? []
+                playbackQueue: load(PersistedPlaybackQueue.self, "playback_queue"),
+                searchHistory: load([String].self, "search_history") ?? [],
+                browserSession: resolvedProfileID.flatMap {
+                    Storage.load(
+                        PersistedBrowserSession.self,
+                        name: "profile.\($0.uuidString.lowercased()).browser-session"
+                    )
+                }
             )
         }.value
     }

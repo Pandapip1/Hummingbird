@@ -115,6 +115,7 @@ struct BrowserTabContentView: View {
                     }
                 )
                     .id(tab.historyIndexIdentity)
+                    .profileSwitcherToolbarItem()
                     .browserTabControls(overviewPresented: $showingTabOverview)
             } else {
                 NavigationStack {
@@ -362,7 +363,7 @@ private struct PairedDeviceLoginSheet: View {
                     throw PairingError.invalidRequest
                 }
                 config = fetched
-                savedAuth = AuthKeychain.load(pluginID: request.pluginID, kind: "auth")
+                savedAuth = app.plugins.auth(for: request.pluginID)
             }
             catch { self.error = error.localizedDescription }
         }

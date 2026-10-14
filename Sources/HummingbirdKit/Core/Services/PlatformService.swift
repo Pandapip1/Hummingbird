@@ -20,17 +20,19 @@ final class PlatformService {
     private var detailsCache: [String: CachedDetails]
     private var detailsCacheWasUsed = false
     private var detailsCacheSaveTask: Task<Void, Never>?
+    private let detailsCacheStorageName: String
     private static let detailsCacheLimit = 20
     private static let maximumCachedDetailBytes = 2 * 1_024 * 1_024
 
-    init(plugins: PluginManager) {
+    init(plugins: PluginManager, detailsCacheStorageName: String = "details_cache") {
         self.plugins = plugins
+        self.detailsCacheStorageName = detailsCacheStorageName
         detailsCache = [:]
         // This cache can contain large plugin responses. Loading and decoding it
         // synchronously delayed iOS's first frame by several seconds.
         Task { [weak self] in
             let loaded = await Task.detached(priority: .utility) {
-                Storage.load([String: CachedDetails].self, name: "details_cache") ?? [:]
+                Storage.load([String: CachedDetails].self, name: detailsCacheStorageName) ?? [:]
             }.value
             guard let self, !self.detailsCacheWasUsed else { return }
             let trimmed = Self.trimmedDetailsCache(loaded)
@@ -113,7 +115,7 @@ final class PlatformService {
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
             await Task.detached(priority: .utility) {
-                Storage.save(cacheSnapshot, name: "details_cache")
+                Storage.save(cacheSnapshot, name: self.detailsCacheStorageName)
             }.value
         }
     }

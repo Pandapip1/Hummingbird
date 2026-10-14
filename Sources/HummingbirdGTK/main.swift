@@ -11,7 +11,20 @@ import Foundation
 @MainActor
 struct HummingbirdGTKApp: App {
     var body: some Scene {
-        WindowGroup("Hummingbird") { PreparedHummingbirdRoot() }
+        WindowGroup("Hummingbird", for: UUID.self) { profileID in
+            GTKProfileRoot(profileID: profileID.wrappedValue)
+        }
+    }
+}
+
+@MainActor
+private struct GTKProfileRoot: View {
+    let profileID: UUID?
+
+    var body: some View {
+        PreparedHummingbirdRoot(
+            profileID: profileID, opensProfilesInNewWindows: true
+        )
     }
 }
 

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftOpenUI
+import ATAppSync
 #if os(macOS) && !BACKEND_GTK
 import AppKit
 #endif
@@ -320,6 +321,56 @@ extension View {
         #else
         self
         #endif
+    }
+}
+
+@MainActor
+private struct ProfileSwitcher: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.openHummingbirdProfile) private var openProfile
+
+    var body: some View {
+        Menu {
+            ForEach(app.localProfiles) { profile in
+                Button {
+                    guard profile.id != app.localProfileID else { return }
+                    app.saveBrowserSession()
+                    openProfile(profile.id)
+                } label: {
+                    Label(profileLabel(profile), systemImage: profile.id == app.localProfileID
+                          ? "checkmark.circle.fill" : "person.crop.circle")
+                }
+            }
+            Button {
+                if let id = app.createLocalProfile() { openProfile(id) }
+            } label: {
+                Label("New Profile", systemImage: "person.crop.circle.badge.plus")
+            }
+        } label: {
+            Image(systemName: "person.crop.circle")
+        }
+        .accessibilityLabel("Profiles")
+    }
+
+    private func profileLabel(_ profile: AppSyncLocalProfile) -> String {
+        let digest = profile.peerService.peer.publicIdentity.stableID.rawValue
+        return profile.id == app.localProfileID
+            ? "Current Profile · \(digest.prefix(8))"
+            : "Profile · \(digest.prefix(8))"
+    }
+}
+
+private struct ProfileSwitcherToolbarModifier: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        content.browserTabToolbarItem(id: "profile.switcher", placement: .leading) {
+            ProfileSwitcher()
+        }
+    }
+}
+
+extension View {
+    func profileSwitcherToolbarItem() -> some View {
+        modifier(ProfileSwitcherToolbarModifier())
     }
 }
 

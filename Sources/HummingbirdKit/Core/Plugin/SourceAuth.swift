@@ -35,13 +35,13 @@ public enum AuthKeychain {
         #endif
     }()
 
-    public static func load(pluginID: String, kind: String) -> SourceAuth? {
-        guard let data = store.load(account: "\(pluginID).\(kind)") else { return nil }
+    public static func load(pluginID: String, kind: String, namespace: String = "") -> SourceAuth? {
+        guard let data = store.load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
         return try? JSONDecoder().decode(SourceAuth.self, from: data)
     }
 
-    public static func save(_ auth: SourceAuth?, pluginID: String, kind: String) {
-        store.save(auth.flatMap { try? JSONEncoder().encode($0) }, account: "\(pluginID).\(kind)")
+    public static func save(_ auth: SourceAuth?, pluginID: String, kind: String, namespace: String = "") {
+        store.save(auth.flatMap { try? JSONEncoder().encode($0) }, account: "\(namespace)\(pluginID).\(kind)")
     }
 }
 

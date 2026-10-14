@@ -28,7 +28,7 @@ public enum Storage {
         StorageWriter.shared.save(value, name: name, backend: backend)
     }
 
-    static func flush() async {
+    public static func flush() async {
         await StorageWriter.shared.flush()
     }
 }

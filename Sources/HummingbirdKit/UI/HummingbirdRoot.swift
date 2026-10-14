@@ -15,6 +15,13 @@ public struct HummingbirdRoot: View {
         DebugServer.shared.startFromEnvironment()
     }
 
+    private init(profileID: UUID, persistence: AppPersistenceSnapshot) {
+        _model = State(wrappedValue: AppModel(
+            persistence: persistence, localProfileID: profileID
+        ))
+        DebugServer.shared.startFromEnvironment()
+    }
+
     private init(persistence: AppPersistenceSnapshot) {
         _model = State(wrappedValue: AppModel(persistence: persistence))
         DebugServer.shared.startFromEnvironment()
@@ -25,6 +32,11 @@ public struct HummingbirdRoot: View {
     public static func prepared() async -> HummingbirdRoot {
         let persistence = await AppPersistenceSnapshot.load()
         return HummingbirdRoot(persistence: persistence)
+    }
+
+    public static func prepared(profileID: UUID) async -> HummingbirdRoot {
+        let persistence = await AppPersistenceSnapshot.load(profileID: profileID)
+        return HummingbirdRoot(profileID: profileID, persistence: persistence)
     }
     public var body: some View {
         DebugSceneSelection {

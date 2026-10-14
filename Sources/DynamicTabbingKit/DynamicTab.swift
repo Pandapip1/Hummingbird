@@ -15,19 +15,25 @@ public final class DynamicTab<Page>: Identifiable {
     public var title: String
 
     @ObservationIgnored private let defaultTitle: @MainActor (Page) -> String
+    @ObservationIgnored private var didChange: @MainActor () -> Void
 
     public init(
         id: UUID = UUID(),
         isPinned: Bool = false,
         title: String = "New Tab",
-        defaultTitle: @escaping @MainActor (Page) -> String = { _ in "New Tab" }
+        history: [Page] = [],
+        historyIndex: Int? = nil,
+        defaultTitle: @escaping @MainActor (Page) -> String = { _ in "New Tab" },
+        didChange: @escaping @MainActor () -> Void = {}
     ) {
         self.id = id
         self.isPinned = isPinned
         self.title = title
-        self.history = []
-        self.historyIndex = -1
+        self.history = history
+        self.historyIndex = history.isEmpty ? -1
+            : min(max(0, historyIndex ?? history.count - 1), history.count - 1)
         self.defaultTitle = defaultTitle
+        self.didChange = didChange
     }
 
     public var current: Page? {
@@ -44,21 +50,29 @@ public final class DynamicTab<Page>: Identifiable {
         history.append(page)
         historyIndex = history.count - 1
         self.title = title ?? defaultTitle(page)
+        didChange()
     }
 
     public func goBack() {
         guard canGoBack else { return }
         historyIndex -= 1
+        didChange()
     }
 
     public func goForward() {
         guard canGoForward else { return }
         historyIndex += 1
+        didChange()
     }
 
     public func reportTitle(_ title: String) {
         guard !title.isEmpty, current != nil else { return }
         self.title = title
+        didChange()
+    }
+
+    public func onChange(_ action: @escaping @MainActor () -> Void) {
+        didChange = action
     }
 }
 

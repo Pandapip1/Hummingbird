@@ -64,7 +64,7 @@ struct WebAuthSheet: View {
             .navigationTitle(spec.title)
             .task { await pairing.start(peerService: app.peerService) }
             .task { await pairing.observeSender() }
-            .task { await pairing.observeCredentialStore() }
+            .task { await pairing.observeCredentialStore { app.plugins.auth(for: $0) } }
             .onDisappear { pairing.stop() }
         }
     }
@@ -132,10 +132,10 @@ private final class CredentialPairingModel {
         }
     }
 
-    func observeCredentialStore() async {
+    func observeCredentialStore(load: @escaping @MainActor (String) -> SourceAuth?) async {
         guard let pluginID else { return }
         while !Task.isCancelled {
-            if confirmed, let auth = AuthKeychain.load(pluginID: pluginID, kind: "auth"), !auth.isEmpty {
+            if confirmed, let auth = load(pluginID), !auth.isEmpty {
                 onFinish(auth)
                 return
             }

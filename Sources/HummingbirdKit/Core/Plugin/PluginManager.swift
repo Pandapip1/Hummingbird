@@ -85,6 +85,8 @@ final class PluginManager {
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
+    @ObservationIgnored private let storageName: String
+    @ObservationIgnored private let credentialNamespace: String
     @ObservationIgnored private var applyingRemoteChange = false
     @ObservationIgnored private let urlSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -99,12 +101,15 @@ final class PluginManager {
         let body: String?
     }
 
-    init(installed: [InstalledPlugin] = [], profileChanges: ProfileChangeStore? = nil) {
+    init(installed: [InstalledPlugin] = [], profileChanges: ProfileChangeStore? = nil,
+         storageName: String = "plugins", credentialNamespace: String = "") {
         self.installed = installed
         self.profileChanges = profileChanges
+        self.storageName = storageName
+        self.credentialNamespace = credentialNamespace
     }
 
-    private func persist() { Storage.save(installed, name: "plugins") }
+    private func persist() { Storage.save(installed, name: storageName) }
 
     // MARK: lookup
 
@@ -122,8 +127,8 @@ final class PluginManager {
             let created = Task.detached(priority: .userInitiated) {
                 PluginRuntime(
                     config: p.config, script: p.script, settings: p.settings,
-                    auth: AuthKeychain.load(pluginID: id, kind: "auth"),
-                    captcha: AuthKeychain.load(pluginID: id, kind: "captcha")
+                    auth: AuthKeychain.load(pluginID: id, kind: "auth", namespace: self.credentialNamespace),
+                    captcha: AuthKeychain.load(pluginID: id, kind: "captcha", namespace: self.credentialNamespace)
                 )
             }
             runtimePreparation[id] = created
@@ -261,8 +266,8 @@ final class PluginManager {
     func remove(_ id: String) {
         invalidate(id)
         installed.removeAll { $0.id == id }
-        AuthKeychain.save(nil, pluginID: id, kind: "auth")
-        AuthKeychain.save(nil, pluginID: id, kind: "captcha")
+        AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
+        AuthKeychain.save(nil, pluginID: id, kind: "captcha", namespace: credentialNamespace)
         persist()
         if !applyingRemoteChange { profileChanges?.delete(collection: HummingbirdProfileSchema.plugin,
                                key: HummingbirdProfileSchema.key(for: id))
@@ -295,24 +300,28 @@ final class PluginManager {
 
     func isLoggedIn(_ id: String) -> Bool {
         _ = credentialRevision
-        return AuthKeychain.load(pluginID: id, kind: "auth") != nil
+        return auth(for: id) != nil
+    }
+
+    func auth(for id: String) -> SourceAuth? {
+        AuthKeychain.load(pluginID: id, kind: "auth", namespace: credentialNamespace)
     }
 
     func saveAuth(_ auth: SourceAuth, pluginID: String) {
-        AuthKeychain.save(auth, pluginID: pluginID, kind: "auth")
+        AuthKeychain.save(auth, pluginID: pluginID, kind: "auth", namespace: credentialNamespace)
         credentialRevision &+= 1
         invalidate(pluginID)
         pendingLogin = nil
     }
 
     func saveCaptcha(_ data: SourceAuth, pluginID: String) {
-        AuthKeychain.save(data, pluginID: pluginID, kind: "captcha")
+        AuthKeychain.save(data, pluginID: pluginID, kind: "captcha", namespace: credentialNamespace)
         invalidate(pluginID)
         pendingCaptcha = nil
     }
 
     func logout(_ id: String) {
-        AuthKeychain.save(nil, pluginID: id, kind: "auth")
+        AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
         credentialRevision &+= 1
         invalidate(id)
     }

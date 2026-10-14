@@ -18,10 +18,11 @@ final class ProfileSyncService {
     @ObservationIgnored private weak var library: LibraryStore?
     @ObservationIgnored private weak var plugins: PluginManager?
     @ObservationIgnored private let peerService: AppSyncPeerService?
+    @ObservationIgnored private var localNetworkEnabled: Bool
 
     init(changes: ProfileChangeStore, mutationLog: AppSyncMutationLog,
          library: LibraryStore, plugins: PluginManager,
-         peerService: AppSyncPeerService?) {
+         peerService: AppSyncPeerService?, localNetworkEnabled: Bool = false) {
         lanSync = peerService.map {
             AppSyncLANClient(
                 messaging: $0, journal: mutationLog, appID: HummingbirdProfileSchema.appID
@@ -31,6 +32,12 @@ final class ProfileSyncService {
         self.library = library
         self.plugins = plugins
         self.peerService = peerService
+        self.localNetworkEnabled = localNetworkEnabled
+    }
+
+    func setLocalNetworkEnabled(_ enabled: Bool) {
+        localNetworkEnabled = enabled
+        Task { await appSync?.setLocalNetworkEnabled(enabled) }
     }
 
     func connect(credential: ATProtoOAuthCredential, oauth: ATProtoOAuthClient,
@@ -47,7 +54,8 @@ final class ProfileSyncService {
         self.appSync = AppSyncClient(
             spaces: spaces, mutationLog: mutationLog,
             repo: credential.session.account, space: space,
-            appID: HummingbirdProfileSchema.appID, messaging: peerService
+            appID: HummingbirdProfileSchema.appID, messaging: peerService,
+            localNetworkEnabled: localNetworkEnabled
         )
     }
 
@@ -70,7 +78,7 @@ final class ProfileSyncService {
         guard state != .syncing else { return }
         state = .syncing
         var completedTransport = false
-        if let lanSync {
+        if localNetworkEnabled, let lanSync {
             let remote = await lanSync.pull()
             do {
                 try await apply(remote, needsUpload: true)
@@ -112,7 +120,7 @@ final class ProfileSyncService {
         ))
         let encoded = try JSONValue.encoding(payload)
         if let appSync { try await appSync.sendMessage(encoded, to: recipient) }
-        else if let lanSync { try await lanSync.send(encoded, to: recipient) }
+        else if localNetworkEnabled, let lanSync { try await lanSync.send(encoded, to: recipient) }
         else { throw PairingError.unavailable }
     }
 

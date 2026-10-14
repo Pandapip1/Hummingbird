@@ -388,6 +388,10 @@ final class ATAppSyncTests: XCTestCase {
 
         let pulledEvents = await bClient.pull()
         XCTAssertEqual(pulledEvents, [event])
+
+        a.stopLANServer()
+        let restarted = try await a.startLANServer(appIDs: [appID])
+        XCTAssertNotNil(restarted.endpoint.port)
     }
 
     private func makePeer(_ name: String, root: URL) throws -> AppSyncPeerService {

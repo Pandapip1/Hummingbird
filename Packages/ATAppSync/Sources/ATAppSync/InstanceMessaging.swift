@@ -346,7 +346,10 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
         lock.withLock { self.journal = journal }
     }
 
-    deinit { stop() }
+    deinit {
+        stop()
+        group.shutdownGracefully { _ in }
+    }
 
     public func start(appIDs: Set<AppSyncAppID>) async throws -> URL {
         if let endpoint = lock.withLock({ endpoint }) { return endpoint }
@@ -433,7 +436,6 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
             return value
         }
         channel?.close(promise: nil)
-        group.shutdownGracefully { _ in }
     }
 }
 

@@ -23,6 +23,17 @@ struct SyncSettingsView: View {
                 }
             } else {
                 List {
+                    Section {
+                        Toggle(
+                            "Local Network Sync",
+                            isOn: Binding(
+                                get: { app.localNetworkSyncEnabled },
+                                set: { app.setLocalNetworkSyncEnabled($0) }
+                            )
+                        )
+                    } footer: {
+                        Text("When enabled, Hummingbird asks for local-network access, advertises this profile with DNS-SD, and exchanges encrypted sync data directly with trusted instances nearby. Your instance identity and offline changes remain stored when this is off.")
+                    }
                     Section("AT Protocol Account") {
                         accountControls
                     }

@@ -18,6 +18,7 @@ final class ProfileAccountService {
     @ObservationIgnored private let changes: ProfileChangeStore
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private let peerService: AppSyncPeerService?
+    @ObservationIgnored private var localNetworkEnabled: Bool
 
     static let configuration = OAuthClientConfiguration(
         clientID: URL(string: "https://eightybps.com/oauth-client-metadata.json")!,
@@ -29,7 +30,7 @@ final class ProfileAccountService {
     )
 
     init(changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
-         peerService: AppSyncPeerService?) {
+         peerService: AppSyncPeerService?, localNetworkEnabled: Bool = false) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
         self.oauth = oauth
         authenticator = ATProtoOAuthAuthenticator(client: oauth)
@@ -42,10 +43,12 @@ final class ProfileAccountService {
         )
         self.changes = changes
         self.peerService = peerService
+        self.localNetworkEnabled = localNetworkEnabled
         if let mutationLog = changes.mutationLog {
             syncService = ProfileSyncService(
                 changes: changes, mutationLog: mutationLog,
-                library: library, plugins: plugins, peerService: peerService
+                library: library, plugins: plugins, peerService: peerService,
+                localNetworkEnabled: localNetworkEnabled
             )
             syncService?.bootstrapCurrentProfile()
             changes.setMutationHandler { [weak self] in
@@ -79,6 +82,11 @@ final class ProfileAccountService {
     }
 
     func sync() async { await syncService?.sync() }
+
+    func setLocalNetworkEnabled(_ enabled: Bool) {
+        localNetworkEnabled = enabled
+        syncService?.setLocalNetworkEnabled(enabled)
+    }
 
     func peers() async throws -> [AppSyncPeerTrustSummary] {
         if let syncService { return try await syncService.peers() }

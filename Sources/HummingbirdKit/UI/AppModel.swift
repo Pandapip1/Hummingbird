@@ -12,6 +12,7 @@ import UIKit
 @Observable
 final class AppModel {
     private static let localProfileIDKey = "appsync.localProfileID"
+    private static let localNetworkSyncEnabledKey = "appsync.localNetworkSyncEnabled"
     let plugins: PluginManager
     let library: LibraryStore
     let platform: PlatformService
@@ -23,6 +24,7 @@ final class AppModel {
     let profileAccount: ProfileAccountService
     let profileRegistry: AppSyncProfileRegistry?
     let peerService: AppSyncPeerService?
+    private(set) var localNetworkSyncEnabled: Bool
     var incomingCredentialPairing: CredentialPairingRequest?
 
     /// Ordinary browser tabs, including app sections opened from the menu.
@@ -89,7 +91,8 @@ final class AppModel {
          profileStorageDirectory: URL = Storage.directory.appendingPathComponent(
             "profile-sync", isDirectory: true
          ),
-         localProfileID suppliedLocalProfileID: UUID? = nil) {
+         localProfileID suppliedLocalProfileID: UUID? = nil,
+         localNetworkSyncEnabled suppliedLocalNetworkSyncEnabled: Bool? = nil) {
         let localProfileID: UUID
         if let suppliedLocalProfileID {
             localProfileID = suppliedLocalProfileID
@@ -107,6 +110,8 @@ final class AppModel {
             id: localProfileID, migrateLegacyIdentity: true
         )
         let peerService = activeProfile?.peerService
+        let localNetworkSyncEnabled = suppliedLocalNetworkSyncEnabled
+            ?? UserDefaults.standard.bool(forKey: Self.localNetworkSyncEnabledKey)
         let profileChanges = ProfileChangeStore(
             storageDirectory: profileStorageDirectory,
             signer: try? peerService?.peer.mutationSigner()
@@ -127,12 +132,13 @@ final class AppModel {
         self.profileChanges = profileChanges
         self.profileRegistry = profileRegistry
         self.peerService = peerService
-        if let profileRegistry {
+        self.localNetworkSyncEnabled = localNetworkSyncEnabled
+        if localNetworkSyncEnabled, let profileRegistry {
             Task { await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID]) }
         }
         self.profileAccount = ProfileAccountService(
             changes: profileChanges, library: library, plugins: plugins,
-            peerService: peerService
+            peerService: peerService, localNetworkEnabled: localNetworkSyncEnabled
         )
         let initialTab = BrowserTab.hummingbirdTab()
         initialTab.push(.home, title: "Home")
@@ -191,6 +197,22 @@ final class AppModel {
     func handleIncomingURL(_ url: URL) {
         if let request = CredentialPairingRequest(url: url) {
             incomingCredentialPairing = request
+        }
+    }
+
+    func setLocalNetworkSyncEnabled(_ enabled: Bool) {
+        guard enabled != localNetworkSyncEnabled else { return }
+        localNetworkSyncEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.localNetworkSyncEnabledKey)
+        profileAccount.setLocalNetworkEnabled(enabled)
+        if enabled {
+            guard let profileRegistry else { return }
+            Task {
+                await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID])
+                await profileAccount.sync()
+            }
+        } else {
+            profileRegistry?.concealAll()
         }
     }
 }

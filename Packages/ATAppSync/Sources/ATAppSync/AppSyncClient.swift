@@ -45,19 +45,21 @@ public actor AppSyncClient {
     private let journalEngine: SpaceSyncEngine
     private let messaging: InstanceMessagingService?
     private let lanSync: AppSyncLANClient?
+    private var localNetworkEnabled: Bool
     private var advertisement: InstanceInboxAdvertisement?
     private var cloudMessageIDs = Set<UUID>()
 
     public init(spaces: SpacesClient, mutationLog: AppSyncMutationLog, repo: DID,
                 space: SpaceReference, appID: AppSyncAppID,
                 recognizedAppIDs: Set<AppSyncAppID>? = nil,
-                messaging: InstanceMessagingService?) {
+                messaging: InstanceMessagingService?, localNetworkEnabled: Bool = false) {
         self.spaces = spaces
         self.repo = repo
         self.space = space
         self.appID = appID
         self.recognizedAppIDs = recognizedAppIDs ?? [appID]
         self.messaging = messaging
+        self.localNetworkEnabled = localNetworkEnabled
         lanSync = messaging.map {
             AppSyncLANClient(messaging: $0, journal: mutationLog, appID: appID)
         }
@@ -65,6 +67,16 @@ public actor AppSyncClient {
             spaces: spaces, journal: mutationLog, repo: repo, space: space,
             journalCollection: AppSyncSchema.journal
         )
+    }
+
+    /// LAN discovery and listening are opt-in because platforms may present a
+    /// privacy permission prompt. Cloud synchronization does not enable them.
+    public func setLocalNetworkEnabled(_ enabled: Bool) {
+        localNetworkEnabled = enabled
+        if !enabled {
+            advertisement = nil
+            messaging?.stopLANServer()
+        }
     }
 
     public func pullMutations() async throws -> [JournalMutation] {
@@ -75,6 +87,7 @@ public actor AppSyncClient {
     /// separate from the Space transport so callers can attempt both and retain
     /// useful progress when either network path fails.
     public func pullLANMutations() async -> [JournalMutation] {
+        guard localNetworkEnabled else { return [] }
         if let messaging, advertisement == nil {
             advertisement = try? await messaging.startLANServer(appIDs: recognizedAppIDs)
         }
@@ -88,7 +101,7 @@ public actor AppSyncClient {
     public func syncMessages() async throws -> [AppSyncMessage] {
         guard let messaging else { return [] }
         try await syncTrustFacts(using: messaging)
-        if advertisement == nil {
+        if localNetworkEnabled, advertisement == nil {
             advertisement = try? await messaging.startLANServer(appIDs: recognizedAppIDs)
         }
         try await publishInstance(messaging)
@@ -216,7 +229,8 @@ public actor AppSyncClient {
         let envelope = try InstanceInboxEnvelope.seal(
             payload, appID: appID, from: messaging.identity, to: recipient
         )
-        if try await sendOverLANIfAvailable(envelope, recipientID: recipient.id) { return }
+        if localNetworkEnabled,
+           try await sendOverLANIfAvailable(envelope, recipientID: recipient.id) { return }
         _ = try await spaces.putRecord(.init(
             repo: repo, space: space, collection: AppSyncSchema.inbox,
             rkey: RecordKey(rawValue: envelope.id.uuidString.lowercased())!,

@@ -23,6 +23,7 @@ func makeTestAppModel(persistence: AppPersistenceSnapshot = .empty) -> AppModel 
         profileStorageDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(
             "HummingbirdProfileTests-\(UUID())", isDirectory: true
         ),
-        localProfileID: UUID()
+        localProfileID: UUID(),
+        localNetworkSyncEnabled: false
     )
 }

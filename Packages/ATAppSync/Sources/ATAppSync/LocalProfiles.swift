@@ -79,6 +79,12 @@ public final class AppSyncProfileRegistry: @unchecked Sendable {
         }
     }
 
+    /// Stops LAN listeners and DNS-SD activity for every loaded profile.
+    /// Profile identities, trust, inboxes, and offline journals remain intact.
+    public func concealAll() {
+        lock.withLock { Array(loaded.values) }.forEach { $0.stopLANServer() }
+    }
+
     private func load(_ descriptor: Descriptor) throws -> AppSyncLocalProfile {
         if let service = loaded[descriptor.id] {
             return .init(id: descriptor.id, createdAt: descriptor.createdAt, peerService: service)

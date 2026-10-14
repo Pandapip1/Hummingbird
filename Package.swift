@@ -1,4 +1,4 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.2
 import PackageDescription
 
 let requestedBackend = Context.environment["SWIFTOPENUI_BACKEND"]?.lowercased()
@@ -45,12 +45,6 @@ var targets: [Target] = [
         dependencies: [.product(name: "SwiftOpenUI", package: "SwiftOpenUI")],
         path: "Sources/AdvancedVideoPlayerKit",
         swiftSettings: backendSwiftSettings
-    ),
-    .systemLibrary(
-        name: "CJavaScriptCoreGTK",
-        path: "Sources/CJavaScriptCoreGTK",
-        pkgConfig: "javascriptcoregtk-6.0",
-        providers: [.apt(["libjavascriptcoregtk-6.0-dev"])]
     ),
     .systemLibrary(
         name: "CSQLite",
@@ -103,6 +97,26 @@ var targets: [Target] = [
     ),
 ]
 
+#if os(Linux)
+targets.append(
+    .systemLibrary(
+        name: "CJavaScriptCoreGTK",
+        path: "Sources/CJavaScriptCoreGTK",
+        pkgConfig: "javascriptcoregtk-6.0",
+        providers: [.apt(["libjavascriptcoregtk-6.0-dev"])]
+    )
+)
+#else
+// SwiftPM validates conditional target dependencies on the manifest host.
+// Keep a source-only placeholder on platforms that never link GTK's JSC.
+targets.append(
+    .target(
+        name: "CJavaScriptCoreGTK",
+        path: "Sources/CJavaScriptCoreGTKStub"
+    )
+)
+#endif
+
 if gtkBackendEnabled {
 products.append(.executable(name: "Hummingbird-gtk", targets: ["HummingbirdGTK"]))
 var gtkExecutableDependencies: [Target.Dependency] = [
@@ -136,5 +150,6 @@ let package = Package(
         .package(url: "https://github.com/fwcd/swift-qrcode-generator.git", from: "1.0.0"),
         .package(path: "Vendor/SwiftOpenUI"),
     ],
-    targets: targets
+    targets: targets,
+    swiftLanguageModes: [.v6]
 )

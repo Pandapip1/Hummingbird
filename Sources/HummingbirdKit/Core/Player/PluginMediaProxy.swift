@@ -14,8 +14,10 @@ actor PluginMediaProxy {
     private struct Presentation: Sendable {
         let runtime: PluginRuntime
         let executor: Int
+        let audioRuntime: PluginRuntime?
+        let audioExecutor: Int?
         let master: String
-        let video: String
+        let video: String?
         let audio: String?
         let cache: UMPMediaCache.Handle?
         let resources: [DashToHLS.Resource]
@@ -54,6 +56,7 @@ actor PluginMediaProxy {
             isExact: false
         )) : nil
         presentations[id] = Presentation(runtime: runtime, executor: executor,
+                                           audioRuntime: nil, audioExecutor: nil,
                                            master: playlists.master, video: playlists.video,
                                            audio: playlists.audio, cache: cache,
                                            resources: playlists.resources,
@@ -64,7 +67,8 @@ actor PluginMediaProxy {
             order.removeFirst()
             presentations[expired] = nil
         }
-        guard let url = URL(string: "\(base)/master.m3u8") else {
+        let playlistName = playlists.video == nil ? "audio.m3u8" : "master.m3u8"
+        guard let url = URL(string: "\(base)/\(playlistName)") else {
             throw PluginError.execution("Could not construct the generated media URL")
         }
         if prefetch {
@@ -74,6 +78,38 @@ actor PluginMediaProxy {
                 try? await Task.sleep(for: .seconds(3))
                 await self.prefetch(id: id)
             }
+        }
+        return url
+    }
+
+    /// Registers separately generated video and audio DASH presentations as a
+    /// single HLS asset. AVFoundation cannot insert HLS tracks into an
+    /// AVMutableComposition, so generated streams must be paired at the
+    /// playlist/proxy layer instead.
+    func register(videoManifest: String, videoRuntime: PluginRuntime, videoExecutor: Int,
+                  audioManifest: String, audioRuntime: PluginRuntime, audioExecutor: Int,
+                  failure: @escaping @Sendable (PluginError) -> Void = { _ in }) async throws -> URL {
+        let channel = try await serverChannel()
+        guard let port = channel.localAddress?.port else {
+            throw PluginError.execution("The media proxy did not receive a loopback port")
+        }
+        let id = UUID().uuidString.lowercased()
+        let base = "http://127.0.0.1:\(port)/\(id)"
+        let playlists = try DashToHLS.convert(videoManifest + "\n" + audioManifest, baseURL: base)
+        presentations[id] = Presentation(
+            runtime: videoRuntime, executor: videoExecutor,
+            audioRuntime: audioRuntime, audioExecutor: audioExecutor,
+            master: playlists.master, video: playlists.video, audio: playlists.audio,
+            cache: nil, resources: playlists.resources,
+            prefetchExecutorFactory: nil, failure: failure
+        )
+        order.append(id)
+        while order.count > 8, let expired = order.first {
+            order.removeFirst()
+            presentations[expired] = nil
+        }
+        guard let url = URL(string: "\(base)/master.m3u8") else {
+            throw PluginError.execution("Could not construct the generated media URL")
         }
         return url
     }
@@ -173,7 +209,9 @@ actor PluginMediaProxy {
         guard let presentation else { return (.notFound, "text/plain", Data()) }
         switch parts.dropFirst().joined(separator: "/") {
         case "master.m3u8": return (.ok, "application/vnd.apple.mpegurl", Data(presentation.master.utf8))
-        case "video.m3u8": return (.ok, "application/vnd.apple.mpegurl", Data(presentation.video.utf8))
+        case "video.m3u8":
+            guard let video = presentation.video else { return (.notFound, "text/plain", Data()) }
+            return (.ok, "application/vnd.apple.mpegurl", Data(video.utf8))
         case "audio.m3u8":
             guard let audio = presentation.audio else { return (.notFound, "text/plain", Data()) }
             return (.ok, "application/vnd.apple.mpegurl", Data(audio.utf8))
@@ -192,8 +230,11 @@ actor PluginMediaProxy {
                 }
                 foregroundRequests += 1
                 defer { foregroundRequests -= 1 }
-                let data = try await presentation.runtime.callHandleBytes(
-                    presentation.executor, "executeRequest",
+                let usesAudioExecutor = parts[1] == "audio"
+                let requestRuntime = usesAudioExecutor ? presentation.audioRuntime ?? presentation.runtime : presentation.runtime
+                let requestExecutor = usesAudioExecutor ? presentation.audioExecutor ?? presentation.executor : presentation.executor
+                let data = try await requestRuntime.callHandleBytes(
+                    requestExecutor, "executeRequest",
                     [upstream, [String: String]()]
                 )
                 if let cache = presentation.cache {
@@ -272,7 +313,7 @@ enum DashToHLS {
     struct Resource: Sendable { let upstream: String }
     struct Result {
         let master: String
-        let video: String
+        let video: String?
         let audio: String?
         let resources: [Resource]
         let estimatedBytes: Int64
@@ -303,21 +344,28 @@ enum DashToHLS {
             guard let kind else { return nil }
             return parseTrack(kind: kind, body: body)
         }
-        guard let video = tracks.first(where: { $0.kind == "video" }) else {
-            throw PluginError.execution("The generated DASH manifest has no video track")
-        }
+        let video = tracks.first(where: { $0.kind == "video" })
         let audio = tracks.first(where: { $0.kind == "audio" })
-        let videoPlaylist = mediaPlaylist(video, baseURL: baseURL)
+        guard video != nil || audio != nil else {
+            throw PluginError.execution("The generated DASH manifest has no playable tracks")
+        }
+        let videoPlaylist = video.map { mediaPlaylist($0, baseURL: baseURL) }
         let audioPlaylist = audio.map { mediaPlaylist($0, baseURL: baseURL) }
         var master = "#EXTM3U\n#EXT-X-VERSION:7\n"
-        if audio != nil {
+        if video != nil, audio != nil {
             master += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Audio\",DEFAULT=YES,AUTOSELECT=YES,URI=\"\(baseURL)/audio.m3u8\"\n"
         }
-        let codecs = ([video.codec] + [audio?.codec].compactMap { $0 }).joined(separator: ",")
-        master += "#EXT-X-STREAM-INF:BANDWIDTH=\(max(1, video.bandwidth + (audio?.bandwidth ?? 0))),CODECS=\"\(codecs)\",RESOLUTION=\(video.width)x\(video.height)"
-        if audio != nil { master += ",AUDIO=\"audio\"" }
-        master += "\n\(baseURL)/video.m3u8\n"
-        let selectedTracks = [video] + [audio].compactMap { $0 }
+        let selectedTracks = [video, audio].compactMap { $0 }
+        let codecs = selectedTracks.map(\.codec).joined(separator: ",")
+        let bandwidth = selectedTracks.reduce(0) { $0 + $1.bandwidth }
+        master += "#EXT-X-STREAM-INF:BANDWIDTH=\(max(1, bandwidth)),CODECS=\"\(codecs)\""
+        if let video {
+            master += ",RESOLUTION=\(video.width)x\(video.height)"
+            if audio != nil { master += ",AUDIO=\"audio\"" }
+            master += "\n\(baseURL)/video.m3u8\n"
+        } else {
+            master += "\n\(baseURL)/audio.m3u8\n"
+        }
         let resources = selectedTracks.flatMap { track -> [Resource] in
             [Resource(upstream: track.initialization)] + track.durations.indices.map { offset in
                 Resource(upstream: track.media.replacingOccurrences(

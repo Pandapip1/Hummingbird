@@ -38,9 +38,6 @@ final class PluginRuntime: @unchecked Sendable {
     var onToast: (@Sendable (String) -> Void)?
     var onLog: (@Sendable (String) -> Void)?
 
-    /// Used by tests to supply the prelude without a bundle.
-    static var preludeOverride: String?
-
     var isLoggedIn: Bool { auth != nil }
     var id: String { config.id }
 
@@ -366,7 +363,6 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     private static func loadPrelude() throws -> String {
-        if let o = preludeOverride { return o }
         guard let url = Bundle.module.url(forResource: "prelude", withExtension: "js"),
               let src = try? String(contentsOf: url, encoding: .utf8) else {
             throw PluginError.execution("prelude.js is missing from the app bundle")
@@ -374,7 +370,7 @@ final class PluginRuntime: @unchecked Sendable {
         return src
     }
 
-    private func perform<T>(_ body: @escaping () throws -> T) async throws -> T {
+    private func perform<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { cont in
             queue.async {
                 do { cont.resume(returning: try body()) } catch { cont.resume(throwing: error) }
@@ -441,9 +437,10 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Invokes `source.<name>(...args)`; `kind` is "value", "pager" or "details". Returns the JSON of the result.
     func callRaw(_ name: String, _ args: [Any] = [], kind: String = "value") async throws -> Data {
+        let encodedArgs = try argsJSON(args)
         let (result, generation) = try await perform {
             try self.enableLocked()
-            let js = "__jb.invoke(\(jsString(name)), \(jsString(try self.argsJSON(args))), \(jsString(kind)))"
+            let js = "__jb.invoke(\(jsString(name)), \(jsString(encodedArgs)), \(jsString(kind)))"
             return (try self.evalResult(js), self.contextGeneration)
         }
         return try await unwrapAwaiting(result, generation: generation)
@@ -463,16 +460,18 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     func callHandle(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> Data {
+        let encodedArgs = try argsJSON(args)
         let (result, generation) = try await perform {
-            (try self.evalResult("__jb.callHandle(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"),
+            (try self.evalResult("__jb.callHandle(\(handle), \(jsString(method)), \(jsString(encodedArgs)))"),
              self.contextGeneration)
         }
         return try await unwrapAwaiting(result, generation: generation)
     }
 
     func callHandleBytes(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> Data {
+        let encodedArgs = try argsJSON(args)
         let (result, generation) = try await perform {
-            (try self.evalResult("__jb.callHandleBytes(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"),
+            (try self.evalResult("__jb.callHandleBytes(\(handle), \(jsString(method)), \(jsString(encodedArgs)))"),
              self.contextGeneration)
         }
         let encoded = try Self.decode(String.self, from: try await unwrapAwaiting(result, generation: generation))
@@ -483,8 +482,9 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     func handlePager<Item: Decodable & Sendable>(_ handle: Int, _ method: String, _ args: [Any] = [], as item: Item.Type) async throws -> PluginPager<Item> {
+        let encodedArgs = try argsJSON(args)
         let data = try await perform {
-            try self.unwrap(try self.evalResult("__jb.callHandleForPager(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"))
+            try self.unwrap(try self.evalResult("__jb.callHandleForPager(\(handle), \(jsString(method)), \(jsString(encodedArgs)))"))
         }
         return PluginPager(runtime: self, payload: try Self.decode(PagerPayload<Item>.self, from: data))
     }
@@ -497,16 +497,18 @@ final class PluginRuntime: @unchecked Sendable {
     struct HandleRef: Decodable { var handle: Int; var nextRequest: Int? }
 
     func handleFromCall(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> HandleRef? {
+        let encodedArgs = try argsJSON(args)
         let data = try await perform {
-            try self.unwrap(try self.evalResult("__jb.callHandleForHandle(\(handle), \(jsString(method)), \(jsString(try self.argsJSON(args))))"))
+            try self.unwrap(try self.evalResult("__jb.callHandleForHandle(\(handle), \(jsString(method)), \(jsString(encodedArgs)))"))
         }
         return try Self.decode(HandleRef?.self, from: data)
     }
 
     func handleFromSource(_ name: String, _ args: [Any] = []) async throws -> HandleRef? {
+        let encodedArgs = try argsJSON(args)
         let data = try await perform {
             try self.enableLocked()
-            return try self.unwrap(try self.evalResult("__jb.invokeForHandle(\(jsString(name)), \(jsString(try self.argsJSON(args))))"))
+            return try self.unwrap(try self.evalResult("__jb.invokeForHandle(\(jsString(name)), \(jsString(encodedArgs)))"))
         }
         return try Self.decode(HandleRef?.self, from: data)
     }

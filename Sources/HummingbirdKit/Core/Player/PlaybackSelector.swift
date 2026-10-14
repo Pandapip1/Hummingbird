@@ -31,6 +31,7 @@ enum PlaybackSelector {
         }
 
         let audio = bestAudio(d.audioSources, language: preferredLanguage)
+        let generatedAudio = bestGeneratedAudio(d.audioSources, language: preferredLanguage)
         let generated = d.videoSources.filter {
             $0.pluginType == "DashManifestRawSource" && $0.hasGenerate && $0.handle != nil
                 && !$0.isWidevine && isPlayableVideoContainer($0)
@@ -41,7 +42,7 @@ enum PlaybackSelector {
         for (identity, sources) in generatedGroups {
             guard let v = bestLanguageSource(sources, language: preferredLanguage) else { continue }
             add(PlaybackOption(id: identity, label: label(for: v), kind: .generated,
-                               video: v, audio: nil, height: v.height))
+                               video: v, audio: generatedAudio, height: v.height))
         }
         for v in d.videoSources where !v.isHLS && !v.isDash && !v.isWidevine && !v.url.isEmpty && isPlayableVideo(v) {
             if d.isUnmuxed {
@@ -89,6 +90,17 @@ enum PlaybackSelector {
         bestLanguageSource(playableAudioSources(sources), language: language)
     }
 
+    static func generatedAudioSources(_ sources: [MediaSource]) -> [MediaSource] {
+        sources.filter {
+            $0.pluginType == "DashManifestRawAudioSource" && $0.hasGenerate && $0.handle != nil
+                && !$0.isWidevine && audioContainers.contains($0.container.lowercased())
+        }
+    }
+
+    static func bestGeneratedAudio(_ sources: [MediaSource], language: String?) -> MediaSource? {
+        bestLanguageSource(generatedAudioSources(sources), language: language)
+    }
+
     static func bestLanguageSource(_ sources: [MediaSource], language: String?) -> MediaSource? {
         var c = sources
         if c.isEmpty { return nil }
@@ -103,14 +115,8 @@ enum PlaybackSelector {
         return c.max(by: { $0.bitrate < $1.bitrate })
     }
 
-    static func generatedAudioChoices(for selected: MediaSource, in sources: [MediaSource]) -> [MediaSource] {
-        let matches = sources.filter {
-            $0.pluginType == "DashManifestRawSource" && $0.hasGenerate && $0.handle != nil
-                && $0.height == selected.height
-                && $0.container.caseInsensitiveCompare(selected.container) == .orderedSame
-                && $0.codec.caseInsensitiveCompare(selected.codec) == .orderedSame
-        }
-        return languageChoices(matches)
+    static func generatedAudioChoices(in sources: [MediaSource]) -> [MediaSource] {
+        languageChoices(generatedAudioSources(sources))
     }
 
     /// Handles are runtime-local, so an isolated runtime must identify the

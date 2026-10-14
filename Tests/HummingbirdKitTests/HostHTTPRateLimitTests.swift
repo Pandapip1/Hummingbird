@@ -6,6 +6,17 @@ import XCTest
 @testable import HummingbirdKit
 
 final class HostHTTPRateLimitTests: XCTestCase {
+    private final class Locked<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Value
+
+        init(_ value: Value) { self.value = value }
+        func read() -> Value { lock.withLock { value } }
+        func withValue<Result>(_ body: (inout Value) -> Result) -> Result {
+            lock.withLock { body(&value) }
+        }
+    }
+
     private final class Clock: @unchecked Sendable {
         private let lock = NSLock()
         private var value: Date
@@ -26,43 +37,49 @@ final class HostHTTPRateLimitTests: XCTestCase {
     }
 
     private final class StubProtocol: URLProtocol, @unchecked Sendable {
-        static let lock = NSLock()
-        static var responses: [(Int, [String: String], String)] = []
-        static var handler: ((URLRequest) -> (Int, [String: String], String))?
-        static var beforeDelivery: ((URLRequest) -> Void)?
-        static var requestCount = 0
+        private final class State: @unchecked Sendable {
+            let lock = NSLock()
+            var responses: [(Int, [String: String], String)] = []
+            var handler: (@Sendable (URLRequest) -> (Int, [String: String], String))?
+            var beforeDelivery: (@Sendable (URLRequest) -> Void)?
+            var requestCount = 0
+        }
+
+        private static let state = State()
+        static var requestCount: Int { state.lock.withLock { state.requestCount } }
 
         static func reset(_ newResponses: [(Int, [String: String], String)]) {
-            lock.lock(); defer { lock.unlock() }
-            responses = newResponses
-            handler = nil
-            beforeDelivery = nil
-            requestCount = 0
+            state.lock.withLock {
+                state.responses = newResponses
+                state.handler = nil
+                state.beforeDelivery = nil
+                state.requestCount = 0
+            }
         }
 
         static func reset(
-            handler newHandler: @escaping (URLRequest) -> (Int, [String: String], String),
-            beforeDelivery newBeforeDelivery: ((URLRequest) -> Void)? = nil
+            handler newHandler: @escaping @Sendable (URLRequest) -> (Int, [String: String], String),
+            beforeDelivery newBeforeDelivery: (@Sendable (URLRequest) -> Void)? = nil
         ) {
-            lock.lock(); defer { lock.unlock() }
-            responses = []
-            handler = newHandler
-            beforeDelivery = newBeforeDelivery
-            requestCount = 0
+            state.lock.withLock {
+                state.responses = []
+                state.handler = newHandler
+                state.beforeDelivery = newBeforeDelivery
+                state.requestCount = 0
+            }
         }
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
         override func startLoading() {
-            Self.lock.lock()
-            Self.requestCount += 1
-            let handler = Self.handler
-            let beforeDelivery = Self.beforeDelivery
-            let queued = handler == nil ? Self.responses.removeFirst() : nil
-            Self.lock.unlock()
+            let (handler, beforeDelivery, queued) = Self.state.lock.withLock {
+                Self.state.requestCount += 1
+                let handler = Self.state.handler
+                return (handler, Self.state.beforeDelivery, handler == nil ? Self.state.responses.removeFirst() : nil)
+            }
             let response = handler?(request) ?? queued!
-            let deliver = {
+            let deliver: @Sendable () -> Void = { [self, response] in
                 let http = HTTPURLResponse(
                     url: self.request.url!, statusCode: response.0, httpVersion: "HTTP/1.1", headerFields: response.1
                 )!
@@ -104,24 +121,27 @@ final class HostHTTPRateLimitTests: XCTestCase {
 
     func testStringBodyDefaultsToTextPlain() throws {
         let clock = Clock(Date(timeIntervalSince1970: 1_700_000_000))
-        var contentType: String?
+        let contentType = Locked<String?>(nil)
         StubProtocol.reset(handler: { request in
-            contentType = request.value(forHTTPHeaderField: "Content-Type")
+            contentType.withValue { $0 = request.value(forHTTPHeaderField: "Content-Type") }
             return (200, [:], "ok")
         })
         let bodyRequest = #"[{"method":"POST","url":"https://example.test/resource","body":{"text":"{}"}}]"#
 
         _ = try makeHost(clock: clock).execute(json: bodyRequest, parallel: false)
 
-        XCTAssertEqual(contentType, "text/plain")
+        XCTAssertEqual(contentType.read(), "text/plain")
     }
 
     func testExpiredSetCookieRemovesStoredCookie() throws {
         let clock = Clock(Date(timeIntervalSince1970: 1_700_000_000))
-        var observedCookies: [String?] = []
+        let observedCookies = Locked<[String?]>([])
         StubProtocol.reset(handler: { request in
-            observedCookies.append(request.value(forHTTPHeaderField: "Cookie"))
-            switch observedCookies.count {
+            let count = observedCookies.withValue {
+                $0.append(request.value(forHTTPHeaderField: "Cookie"))
+                return $0.count
+            }
+            switch count {
             case 1:
                 return (200, ["Set-Cookie": "session=present; Domain=.example.test; Path=/"], "ok")
             case 2:
@@ -136,9 +156,10 @@ final class HostHTTPRateLimitTests: XCTestCase {
         _ = host.execute(json: request(), parallel: false)
         _ = host.execute(json: request(), parallel: false)
 
-        XCTAssertNil(observedCookies[0])
-        XCTAssertEqual(observedCookies[1], "session=present")
-        XCTAssertNil(observedCookies[2])
+        let cookies = observedCookies.read()
+        XCTAssertNil(cookies[0])
+        XCTAssertEqual(cookies[1], "session=present")
+        XCTAssertNil(cookies[2])
     }
 
     func testRetryAfterSecondsDelaysAndRetriesSafeRequestOnce() throws {

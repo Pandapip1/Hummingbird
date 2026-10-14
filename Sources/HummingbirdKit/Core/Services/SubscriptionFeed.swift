@@ -54,7 +54,7 @@ final class SubscriptionFeed {
             func addNext() {
                 guard let sub = iterator.next() else { return }
                 running += 1
-                group.addTask { @MainActor [self] in
+                group.addTask { [self] in
                     do { return (sub, .success(try await fetchChannel(sub))) } catch { return (sub, .failure(error)) }
                 }
             }

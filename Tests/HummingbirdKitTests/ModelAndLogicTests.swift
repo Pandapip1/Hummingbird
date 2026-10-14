@@ -327,6 +327,20 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true)?.height, 1080)
     }
 
+    func testGeneratedPlaybackPairsSeparateGeneratedAudio() throws {
+        let d = try decode(VideoDetails.self, """
+        {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},
+         "video":{"isUnMuxed":true,
+           "videoSources":[{"plugin_type":"DashManifestRawSource","__handle":1,"hasGenerate":true,"height":1080,"container":"video/mp4","codec":"avc1"}],
+           "audioSources":[
+             {"plugin_type":"DashManifestRawAudioSource","__handle":2,"hasGenerate":true,"container":"audio/mp4","codec":"mp4a","bitrate":128000,"language":"en"},
+             {"plugin_type":"DashManifestRawAudioSource","__handle":3,"hasGenerate":true,"container":"audio/mp4","codec":"mp4a","bitrate":192000,"language":"es","original":true}]}}
+        """)
+        let option = try XCTUnwrap(PlaybackSelector.options(for: d, preferredLanguage: "en-US").first)
+        XCTAssertEqual(option.audio?.handle, 2)
+        XCTAssertEqual(PlaybackSelector.generatedAudioChoices(in: d.audioSources).count, 2)
+    }
+
     func testGeneratedPlaybackKeepsLanguagesAndDefaultsToViewerLanguage() throws {
         let d = try decode(VideoDetails.self, """
         {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},
@@ -340,9 +354,7 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(options.count, 2)
         XCTAssertTrue(options.allSatisfy { $0.video.language == "en" })
         let selected = try XCTUnwrap(options.first(where: { $0.height == 1080 }))
-        let audio = PlaybackSelector.generatedAudioChoices(for: selected.video, in: d.videoSources)
-        XCTAssertEqual(audio.count, 2)
-        XCTAssertEqual(Set(audio.map(\.language)), ["en", "es"])
+        XCTAssertTrue(PlaybackSelector.generatedAudioChoices(in: d.audioSources).isEmpty)
         let equivalent = d.videoSources.filter { PlaybackSelector.isSameGeneratedSource($0, as: selected.video) }
         XCTAssertEqual(equivalent.count, 1)
         XCTAssertEqual(equivalent.first?.language, "en")
@@ -368,11 +380,26 @@ final class ModelAndLogicTests: XCTestCase {
         let playlists = try DashToHLS.convert(mpd, baseURL: "http://127.0.0.1:1234/presentation")
         XCTAssertTrue(playlists.master.contains("CODECS=\"avc1.64001f,mp4a.40.2\""))
         XCTAssertTrue(playlists.master.contains("AUDIO=\"audio\""))
-        XCTAssertTrue(playlists.video.contains("#EXT-X-MEDIA-SEQUENCE:7"))
-        XCTAssertEqual(playlists.video.components(separatedBy: "#EXTINF:").count - 1, 4)
-        XCTAssertTrue(playlists.video.contains("segIndex=7"))
-        XCTAssertTrue(playlists.video.contains("segIndex=10"))
-        XCTAssertTrue(playlists.video.hasSuffix("#EXT-X-ENDLIST\n"))
+        let video = try XCTUnwrap(playlists.video)
+        XCTAssertTrue(video.contains("#EXT-X-MEDIA-SEQUENCE:7"))
+        XCTAssertEqual(video.components(separatedBy: "#EXTINF:").count - 1, 4)
+        XCTAssertTrue(video.contains("segIndex=7"))
+        XCTAssertTrue(video.contains("segIndex=10"))
+        XCTAssertTrue(video.hasSuffix("#EXT-X-ENDLIST\n"))
+    }
+
+    func testGeneratedAudioOnlyDashConvertsToHLS() throws {
+        let mpd = """
+        <MPD><Period><AdaptationSet contentType="audio"><Representation codecs="mp4a.40.2" bandwidth="128000">
+          <SegmentTemplate timescale="1000" initialization="https://grayjay.internal/audio/internal/init.mp4" media="https://grayjay.internal/audio/internal/segment.mp4?segIndex=$Number$">
+            <SegmentTimeline><S d="2000" r="1"/></SegmentTimeline>
+          </SegmentTemplate></Representation></AdaptationSet></Period></MPD>
+        """
+        let playlists = try DashToHLS.convert(mpd, baseURL: "http://127.0.0.1:1234/audio")
+        XCTAssertNil(playlists.video)
+        XCTAssertNotNil(playlists.audio)
+        XCTAssertTrue(playlists.master.contains("/audio.m3u8"))
+        XCTAssertEqual(playlists.resources.count, 3)
     }
 
     func testUMPCacheVersionCleanupRemovesOnlyOlderCacheDirectories() throws {

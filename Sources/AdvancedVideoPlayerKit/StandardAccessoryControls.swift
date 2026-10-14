@@ -1,11 +1,11 @@
 import SwiftOpenUI
 
 private struct PlayerMenuPresentationChangedKey: EnvironmentKey {
-    static let defaultValue: (Bool) -> Void = { _ in }
+    static let defaultValue: @MainActor @Sendable (Bool) -> Void = { _ in }
 }
 
 extension EnvironmentValues {
-    var playerMenuPresentationChanged: (Bool) -> Void {
+    var playerMenuPresentationChanged: @MainActor @Sendable (Bool) -> Void {
         get { self[PlayerMenuPresentationChangedKey.self] }
         set { self[PlayerMenuPresentationChangedKey.self] = newValue }
     }

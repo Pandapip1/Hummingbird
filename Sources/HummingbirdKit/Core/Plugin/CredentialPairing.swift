@@ -115,6 +115,11 @@ enum PairingRemoteStatus: Equatable {
     case waiting, accepted, rejected
 }
 
+private final class PairingWeakReference<Value: AnyObject>: @unchecked Sendable {
+    weak var value: Value?
+    init(_ value: Value) { self.value = value }
+}
+
 /// A short-lived, one-shot HTTP receiver. The body is encrypted; possession of
 /// the QR payload is required both to locate the listener and decrypt the result.
 final class CredentialPairingReceiver: @unchecked Sendable {
@@ -145,13 +150,15 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     func start() async throws -> CredentialPairingRequest {
         if let requestValue { return requestValue }
         let secret = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+        let receiver = PairingWeakReference(self)
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .childChannelInitializer { channel in
                 channel.pipeline.configureHTTPServerPipeline().flatMap {
                     channel.pipeline.addHandler(CredentialPairingHTTPHandler {
-                        [weak self] head, body in
-                        self?.respond(to: head, body: body, secret: secret) ?? PairingHTTPResponse(status: .gone)
+                        head, body in
+                        receiver.value?.respond(to: head, body: body, secret: secret)
+                            ?? PairingHTTPResponse(status: .gone)
                     })
                 }
             }
@@ -174,10 +181,10 @@ final class CredentialPairingReceiver: @unchecked Sendable {
         let request = CredentialPairingRequest(
             endpoint: endpointURL, secret: secret, pluginID: pluginID, pluginSourceURL: pluginSourceURL
         )
-        lock.lock()
-        self.channel = channel
-        requestValue = request
-        lock.unlock()
+        lock.withLock {
+            self.channel = channel
+            requestValue = request
+        }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(600))
             self?.stop()
@@ -302,7 +309,8 @@ private final class CredentialPairingHTTPHandler: ChannelInboundHandler, @unchec
         headers.add(name: "Connection", value: "close")
         if let proof = result.proof { headers.add(name: "X-Hummingbird-Pairing-Proof", value: proof) }
         context.write(wrapOutboundOut(.head(.init(version: .http1_1, status: result.status, headers: headers))), promise: nil)
-        context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in context.close(promise: nil) }
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+        context.close(promise: nil)
     }
 }
 

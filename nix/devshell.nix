@@ -164,7 +164,9 @@
             # Xcode's linker does not inherit Nix's usual compiler-wrapper
             # search paths. Make the libraries named by pkg-config visible to
             # SwiftPM while retaining the system Swift/macOS SDK toolchain.
-            export LIBRARY_PATH="${lib.makeLibraryPath (deps.baseLibs ++ deps.darwinGtkLibs)}:''${LIBRARY_PATH:-}"
+            # Data-only packages such as the icon theme have no lib output;
+            # including them makes SwiftPM pass a nonexistent -L path.
+            export LIBRARY_PATH="${lib.makeLibraryPath (deps.baseLibs ++ lib.filter (dependency: dependency != deps.iconTheme) deps.darwinGtkLibs)}:''${LIBRARY_PATH:-}"
           ''}
 
           if [ ! -e Vendor/SwiftOpenUI/Package.swift ]; then

@@ -185,14 +185,14 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         let runtime = try makeRuntime(settingsOverride: ["useUMP": "true", "use_native_ump": "false"])
         defer { Task { await runtime.stop() } }
         let url = fixtureVideoURL
-        let (manifest, executor) = try await generatedPresentation(runtime, url: url)
+        let (manifest, executor) = try await Self.generatedPresentation(runtime, url: url)
         let playbackURL = try await PluginMediaProxy.shared.register(
             manifest: manifest, runtime: runtime, executor: executor, prefetch: true,
             useCache: true, cacheAllocationBytes: 1,
             prefetchExecutorFactory: {
                 let clone = runtime.isolatedClone()
                 do {
-                    let (_, executor) = try await self.generatedPresentation(clone, url: url)
+                    let (_, executor) = try await Self.generatedPresentation(clone, url: url)
                     return (clone, executor)
                 } catch {
                     await clone.stop()
@@ -215,8 +215,29 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         let (segmentData, segmentResponse) = try await URLSession.shared.data(from: segmentURL)
         XCTAssertEqual((segmentResponse as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertGreaterThan(segmentData.count, 1_000)
+
+        let (audioManifest, audioExecutor) = try await Self.generatedPresentation(
+            runtime, url: url, sourceType: "DashManifestRawAudioSource"
+        )
+        let combinedURL = try await PluginMediaProxy.shared.register(
+            videoManifest: manifest, videoRuntime: runtime, videoExecutor: executor,
+            audioManifest: audioManifest, audioRuntime: runtime, audioExecutor: audioExecutor
+        )
+        let combinedMaster = String(decoding: try await URLSession.shared.data(from: combinedURL).0, as: UTF8.self)
+        XCTAssertTrue(combinedMaster.contains("TYPE=AUDIO"))
+        XCTAssertTrue(combinedMaster.contains("AUDIO=\"audio\""))
+        let audioBase = combinedURL.deletingLastPathComponent()
+        let (audioInit, audioInitResponse) = try await URLSession.shared.data(
+            from: audioBase.appendingPathComponent("audio/internal/init.mp4")
+        )
+        XCTAssertEqual((audioInitResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(String(decoding: audioInit.dropFirst(4).prefix(4), as: UTF8.self), "ftyp")
+        let audioSegmentURL = URL(string: "\(audioBase.absoluteString)/audio/internal/segment.mp4?segIndex=1")!
+        let (audioSegment, audioSegmentResponse) = try await URLSession.shared.data(from: audioSegmentURL)
+        XCTAssertEqual((audioSegmentResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertGreaterThan(audioSegment.count, 1_000)
         #if canImport(AVFoundation)
-        let asset = AVURLAsset(url: playbackURL)
+        let asset = AVURLAsset(url: combinedURL)
         let playable = try await asset.load(.isPlayable)
         let duration = try await asset.load(.duration).seconds
         XCTAssertTrue(playable)
@@ -276,7 +297,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
     func testCurrentOfficialPluginGeneratedExecutorAcrossUMPBoundary() async throws {
         let runtime = try makeRuntime(settingsOverride: ["useUMP": "true", "use_native_ump": "false"])
         defer { Task { await runtime.stop() } }
-        let (_, executor) = try await generatedPresentation(runtime, url: fixtureVideoURL)
+        let (_, executor) = try await Self.generatedPresentation(runtime, url: fixtureVideoURL)
 
         for segment in [13, 25] {
             let bytes = try await runtime.callHandleBytes(
@@ -335,12 +356,23 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         return details
     }
 
-    private func generatedPresentation(_ runtime: PluginRuntime, url: String) async throws -> (String, Int) {
+    private static func generatedPresentation(
+        _ runtime: PluginRuntime,
+        url: String,
+        sourceType: String = "DashManifestRawSource"
+    ) async throws -> (String, Int) {
         for attempt in 0..<2 {
-            let details = try await videoDetails(runtime, url: url)
-            guard let source = details.videoSources.first(where: { $0.container == "video/mp4" }),
+            let data = try await runtime.callRaw("getContentDetails", [url], kind: "details")
+            guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data) else {
+                throw PluginError.execution("Expected YouTube video details")
+            }
+            let sources = sourceType == "DashManifestRawAudioSource"
+                ? details.audioSources : details.videoSources
+            guard let source = sources.first(where: {
+                $0.pluginType == sourceType && $0.container.lowercased().contains("mp4")
+            }),
                   let handle = source.handle else {
-                throw PluginError.execution("Expected a generated MP4 source")
+                throw PluginError.execution("Expected a generated MP4 \(sourceType)")
             }
             do {
                 let manifest = try PluginRuntime.decode(

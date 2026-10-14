@@ -322,6 +322,14 @@ private struct BrowserTabStrip: View {
 #if os(macOS) && !BACKEND_GTK
 private final class HummingbirdTabBarAccessoryViewController: NSTitlebarAccessoryViewController {}
 
+private final class NotificationObserverTokens: @unchecked Sendable {
+    var values: [NSObjectProtocol] = []
+
+    deinit {
+        values.forEach(NotificationCenter.default.removeObserver)
+    }
+}
+
 /// Owns the tab strip as window chrome. SwiftUI representables can be rebuilt
 /// or briefly overlap during navigation, so installation is reconciled at the
 /// NSWindow level rather than treating each representable as the accessory's
@@ -337,7 +345,7 @@ final class WindowTabBarAccessoryManager {
     private let accessory = HummingbirdTabBarAccessoryViewController()
     private let hosting: NSHostingController<AnyView>
     private var owners: [UUID: Bool] = [:]
-    private var observers: [NSObjectProtocol] = []
+    private let observers = NotificationObserverTokens()
 
     init(window: NSWindow, app: AppModel) {
         self.window = window
@@ -348,7 +356,7 @@ final class WindowTabBarAccessoryManager {
         hosting.view.autoresizingMask = [.width]
 
         let center = NotificationCenter.default
-        observers = [
+        observers.values = [
             center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) {
                 [weak self] _ in MainActor.assumeIsolated { self?.reconcile() }
             },
@@ -359,10 +367,6 @@ final class WindowTabBarAccessoryManager {
                 [weak self] _ in self?.reconcileAfterFullScreenTransition()
             },
         ]
-    }
-
-    deinit {
-        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
     var isUnused: Bool { owners.isEmpty }

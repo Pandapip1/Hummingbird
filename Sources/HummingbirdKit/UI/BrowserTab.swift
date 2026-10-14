@@ -38,8 +38,9 @@ extension DynamicTab where Page == Route {
 /// from the pinned tab, or the current tab's own history when called from
 /// within one. Mirrors `Route`-browsing call sites that used to push a
 /// `NavigationLink(value:)` directly onto a single shared `NavigationStack`.
-struct OpenRouteAction {
-    let action: (Route, String?) -> Void
+struct OpenRouteAction: Sendable {
+    let action: @MainActor @Sendable (Route, String?) -> Void
+    @MainActor
     func callAsFunction(_ route: Route, title: String? = nil) { action(route, title) }
 }
 

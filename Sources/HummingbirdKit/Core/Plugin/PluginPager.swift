@@ -1,12 +1,12 @@
 import Foundation
 
 /// An element that may fail to decode without sinking the page it arrived in.
-struct Lossy<T: Decodable>: Decodable {
+struct Lossy<T: Decodable & Sendable>: Decodable, Sendable {
     let value: T?
     init(from decoder: Decoder) throws { value = try? T(from: decoder) }
 }
 
-struct PagerPayload<Item: Decodable>: Decodable {
+struct PagerPayload<Item: Decodable & Sendable>: Decodable, Sendable {
     var pager: Int
     var results: [Lossy<Item>]
     var hasMore: Bool

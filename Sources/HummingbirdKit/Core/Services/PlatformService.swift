@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import DebugKit
 
-private func capture<T>(_ op: () async throws -> T) async -> Result<T, Error> {
+private func capture<T: Sendable>(_ op: @Sendable () async throws -> T) async -> Result<T, Error> {
     do { return .success(try await op()) } catch { return .failure(error) }
 }
 
@@ -291,10 +291,10 @@ enum Route: Hashable {
 
 // MARK: - Merged feeds
 
-struct FeedSource {
+struct FeedSource: Sendable {
     let runtime: PluginRuntime
     let label: String
-    let open: () async throws -> PluginPager<ContentItem>
+    let open: @Sendable () async throws -> PluginPager<ContentItem>
 }
 
 /// Loads pages from several plugins and interleaves them so no single plugin dominates the list.

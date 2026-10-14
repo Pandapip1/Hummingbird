@@ -17,13 +17,11 @@ enum Fmt {
     }
 
     #if canImport(Darwin)
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
+    static func relative(_ date: Date) -> String {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .full
-        return f
-    }()
-
-    static func relative(_ date: Date) -> String { relativeFormatter.localizedString(for: date, relativeTo: Date()) }
+        return f.localizedString(for: date, relativeTo: Date())
+    }
     #else
     // RelativeDateTimeFormatter is not in Foundation on Linux, so this renders English text itself.
     static func relative(_ date: Date, now: Date = Date()) -> String {

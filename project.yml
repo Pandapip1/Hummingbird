@@ -5,8 +5,8 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.9"
-    SWIFT_STRICT_CONCURRENCY: minimal
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
@@ -80,6 +80,19 @@ targets:
         DEVELOPMENT_TEAM: NMM6M6QVAT
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Hummingbird
+  HummingbirdIOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/HummingbirdIOSUITests
+    dependencies:
+      - target: Hummingbird
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.HummingbirdIOSUITests
+        DEVELOPMENT_TEAM: NMM6M6QVAT
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Hummingbird
 schemes:
   Hummingbird:
     build:
@@ -88,3 +101,4 @@ schemes:
     test:
       targets:
         - HummingbirdTVUITests
+        - HummingbirdIOSUITests

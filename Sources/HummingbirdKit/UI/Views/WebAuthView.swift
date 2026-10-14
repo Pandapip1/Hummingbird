@@ -278,7 +278,7 @@ final class WebAuthSession {
 
 #if os(iOS) && !BACKEND_GTK
 import UIKit
-import AVFoundation
+@preconcurrency import AVFoundation
 
 struct QRScannerView: UIViewControllerRepresentable {
     let onCode: (String) -> Void
@@ -290,9 +290,14 @@ struct QRScannerView: UIViewControllerRepresentable {
     }
     func updateUIViewController(_ uiViewController: ScannerController, context: Context) {}
 
-    final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    final class ScannerController: UIViewController, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
+        private final class CaptureSessionBox: @unchecked Sendable {
+            let value = AVCaptureSession()
+        }
+
         var onCode: ((String) -> Void)?
-        private let session = AVCaptureSession()
+        private let sessionBox = CaptureSessionBox()
+        private var session: AVCaptureSession { sessionBox.value }
         private var preview: AVCaptureVideoPreviewLayer?
         private var done = false
 
@@ -321,7 +326,10 @@ struct QRScannerView: UIViewControllerRepresentable {
 
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
-            DispatchQueue.global(qos: .userInitiated).async { [session] in if !session.isRunning { session.startRunning() } }
+            let sessionBox = sessionBox
+            DispatchQueue.global(qos: .userInitiated).async {
+                if !sessionBox.value.isRunning { sessionBox.value.startRunning() }
+            }
         }
 
         override func viewWillDisappear(_ animated: Bool) {
@@ -351,15 +359,33 @@ struct QRScannerView: NSViewRepresentable {
     }
     func updateNSView(_ nsView: ScannerNSView, context: Context) {}
 
-    final class ScannerNSView: NSView, AVCaptureMetadataOutputObjectsDelegate {
+    private final class CaptureSessionController: @unchecked Sendable {
+        let session = AVCaptureSession()
+        private let queue = DispatchQueue(label: "app.hummingbird.qr-capture", qos: .userInitiated)
+
+        func start() {
+            queue.async { [self] in
+                if !session.isRunning { session.startRunning() }
+            }
+        }
+
+        func stop() {
+            queue.async { [self] in
+                if session.isRunning { session.stopRunning() }
+            }
+        }
+    }
+
+    final class ScannerNSView: NSView, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
         var onCode: ((String) -> Void)?
-        private let session = AVCaptureSession()
+        private let capture = CaptureSessionController()
         private var preview: AVCaptureVideoPreviewLayer?
         private var done = false
 
         override init(frame: NSRect) {
             super.init(frame: frame)
             wantsLayer = true
+            let session = capture.session
             guard let device = AVCaptureDevice.default(for: .video),
                   let input = try? AVCaptureDeviceInput(device: device),
                   session.canAddInput(input) else { return }
@@ -385,11 +411,9 @@ struct QRScannerView: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if window != nil {
-                DispatchQueue.global(qos: .userInitiated).async { [session] in
-                    if !session.isRunning { session.startRunning() }
-                }
+                capture.start()
             } else {
-                session.stopRunning()
+                capture.stop()
             }
         }
 

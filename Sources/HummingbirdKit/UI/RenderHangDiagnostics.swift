@@ -1,6 +1,6 @@
 #if DEBUG && os(iOS)
 import Foundation
-import MetricKit
+@preconcurrency import MetricKit
 
 /// Persists Apple's symbolication-ready hang diagnostics for later retrieval
 /// from the app container. MetricKit delivers them asynchronously, often on a
@@ -13,6 +13,10 @@ public enum RenderHangDiagnostics {
 }
 
 private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @unchecked Sendable {
+    private struct PendingHang: Sendable {
+        let filename: String
+        let data: Data
+    }
     @MainActor static let shared = MetricHangRecorder()
     private let writer = DispatchQueue(label: "app.hummingbird.metric-hangs", qos: .utility)
     private var started = false
@@ -31,16 +35,20 @@ private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @un
     }
 
     private func persist(_ payloads: [MXDiagnosticPayload]) {
-        let hangs = payloads.filter { !($0.hangDiagnostics?.isEmpty ?? true) }
+        let hangs = payloads.compactMap { payload -> PendingHang? in
+            guard !(payload.hangDiagnostics?.isEmpty ?? true),
+                  let data = try? payload.jsonRepresentation() else { return nil }
+            let begin = Int(payload.timeStampBegin.timeIntervalSince1970)
+            let end = Int(payload.timeStampEnd.timeIntervalSince1970)
+            return PendingHang(filename: "hang-\(begin)-\(end).json", data: data)
+        }
         guard !hangs.isEmpty else { return }
         writer.async {
             do {
                 let directory = try Self.directory()
-                for payload in hangs {
-                    let begin = Int(payload.timeStampBegin.timeIntervalSince1970)
-                    let end = Int(payload.timeStampEnd.timeIntervalSince1970)
-                    let url = directory.appendingPathComponent("hang-\(begin)-\(end).json")
-                    try payload.jsonRepresentation().write(to: url, options: .atomic)
+                for hang in hangs {
+                    let url = directory.appendingPathComponent(hang.filename)
+                    try hang.data.write(to: url, options: .atomic)
                 }
             } catch {
                 // Diagnostics must never affect the application being measured.

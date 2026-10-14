@@ -144,8 +144,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             return
         }
         if choice.kind == .generated {
-            audioSources = PlaybackSelector.generatedAudioChoices(for: choice.video, in: details.videoSources)
-            selectedAudioSource = choice.video
+            audioSources = PlaybackSelector.generatedAudioChoices(in: details.audioSources)
+            selectedAudioSource = choice.audio
         } else {
             audioSources = splitAudioSources
         }
@@ -197,11 +197,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard var choice = selected else { return }
         let position = backend?.currentTime
         let autoplay = backend?.isPlaying ?? true
-        if choice.kind == .generated { choice.video = source }
-        else {
-            guard choice.audio != nil else { return }
-            choice.audio = source
-        }
+        guard choice.audio != nil else { return }
+        choice.audio = source
         guard await play(choice, resumeAt: position, duration: details?.item.duration,
                          autoplay: autoplay, normalizeSavedPosition: false) else { return }
         selectedAudioSource = source
@@ -210,8 +207,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private func refreshAudioSources(for choice: PlaybackOption) {
         guard let details else { return }
         if choice.kind == .generated {
-            audioSources = PlaybackSelector.generatedAudioChoices(for: choice.video, in: details.videoSources)
-            selectedAudioSource = choice.video
+            audioSources = PlaybackSelector.generatedAudioChoices(in: details.audioSources)
+            selectedAudioSource = choice.audio
         } else {
             audioSources = PlaybackSelector.audioChoices(details.audioSources)
             selectedAudioSource = choice.audio
@@ -337,13 +334,32 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 "videoHost": URL(string: option.video.url)?.host ?? "generated",
                 "audioHost": option.audio.flatMap { URL(string: $0.url)?.host } ?? "none",
             ])
-            let request = PlayRequest(video: try await resolve(option.video, generation: generation,
-                                                               reloadOnBlockedBootstrap: reloadOnBlockedBootstrap),
-                                      audio: try await option.audio.asyncMap {
-                                          try await resolve($0, generation: generation,
-                                                            reloadOnBlockedBootstrap: reloadOnBlockedBootstrap)
-                                      },
-                                      isLive: option.kind == .live)
+            let video: ResolvedMedia
+            let audio: ResolvedMedia?
+            if option.kind == .generated,
+               let audioSource = option.audio,
+               audioSource.pluginType == "DashManifestRawAudioSource" {
+                video = try await resolveGeneratedPair(
+                    video: option.video, audio: audioSource, generation: generation
+                )
+                audio = nil
+            } else {
+                video = try await resolve(
+                    option.video,
+                    generation: generation,
+                    reloadOnBlockedBootstrap: reloadOnBlockedBootstrap
+                )
+                if let audioSource = option.audio {
+                    audio = try await resolve(
+                        audioSource,
+                        generation: generation,
+                        reloadOnBlockedBootstrap: reloadOnBlockedBootstrap
+                    )
+                } else {
+                    audio = nil
+                }
+            }
+            let request = PlayRequest(video: video, audio: audio, isLive: option.kind == .live)
             var start = resumeAt
             if let r = resumeAt {
                 // Restart from the beginning if the viewer was already near the end, or has barely started.
@@ -389,6 +405,33 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         var headers: [String: String]?
     }
 
+    private func resolveGeneratedPair(video: MediaSource, audio: MediaSource,
+                                      generation: Int) async throws -> ResolvedMedia {
+        guard let runtime, let videoHandle = video.handle, let audioHandle = audio.handle else {
+            throw PluginError.execution("Generated video or audio source is unavailable")
+        }
+        let videoManifest = try await PluginRuntime.decodeOffMain(
+            String.self, from: try await runtime.callHandle(videoHandle, "generate")
+        )
+        guard let videoExecutor = try await runtime.handleFromCall(videoHandle, "getRequestExecutor") else {
+            throw PluginError.execution("The generated video source did not provide a request executor")
+        }
+        let audioManifest = try await PluginRuntime.decodeOffMain(
+            String.self, from: try await runtime.callHandle(audioHandle, "generate")
+        )
+        guard let audioExecutor = try await runtime.handleFromCall(audioHandle, "getRequestExecutor") else {
+            throw PluginError.execution("The generated audio source did not provide a request executor")
+        }
+        let url = try await PluginMediaProxy.shared.register(
+            videoManifest: videoManifest, videoRuntime: runtime, videoExecutor: videoExecutor.handle,
+            audioManifest: audioManifest, audioRuntime: runtime, audioExecutor: audioExecutor.handle,
+            failure: { [weak self] error in
+                Task { @MainActor in await self?.handlePluginMediaFailure(error, generation: generation) }
+            }
+        )
+        return ResolvedMedia(url: url, headers: [:])
+    }
+
     private func resolve(_ source: MediaSource, generation: Int,
                          reloadOnBlockedBootstrap: Bool = false) async throws -> ResolvedMedia {
         DebugServer.record("player", "resolve_source", fields: [
@@ -396,7 +439,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             "host": URL(string: source.url)?.host ?? "generated",
             "hasModifier": String(source.requestModifier != nil),
         ])
-        if source.pluginType == "DashManifestRawSource", let handle = source.handle, let runtime {
+        if ["DashManifestRawSource", "DashManifestRawAudioSource"].contains(source.pluginType),
+           let handle = source.handle, let runtime {
             let manifestData = try await runtime.callHandle(handle, "generate")
             let manifest = try await PluginRuntime.decodeOffMain(String.self, from: manifestData)
             guard let executor = try await runtime.handleFromCall(handle, "getRequestExecutor") else {
@@ -411,8 +455,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                     let clone = runtime.isolatedClone()
                     do {
                         let data = try await clone.callRaw("getContentDetails", [sourceURL], kind: "details")
-                        guard case .video(let details) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data),
-                              let cloneSource = details.videoSources.first(where: {
+                        guard case .video(let details) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
+                            throw PluginError.execution("The isolated prefetch runtime did not return video details")
+                        }
+                        let candidates = source.pluginType == "DashManifestRawAudioSource"
+                            ? details.audioSources : details.videoSources
+                        guard let cloneSource = candidates.first(where: {
                                   PlaybackSelector.isSameGeneratedSource($0, as: source) && $0.handle != nil
                               }), let handle = cloneSource.handle else {
                             throw PluginError.execution("The isolated prefetch runtime did not return the selected source")
@@ -619,12 +667,5 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         playbackRequested = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil
         didFinishCurrentItem = false
-    }
-}
-
-private extension Optional {
-    func asyncMap<T>(_ transform: (Wrapped) async throws -> T) async rethrows -> T? {
-        guard let self else { return nil }
-        return try await transform(self)
     }
 }

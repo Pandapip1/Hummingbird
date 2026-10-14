@@ -1,9 +1,32 @@
 import Foundation
 
+private final class HTTPBatchState: @unchecked Sendable {
+    let requests: [[String: Any]]
+    private var results: [[String: Any]]
+    private let lock = NSLock()
+
+    init(requests: [[String: Any]]) {
+        self.requests = requests
+        results = .init(repeating: [:], count: requests.count)
+    }
+
+    func store(_ result: [String: Any], at index: Int) {
+        lock.withLock { results[index] = result }
+    }
+
+    func snapshot() -> [[String: Any]] { lock.withLock { results } }
+}
+
+private final class HTTPTaskResult: @unchecked Sendable {
+    var data: Data?
+    var response: URLResponse?
+    var failure: Error?
+}
+
 /// Native side of the plugin `http` package. The JS wrapper (prelude.js) batches requests and calls `execute`
 /// with a JSON array; this class performs them (optionally in parallel), enforcing the plugin's allow-list,
 /// applying stored credentials and cookies, and returning a JSON array of response objects.
-final class HostHTTP: NSObject {
+final class HostHTTP: NSObject, @unchecked Sendable {
     struct ClientState {
         var withAuth: Bool
         /// Cookies from stored auth / captcha data and from responses on an authenticated client.
@@ -72,11 +95,9 @@ final class HostHTTP: NSObject {
     func execute(json: String, parallel: Bool) -> String {
         guard let data = json.data(using: .utf8),
               let requests = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return "[]" }
-        var results = [[String: Any]](repeating: [:], count: requests.count)
-        let resultLock = NSLock()
-        let runOne: (Int) -> Void = { [self] i in
-            let r = run(requests[i])
-            resultLock.lock(); results[i] = r; resultLock.unlock()
+        let batch = HTTPBatchState(requests: requests)
+        let runOne: @Sendable (Int) -> Void = { [self, batch] i in
+            batch.store(run(batch.requests[i]), at: i)
         }
         if parallel && requests.count > 1 {
             let group = DispatchGroup()
@@ -88,7 +109,7 @@ final class HostHTTP: NSObject {
         } else {
             for i in 0..<requests.count { runOne(i) }
         }
-        let out = (try? JSONSerialization.data(withJSONObject: results)) ?? Data("[]".utf8)
+        let out = (try? JSONSerialization.data(withJSONObject: batch.snapshot())) ?? Data("[]".utf8)
         return String(decoding: out, as: UTF8.self)
     }
 
@@ -211,11 +232,11 @@ final class HostHTTP: NSObject {
         let redirectGuard = RedirectGuard(owner: self, clientId: clientId, applyCookies: applyCookies,
                                           updateCookies: updateCookies, allowNewCookies: allowNewCookies, useAuth: useAuth)
         let semaphore = DispatchSemaphore(value: 0)
-        var responseData: Data?
-        var response: URLResponse?
-        var failure: Error?
+        let taskResult = HTTPTaskResult()
         let task = session.dataTask(with: request) { d, r, e in
-            responseData = d; response = r; failure = e
+            taskResult.data = d
+            taskResult.response = r
+            taskResult.failure = e
             semaphore.signal()
         }
         task.delegate = redirectGuard
@@ -226,7 +247,9 @@ final class HostHTTP: NSObject {
         if let violation = redirectGuard.violation {
             return ["error": violation, "errorType": "ScriptImplementationException"]
         }
-        if let failure {
+        let responseData = taskResult.data
+        let response = taskResult.response
+        if let failure = taskResult.failure {
             if (failure as? URLError)?.code == .timedOut {
                 // Timeouts come back as a 408 response rather than an exception.
                 return ["code": 408, "url": "", "body": NSNull(), "headers": [String: [String]]()]
@@ -409,7 +432,7 @@ final class HostHTTP: NSObject {
 }
 
 /// Per-request redirect policy: every hop must pass the plugin's allow-list, and cookies are re-evaluated per host.
-private final class RedirectGuard: NSObject, URLSessionTaskDelegate {
+private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     let owner: HostHTTP
     let clientId: String
     let applyCookies: Bool

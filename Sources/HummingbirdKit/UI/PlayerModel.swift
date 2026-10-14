@@ -656,7 +656,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         library?.flushHistory()
         dismissFullscreen()
-        removeFullscreenPresenter()
         backend?.stop()
         backend = nil
         loadedURL = nil

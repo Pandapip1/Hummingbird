@@ -37,6 +37,22 @@ final class PlayerLayoutTests: XCTestCase {
         XCTAssertFalse(backend.isPlaying)
         XCTAssertEqual(backend.playCount, 2)
     }
+
+    @MainActor
+    func testMediaTeardownPreservesViewOwnedFullscreenPresenter() {
+        let model = PlayerModel()
+        var presentationCount = 0
+        model.installFullscreenPresenter(
+            present: { presentationCount += 1 },
+            dismiss: {}
+        )
+
+        model.teardown()
+        model.toggleFullscreen()
+
+        XCTAssertEqual(presentationCount, 1)
+        model.removeFullscreenPresenter()
+    }
 }
 
 @MainActor

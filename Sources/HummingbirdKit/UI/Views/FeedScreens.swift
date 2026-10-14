@@ -35,6 +35,7 @@ struct SearchView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.openRoute) private var openRoute
     @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
+    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     @State private var query = ""
     @State private var submittedQuery = ""
     @State private var feed: FeedModel?
@@ -103,7 +104,10 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .modifier(SearchInputModifier(query: $query, hidden: isOverviewPreview))
+            .modifier(SearchInputModifier(
+                query: $query,
+                hidden: isOverviewPreview || !isBrowserTabToolbarActive
+            ))
             .toolbar {
                 #if os(tvOS)
                 if let browserToolbar {
@@ -212,6 +216,12 @@ private struct SearchInputModifier: ViewModifier {
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: "Search or paste a link"
             )
+            #elseif os(macOS)
+            content.browserTabToolbarItem(id: "search.field", placement: .principal) {
+                TextField("Search or paste a link", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 260, idealWidth: 420, maxWidth: 560)
+            }
             #else
             content.searchable(text: $query, prompt: "Search or paste a link")
             #endif
@@ -224,6 +234,7 @@ private struct SearchInputModifier: ViewModifier {
 @MainActor
 struct SubscriptionsView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
@@ -258,16 +269,26 @@ struct SubscriptionsView: View {
             .navigationTitle("Subscriptions")
             .toolbar {
                 #if os(tvOS)
-                if let browserToolbar {
+                if isBrowserTabToolbarActive, let browserToolbar {
                     BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
                 }
-                #endif
-                ToolbarItem(placement: .primaryAction) {
-                    NavigationLink { ManageSubscriptionsView() } label: { Image(systemName: "person.2") }
+                if isBrowserTabToolbarActive {
+                    ToolbarItem(placement: .primaryAction) {
+                        NavigationLink { ManageSubscriptionsView() } label: { Image(systemName: "person.2") }
+                    }
                 }
+                #endif
             }
         }
         .task { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
+        .browserTabToolbarItem(id: "subscriptions.manage", placement: .trailing) {
+            Button {
+                browserToolbar?.tab.push(.manageSubscriptions, title: "Manage Subscriptions")
+            } label: {
+                Image(systemName: "person.2")
+            }
+            .accessibilityLabel("Manage subscriptions")
+        }
     }
 }
 
@@ -434,23 +455,19 @@ struct PlaybackQueueView: View {
         }
         .listStyle(.plain)
         .navigationTitle("Queue")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { app.playbackQueue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
-                    .disabled(app.playbackQueue.items.count < 2)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { app.playbackQueue.cycleRepeatMode() } label: {
-                    Image(systemName: app.playbackQueue.repeatMode.systemImage)
-                }
-                .accessibilityLabel(app.playbackQueue.repeatMode.label)
-            }
-            #if os(iOS)
-            ToolbarItem(placement: .topBarTrailing) {
-                EditButton()
-            }
-            #endif
+        .browserTabToolbarItem(id: "queue.shuffle", placement: .trailing) {
+            Button { app.playbackQueue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
+                .disabled(app.playbackQueue.items.count < 2)
         }
+        .browserTabToolbarItem(id: "queue.repeat", placement: .trailing) {
+            Button { app.playbackQueue.cycleRepeatMode() } label: {
+                Image(systemName: app.playbackQueue.repeatMode.systemImage)
+            }
+            .accessibilityLabel(app.playbackQueue.repeatMode.label)
+        }
+        #if os(iOS)
+        .browserTabToolbarItem(id: "queue.edit", placement: .trailing) { EditButton() }
+        #endif
         .overlay {
             if app.playbackQueue.items.isEmpty {
                 ContentUnavailableView("Queue is empty", systemImage: "text.line.first.and.arrowtriangle.forward",
@@ -472,9 +489,7 @@ struct WatchLaterView: View {
         .listStyle(.plain)
         .navigationTitle("Watch later")
         #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) { EditButton() }
-        }
+        .browserTabToolbarItem(id: "watch-later.edit", placement: .trailing) { EditButton() }
         #endif
         .overlay { if app.library.watchLater.isEmpty { ContentUnavailableView("Nothing saved", systemImage: "clock", description: Text("Use \"Watch later\" on any video.")) } }
     }
@@ -496,12 +511,9 @@ struct HistoryView: View {
         }
         .listStyle(.plain)
         .navigationTitle("History")
-        .toolbar {
-            if !app.library.history.isEmpty {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Clear", role: .destructive) { app.library.clearHistory() }
-                }
-            }
+        .browserTabToolbarItem(id: "history.clear", placement: .trailing) {
+            Button("Clear", role: .destructive) { app.library.clearHistory() }
+                .disabled(app.library.history.isEmpty)
         }
         .overlay { if app.library.history.isEmpty { ContentUnavailableView("No history", systemImage: "clock.arrow.circlepath") } }
     }
@@ -522,9 +534,7 @@ struct LocalPlaylistView: View {
         .listStyle(.plain)
         .navigationTitle(playlist?.name ?? "Playlist")
         #if os(iOS)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) { EditButton() }
-        }
+        .browserTabToolbarItem(id: "playlist.edit", placement: .trailing) { EditButton() }
         #endif
         .overlay { if playlist?.videos.isEmpty ?? true { ContentUnavailableView("Empty playlist", systemImage: "music.note.list") } }
     }

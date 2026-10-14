@@ -343,9 +343,10 @@ private final class MacOSFullscreenPresenter: NSObject, NSWindowDelegate {
             rootView: FullscreenPlayerView(model: model).preferredColorScheme(.dark)
         )
         let w = NSWindow(contentViewController: hosting)
-        w.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-        w.titlebarAppearsTransparent = true
-        w.titleVisibility = .hidden
+        // A dedicated borderless window makes fullscreen player chrome behave
+        // like native media apps: no stranded titlebar/traffic-light strip.
+        w.styleMask = [.borderless, .resizable]
+        w.backgroundColor = .black
         w.isReleasedWhenClosed = false
         w.collectionBehavior = .fullScreenPrimary
         w.delegate = self

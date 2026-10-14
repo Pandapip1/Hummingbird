@@ -277,6 +277,7 @@ final class PlatformService {
 enum Route: Hashable {
     case home
     case subscriptions
+    case manageSubscriptions
     case search
     case library
     case sources

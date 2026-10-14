@@ -106,8 +106,9 @@ struct AppSectionMenu: View {
             sectionButton("Search", systemImage: "magnifyingglass", route: .search)
             sectionButton("Library", systemImage: "books.vertical", route: .library)
             sectionButton("Sources", systemImage: "puzzlepiece.extension", route: .sources)
+            sectionButton("Settings", systemImage: "gearshape", route: .settings)
         } label: {
-            Image(systemName: "plus.square")
+            Image(systemName: "plus")
         }
         .accessibilityLabel("Open section in new tab")
         #endif
@@ -127,7 +128,7 @@ private struct NativeSectionMenuButton: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UIButton {
         let button = UIButton(type: .system)
-        button.setImage(UIImage(systemName: "plus.square"), for: .normal)
+        button.setImage(UIImage(systemName: "plus"), for: .normal)
         button.accessibilityLabel = "Open section in new tab"
         button.showsMenuAsPrimaryAction = true
         button.menu = makeMenu()
@@ -145,6 +146,7 @@ private struct NativeSectionMenuButton: UIViewRepresentable {
             action("Search", image: "magnifyingglass", route: .search),
             action("Library", image: "books.vertical", route: .library),
             action("Sources", image: "puzzlepiece.extension", route: .sources),
+            action("Settings", image: "gearshape", route: .settings),
         ])
     }
 
@@ -219,11 +221,8 @@ struct BrowserTopToolbar: ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
             BrowserBackButton(tab: tab)
             BrowserForwardButton(tab: tab)
-            #if os(macOS)
-            AppSectionMenu()
-            #endif
         }
-        #if !os(macOS)
+        #if os(tvOS)
         ToolbarItem(placement: .primaryAction) {
             AppSectionMenu()
         }

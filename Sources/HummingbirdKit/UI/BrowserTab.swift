@@ -19,6 +19,7 @@ extension DynamicTab where Page == Route {
         switch route {
         case .home: return "Home"
         case .subscriptions: return "Subscriptions"
+        case .manageSubscriptions: return "Manage Subscriptions"
         case .search: return "Search"
         case .library: return "Library"
         case .sources: return "Sources"

@@ -169,6 +169,7 @@ struct RouteContent: View {
             switch route {
             case .home: HomeView(browserToolbar: browserToolbar)
             case .subscriptions: SubscriptionsView(browserToolbar: browserToolbar)
+            case .manageSubscriptions: ManageSubscriptionsView()
             case .search: SearchView(browserToolbar: browserToolbar)
             case .library: LibraryView(browserToolbar: browserToolbar)
             case .sources: SourcesView(browserToolbar: browserToolbar)

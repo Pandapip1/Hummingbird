@@ -9,6 +9,7 @@ import AVFoundation
 @MainActor
 struct SourcesView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     let browserToolbar: BrowserToolbarContext?
     @State private var showAdd = false
     @State private var removeTarget: String?
@@ -28,16 +29,14 @@ struct SourcesView: View {
             .navigationTitle("Sources")
             .toolbar {
                 #if os(tvOS)
-                if let browserToolbar {
+                if isBrowserTabToolbarActive, let browserToolbar {
                     BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
                 }
-                #endif
-                #if os(iOS)
-                ToolbarItem(placement: .topBarLeading) { settingsButton }
-                ToolbarItem(placement: .topBarTrailing) { Button { showAdd = true } label: { Image(systemName: "plus") } }
-                #else
-                ToolbarItem(placement: .automatic) { settingsButton }
-                ToolbarItem(placement: .primaryAction) { Button { showAdd = true } label: { Image(systemName: "plus") } }
+                if isBrowserTabToolbarActive {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showAdd = true } label: { Image(systemName: "square.and.arrow.down") }
+                    }
+                }
                 #endif
             }
             .sheet(isPresented: $showAdd) { AddSourceSheet() }
@@ -57,17 +56,12 @@ struct SourcesView: View {
             }
             .refreshable { await app.plugins.checkForUpdates() }
         }
+        .browserTabToolbarItem(id: "sources.add", placement: .trailing) {
+            Button { showAdd = true } label: { Image(systemName: "square.and.arrow.down") }
+                .accessibilityLabel("Add source")
+        }
     }
 
-    private var settingsButton: some View {
-        // Settings is a top-level destination. Always give it its own tab,
-        // even when Sources is being shown from a blank browser tab whose
-        // contextual `openRoute` action would otherwise reuse that tab.
-        Button { app.openInNewTab(.settings, title: "Settings") } label: {
-            Image(systemName: "gearshape")
-        }
-        .accessibilityLabel("Settings")
-    }
 }
 
 /// A source row keeps the most useful plugin actions available without opening its detail page.

@@ -8,7 +8,9 @@
       "key": "literal:self",
       "name": "Hummingbird Profile",
       "collections": [
-        "com.eightybps.hummingbird.journal"
+        "com.eightybps.appsync.journal",
+        "com.eightybps.appsync.instance",
+        "com.eightybps.appsync.inbox"
       ]
     }
   }

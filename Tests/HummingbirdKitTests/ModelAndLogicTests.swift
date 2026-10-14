@@ -8,7 +8,7 @@ final class ModelAndLogicTests: XCTestCase {
 
     @MainActor
     func testBrowserTabManagementCreatesSelectsAndClosesTabs() {
-        let model = AppModel()
+        let model = makeTestAppModel()
         let home = model.activeTab
         XCTAssertEqual(home.current, .home)
         XCTAssertEqual(home.title, "Home")
@@ -153,7 +153,7 @@ final class ModelAndLogicTests: XCTestCase {
             searchHistory: ["prepared query"]
         )
 
-        let model = AppModel(persistence: snapshot)
+        let model = makeTestAppModel(persistence: snapshot)
 
         XCTAssertEqual(model.library.watchLater, [video])
         XCTAssertEqual(model.library.homeCache, [video])

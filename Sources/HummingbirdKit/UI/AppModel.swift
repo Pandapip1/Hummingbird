@@ -2,6 +2,7 @@ import Foundation
 import SwiftOpenUI
 import Observation
 import ATProtoKit
+import ATAppSync
 #if DEBUG && os(iOS)
 import UIKit
 #endif
@@ -17,8 +18,9 @@ final class AppModel {
     let homeFeed: FeedModel
     let playbackQueue: PlaybackQueue
     let searchHistory: SearchHistory
-    let profileJournal: ProfileMutationJournal
+    let profileChanges: ProfileChangeStore
     let profileAccount: ProfileAccountService
+    let peerService: AppSyncPeerService?
     var incomingCredentialPairing: CredentialPairingRequest?
 
     /// Ordinary browser tabs, including app sections opened from the menu.
@@ -80,21 +82,28 @@ final class AppModel {
 
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
-    init(persistence: AppPersistenceSnapshot = .empty) {
-        let profileJournal = ProfileMutationJournal(
-            storageDirectory: Storage.directory.appendingPathComponent("profile-sync", isDirectory: true)
+    init(persistence: AppPersistenceSnapshot = .empty,
+         credentialStore: any CredentialStore = AuthKeychain.store) {
+        let peerService = try? AppSyncPeerService(
+            credentialStore: credentialStore, storageDirectory: Storage.directory
         )
-        let plugins = PluginManager(installed: persistence.plugins, profileJournal: profileJournal)
-        let library = LibraryStore(snapshot: persistence.library, profileJournal: profileJournal)
+        let profileChanges = ProfileChangeStore(
+            storageDirectory: Storage.directory.appendingPathComponent("profile-sync", isDirectory: true),
+            signer: try? peerService?.peer.mutationSigner()
+        )
+        let plugins = PluginManager(installed: persistence.plugins, profileChanges: profileChanges)
+        let library = LibraryStore(snapshot: persistence.library, profileChanges: profileChanges)
         let platform = PlatformService(plugins: plugins)
         self.plugins = plugins
         self.library = library
         self.platform = platform
         self.playbackQueue = PlaybackQueue(restored: persistence.playbackQueue)
         self.searchHistory = SearchHistory(load: { persistence.searchHistory })
-        self.profileJournal = profileJournal
+        self.profileChanges = profileChanges
+        self.peerService = peerService
         self.profileAccount = ProfileAccountService(
-            mutationJournal: profileJournal, library: library, plugins: plugins
+            changes: profileChanges, library: library, plugins: plugins,
+            peerService: peerService
         )
         let initialTab = BrowserTab.hummingbirdTab()
         initialTab.push(.home, title: "Home")

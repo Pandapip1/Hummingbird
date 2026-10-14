@@ -1,8 +1,10 @@
 import ATProtoKit
+import ATAppSync
 import Crypto
 import Foundation
 
 enum HummingbirdProfileSchema {
+    static let appID = AppSyncAppID(rawValue: "com.eightybps.hummingbird")!
     static let spaceType = NSID(rawValue: "com.eightybps.hummingbird.profile")!
     static let spaceKey = RecordKey(rawValue: "self")!
     static let subscription = NSID(rawValue: "com.eightybps.hummingbird.subscription")!
@@ -10,7 +12,6 @@ enum HummingbirdProfileSchema {
     static let watchLater = NSID(rawValue: "com.eightybps.hummingbird.watchLater")!
     static let history = NSID(rawValue: "com.eightybps.hummingbird.history")!
     static let plugin = NSID(rawValue: "com.eightybps.hummingbird.plugin")!
-    static let journal = NSID(rawValue: "com.eightybps.hummingbird.journal")!
 
     static func key(for stableIdentity: String) -> RecordKey {
         let digest = SHA256.hash(data: Data(stableIdentity.utf8))
@@ -36,7 +37,7 @@ struct SyncedPlugin: Codable, Hashable, Sendable {
     }
 }
 
-/// A watch-later item plus its user-visible list position. Reordering journals
+/// A watch-later item plus its user-visible list position. Reordering records
 /// every affected register, so peers converge on both membership and order.
 struct SyncedWatchLater: Codable, Hashable, Sendable {
     let video: SavedVideo
@@ -105,38 +106,41 @@ enum ProfileEntity: Hashable, Sendable {
 
 /// Synchronous mutation boundary used by local stores. Returning from a user
 /// edit means its outbox entry is already durable; connectivity is irrelevant.
-final class ProfileMutationJournal: @unchecked Sendable {
+final class ProfileChangeStore: @unchecked Sendable {
     private let lock = NSLock()
     private let storageDirectory: URL?
-    private var active: OfflineMutationJournal?
+    private var active: AppSyncMutationLog?
     private var activeAccount: DID?
     private var storedError: (any Error)?
     private var mutationHandler: (@Sendable () -> Void)?
+    private let signer: AppSyncMutationSigner?
 
-    /// Creates the account-switching journal used by the app. No events are
+    /// Creates the account-switching change store used by the app. No events are
     /// recorded before an account is selected; sign-in bootstraps current state.
-    init(storageDirectory: URL) {
+    init(storageDirectory: URL, signer: AppSyncMutationSigner? = nil) {
         self.storageDirectory = storageDirectory
+        self.signer = signer
     }
 
-    /// Creates an already-active journal, primarily for isolated tests.
-    init(journal: OfflineMutationJournal) {
+    /// Creates an already-active change store, primarily for isolated tests.
+    init(mutationLog: AppSyncMutationLog) {
         storageDirectory = nil
-        active = journal
+        signer = nil
+        active = mutationLog
     }
 
     var lastError: (any Error)? { lock.withLock { storedError } }
-    var journal: OfflineMutationJournal? { lock.withLock { active } }
+    var mutationLog: AppSyncMutationLog? { lock.withLock { active } }
 
-    func activate(account: DID) throws -> OfflineMutationJournal {
-        if let journal = lock.withLock({ activeAccount == account ? active : nil }) { return journal }
+    func activate(account: DID) throws -> AppSyncMutationLog {
+        if let mutationLog = lock.withLock({ activeAccount == account ? active : nil }) { return mutationLog }
         guard let storageDirectory else {
             throw CocoaError(.fileNoSuchFile)
         }
         let digest = SHA256.hash(data: Data(account.rawValue.utf8))
             .map { String(format: "%02x", $0) }.joined()
-        let created = try OfflineMutationJournal(
-            fileURL: storageDirectory.appendingPathComponent("\(digest).json")
+        let created = try AppSyncMutationLog(
+            fileURL: storageDirectory.appendingPathComponent("\(digest).json"), signer: signer
         )
         lock.withLock {
             active = created
@@ -159,8 +163,8 @@ final class ProfileMutationJournal: @unchecked Sendable {
 
     func put(_ entity: ProfileEntity) {
         do {
-            guard let journal else { return }
-            try journal.appendPut(collection: entity.collection, key: entity.recordKey, value: entity.json())
+            guard let mutationLog else { return }
+            try mutationLog.appendPut(collection: entity.collection, key: entity.recordKey, value: entity.json())
             lock.withLock { mutationHandler }?()
         } catch {
             lock.withLock { storedError = error }
@@ -169,8 +173,8 @@ final class ProfileMutationJournal: @unchecked Sendable {
 
     func delete(collection: NSID, key: RecordKey) {
         do {
-            guard let journal else { return }
-            try journal.appendDelete(collection: collection, key: key)
+            guard let mutationLog else { return }
+            try mutationLog.appendDelete(collection: collection, key: key)
             lock.withLock { mutationHandler }?()
         } catch {
             lock.withLock { storedError = error }

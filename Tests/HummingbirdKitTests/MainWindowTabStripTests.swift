@@ -13,7 +13,7 @@ final class MainWindowTabStripTests: XCTestCase {
         try TestDisplaySession.start()
         guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
 
-        let model = AppModel()
+        let model = makeTestAppModel()
         model.openNewTab()
         let contentID = model.activeTabID
         let root = widgetFromOpaque(gtkRenderView(RootView().environment(model)))

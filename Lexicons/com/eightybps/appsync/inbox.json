@@ -1,0 +1,18 @@
+{
+  "lexicon": 1,
+  "id": "com.eightybps.appsync.inbox",
+  "description": "An end-to-end encrypted, signed app-scoped message for one AT AppSync instance.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["envelope"],
+        "properties": {
+          "envelope": { "type": "unknown" }
+        }
+      }
+    }
+  }
+}

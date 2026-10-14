@@ -1,0 +1,18 @@
+{
+  "lexicon": 1,
+  "id": "com.eightybps.appsync.instance",
+  "description": "An AT AppSync instance registration and its optional LAN append-only inbox endpoint.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["registration"],
+        "properties": {
+          "registration": { "type": "unknown", "description": "Signed AppSync instance descriptor including recognized App IDs and transport capabilities." }
+        }
+      }
+    }
+  }
+}

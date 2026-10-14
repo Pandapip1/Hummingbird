@@ -1,4 +1,5 @@
 import ATProtoKit
+import ATAppSync
 import XCTest
 @testable import HummingbirdKit
 #if canImport(Darwin)
@@ -33,25 +34,25 @@ final class ProfileSyncTests: XCTestCase {
     }
 
     @MainActor
-    func testPluginSettingsAreJournaledButCredentialsAreNot() throws {
+    func testPluginSettingsAreReplicatedButCredentialsAreNot() throws {
         let previousStore = AuthKeychain.store
         AuthKeychain.store = InMemoryCredentialStore()
         defer { AuthKeychain.store = previousStore }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let journal = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("journal.json"))
-        let recorder = ProfileMutationJournal(journal: journal)
+        let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
+        let recorder = ProfileChangeStore(mutationLog: mutationLog)
         let configJSON = #"{"name":"Example","id":"example","sourceUrl":"https://plugins.example/config.json"}"#
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(configJSON.utf8))
         let manager = PluginManager(
             installed: [InstalledPlugin(config: config, script: "secret executable")],
-            profileJournal: recorder
+            profileChanges: recorder
         )
 
         manager.setSetting(pluginID: "example", key: "region", value: "ca")
-        let beforeCredential = journal.pending()
+        let beforeCredential = mutationLog.pending()
         manager.saveAuth(SourceAuth(headers: ["plugins.example": ["authorization": "Bearer secret"]]), pluginID: "example")
 
-        XCTAssertEqual(journal.pending(), beforeCredential)
+        XCTAssertEqual(mutationLog.pending(), beforeCredential)
         let encoded = try JSONEncoder().encode(try XCTUnwrap(beforeCredential.last?.value))
         let text = String(decoding: encoded, as: UTF8.self)
         XCTAssertTrue(text.contains("region"))
@@ -62,20 +63,20 @@ final class ProfileSyncTests: XCTestCase {
     @MainActor
     func testLibraryDeletionLeavesDurableTombstone() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let journal = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("journal.json"))
-        let library = LibraryStore(profileJournal: ProfileMutationJournal(journal: journal))
+        let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
+        let library = LibraryStore(profileChanges: ProfileChangeStore(mutationLog: mutationLog))
         let playlist = library.createPlaylist(name: "Offline")
         library.deletePlaylist(playlist.id)
 
         let key = try XCTUnwrap(RecordKey(rawValue: playlist.id.uuidString.lowercased()))
-        XCTAssertNotNil(journal.tombstone(collection: HummingbirdProfileSchema.playlist, key: key))
-        XCTAssertEqual(journal.pending().last?.operation, .delete)
+        XCTAssertNotNil(mutationLog.tombstone(collection: HummingbirdProfileSchema.playlist, key: key))
+        XCTAssertEqual(mutationLog.pending().last?.operation, .delete)
     }
 
-    func testMutationJournalsAreIsolatedByAccount() throws {
+    func testReplicatedChangesAreIsolatedByAccount() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let recorder = ProfileMutationJournal(storageDirectory: directory)
+        let recorder = ProfileChangeStore(storageDirectory: directory)
         let firstAccount = DID(rawValue: "did:plc:first")!
         let secondAccount = DID(rawValue: "did:plc:second")!
         let first = try recorder.activate(account: firstAccount)

@@ -2,6 +2,7 @@ import Foundation
 import DebugKit
 import DynamicTabbingKit
 import SwiftOpenUI
+import ATAppSync
 @MainActor
 struct RootView: View {
     @Environment(AppModel.self) private var model
@@ -279,8 +280,8 @@ struct LoginSheet: View {
     }
 }
 
-/// Runs a new isolated login for a QR pairing request. Credentials already
-/// stored on the scanning device are deliberately neither loaded nor changed.
+/// Shares an existing local login when available, or captures a replacement in
+/// an isolated browser. The transferred credential is never replicated.
 @MainActor
 private struct PairedDeviceLoginSheet: View {
     @Environment(AppModel.self) private var app
@@ -291,6 +292,9 @@ private struct PairedDeviceLoginSheet: View {
     @State private var sending = false
     @State private var verified = false
     @State private var remoteAccepted = false
+    @State private var senderIdentity: AppSyncPeer?
+    @State private var savedAuth: SourceAuth?
+    @State private var useFreshLogin = false
 
     var body: some View {
         Group {
@@ -300,13 +304,12 @@ private struct PairedDeviceLoginSheet: View {
                                            description: Text(error))
                     Button("Close", action: onClose)
                 }
-            } else if !verified {
+            } else if !verified, let senderIdentity {
                 VStack(spacing: 20) {
                     Text("Verify this sign-in").font(.title2)
-                    Text(request.verificationEmoji)
-                        .font(.title2)
-                        .accessibilityLabel("Verification emoji: \(request.verificationEmoji)")
-                    Text("Check that these emoji match the TV. Continue only if every emoji is the same.")
+                    pairingFingerprint("Sender (this device)", request.senderVerificationEmoji(senderIdentity))
+                    pairingFingerprint("Receiver", request.receiverVerificationEmoji)
+                    Text("Check that both labeled fingerprints match the TV. Continue only if every emoji is the same.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                     HStack {
@@ -317,6 +320,8 @@ private struct PairedDeviceLoginSheet: View {
                     }
                 }
                 .padding()
+            } else if !verified {
+                ProgressView("Introducing this device…")
             } else if !remoteAccepted {
                 VStack(spacing: 16) {
                     ProgressView("Waiting for the TV to confirm…")
@@ -324,19 +329,21 @@ private struct PairedDeviceLoginSheet: View {
                         Task { try? await request.reject(); onClose() }
                     }
                 }
+            } else if let savedAuth, !useFreshLogin {
+                VStack(spacing: 16) {
+                    Text("This profile already has a sign-in for \(config?.name ?? request.pluginID).")
+                        .multilineTextAlignment(.center)
+                    Button("Send saved sign-in") { deliver(savedAuth) }
+                        .disabled(sending)
+                    Button("Sign in again") { useFreshLogin = true }
+                        .disabled(sending)
+                    if sending { ProgressView("Sending credentials…") }
+                }
+                .padding()
             } else if let config, let spec = WebAuthSpec.login(for: config) {
                 WebAuthSheet(spec: spec) { auth in
                     guard let auth else { onClose(); return }
-                    sending = true
-                    Task {
-                        do {
-                            try await request.send(auth)
-                            onClose()
-                        } catch {
-                            self.error = error.localizedDescription
-                            sending = false
-                        }
-                    }
+                    deliver(auth)
                 }
                 .overlay {
                     if sending { ProgressView("Sending credentials…") }
@@ -355,10 +362,13 @@ private struct PairedDeviceLoginSheet: View {
                     throw PairingError.invalidRequest
                 }
                 config = fetched
+                savedAuth = AuthKeychain.load(pluginID: request.pluginID, kind: "auth")
             }
             catch { self.error = error.localizedDescription }
         }
         .task {
+            do { senderIdentity = try await request.announceSender() }
+            catch { self.error = error.localizedDescription; return }
             while !Task.isCancelled && !remoteAccepted && error == nil {
                 do {
                     switch try await request.remoteStatus() {
@@ -377,6 +387,36 @@ private struct PairedDeviceLoginSheet: View {
                 }
                 try? await Task.sleep(for: .seconds(1))
             }
+        }
+    }
+
+    private func deliver(_ auth: SourceAuth) {
+        sending = true
+        Task {
+            do {
+                do {
+                    try await request.send(auth)
+                } catch {
+                    // The QR endpoint is preferred and works without Internet.
+                    // If the devices leave the same LAN, use the recipient's
+                    // append-only encrypted peer messaging instead.
+                    try await app.profileAccount.sendCredential(
+                        auth, pluginID: request.pluginID,
+                        sourceURL: request.pluginSourceURL, recipient: request.receiver
+                    )
+                }
+                onClose()
+            } catch {
+                self.error = error.localizedDescription
+                sending = false
+            }
+        }
+    }
+
+    private func pairingFingerprint(_ label: String, _ value: String) -> some View {
+        VStack(spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title2).accessibilityLabel("\(label): \(value)")
         }
     }
 }

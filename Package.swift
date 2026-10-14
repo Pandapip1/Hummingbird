@@ -73,6 +73,7 @@ var targets: [Target] = [
             .target(name: "CMainThreadSampler", condition: .when(platforms: [.iOS])),
             "CSQLite",
             .product(name: "ATProtoKit", package: "ATProtoKit"),
+            .product(name: "ATAppSync", package: "ATAppSync"),
             .product(name: "Security", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),
@@ -164,6 +165,7 @@ let package = Package(
         .package(url: "https://github.com/fwcd/swift-qrcode-generator.git", from: "1.0.0"),
         .package(path: "Vendor/SwiftOpenUI"),
         .package(path: "Packages/ATProtoKit"),
+        .package(path: "Packages/ATAppSync"),
     ],
     targets: targets,
     swiftLanguageModes: [.v6]

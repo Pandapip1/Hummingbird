@@ -1,4 +1,5 @@
 import XCTest
+import ATAppSync
 @testable import HummingbirdKit
 
 final class CredentialPairingTests: XCTestCase {
@@ -41,7 +42,9 @@ final class CredentialPairingTests: XCTestCase {
         let received = expectation(description: "receiver callback")
         let auth = SourceAuth(cookieMap: ["nebula.tv": ["session": "paired"]])
         var receivedAuth: SourceAuth?
-        let receiver = CredentialPairingReceiver(pluginID: "nebula", pluginSourceURL: source) { value in
+        let receiver = CredentialPairingReceiver(
+            pluginID: "nebula", pluginSourceURL: source, identity: .generate()
+        ) { value in
             receivedAuth = value
             received.fulfill()
         }
@@ -52,10 +55,13 @@ final class CredentialPairingTests: XCTestCase {
         local.host = "127.0.0.1"
         let request = CredentialPairingRequest(
             endpoint: try XCTUnwrap(local.url), secret: advertised.secret,
-            pluginID: advertised.pluginID, pluginSourceURL: advertised.pluginSourceURL
+            pluginID: advertised.pluginID, pluginSourceURL: advertised.pluginSourceURL,
+            receiver: advertised.receiver
         )
+        let sender = AppSyncPeerIdentity.generate()
+        _ = try await request.announceSender(sender)
         do {
-            try await request.send(auth)
+            try await request.send(auth, sender: sender)
             XCTFail("The receiver accepted credentials before local verification")
         } catch {
             XCTAssertEqual(error as? PairingError, .rejected)
@@ -63,7 +69,7 @@ final class CredentialPairingTests: XCTestCase {
         receiver.confirmVerification()
         let acceptedStatus = try await request.remoteStatus()
         XCTAssertEqual(acceptedStatus, .accepted)
-        try await request.send(auth)
+        try await request.send(auth, sender: sender)
         await fulfillment(of: [received], timeout: 2)
 
         XCTAssertEqual(receivedAuth, auth)
@@ -73,7 +79,7 @@ final class CredentialPairingTests: XCTestCase {
     func testEitherDeviceCanRejectAnEmojiMismatch() async throws {
         let rejected = expectation(description: "remote rejection callback")
         let receiver = CredentialPairingReceiver(
-            pluginID: "nebula", pluginSourceURL: source,
+            pluginID: "nebula", pluginSourceURL: source, identity: .generate(),
             onReceive: { _ in XCTFail("Rejection delivered credentials") },
             onReject: { rejected.fulfill() }
         )
@@ -83,24 +89,30 @@ final class CredentialPairingTests: XCTestCase {
         local.host = "127.0.0.1"
         let request = CredentialPairingRequest(
             endpoint: try XCTUnwrap(local.url), secret: advertised.secret,
-            pluginID: advertised.pluginID, pluginSourceURL: advertised.pluginSourceURL
+            pluginID: advertised.pluginID, pluginSourceURL: advertised.pluginSourceURL,
+            receiver: advertised.receiver
         )
+        let sender = AppSyncPeerIdentity.generate()
+        _ = try await request.announceSender(sender)
 
         let initialStatus = try await request.remoteStatus()
         XCTAssertEqual(initialStatus, .waiting)
-        try await request.reject()
+        try await request.reject(sender: sender)
         await fulfillment(of: [rejected], timeout: 2)
         let rejectedStatus = try await request.remoteStatus()
         XCTAssertEqual(rejectedStatus, .rejected)
 
-        let localReceiver = CredentialPairingReceiver(pluginID: "nebula", pluginSourceURL: source, onReceive: { _ in })
+        let localReceiver = CredentialPairingReceiver(
+            pluginID: "nebula", pluginSourceURL: source, identity: .generate(), onReceive: { _ in }
+        )
         defer { localReceiver.stop() }
         let localAdvertised = try await localReceiver.start()
         var localStatus = URLComponents(url: localAdvertised.endpoint, resolvingAgainstBaseURL: false)!
         localStatus.host = "127.0.0.1"
         let localRequest = CredentialPairingRequest(
             endpoint: try XCTUnwrap(localStatus.url), secret: localAdvertised.secret,
-            pluginID: localAdvertised.pluginID, pluginSourceURL: localAdvertised.pluginSourceURL
+            pluginID: localAdvertised.pluginID, pluginSourceURL: localAdvertised.pluginSourceURL,
+            receiver: localAdvertised.receiver
         )
         localReceiver.rejectVerification()
         let locallyRejectedStatus = try await localRequest.remoteStatus()

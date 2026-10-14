@@ -20,6 +20,11 @@ public final class ATProtoOAuthAuthenticator {
     public init(client: ATProtoOAuthClient) { self.client = client }
 
     public func signIn(identifier: String) async throws -> ATProtoOAuthCredential {
+        #if os(tvOS)
+        throw OAuthError.authorizationFailed(
+            "tvOS does not provide system web authentication; authorize this instance from a companion device."
+        )
+        #else
         let pending = try await client.begin(identifier: identifier)
         let callback: ASWebAuthenticationSession.Callback
         switch pending.callback {
@@ -50,6 +55,7 @@ public final class ATProtoOAuthAuthenticator {
             Task { @MainActor [weak self] in self?.activeSession?.cancel() }
         }
         return try await client.complete(pending, callbackURL: callbackURL)
+        #endif
     }
 }
 

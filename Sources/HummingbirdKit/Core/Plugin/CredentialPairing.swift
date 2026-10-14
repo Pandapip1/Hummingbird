@@ -1,8 +1,13 @@
 import Crypto
+import ATAppSync
 import Foundation
 import NIOCore
 import NIOHTTP1
 import NIOPosix
+
+private enum PairingIdentityProvider {
+    static let store = AppSyncPeerIdentityStore(credentialStore: AuthKeychain.store)
+}
 
 struct CredentialPairingRequest: Codable, Equatable, Sendable {
     static let scheme = "hummingbird"
@@ -12,12 +17,15 @@ struct CredentialPairingRequest: Codable, Equatable, Sendable {
     let secret: Data
     let pluginID: String
     let pluginSourceURL: URL
+    let receiver: AppSyncPeer
 
-    init(endpoint: URL, secret: Data, pluginID: String, pluginSourceURL: URL) {
+    init(endpoint: URL, secret: Data, pluginID: String, pluginSourceURL: URL,
+         receiver: AppSyncPeer = AppSyncPeerIdentity.generate().publicIdentity) {
         self.endpoint = endpoint
         self.secret = secret
         self.pluginID = pluginID
         self.pluginSourceURL = pluginSourceURL
+        self.receiver = receiver
     }
 
     init?(url: URL) {
@@ -30,8 +38,12 @@ struct CredentialPairingRequest: Codable, Equatable, Sendable {
               let sourceText = components.queryItems?.first(where: { $0.name == "source" })?.value,
               let pluginSourceURL = URL(string: sourceText), ["http", "https"].contains(pluginSourceURL.scheme),
               let secretText = components.queryItems?.first(where: { $0.name == "secret" })?.value,
-              let secret = Data(base64URLEncoded: secretText), secret.count == 32 else { return nil }
-        self.init(endpoint: endpoint, secret: secret, pluginID: pluginID, pluginSourceURL: pluginSourceURL)
+              let secret = Data(base64URLEncoded: secretText), secret.count == 32,
+              let receiverText = components.queryItems?.first(where: { $0.name == "receiver" })?.value,
+              let receiverData = Data(base64URLEncoded: receiverText),
+              let receiver = try? JSONDecoder().decode(AppSyncPeer.self, from: receiverData) else { return nil }
+        self.init(endpoint: endpoint, secret: secret, pluginID: pluginID,
+                  pluginSourceURL: pluginSourceURL, receiver: receiver)
     }
 
     var url: URL {
@@ -43,6 +55,7 @@ struct CredentialPairingRequest: Codable, Equatable, Sendable {
             URLQueryItem(name: "secret", value: secret.base64URLEncodedString()),
             URLQueryItem(name: "plugin", value: pluginID),
             URLQueryItem(name: "source", value: pluginSourceURL.absoluteString),
+            URLQueryItem(name: "receiver", value: try! JSONEncoder().encode(receiver).base64URLEncodedString()),
         ]
         return components.url!
     }
@@ -64,8 +77,15 @@ struct CredentialPairingRequest: Codable, Equatable, Sendable {
         return digest.prefix(7).map { emoji[Int($0) % emoji.count] }.joined(separator: " ")
     }
 
+    var receiverVerificationEmoji: String { receiver.verificationEmoji(sessionSecret: secret) }
+    func senderVerificationEmoji(_ sender: AppSyncPeer) -> String {
+        sender.verificationEmoji(sessionSecret: secret)
+    }
+
     func encrypted(_ auth: SourceAuth) throws -> Data {
-        try encryptedPayload(.credentials(auth))
+        try encryptedPayload(.credentials(.init(
+            pluginID: pluginID, pluginSourceURL: pluginSourceURL, auth: auth
+        )))
     }
 
     fileprivate func encryptedPayload(_ payload: PairingPayload) throws -> Data {
@@ -76,8 +96,10 @@ struct CredentialPairingRequest: Codable, Equatable, Sendable {
     }
 
     func decrypt(_ data: Data) throws -> SourceAuth {
-        guard case .credentials(let auth) = try decryptPayload(data) else { throw PairingError.invalidRequest }
-        return auth
+        guard case .credentials(let transfer) = try decryptPayload(data),
+              transfer.pluginID == pluginID, transfer.pluginSourceURL == pluginSourceURL
+        else { throw PairingError.invalidRequest }
+        return transfer.auth
     }
 
     fileprivate func decryptPayload(_ data: Data) throws -> PairingPayload {
@@ -93,8 +115,14 @@ struct CredentialPairingRequest: Codable, Equatable, Sendable {
     }
 }
 
-fileprivate enum PairingPayload: Codable {
-    case credentials(SourceAuth)
+struct CredentialTransfer: Codable, Equatable, Sendable {
+    let pluginID: String
+    let pluginSourceURL: URL
+    let auth: SourceAuth
+}
+
+enum PairingPayload: Codable, Equatable, Sendable {
+    case credentials(CredentialTransfer)
     case rejection
 }
 
@@ -131,16 +159,32 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     private var rejected = false
     private var stopped = false
     private var requestValue: CredentialPairingRequest?
+    private let identity: AppSyncPeerIdentity?
+    private let messageStore: AppSyncMessageStore?
+    private var senderIdentity: AppSyncPeer?
     private let pluginID: String
     private let pluginSourceURL: URL
     private let onReceive: @MainActor (SourceAuth) -> Void
     private let onReject: @MainActor () -> Void
 
     init(pluginID: String, pluginSourceURL: URL,
+         identity: AppSyncPeerIdentity? = nil,
+         messageStore suppliedMessageStore: AppSyncMessageStore? = nil,
          onReceive: @escaping @MainActor (SourceAuth) -> Void,
          onReject: @escaping @MainActor () -> Void = {}) {
         self.pluginID = pluginID
         self.pluginSourceURL = pluginSourceURL
+        let resolvedIdentity = identity ?? (try? PairingIdentityProvider.store.identity())
+        self.identity = resolvedIdentity
+        if let suppliedMessageStore {
+            messageStore = suppliedMessageStore
+        } else if let resolvedIdentity {
+            let file = Storage.directory.appendingPathComponent("peer-messages", isDirectory: true)
+                .appendingPathComponent("\(resolvedIdentity.publicIdentity.id.uuidString.lowercased()).json")
+            messageStore = try? AppSyncMessageStore(identity: resolvedIdentity, fileURL: file)
+        } else {
+            messageStore = nil
+        }
         self.onReceive = onReceive
         self.onReject = onReject
     }
@@ -149,6 +193,7 @@ final class CredentialPairingReceiver: @unchecked Sendable {
 
     func start() async throws -> CredentialPairingRequest {
         if let requestValue { return requestValue }
+        guard let identity else { throw AppSyncPeerError.credentialStoreUnavailable }
         let secret = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
         let receiver = PairingWeakReference(self)
         let bootstrap = ServerBootstrap(group: group)
@@ -179,7 +224,8 @@ final class CredentialPairingReceiver: @unchecked Sendable {
             throw PairingError.unavailable
         }
         let request = CredentialPairingRequest(
-            endpoint: endpointURL, secret: secret, pluginID: pluginID, pluginSourceURL: pluginSourceURL
+            endpoint: endpointURL, secret: secret, pluginID: pluginID,
+            pluginSourceURL: pluginSourceURL, receiver: identity.publicIdentity
         )
         lock.withLock {
             self.channel = channel
@@ -205,7 +251,7 @@ final class CredentialPairingReceiver: @unchecked Sendable {
 
     func confirmVerification() {
         lock.lock()
-        confirmed = true
+        confirmed = senderIdentity != nil
         lock.unlock()
     }
 
@@ -216,17 +262,21 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     }
 
     private func respond(to head: HTTPRequestHead, body: Data, secret: Data) -> PairingHTTPResponse {
+        guard let identity else { return .init(status: .serviceUnavailable) }
         if head.method == .GET, head.uri == "/status" {
             lock.lock()
             let status: HTTPResponseStatus = rejected ? .conflict : (confirmed ? .ok : (consumed ? .gone : .noContent))
             lock.unlock()
             let request = CredentialPairingRequest(
                 endpoint: URL(string: "http://localhost")!, secret: secret,
-                pluginID: pluginID, pluginSourceURL: pluginSourceURL
+                pluginID: pluginID, pluginSourceURL: pluginSourceURL, receiver: identity.publicIdentity
             )
             return PairingHTTPResponse(status: status, proof: request.statusProof(Int(status.code)))
         }
         guard head.method == .POST else { return .init(status: .badRequest) }
+        if head.uri == "/hello" {
+            return .init(status: acceptHello(body, secret: secret) ? .noContent : .badRequest)
+        }
         if head.uri == "/reject" {
             return .init(status: acceptRejection(body, secret: secret) ? .noContent : .badRequest)
         }
@@ -237,36 +287,66 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     }
 
     private func accept(_ data: Data, secret: Data) -> Bool {
+        guard let messageStore else { return false }
         lock.lock()
         guard confirmed, !rejected, !consumed else { lock.unlock(); return false }
         consumed = true
         lock.unlock()
-        let request = CredentialPairingRequest(
-            endpoint: URL(string: "http://localhost")!, secret: secret,
-            pluginID: pluginID, pluginSourceURL: pluginSourceURL
-        )
-        guard let auth = try? request.decrypt(data), !auth.isEmpty else {
+        guard let envelope = try? JSONDecoder().decode(AppSyncSealedMessage.self, from: data),
+              envelope.sender == senderIdentity,
+              (try? messageStore.appendRemote(envelope)) != nil,
+              case .credentials(let transfer) = try? messageStore.open(envelope, as: PairingPayload.self),
+              transfer.pluginID == pluginID, transfer.pluginSourceURL == pluginSourceURL,
+              !transfer.auth.isEmpty else {
             lock.lock(); consumed = false; lock.unlock()
             return false
         }
-        Task { @MainActor [onReceive] in onReceive(auth) }
+        Task { @MainActor [onReceive] in onReceive(transfer.auth) }
+        try? messageStore.deleteLocal(id: envelope.id)
         stop()
         return true
     }
 
     private func acceptRejection(_ data: Data, secret: Data) -> Bool {
-        let request = CredentialPairingRequest(
-            endpoint: URL(string: "http://localhost")!, secret: secret,
-            pluginID: pluginID, pluginSourceURL: pluginSourceURL
-        )
-        guard case .rejection = try? request.decryptPayload(data) else { return false }
+        guard let messageStore else { return false }
+        guard let envelope = try? JSONDecoder().decode(AppSyncSealedMessage.self, from: data),
+              (try? messageStore.appendRemote(envelope)) != nil,
+              case .rejection = try? messageStore.open(envelope, as: PairingPayload.self) else { return false }
         lock.lock()
         guard !consumed else { lock.unlock(); return false }
         consumed = true
         rejected = true
         lock.unlock()
         Task { @MainActor [onReject] in onReject() }
+        try? messageStore.deleteLocal(id: envelope.id)
         return true
+    }
+
+    private func acceptHello(_ data: Data, secret: Data) -> Bool {
+        guard let hello = try? JSONDecoder().decode(PairingHello.self, from: data),
+              hello.proof == hello.identityProof(secret: secret) else { return false }
+        lock.withLock { senderIdentity = hello.sender }
+        return true
+    }
+
+    var remoteSender: AppSyncPeer? { lock.withLock { senderIdentity } }
+}
+
+private struct PairingHello: Codable {
+    let sender: AppSyncPeer
+    let proof: Data
+
+    init(sender: AppSyncPeer, secret: Data) {
+        self.sender = sender
+        proof = Self.proof(sender: sender, secret: secret)
+    }
+
+    func identityProof(secret: Data) -> Data { Self.proof(sender: sender, secret: secret) }
+    private static func proof(sender: AppSyncPeer, secret: Data) -> Data {
+        var data = Data(sender.id.uuidString.lowercased().utf8)
+        data.append(sender.signingKey)
+        data.append(sender.encryptionKey)
+        return Data(HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: secret)))
     }
 }
 
@@ -315,17 +395,38 @@ private final class CredentialPairingHTTPHandler: ChannelInboundHandler, @unchec
 }
 
 extension CredentialPairingRequest {
-    func send(_ auth: SourceAuth, session: URLSession = .shared) async throws {
+    func send(_ auth: SourceAuth, sender supplied: AppSyncPeerIdentity? = nil,
+              session: URLSession = .shared) async throws {
+        let sender = try supplied ?? PairingIdentityProvider.store.identity()
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.httpBody = try encrypted(auth)
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(AppSyncSealedMessage.seal(
+            PairingPayload.credentials(.init(
+                pluginID: pluginID, pluginSourceURL: pluginSourceURL, auth: auth
+            )), appID: HummingbirdProfileSchema.appID, from: sender, to: receiver
+        ))
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 204 else { throw PairingError.rejected }
     }
 
-    func reject(session: URLSession = .shared) async throws {
-        try await post(try encryptedPayload(.rejection), to: endpoint.deletingLastPathComponent().appendingPathComponent("reject"), session: session)
+    func reject(sender supplied: AppSyncPeerIdentity? = nil, session: URLSession = .shared) async throws {
+        let sender = try supplied ?? PairingIdentityProvider.store.identity()
+        let envelope = try AppSyncSealedMessage.seal(
+            PairingPayload.rejection, appID: HummingbirdProfileSchema.appID,
+            from: sender, to: receiver
+        )
+        try await post(try JSONEncoder().encode(envelope), to: endpoint.deletingLastPathComponent().appendingPathComponent("reject"), session: session)
+    }
+
+
+    func announceSender(_ supplied: AppSyncPeerIdentity? = nil,
+                        session: URLSession = .shared) async throws -> AppSyncPeer {
+        let identity = try supplied ?? PairingIdentityProvider.store.identity()
+        let hello = PairingHello(sender: identity.publicIdentity, secret: secret)
+        try await post(try JSONEncoder().encode(hello),
+                       to: endpoint.deletingLastPathComponent().appendingPathComponent("hello"), session: session)
+        return identity.publicIdentity
     }
 
     func remoteStatus(session: URLSession = .shared) async throws -> PairingRemoteStatus {

@@ -12,12 +12,12 @@ final class MacTabBarAccessoryTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
-        let manager = WindowTabBarAccessoryManager(window: window, app: AppModel())
+        let manager = WindowTabBarAccessoryManager(window: window, app: makeTestAppModel())
         let first = UUID()
         let second = UUID()
 
-        manager.attach(owner: first, app: AppModel())
-        manager.attach(owner: second, app: AppModel())
+        manager.attach(owner: first, app: makeTestAppModel())
+        manager.attach(owner: second, app: makeTestAppModel())
 
         XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
         XCTAssertEqual(window.titlebarAccessoryViewControllers[0].layoutAttribute, .bottom)
@@ -39,9 +39,9 @@ final class MacTabBarAccessoryTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
-        let manager = WindowTabBarAccessoryManager(window: window, app: AppModel())
+        let manager = WindowTabBarAccessoryManager(window: window, app: makeTestAppModel())
         let owner = UUID()
-        manager.attach(owner: owner, app: AppModel())
+        manager.attach(owner: owner, app: makeTestAppModel())
         let original = window.titlebarAccessoryViewControllers[0]
 
         window.setContentSize(NSSize(width: 1_000, height: 700))
@@ -62,7 +62,7 @@ final class MacTabBarAccessoryTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
-        let app = AppModel()
+        let app = makeTestAppModel()
         let manager = WindowTabBarAccessoryManager(window: window, app: app)
         let owner = UUID()
 

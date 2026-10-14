@@ -84,7 +84,7 @@ final class PluginManager {
 
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
-    @ObservationIgnored private let profileJournal: ProfileMutationJournal?
+    @ObservationIgnored private let profileChanges: ProfileChangeStore?
     @ObservationIgnored private var applyingRemoteChange = false
     @ObservationIgnored private let urlSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -99,9 +99,9 @@ final class PluginManager {
         let body: String?
     }
 
-    init(installed: [InstalledPlugin] = [], profileJournal: ProfileMutationJournal? = nil) {
+    init(installed: [InstalledPlugin] = [], profileChanges: ProfileChangeStore? = nil) {
         self.installed = installed
-        self.profileJournal = profileJournal
+        self.profileChanges = profileChanges
     }
 
     private func persist() { Storage.save(installed, name: "plugins") }
@@ -264,7 +264,7 @@ final class PluginManager {
         AuthKeychain.save(nil, pluginID: id, kind: "auth")
         AuthKeychain.save(nil, pluginID: id, kind: "captcha")
         persist()
-        if !applyingRemoteChange { profileJournal?.delete(collection: HummingbirdProfileSchema.plugin,
+        if !applyingRemoteChange { profileChanges?.delete(collection: HummingbirdProfileSchema.plugin,
                                key: HummingbirdProfileSchema.key(for: id))
         }
     }
@@ -370,7 +370,7 @@ final class PluginManager {
     /// runtime source and SourceAuth/keychain data are structurally unavailable.
     private func recordPlugin(_ plugin: InstalledPlugin) {
         guard let synced = SyncedPlugin(plugin) else { return }
-        profileJournal?.put(.plugin(synced))
+        profileChanges?.put(.plugin(synced))
     }
 
     func applyRemote(_ plugin: SyncedPlugin) async throws {

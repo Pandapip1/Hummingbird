@@ -1,4 +1,5 @@
 import ATProtoKit
+import ATAppSync
 import Foundation
 import Observation
 
@@ -14,10 +15,11 @@ final class ProfileAccountService {
     @ObservationIgnored private let oauth: ATProtoOAuthClient
     @ObservationIgnored private let authenticator: ATProtoOAuthAuthenticator
     @ObservationIgnored private let credentialStore: OAuthCredentialStore
-    @ObservationIgnored private let mutationJournal: ProfileMutationJournal
+    @ObservationIgnored private let changes: ProfileChangeStore
     @ObservationIgnored private weak var library: LibraryStore?
     @ObservationIgnored private weak var plugins: PluginManager?
     @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private let peerService: AppSyncPeerService?
 
     static let configuration = OAuthClientConfiguration(
         clientID: URL(string: "https://eightybps.com/oauth-client-metadata.json")!,
@@ -28,7 +30,8 @@ final class ProfileAccountService {
         ]
     )
 
-    init(mutationJournal: ProfileMutationJournal, library: LibraryStore, plugins: PluginManager) {
+    init(changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
+         peerService: AppSyncPeerService?) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
         self.oauth = oauth
         authenticator = ATProtoOAuthAuthenticator(client: oauth)
@@ -39,9 +42,10 @@ final class ProfileAccountService {
             service: "com.eightybps.hummingbird.atproto",
             accessGroup: keychainAccessGroup
         )
-        self.mutationJournal = mutationJournal
+        self.changes = changes
         self.library = library
         self.plugins = plugins
+        self.peerService = peerService
         restore()
     }
 
@@ -64,6 +68,14 @@ final class ProfileAccountService {
 
     func sync() async { await syncService?.sync() }
 
+    func sendCredential(_ auth: SourceAuth, pluginID: String, sourceURL: URL,
+                        recipient: AppSyncPeer) async throws {
+        guard let syncService else { throw PairingError.unavailable }
+        try await syncService.sendCredential(
+            auth, pluginID: pluginID, sourceURL: sourceURL, recipient: recipient
+        )
+    }
+
     func signOut() {
         if let account { try? credentialStore.remove(account: account) }
         UserDefaults.standard.removeObject(forKey: "atproto.currentAccount")
@@ -72,8 +84,8 @@ final class ProfileAccountService {
         syncService = nil
         retryTask?.cancel()
         retryTask = nil
-        mutationJournal.setMutationHandler(nil)
-        mutationJournal.deactivate()
+        changes.setMutationHandler(nil)
+        changes.deactivate()
     }
 
     private func restore() {
@@ -86,9 +98,9 @@ final class ProfileAccountService {
         account = credential.session.account
         handle = credential.session.handle
         guard let library, let plugins else { return }
-        let journal: OfflineMutationJournal
+        let mutationLog: AppSyncMutationLog
         do {
-            journal = try mutationJournal.activate(account: credential.session.account)
+            mutationLog = try changes.activate(account: credential.session.account)
         } catch {
             errorMessage = error.localizedDescription
             syncService = nil
@@ -96,9 +108,10 @@ final class ProfileAccountService {
         }
         syncService = ProfileSyncService(
             credential: credential, oauth: oauth, credentialStore: credentialStore,
-            mutationJournal: mutationJournal, journal: journal, library: library, plugins: plugins
+            changes: changes, mutationLog: mutationLog, library: library, plugins: plugins,
+            peerService: peerService
         )
-        mutationJournal.setMutationHandler { [weak self] in
+        changes.setMutationHandler { [weak self] in
             Task { @MainActor in await self?.sync() }
         }
         retryTask?.cancel()

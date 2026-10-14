@@ -1,4 +1,5 @@
 import ATProtoKit
+import ATAppSync
 import Foundation
 import Observation
 
@@ -11,16 +12,17 @@ final class ProfileSyncService {
     private(set) var lastSyncedAt: Date?
 
     @ObservationIgnored private let owner: DID
-    @ObservationIgnored private let engine: SpaceSyncEngine
+    @ObservationIgnored private let appSync: AppSyncClient
     @ObservationIgnored private let spaces: SpacesClient
-    @ObservationIgnored private let mutationJournal: ProfileMutationJournal
+    @ObservationIgnored private let changes: ProfileChangeStore
     @ObservationIgnored private weak var library: LibraryStore?
     @ObservationIgnored private weak var plugins: PluginManager?
 
     init(credential: ATProtoOAuthCredential, oauth: ATProtoOAuthClient,
-         credentialStore: OAuthCredentialStore?, mutationJournal: ProfileMutationJournal,
-         journal: OfflineMutationJournal,
-         library: LibraryStore, plugins: PluginManager) {
+         credentialStore: OAuthCredentialStore?, changes: ProfileChangeStore,
+         mutationLog: AppSyncMutationLog,
+         library: LibraryStore, plugins: PluginManager,
+         peerService: AppSyncPeerService?) {
         owner = credential.session.account
         let authorization = DPoPAuthorization(credential: credential, oauth: oauth, store: credentialStore)
         let xrpc = XRPCClient(service: credential.session.pds, authorization: authorization)
@@ -30,24 +32,25 @@ final class ProfileSyncService {
             key: HummingbirdProfileSchema.spaceKey
         )
         self.spaces = spaces
-        engine = SpaceSyncEngine(spaces: spaces, journal: journal,
-                                 repo: credential.session.account, space: space,
-                                 journalCollection: HummingbirdProfileSchema.journal)
-        self.mutationJournal = mutationJournal
+        appSync = AppSyncClient(
+            spaces: spaces, mutationLog: mutationLog, repo: credential.session.account, space: space,
+            appID: HummingbirdProfileSchema.appID, messaging: peerService
+        )
+        self.changes = changes
         self.library = library
         self.plugins = plugins
     }
 
     func bootstrapCurrentProfile() {
-        guard let library, let plugins, mutationJournal.journal?.isEmpty == true else { return }
-        for value in library.subscriptions { mutationJournal.put(.subscription(value)) }
-        for value in library.playlists { mutationJournal.put(.playlist(value)) }
+        guard let library, let plugins, changes.mutationLog?.isEmpty == true else { return }
+        for value in library.subscriptions { changes.put(.subscription(value)) }
+        for value in library.playlists { changes.put(.playlist(value)) }
         for (position, value) in library.watchLater.enumerated() {
-            mutationJournal.put(.watchLater(.init(video: value, position: position)))
+            changes.put(.watchLater(.init(video: value, position: position)))
         }
-        for value in library.history { mutationJournal.put(.history(value)) }
+        for value in library.history { changes.put(.history(value)) }
         for value in plugins.installed {
-            if let synced = SyncedPlugin(value) { mutationJournal.put(.plugin(synced)) }
+            if let synced = SyncedPlugin(value) { changes.put(.plugin(synced)) }
         }
     }
 
@@ -58,9 +61,11 @@ final class ProfileSyncService {
             try await ensureOwnerSpace()
             // Pull before pushing so a newer edit from another device cannot be
             // overwritten merely because this device happened to reconnect.
-            let remote = try await engine.pull()
+            let remote = try await appSync.pullMutations()
             try await apply(remote)
-            try await engine.pushPending()
+            try await appSync.pushMutations()
+            let messages = try await appSync.syncMessages()
+            try await applyMessages(messages)
             lastSyncedAt = Date()
             state = .idle
         } catch let error as URLError where [
@@ -73,6 +78,14 @@ final class ProfileSyncService {
         }
     }
 
+    func sendCredential(_ auth: SourceAuth, pluginID: String, sourceURL: URL,
+                        recipient: AppSyncPeer) async throws {
+        let payload = PairingPayload.credentials(.init(
+            pluginID: pluginID, pluginSourceURL: sourceURL, auth: auth
+        ))
+        try await appSync.sendMessage(try .encoding(payload), to: recipient)
+    }
+
     private func ensureOwnerSpace() async throws {
         do {
             _ = try await spaces.createOwnerSpace(
@@ -83,11 +96,11 @@ final class ProfileSyncService {
         }
     }
 
-    private func apply(_ records: [JournalMutation]) async throws {
+    private func apply(_ records: [AppSyncMutation]) async throws {
         guard let library, let plugins else { return }
         for event in records {
-            guard let journal = mutationJournal.journal else { return }
-            guard try journal.merge(event, needsUpload: false) else { continue }
+            guard let mutationLog = changes.mutationLog else { return }
+            guard try mutationLog.merge(event, needsUpload: false) else { continue }
             if event.operation == .delete {
                 if event.collection == HummingbirdProfileSchema.plugin {
                     plugins.applyRemoteDelete(key: event.recordKey)
@@ -101,6 +114,18 @@ final class ProfileSyncService {
                 default: library.applyRemote(entity, deleted: false)
                 }
             }
+        }
+    }
+
+    private func applyMessages(_ messages: [AppSyncMessage]) async throws {
+        guard let plugins else { return }
+        for message in messages {
+            guard case .credentials(let transfer) = try message.payload.decode(PairingPayload.self),
+                  !transfer.auth.isEmpty,
+                  plugins.plugin(transfer.pluginID)?.config.sourceUrl == transfer.pluginSourceURL.absoluteString
+            else { continue }
+            plugins.saveAuth(transfer.auth, pluginID: transfer.pluginID)
+            try await appSync.acknowledgeMessage(id: message.id)
         }
     }
 }

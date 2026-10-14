@@ -1,0 +1,60 @@
+{
+  "lexicon": 1,
+  "id": "com.eightybps.appsync.journal",
+  "description": "A signed AT AppSync journal checkpoint. Later checkpoints from the same instance may subsume earlier checkpoints.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["batchID", "eventData", "events", "originInstanceID", "originSigningKey", "signature"],
+        "properties": {
+          "batchID": { "type": "string", "maxLength": 36 },
+          "eventData": {
+            "type": "array",
+            "items": { "type": "ref", "ref": "#eventBucket" }
+          },
+          "events": {
+            "type": "array",
+            "items": { "type": "ref", "ref": "#eventReference" }
+          },
+          "originInstanceID": { "type": "string", "maxLength": 36 },
+          "originSigningKey": { "type": "string", "description": "Base64-encoded P-256 public key." },
+          "signature": { "type": "string", "description": "Base64-encoded DER ECDSA signature over the resolved ordered event data." }
+        }
+      }
+    },
+    "eventBucket": {
+      "type": "object",
+      "required": ["eventID", "values"],
+      "properties": {
+        "eventID": { "type": "string", "maxLength": 36 },
+        "values": {
+          "type": "array",
+          "items": { "type": "ref", "ref": "#eventData" }
+        }
+      }
+    },
+    "eventReference": {
+      "type": "object",
+      "required": ["eventID", "index"],
+      "properties": {
+        "eventID": { "type": "string", "maxLength": 36 },
+        "index": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "eventData": {
+      "type": "object",
+      "required": ["id", "collection", "recordKey", "operation", "timestamp"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 36 },
+        "collection": { "type": "string", "format": "nsid" },
+        "recordKey": { "type": "string", "maxLength": 512 },
+        "operation": { "type": "string", "knownValues": ["put", "delete"] },
+        "value": { "type": "unknown" },
+        "timestamp": { "type": "ref", "ref": "com.eightybps.appsync.defs#version" }
+      }
+    }
+  }
+}

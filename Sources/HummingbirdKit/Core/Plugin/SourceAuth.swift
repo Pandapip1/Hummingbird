@@ -1,4 +1,5 @@
 import Foundation
+import ATAppSync
 #if canImport(Security)
 import Security
 #endif
@@ -18,7 +19,7 @@ public struct SourceAuth: Codable, Equatable, Sendable {
 }
 
 /// Where per-plugin credentials are kept.
-public protocol CredentialStore: Sendable {
+public protocol CredentialStore: AppSyncCredentialStore {
     func load(account: String) -> Data?
     /// `nil` deletes the entry.
     func save(_ data: Data?, account: String)

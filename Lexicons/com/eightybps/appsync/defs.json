@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "com.eightybps.hummingbird.defs",
+  "id": "com.eightybps.appsync.defs",
   "defs": {
     "version": {
       "type": "object",

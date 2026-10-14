@@ -1,4 +1,5 @@
 import Foundation
+import ATAppSync
 #if !canImport(WebKit) || BACKEND_GTK
 import Observation
 import QRCodeGenerator
@@ -7,6 +8,7 @@ import SwiftOpenUI
 /// On tvOS, hands a fresh isolated browser login to another Hummingbird device.
 @MainActor
 struct WebAuthSheet: View {
+    @Environment(AppModel.self) private var app
     let spec: WebAuthSpec
     let onFinish: (SourceAuth?) -> Void
     @State private var pairing: CredentialPairingModel
@@ -32,15 +34,18 @@ struct WebAuthSheet: View {
                     Text("A new private sign-in window will open on that device. This code expires after 10 minutes.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
-                    Text(request.verificationEmoji)
-                        .font(.title2)
-                        .accessibilityLabel("Verification emoji: \(request.verificationEmoji)")
-                    Text("Confirm only if these emoji match the other device.")
+                    fingerprint("Receiver (this device)", request.receiverVerificationEmoji)
+                    if let sender = pairing.remoteSender {
+                        fingerprint("Sender", request.senderVerificationEmoji(sender))
+                    } else {
+                        ProgressView("Waiting for sender identity…")
+                    }
+                    Text("Confirm only if both labeled fingerprints match the other device.")
                         .foregroundStyle(.secondary)
                     Button(pairing.confirmed ? "Emoji confirmed" : "They match") {
                         pairing.confirm()
                     }
-                    .disabled(pairing.confirmed)
+                    .disabled(pairing.confirmed || pairing.remoteSender == nil)
                     Button("They don’t match", role: .destructive) { pairing.reject() }
                         .disabled(pairing.confirmed)
                 } else if let error = pairing.error {
@@ -57,8 +62,17 @@ struct WebAuthSheet: View {
                 }
             }
             .navigationTitle(spec.title)
-            .task { await pairing.start() }
+            .task { await pairing.start(peerService: app.peerService) }
+            .task { await pairing.observeSender() }
+            .task { await pairing.observeCredentialStore() }
             .onDisappear { pairing.stop() }
+        }
+    }
+
+    private func fingerprint(_ label: String, _ value: String) -> some View {
+        VStack(spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title2).accessibilityLabel("\(label): \(value)")
         }
     }
 }
@@ -73,6 +87,7 @@ private final class CredentialPairingModel {
     private(set) var request: CredentialPairingRequest?
     private(set) var error: String?
     private(set) var confirmed = false
+    private(set) var remoteSender: AppSyncPeer?
 
     init(pluginID: String?, sourceURL: URL?, onFinish: @escaping (SourceAuth?) -> Void) {
         self.pluginID = pluginID
@@ -80,7 +95,7 @@ private final class CredentialPairingModel {
         self.onFinish = onFinish
     }
 
-    func start() async {
+    func start(peerService: AppSyncPeerService?) async {
         guard request == nil, error == nil, receiver == nil else { return }
         guard let pluginID, let sourceURL else {
             error = "This plugin has no source URL to share with the sign-in device."
@@ -89,6 +104,8 @@ private final class CredentialPairingModel {
         let receiver = CredentialPairingReceiver(
             pluginID: pluginID,
             pluginSourceURL: sourceURL,
+            identity: peerService?.peer,
+            messageStore: peerService?.messageStore,
             onReceive: { [weak self] auth in self?.onFinish(auth) },
             onReject: { [weak self] in self?.error = "The other device reported that the verification emoji did not match." }
         )
@@ -105,6 +122,24 @@ private final class CredentialPairingModel {
     func confirm() {
         receiver?.confirmVerification()
         confirmed = true
+    }
+
+    func observeSender() async {
+        while !Task.isCancelled && remoteSender == nil {
+            remoteSender = receiver?.remoteSender
+            if remoteSender == nil { try? await Task.sleep(for: .milliseconds(200)) }
+        }
+    }
+
+    func observeCredentialStore() async {
+        guard let pluginID else { return }
+        while !Task.isCancelled {
+            if confirmed, let auth = AuthKeychain.load(pluginID: pluginID, kind: "auth"), !auth.isEmpty {
+                onFinish(auth)
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
     }
 
     func reject() {

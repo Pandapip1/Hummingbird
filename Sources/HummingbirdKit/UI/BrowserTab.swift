@@ -23,7 +23,6 @@ extension DynamicTab where Page == Route {
         case .search: return "Search"
         case .library: return "Library"
         case .sources: return "Sources"
-        case .peers: return "Peers"
         case .item(let item): return item.name.isEmpty ? "Video" : item.name
         case .content: return "Loading…"
         case .channel: return "Channel"

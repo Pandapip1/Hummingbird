@@ -173,8 +173,6 @@ struct RouteContent: View {
             case .search: SearchView(browserToolbar: browserToolbar)
             case .library: LibraryView(browserToolbar: browserToolbar)
             case .sources: SourcesView(browserToolbar: browserToolbar)
-            case .peers:
-                NavigationStack { PeerManagerView(browserToolbar: browserToolbar) }
             case .content(let url):
                 VideoDetailView(url: url, preview: nil, player: player,
                                 shouldKeepPlaybackWhenHidden: shouldKeepPlaybackWhenHidden)

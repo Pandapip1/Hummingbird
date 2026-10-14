@@ -4,7 +4,7 @@ import QRCodeGenerator
 import SwiftOpenUI
 
 @MainActor
-struct PeerManagerView: View {
+struct SyncSettingsView: View {
     @Environment(AppModel.self) private var app
     @State private var peers: [AppSyncPeerTrustSummary] = []
     @State private var isLoading = false
@@ -12,7 +12,7 @@ struct PeerManagerView: View {
     @State private var errorMessage: String?
     @State private var peerToDistrust: AppSyncPeerTrustSummary?
     @State private var showingLocalCode = false
-    let browserToolbar: BrowserToolbarContext?
+    @State private var accountIdentifier = ""
 
     var body: some View {
         Group {
@@ -23,6 +23,9 @@ struct PeerManagerView: View {
                 }
             } else {
                 List {
+                    Section("AT Protocol Account") {
+                        accountControls
+                    }
                     Section("This instance") {
                         if let service = app.peerService {
                             PeerIdentityLabel(peerID: service.peer.publicIdentity.stableID)
@@ -32,8 +35,15 @@ struct PeerManagerView: View {
                         }
                     }
 
-                    if !peers.isEmpty {
-                        Section("Instances") {
+                    Section("Instances") {
+                        if isLoading && peers.isEmpty {
+                            ProgressView("Finding instances…")
+                        } else if peers.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("No other instances").font(.headline)
+                                Text(emptyDescription).font(.footnote).foregroundStyle(.secondary)
+                            }
+                        } else {
                             ForEach(peers) { peer in
                                 PeerTrustRow(
                                     peer: peer,
@@ -48,22 +58,10 @@ struct PeerManagerView: View {
                         Section { Text(errorMessage).foregroundStyle(.red).font(.footnote) }
                     }
                 }
-                .overlay {
-                    if isLoading && peers.isEmpty {
-                        ProgressView("Finding instances…")
-                    } else if !isLoading && peers.isEmpty {
-                        ContentUnavailableView(
-                            "No other instances",
-                            systemImage: "person.2.slash",
-                            description: Text(emptyDescription)
-                        )
-                    }
-                }
             }
         }
-        .navigationTitle("Peers")
+        .navigationTitle("Sync")
         .toolbar {
-            FocusBrowserToolbar(browserToolbar: browserToolbar)
             if !isScanning {
                 ToolbarItem(placement: .primaryAction) {
                     Button { isScanning = true } label: {
@@ -95,6 +93,44 @@ struct PeerManagerView: View {
             Button("Cancel", role: .cancel) { peerToDistrust = nil }
         } message: {
             Text("This ends trust in both directions for observers that accept the revocation. The instance can be verified again later.")
+        }
+    }
+
+    @ViewBuilder private var accountControls: some View {
+        if let account = app.profileAccount.account {
+            LabeledContent("Account", value: app.profileAccount.handle ?? account.rawValue)
+            if let sync = app.profileAccount.syncService {
+                switch sync.state {
+                case .idle: Text(sync.lastSyncedAt == nil ? "Ready to sync" : "Synced")
+                case .syncing: ProgressView("Syncing…")
+                case .offline: Text("Offline — changes are queued")
+                case .failed(let message): Text(message).foregroundStyle(.red)
+                }
+            }
+            Button("Sync Now") {
+                Task {
+                    await app.profileAccount.sync()
+                    await reload()
+                }
+            }
+            Button("Sign Out", role: .destructive) {
+                app.profileAccount.signOut()
+                peers = []
+            }
+        } else {
+            TextField("Handle or DID", text: $accountIdentifier)
+                .settingsTextEntryStyle()
+            Button("Sign In with AT Protocol") {
+                Task {
+                    await app.profileAccount.signIn(identifier: accountIdentifier)
+                    await reload()
+                }
+            }
+            .disabled(app.profileAccount.isSigningIn || accountIdentifier.isEmpty)
+            if app.profileAccount.isSigningIn { ProgressView("Opening your account provider…") }
+            if let message = app.profileAccount.errorMessage {
+                Text(message).foregroundStyle(.red)
+            }
         }
     }
 

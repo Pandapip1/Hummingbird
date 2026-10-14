@@ -2,13 +2,6 @@ import Foundation
 import DebugKit
 import DynamicTabbingKit
 import SwiftOpenUI
-#if os(macOS) && !BACKEND_GTK
-import AppKit
-#endif
-#if os(tvOS)
-import UIKit
-#endif
-
 @MainActor
 struct RootView: View {
     @Environment(AppModel.self) private var model
@@ -24,24 +17,7 @@ struct RootView: View {
             BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
         }
         .navigationTitle(windowTitle)
-        // Browser-style tab chrome: native toolbar navigation controls at the
-        // leading edge on desktop. macOS seats the tab strip below the toolbar
-        // via NSTitlebarAccessoryViewController (Safari-style separate row);
-        // other desktop platforms keep tabs in the .principal toolbar slot.
-        .toolbar {
-            #if !os(iOS) && !os(tvOS)
-            if !showingTabOverview {
-                BrowserTopToolbar(tab: app.activeTab) { showingTabOverview = true }
-            }
-            #endif
-        }
-        #if !os(iOS) && !os(tvOS)
-        .background {
-            #if os(macOS) && !BACKEND_GTK
-            TabBarAccessoryInstaller(app: model, isHidden: showingTabOverview).frame(width: 0, height: 0)
-            #endif
-        }
-        #endif
+        .browserWindowChrome(model: model, overviewPresented: $showingTabOverview)
         .overlay {
             if let loginTarget {
                 LoginSheet(pluginID: loginTarget.value) { self.loginTarget = nil }
@@ -95,68 +71,22 @@ struct AppSectionMenu: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        #if os(tvOS)
-        NativeSectionMenuButton { route, title in
+        AdaptiveActionMenu(
+            title: "Open section in new tab",
+            systemImage: "plus",
+            items: [
+                AdaptiveMenuItem(id: "home", title: "Home", systemImage: "house", value: Route.home),
+                AdaptiveMenuItem(id: "subscriptions", title: "Subscriptions", systemImage: "rectangle.stack.person.crop", value: Route.subscriptions),
+                AdaptiveMenuItem(id: "search", title: "Search", systemImage: "magnifyingglass", value: Route.search),
+                AdaptiveMenuItem(id: "library", title: "Library", systemImage: "books.vertical", value: Route.library),
+                AdaptiveMenuItem(id: "sources", title: "Sources", systemImage: "puzzlepiece.extension", value: Route.sources),
+                AdaptiveMenuItem(id: "settings", title: "Settings", systemImage: "gearshape", value: Route.settings),
+            ]
+        ) { route, title in
             app.openSection(route, title: title)
         }
-        #else
-        Menu {
-            sectionButton("Home", systemImage: "house", route: .home)
-            sectionButton("Subscriptions", systemImage: "rectangle.stack.person.crop", route: .subscriptions)
-            sectionButton("Search", systemImage: "magnifyingglass", route: .search)
-            sectionButton("Library", systemImage: "books.vertical", route: .library)
-            sectionButton("Sources", systemImage: "puzzlepiece.extension", route: .sources)
-            sectionButton("Settings", systemImage: "gearshape", route: .settings)
-        } label: {
-            Image(systemName: "plus")
-        }
-        .accessibilityLabel("Open section in new tab")
-        #endif
-    }
-
-    private func sectionButton(_ title: String, systemImage: String, route: Route) -> some View {
-        Button { app.openSection(route, title: title) } label: {
-            Label(title, systemImage: systemImage)
-        }
     }
 }
-
-#if os(tvOS)
-@MainActor
-private struct NativeSectionMenuButton: UIViewRepresentable {
-    let open: @MainActor (Route, String) -> Void
-
-    func makeUIView(context: Context) -> UIButton {
-        let button = UIButton(type: .system)
-        button.setImage(UIImage(systemName: "plus"), for: .normal)
-        button.accessibilityLabel = "Open section in new tab"
-        button.showsMenuAsPrimaryAction = true
-        button.menu = makeMenu()
-        return button
-    }
-
-    func updateUIView(_ button: UIButton, context: Context) {
-        button.menu = makeMenu()
-    }
-
-    private func makeMenu() -> UIMenu {
-        UIMenu(title: "New Tab", children: [
-            action("Home", image: "house", route: .home),
-            action("Subscriptions", image: "rectangle.stack.person.crop", route: .subscriptions),
-            action("Search", image: "magnifyingglass", route: .search),
-            action("Library", image: "books.vertical", route: .library),
-            action("Sources", image: "puzzlepiece.extension", route: .sources),
-            action("Settings", image: "gearshape", route: .settings),
-        ])
-    }
-
-    private func action(_ title: String, image: String, route: Route) -> UIAction {
-        UIAction(title: title, image: UIImage(systemName: image)) { _ in
-            Task { @MainActor in open(route, title) }
-        }
-    }
-}
-#endif
 
 /// An ordinary browser tab's content: whatever `Route` it's currently showing,
 /// with its own back/forward (this tab's own linear history, not a
@@ -166,7 +96,6 @@ private struct NativeSectionMenuButton: UIViewRepresentable {
 @MainActor
 struct BrowserTabContentView: View {
     @Environment(AppModel.self) private var app
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
     let tab: BrowserTab
     @Binding var showingTabOverview: Bool
 
@@ -185,54 +114,19 @@ struct BrowserTabContentView: View {
                     }
                 )
                     .id(tab.historyIndexIdentity)
-                    #if os(iOS)
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        if !isOverviewPreview {
-                            MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
-                        }
-                    }
-                    #endif
+                    .browserTabControls(overviewPresented: $showingTabOverview)
             } else {
                 NavigationStack {
                     ContentUnavailableView("New Tab", systemImage: "plus.square", description: Text("Choose a section from the menu."))
                         .navigationTitle("New Tab")
                 }
-                #if os(iOS)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if !isOverviewPreview {
-                        MobileBrowserToolbar(showingTabOverview: $showingTabOverview)
-                    }
-                }
-                #endif
+                .browserTabControls(overviewPresented: $showingTabOverview)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .environment(\.openRoute, OpenRouteAction { route, title in tab.push(route, title: title) })
     }
 }
-
-#if !os(iOS)
-@MainActor
-struct BrowserTopToolbar: ToolbarContent {
-    let tab: BrowserTab
-    let showTabOverview: () -> Void
-
-    var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            BrowserBackButton(tab: tab)
-            BrowserForwardButton(tab: tab)
-        }
-        #if os(tvOS)
-        ToolbarItem(placement: .primaryAction) {
-            AppSectionMenu()
-        }
-        ToolbarItem(placement: .primaryAction) {
-            BrowserTabOverviewButton(action: showTabOverview)
-        }
-        #endif
-    }
-}
-#endif
 
 @MainActor
 struct BrowserBackButton: View {
@@ -280,31 +174,8 @@ struct BrowserToolbarContext {
     let showTabOverview: () -> Void
 }
 
-private struct BrowserTopToolbarModifier: ViewModifier {
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
-    let context: BrowserToolbarContext?
-
-    func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.toolbar {
-            if let context, !isOverviewPreview {
-                BrowserTopToolbar(tab: context.tab, showTabOverview: context.showTabOverview)
-            }
-        }
-        #else
-        content
-        #endif
-    }
-}
-
-extension View {
-    func browserTopToolbar(_ context: BrowserToolbarContext?) -> some View {
-        modifier(BrowserTopToolbarModifier(context: context))
-    }
-}
-
 @MainActor
-private struct BrowserTabStrip: View {
+struct BrowserTabStrip: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
@@ -319,192 +190,6 @@ private struct BrowserTabStrip: View {
     }
 }
 
-#if os(macOS) && !BACKEND_GTK
-private final class HummingbirdTabBarAccessoryViewController: NSTitlebarAccessoryViewController {}
-
-private final class NotificationObserverTokens: @unchecked Sendable {
-    var values: [NSObjectProtocol] = []
-
-    deinit {
-        values.forEach(NotificationCenter.default.removeObserver)
-    }
-}
-
-/// Owns the tab strip as window chrome. SwiftUI representables can be rebuilt
-/// or briefly overlap during navigation, so installation is reconciled at the
-/// NSWindow level rather than treating each representable as the accessory's
-/// owner.
-@MainActor
-final class WindowTabBarAccessoryManager {
-    // BrowserTabBar's label, tab padding, capsule padding, and outer padding
-    // require about 37 points at the default macOS font size. Leave one point
-    // for pixel rounding rather than clipping the capsule's lower edge.
-    static let height: CGFloat = 38
-
-    private weak var window: NSWindow?
-    private let accessory = HummingbirdTabBarAccessoryViewController()
-    private let hosting: NSHostingController<AnyView>
-    private var owners: [UUID: Bool] = [:]
-    private let observers = NotificationObserverTokens()
-
-    init(window: NSWindow, app: AppModel) {
-        self.window = window
-        hosting = NSHostingController(rootView: AnyView(BrowserTabStrip().environment(app)))
-        accessory.view = hosting.view
-        accessory.layoutAttribute = .bottom
-        accessory.fullScreenMinHeight = 0
-        hosting.view.autoresizingMask = [.width]
-
-        let center = NotificationCenter.default
-        observers.values = [
-            center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) {
-                [weak self] _ in MainActor.assumeIsolated { self?.reconcile() }
-            },
-            center.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) {
-                [weak self] _ in self?.reconcileAfterFullScreenTransition()
-            },
-            center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) {
-                [weak self] _ in self?.reconcileAfterFullScreenTransition()
-            },
-        ]
-    }
-
-    var isUnused: Bool { owners.isEmpty }
-
-    func attach(owner: UUID, app: AppModel, isHidden: Bool = false) {
-        owners[owner] = isHidden
-        hosting.rootView = AnyView(BrowserTabStrip().environment(app))
-        reconcile()
-    }
-
-    func detach(owner: UUID) {
-        owners[owner] = nil
-        guard owners.isEmpty, let window else { return }
-        if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
-            window.removeTitlebarAccessoryViewController(at: index)
-        }
-    }
-
-    func reconcile() {
-        guard !owners.isEmpty, let window, window.styleMask.contains(.titled) else { return }
-        guard owners.values.contains(false) else {
-            if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
-                window.removeTitlebarAccessoryViewController(at: index)
-            }
-            return
-        }
-        // Remove abandoned Hummingbird accessories left by a replaced SwiftUI
-        // coordinator before ensuring this manager's accessory is installed.
-        for index in window.titlebarAccessoryViewControllers.indices.reversed() {
-            let candidate = window.titlebarAccessoryViewControllers[index]
-            if candidate is HummingbirdTabBarAccessoryViewController, candidate !== accessory {
-                window.removeTitlebarAccessoryViewController(at: index)
-            }
-        }
-        let width = max(0, window.contentLayoutRect.width)
-        hosting.view.frame = NSRect(x: 0, y: 0, width: width, height: Self.height)
-        accessory.view.frame = hosting.view.frame
-        if !window.titlebarAccessoryViewControllers.contains(where: { $0 === accessory }) {
-            window.addTitlebarAccessoryViewController(accessory)
-        }
-        window.contentView?.needsLayout = true
-    }
-
-    private nonisolated func reconcileAfterFullScreenTransition() {
-        // AppKit can report its old content-layout rect until the following
-        // main-run-loop turn after a fullscreen transition.
-        DispatchQueue.main.async { [weak self] in self?.reconcile() }
-    }
-}
-
-@MainActor
-private final class WindowTabBarAccessoryRegistry {
-    static let shared = WindowTabBarAccessoryRegistry()
-    private struct Entry { weak var window: NSWindow?; let manager: WindowTabBarAccessoryManager }
-    private var entries: [ObjectIdentifier: Entry] = [:]
-
-    func manager(for window: NSWindow, app: AppModel) -> WindowTabBarAccessoryManager {
-        purgeReleasedWindows()
-        let key = ObjectIdentifier(window)
-        if let entry = entries[key], entry.window === window { return entry.manager }
-        let manager = WindowTabBarAccessoryManager(window: window, app: app)
-        entries[key] = Entry(window: window, manager: manager)
-        return manager
-    }
-
-    func releaseManager(for window: NSWindow) {
-        let key = ObjectIdentifier(window)
-        if entries[key]?.manager.isUnused == true { entries[key] = nil }
-        purgeReleasedWindows()
-    }
-
-    private func purgeReleasedWindows() {
-        entries = entries.filter { $0.value.window != nil }
-    }
-}
-
-/// Mounts `BrowserTabStrip` as a window-managed titlebar accessory so it
-/// occupies its own row below the toolbar, matching Safari and iTerm2.
-@MainActor
-private struct TabBarAccessoryInstaller: NSViewRepresentable {
-    let app: AppModel
-    let isHidden: Bool
-
-    func makeNSView(context: Context) -> _WindowObserverView {
-        let v = _WindowObserverView()
-        v.coordinator = context.coordinator
-        return v
-    }
-
-    func updateNSView(_ nsView: _WindowObserverView, context: Context) {
-        context.coordinator.app = app
-        context.coordinator.isHidden = isHidden
-        context.coordinator.move(to: nsView.window)
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(app: app, isHidden: isHidden) }
-
-    static func dismantleNSView(_ nsView: _WindowObserverView, coordinator: Coordinator) {
-        coordinator.move(to: nil)
-        nsView.coordinator = nil
-    }
-
-    @MainActor
-    final class Coordinator {
-        var app: AppModel
-        var isHidden: Bool
-        private let owner = UUID()
-        private weak var installedWindow: NSWindow?
-
-        init(app: AppModel, isHidden: Bool) {
-            self.app = app
-            self.isHidden = isHidden
-        }
-
-        func move(to window: NSWindow?) {
-            if installedWindow !== window, let old = installedWindow {
-                let registry = WindowTabBarAccessoryRegistry.shared
-                let manager = registry.manager(for: old, app: app)
-                manager.detach(owner: owner)
-                registry.releaseManager(for: old)
-            }
-            guard let window else { installedWindow = nil; return }
-            let manager = WindowTabBarAccessoryRegistry.shared.manager(for: window, app: app)
-            manager.attach(owner: owner, app: app, isHidden: isHidden)
-            installedWindow = window
-        }
-    }
-
-    @MainActor
-    final class _WindowObserverView: NSView {
-        weak var coordinator: Coordinator?
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            coordinator?.move(to: window)
-        }
-    }
-}
-#endif
 
 private extension BrowserTab {
     /// `.id()` key for `RouteContent` so SwiftUI tears down and rebuilds the

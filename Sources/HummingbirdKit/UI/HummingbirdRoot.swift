@@ -6,9 +6,6 @@ import SwiftOpenUI
 @MainActor
 public struct HummingbirdRoot: View {
     @State private var model: AppModel
-    #if canImport(SwiftUI) && !BACKEND_GTK
-    @Environment(\.scenePhase) private var scenePhase
-    #endif
     public init() {
         _model = State(wrappedValue: AppModel())
         // Start the opt-in debug transport as soon as the root is created.
@@ -29,50 +26,17 @@ public struct HummingbirdRoot: View {
         return HummingbirdRoot(persistence: persistence)
     }
     public var body: some View {
-        #if canImport(SwiftUI) && !BACKEND_GTK
-        #if os(tvOS)
-        if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] == "player" {
-            TVPlayerDebugScene()
-        } else if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] == "player-seek" {
-            TVSeekDebugScene()
-        } else if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] == "install-preview" {
-            TVInstallPreviewDebugScene()
-        } else {
-            appRoot
+        DebugSceneSelection {
+            RootView()
+                .environment(model)
+                .configuresVisualAuditRoute(configureVisualAuditRoute)
+                .task { await model.plugins.checkForUpdates() }
+                .task { configureDebugServer() }
+                .onOpenURL { model.handleIncomingURL($0) }
+                .observesApplicationLifecycle(model)
         }
-        #else
-        appRoot
-        #endif
-        #else
-        RootView()
-            .environment(model)
-            .task { await model.plugins.checkForUpdates() }
-            .task { configureDebugServer() }
-            .onOpenURL { model.handleIncomingURL($0) }
-        #endif
     }
 
-    #if canImport(SwiftUI) && !BACKEND_GTK
-    private var appRoot: some View {
-        RootView()
-            .environment(model)
-            #if DEBUG && os(tvOS)
-            .task { configureVisualAuditRoute() }
-            #endif
-            .task { await model.plugins.checkForUpdates() }
-            .task { configureDebugServer() }
-            .onOpenURL { model.handleIncomingURL($0) }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .background {
-                    model.library.flushHistory()
-                    model.library.persistSubscriptionState()
-                    Task.detached { await Storage.flush() }
-                }
-            }
-    }
-    #endif
-
-    #if DEBUG && os(tvOS)
     private func configureVisualAuditRoute() {
         guard let name = ProcessInfo.processInfo.environment["HUMMINGBIRD_VISUAL_AUDIT_ROUTE"] else { return }
         let route: Route
@@ -87,7 +51,6 @@ public struct HummingbirdRoot: View {
         guard model.activeTab.current != route else { return }
         model.activeTab.push(route, title: name.capitalized)
     }
-    #endif
 
     private func configureDebugServer() {
         DebugServer.shared.registerProbe("activeTab") { model.activeTabID.uuidString }
@@ -110,7 +73,7 @@ public struct HummingbirdRoot: View {
 
 #if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
 @MainActor
-private struct TVPlayerDebugScene: View {
+struct TVPlayerDebugScene: View {
     @State private var player = PlayerModel(backend: AVMediaBackend())
 
     var body: some View {
@@ -148,7 +111,7 @@ private struct TVPlayerDebugScene: View {
 }
 
 @MainActor
-private struct TVSeekDebugScene: View {
+struct TVSeekDebugScene: View {
     @State private var player = TVSeekDebugModel()
 
     var body: some View {
@@ -180,7 +143,7 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
 }
 
 @MainActor
-private struct TVInstallPreviewDebugScene: View {
+struct TVInstallPreviewDebugScene: View {
     private let preview: InstallPreview = {
         let urls = (0..<30).map { "https://audit-\($0).example.com/path" }
         let json = """

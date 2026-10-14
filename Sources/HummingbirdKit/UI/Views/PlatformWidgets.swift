@@ -1,5 +1,11 @@
 import Foundation
 import SwiftOpenUI
+#if os(macOS) && !BACKEND_GTK
+import AppKit
+#endif
+#if os(tvOS)
+import UIKit
+#endif
 #if canImport(AVFoundation)
 import AVFoundation
 #endif
@@ -20,6 +26,268 @@ struct ExternalURLLink<Label: View>: View {
         #endif
     }
 }
+
+#if os(macOS) && !BACKEND_GTK
+private final class HummingbirdTabBarAccessoryViewController: NSTitlebarAccessoryViewController {}
+
+private final class NotificationObserverTokens: @unchecked Sendable {
+    var values: [NSObjectProtocol] = []
+
+    deinit {
+        values.forEach(NotificationCenter.default.removeObserver)
+    }
+}
+
+/// Owns the tab strip as window chrome. SwiftUI representables can be rebuilt
+/// or briefly overlap during navigation, so installation is reconciled at the
+/// NSWindow level rather than treating each representable as the accessory's
+/// owner.
+@MainActor
+final class WindowTabBarAccessoryManager {
+    // BrowserTabBar's label, tab padding, capsule padding, and outer padding
+    // require about 37 points at the default macOS font size. Leave one point
+    // for pixel rounding rather than clipping the capsule's lower edge.
+    static let height: CGFloat = 38
+
+    private weak var window: NSWindow?
+    private let accessory = HummingbirdTabBarAccessoryViewController()
+    private let hosting: NSHostingController<AnyView>
+    private var owners: [UUID: Bool] = [:]
+    private let observers = NotificationObserverTokens()
+
+    init(window: NSWindow, app: AppModel) {
+        self.window = window
+        hosting = NSHostingController(rootView: AnyView(BrowserTabStrip().environment(app)))
+        accessory.view = hosting.view
+        accessory.layoutAttribute = .bottom
+        accessory.fullScreenMinHeight = 0
+        hosting.view.autoresizingMask = [.width]
+
+        let center = NotificationCenter.default
+        observers.values = [
+            center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) {
+                [weak self] _ in MainActor.assumeIsolated { self?.reconcile() }
+            },
+            center.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: .main) {
+                [weak self] _ in self?.reconcileAfterFullScreenTransition()
+            },
+            center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) {
+                [weak self] _ in self?.reconcileAfterFullScreenTransition()
+            },
+        ]
+    }
+
+    var isUnused: Bool { owners.isEmpty }
+
+    func attach(owner: UUID, app: AppModel, isHidden: Bool = false) {
+        owners[owner] = isHidden
+        hosting.rootView = AnyView(BrowserTabStrip().environment(app))
+        reconcile()
+    }
+
+    func detach(owner: UUID) {
+        owners[owner] = nil
+        guard owners.isEmpty, let window else { return }
+        if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
+            window.removeTitlebarAccessoryViewController(at: index)
+        }
+    }
+
+    func reconcile() {
+        guard !owners.isEmpty, let window, window.styleMask.contains(.titled) else { return }
+        guard owners.values.contains(false) else {
+            if let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessory }) {
+                window.removeTitlebarAccessoryViewController(at: index)
+            }
+            return
+        }
+        // Remove abandoned Hummingbird accessories left by a replaced SwiftUI
+        // coordinator before ensuring this manager's accessory is installed.
+        for index in window.titlebarAccessoryViewControllers.indices.reversed() {
+            let candidate = window.titlebarAccessoryViewControllers[index]
+            if candidate is HummingbirdTabBarAccessoryViewController, candidate !== accessory {
+                window.removeTitlebarAccessoryViewController(at: index)
+            }
+        }
+        let width = max(0, window.contentLayoutRect.width)
+        hosting.view.frame = NSRect(x: 0, y: 0, width: width, height: Self.height)
+        accessory.view.frame = hosting.view.frame
+        if !window.titlebarAccessoryViewControllers.contains(where: { $0 === accessory }) {
+            window.addTitlebarAccessoryViewController(accessory)
+        }
+        window.contentView?.needsLayout = true
+    }
+
+    private nonisolated func reconcileAfterFullScreenTransition() {
+        // AppKit can report its old content-layout rect until the following
+        // main-run-loop turn after a fullscreen transition.
+        DispatchQueue.main.async { [weak self] in self?.reconcile() }
+    }
+}
+
+@MainActor
+private final class WindowTabBarAccessoryRegistry {
+    static let shared = WindowTabBarAccessoryRegistry()
+    private struct Entry { weak var window: NSWindow?; let manager: WindowTabBarAccessoryManager }
+    private var entries: [ObjectIdentifier: Entry] = [:]
+
+    func manager(for window: NSWindow, app: AppModel) -> WindowTabBarAccessoryManager {
+        purgeReleasedWindows()
+        let key = ObjectIdentifier(window)
+        if let entry = entries[key], entry.window === window { return entry.manager }
+        let manager = WindowTabBarAccessoryManager(window: window, app: app)
+        entries[key] = Entry(window: window, manager: manager)
+        return manager
+    }
+
+    func releaseManager(for window: NSWindow) {
+        let key = ObjectIdentifier(window)
+        if entries[key]?.manager.isUnused == true { entries[key] = nil }
+        purgeReleasedWindows()
+    }
+
+    private func purgeReleasedWindows() {
+        entries = entries.filter { $0.value.window != nil }
+    }
+}
+
+/// Mounts `BrowserTabStrip` as a window-managed titlebar accessory so it
+/// occupies its own row below the toolbar, matching Safari and iTerm2.
+@MainActor
+struct TabBarAccessoryInstaller: NSViewRepresentable {
+    let app: AppModel
+    let isHidden: Bool
+
+    func makeNSView(context: Context) -> _WindowObserverView {
+        let v = _WindowObserverView()
+        v.coordinator = context.coordinator
+        return v
+    }
+
+    func updateNSView(_ nsView: _WindowObserverView, context: Context) {
+        context.coordinator.app = app
+        context.coordinator.isHidden = isHidden
+        context.coordinator.move(to: nsView.window)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(app: app, isHidden: isHidden) }
+
+    static func dismantleNSView(_ nsView: _WindowObserverView, coordinator: Coordinator) {
+        coordinator.move(to: nil)
+        nsView.coordinator = nil
+    }
+
+    @MainActor
+    final class Coordinator {
+        var app: AppModel
+        var isHidden: Bool
+        private let owner = UUID()
+        private weak var installedWindow: NSWindow?
+
+        init(app: AppModel, isHidden: Bool) {
+            self.app = app
+            self.isHidden = isHidden
+        }
+
+        func move(to window: NSWindow?) {
+            if installedWindow !== window, let old = installedWindow {
+                let registry = WindowTabBarAccessoryRegistry.shared
+                let manager = registry.manager(for: old, app: app)
+                manager.detach(owner: owner)
+                registry.releaseManager(for: old)
+            }
+            guard let window else { installedWindow = nil; return }
+            let manager = WindowTabBarAccessoryRegistry.shared.manager(for: window, app: app)
+            manager.attach(owner: owner, app: app, isHidden: isHidden)
+            installedWindow = window
+        }
+    }
+
+    @MainActor
+    final class _WindowObserverView: NSView {
+        weak var coordinator: Coordinator?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            coordinator?.move(to: window)
+        }
+    }
+}
+#endif
+
+#if os(macOS) && !BACKEND_GTK
+@MainActor
+final class MacOSFullscreenPresenter: NSObject, NSWindowDelegate {
+    private weak var model: PlayerModel?
+    private var window: NSWindow?
+
+    func install(on model: PlayerModel) {
+        self.model = model
+        model.installFullscreenPresenter(
+            present: { [weak self] in self?.open() },
+            dismiss: { [weak self] in self?.requestClose() }
+        )
+    }
+
+    func uninstall() {
+        model?.removeFullscreenPresenter()
+        requestClose()
+        model = nil
+    }
+
+    private func open() {
+        guard window == nil, let model else { return }
+        let hosting = NSHostingController(
+            rootView: FullscreenPlayerView(model: model).preferredColorScheme(.dark)
+        )
+        let w = NSWindow(contentViewController: hosting)
+        // A dedicated borderless window makes fullscreen player chrome behave
+        // like native media apps: no stranded titlebar/traffic-light strip.
+        w.styleMask = [.borderless, .resizable]
+        w.backgroundColor = .black
+        w.isReleasedWhenClosed = false
+        w.collectionBehavior = .fullScreenPrimary
+        w.delegate = self
+        w.setContentSize(NSSize(width: 1280, height: 720))
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        w.toggleFullScreen(nil)
+        window = w
+        model.fullscreenDidChange(true)
+    }
+
+    private func requestClose() {
+        guard let w = window else { return }
+        if w.styleMask.contains(.fullScreen) {
+            // Exit fullscreen first; windowDidExitFullScreen will close the window.
+            w.toggleFullScreen(nil)
+        } else {
+            performClose(w)
+        }
+    }
+
+    private func performClose(_ w: NSWindow) {
+        window = nil
+        w.delegate = nil
+        w.close()
+        model?.fullscreenDidChange(false)
+    }
+
+    nonisolated func windowDidExitFullScreen(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            guard let w = window else { return }
+            performClose(w)
+        }
+    }
+
+    nonisolated func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            guard window != nil else { return }
+            window = nil
+            model?.fullscreenDidChange(false)
+        }
+    }
+}
+#endif
 
 @MainActor
 struct LazyContentStack<Content: View>: View {
@@ -55,6 +323,109 @@ extension View {
     }
 }
 
+private struct ApplicationLifecycleModifier: ViewModifier {
+    let model: AppModel
+    #if canImport(SwiftUI) && !BACKEND_GTK
+    @Environment(\.scenePhase) private var scenePhase
+    #endif
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if canImport(SwiftUI) && !BACKEND_GTK
+        content.onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                model.library.flushHistory()
+                model.library.persistSubscriptionState()
+                Task.detached { await Storage.flush() }
+            }
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+extension View {
+    func observesApplicationLifecycle(_ model: AppModel) -> some View {
+        modifier(ApplicationLifecycleModifier(model: model))
+    }
+
+    @ViewBuilder
+    func configuresVisualAuditRoute(_ configure: @escaping @MainActor @Sendable () -> Void) -> some View {
+        #if DEBUG && os(tvOS)
+        task { configure() }
+        #else
+        self
+        #endif
+    }
+}
+
+@MainActor
+struct DebugSceneSelection<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        #if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
+        switch ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] {
+        case "player": TVPlayerDebugScene()
+        case "player-seek": TVSeekDebugScene()
+        case "install-preview": TVInstallPreviewDebugScene()
+        default: content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+@MainActor
+struct BrowserTopToolbar: ToolbarContent {
+    let tab: BrowserTab
+    let showTabOverview: () -> Void
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            BrowserBackButton(tab: tab)
+            BrowserForwardButton(tab: tab)
+        }
+        #if os(tvOS)
+        ToolbarItem(placement: .primaryAction) { AppSectionMenu() }
+        ToolbarItem(placement: .primaryAction) {
+            BrowserTabOverviewButton(action: showTabOverview)
+        }
+        #endif
+    }
+}
+
+private struct BrowserTopToolbarModifier: ViewModifier {
+    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
+    let context: BrowserToolbarContext?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        content.toolbar {
+            if let context, !isOverviewPreview {
+                BrowserTopToolbar(tab: context.tab, showTabOverview: context.showTabOverview)
+            }
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+extension View {
+    func browserTopToolbar(_ context: BrowserToolbarContext?) -> some View {
+        modifier(BrowserTopToolbarModifier(context: context))
+    }
+}
+
 @MainActor
 struct LoadMoreButton: View {
     let feed: FeedModel
@@ -68,6 +439,159 @@ struct LoadMoreButton: View {
                 .frame(maxWidth: .infinity)
         }
         #endif
+    }
+}
+
+struct AdaptiveMenuItem<Value>: Identifiable {
+    let id: String
+    let title: String
+    let systemImage: String
+    let value: Value
+}
+
+@MainActor
+struct AdaptiveActionMenu<Value>: View {
+    let title: String
+    let systemImage: String
+    let items: [AdaptiveMenuItem<Value>]
+    let action: @MainActor @Sendable (Value, String) -> Void
+
+    var body: some View {
+        #if os(tvOS)
+        NativeActionMenuButton(
+            title: title,
+            systemImage: systemImage,
+            items: items,
+            action: action
+        )
+        #else
+        Menu {
+            ForEach(items) { item in
+                Button { action(item.value, item.title) } label: {
+                    Label(item.title, systemImage: item.systemImage)
+                }
+            }
+        } label: {
+            Image(systemName: systemImage)
+        }
+        .accessibilityLabel(title)
+        #endif
+    }
+}
+
+#if os(tvOS)
+@MainActor
+private struct NativeActionMenuButton<Value>: UIViewRepresentable {
+    let title: String
+    let systemImage: String
+    let items: [AdaptiveMenuItem<Value>]
+    let action: @MainActor @Sendable (Value, String) -> Void
+
+    func makeUIView(context: Context) -> UIButton {
+        let button = UIButton(type: .system)
+        button.setImage(UIImage(systemName: systemImage), for: .normal)
+        button.accessibilityLabel = title
+        button.showsMenuAsPrimaryAction = true
+        button.menu = makeMenu()
+        return button
+    }
+
+    func updateUIView(_ button: UIButton, context: Context) {
+        button.menu = makeMenu()
+    }
+
+    private func makeMenu() -> UIMenu {
+        UIMenu(title: title, children: items.map { item in
+            UIAction(title: item.title, image: UIImage(systemName: item.systemImage)) { _ in
+                Task { @MainActor in action(item.value, item.title) }
+            }
+        })
+    }
+}
+#endif
+
+private struct BrowserWindowChromeModifier: ViewModifier {
+    let model: AppModel
+    @Binding var overviewPresented: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS) || os(tvOS)
+        content
+        #else
+        content
+            .toolbar {
+                if !overviewPresented {
+                    BrowserTopToolbar(tab: model.activeTab) { overviewPresented = true }
+                }
+            }
+            .background {
+                #if os(macOS) && !BACKEND_GTK
+                TabBarAccessoryInstaller(app: model, isHidden: overviewPresented)
+                    .frame(width: 0, height: 0)
+                #endif
+            }
+        #endif
+    }
+}
+
+private struct BrowserTabControlsModifier: ViewModifier {
+    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
+    @Binding var overviewPresented: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.safeAreaInset(edge: .bottom, spacing: 0) {
+            if !isOverviewPreview {
+                MobileBrowserToolbar(showingTabOverview: $overviewPresented)
+            }
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+extension View {
+    func browserWindowChrome(model: AppModel, overviewPresented: Binding<Bool>) -> some View {
+        modifier(BrowserWindowChromeModifier(model: model, overviewPresented: overviewPresented))
+    }
+
+    func browserTabControls(overviewPresented: Binding<Bool>) -> some View {
+        modifier(BrowserTabControlsModifier(overviewPresented: overviewPresented))
+    }
+}
+
+private struct PlayerFullscreenPresentationModifier: ViewModifier {
+    let model: PlayerModel
+    #if os(macOS) && !BACKEND_GTK
+    @State private var presenter = MacOSFullscreenPresenter()
+    #endif
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(macOS) && !BACKEND_GTK
+        content
+            .onAppear { presenter.install(on: model) }
+            .onDisappear { presenter.uninstall() }
+        #elseif canImport(UIKit)
+        // AVPlayerViewController owns fullscreen presentation on UIKit.
+        content
+        #else
+        let isFullscreen = model.isFullscreen
+        content.fullScreenCover(
+            isPresented: Binding(get: { isFullscreen }, set: { if !$0 { model.dismissFullscreen() } })
+        ) {
+            FullscreenPlayerView(model: model)
+        }
+        #endif
+    }
+}
+
+extension View {
+    func playerFullscreenPresentation(model: PlayerModel) -> some View {
+        modifier(PlayerFullscreenPresentationModifier(model: model))
     }
 }
 

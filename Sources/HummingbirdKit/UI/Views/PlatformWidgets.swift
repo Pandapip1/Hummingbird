@@ -420,7 +420,7 @@ extension View {
 
     @ViewBuilder
     func configuresVisualAuditRoute(_ configure: @escaping @MainActor @Sendable () -> Void) -> some View {
-        #if DEBUG && os(tvOS)
+        #if DEBUG
         task { configure() }
         #else
         self

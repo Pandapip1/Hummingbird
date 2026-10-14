@@ -1,0 +1,12 @@
+{
+  "client_id": "https://eightybps.com/oauth-client-metadata.json",
+  "application_type": "native",
+  "client_name": "Hummingbird",
+  "client_uri": "https://eightybps.com/",
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "redirect_uris": ["com.eightybps.hummingbird:/oauth/callback"],
+  "scope": "atproto space:com.eightybps.hummingbird.profile?authority=self&skey=self&manage=create",
+  "token_endpoint_auth_method": "none",
+  "dpop_bound_access_tokens": true
+}

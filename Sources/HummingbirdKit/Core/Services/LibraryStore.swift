@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import ATProtoKit
 
 @MainActor
 @Observable
@@ -11,13 +12,18 @@ final class LibraryStore {
     /// Most recent first-page results per channel URL, used when a channel is rate-limited or fails.
     private(set) var feedCache: [String: [SavedVideo]] = [:]
     private(set) var homeCache: [SavedVideo] = []
+    @ObservationIgnored private let profileJournal: ProfileMutationJournal?
+    @ObservationIgnored private var applyingRemoteChange = false
+    @ObservationIgnored private var watchLaterPositions: [String: Int] = [:]
 
     static let historyLimit = 2000
 
-    init(snapshot: LibraryPersistenceSnapshot = .empty) {
+    init(snapshot: LibraryPersistenceSnapshot = .empty, profileJournal: ProfileMutationJournal? = nil) {
+        self.profileJournal = profileJournal
         subscriptions = snapshot.subscriptions
         playlists = snapshot.playlists
         watchLater = snapshot.watchLater
+        watchLaterPositions = Dictionary(uniqueKeysWithValues: snapshot.watchLater.enumerated().map { ($0.element.id, $0.offset) })
         history = snapshot.history
         feedCache = snapshot.feedCache
         homeCache = snapshot.homeCache
@@ -29,22 +35,28 @@ final class LibraryStore {
 
     func subscribe(channel: ChannelInfo, pluginId: String) {
         guard !isSubscribed(channel.url) else { return }
-        subscriptions.append(Subscription(channelURL: channel.url, pluginId: pluginId, name: channel.name,
-                                          thumbnail: channel.thumbnail, subscribers: channel.subscribers))
+        let subscription = Subscription(channelURL: channel.url, pluginId: pluginId, name: channel.name,
+                                        thumbnail: channel.thumbnail, subscribers: channel.subscribers)
+        subscriptions.append(subscription)
         Storage.save(subscriptions, name: "subscriptions")
+        if !applyingRemoteChange { profileJournal?.put(.subscription(subscription)) }
     }
 
     func subscribe(url: String, pluginId: String, name: String, thumbnail: String?) {
         guard !isSubscribed(url) else { return }
-        subscriptions.append(Subscription(channelURL: url, pluginId: pluginId, name: name, thumbnail: thumbnail))
+        let subscription = Subscription(channelURL: url, pluginId: pluginId, name: name, thumbnail: thumbnail)
+        subscriptions.append(subscription)
         Storage.save(subscriptions, name: "subscriptions")
+        if !applyingRemoteChange { profileJournal?.put(.subscription(subscription)) }
     }
 
     func unsubscribe(_ channelURL: String) {
+        let key = HummingbirdProfileSchema.key(for: channelURL)
         subscriptions.removeAll { $0.channelURL == channelURL }
         feedCache[channelURL] = nil
         Storage.save(subscriptions, name: "subscriptions")
         Storage.save(feedCache, name: "feed_cache")
+        if !applyingRemoteChange { profileJournal?.delete(collection: HummingbirdProfileSchema.subscription, key: key) }
     }
 
     func updateSubscription(_ channelURL: String, fetched: Date, newest: Int?, cache: [SavedVideo]?) {
@@ -69,18 +81,37 @@ final class LibraryStore {
     func isInWatchLater(_ v: SavedVideo) -> Bool { watchLater.contains { $0.id == v.id } }
 
     func toggleWatchLater(_ v: SavedVideo) {
-        if let i = watchLater.firstIndex(where: { $0.id == v.id }) { watchLater.remove(at: i) } else { watchLater.append(v) }
+        if let i = watchLater.firstIndex(where: { $0.id == v.id }) {
+            watchLater.remove(at: i)
+            watchLaterPositions[v.id] = nil
+            if !applyingRemoteChange { profileJournal?.delete(collection: HummingbirdProfileSchema.watchLater,
+                                   key: HummingbirdProfileSchema.key(for: v.id))
+            }
+        } else {
+            watchLater.append(v)
+            watchLaterPositions[v.id] = watchLater.count - 1
+            if !applyingRemoteChange {
+                profileJournal?.put(.watchLater(.init(video: v, position: watchLater.count - 1)))
+            }
+        }
         Storage.save(watchLater, name: "watch_later")
     }
 
     func moveWatchLater(from: IndexSet, to: Int) {
         watchLater.move(fromOffsets: from, toOffset: to)
         Storage.save(watchLater, name: "watch_later")
+        journalWatchLaterOrder()
     }
 
     func removeWatchLater(at offsets: IndexSet) {
+        let removed = offsets.map { watchLater[$0] }
         watchLater.remove(atOffsets: offsets)
+        for video in removed { watchLaterPositions[video.id] = nil }
         Storage.save(watchLater, name: "watch_later")
+        for video in removed {
+            profileJournal?.delete(collection: HummingbirdProfileSchema.watchLater,
+                                   key: HummingbirdProfileSchema.key(for: video.id))
+        }
     }
 
     // MARK: playlists
@@ -90,6 +121,7 @@ final class LibraryStore {
         let p = Playlist(name: name, videos: videos)
         playlists.append(p)
         Storage.save(playlists, name: "playlists")
+        if !applyingRemoteChange { profileJournal?.put(.playlist(p)) }
         return p
     }
 
@@ -97,11 +129,15 @@ final class LibraryStore {
         guard let i = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
         playlists[i].name = name; playlists[i].updated = Date()
         Storage.save(playlists, name: "playlists")
+        if !applyingRemoteChange { profileJournal?.put(.playlist(playlists[i])) }
     }
 
     func deletePlaylist(_ id: UUID) {
         playlists.removeAll { $0.id == id }
         Storage.save(playlists, name: "playlists")
+        if !applyingRemoteChange { profileJournal?.delete(collection: HummingbirdProfileSchema.playlist,
+                               key: RecordKey(rawValue: id.uuidString.lowercased())!)
+        }
     }
 
     func add(_ v: SavedVideo, to playlistID: UUID) {
@@ -109,18 +145,21 @@ final class LibraryStore {
               !playlists[i].videos.contains(where: { $0.id == v.id }) else { return }
         playlists[i].videos.append(v); playlists[i].updated = Date()
         Storage.save(playlists, name: "playlists")
+        if !applyingRemoteChange { profileJournal?.put(.playlist(playlists[i])) }
     }
 
     func removeVideos(at offsets: IndexSet, from playlistID: UUID) {
         guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
         playlists[i].videos.remove(atOffsets: offsets); playlists[i].updated = Date()
         Storage.save(playlists, name: "playlists")
+        if !applyingRemoteChange { profileJournal?.put(.playlist(playlists[i])) }
     }
 
     func moveVideos(from: IndexSet, to: Int, in playlistID: UUID) {
         guard let i = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
         playlists[i].videos.move(fromOffsets: from, toOffset: to); playlists[i].updated = Date()
         Storage.save(playlists, name: "playlists")
+        if !applyingRemoteChange { profileJournal?.put(.playlist(playlists[i])) }
     }
 
     // MARK: history
@@ -131,17 +170,101 @@ final class LibraryStore {
         let entry = HistoryEntry(video: v, position: seconds, date: Date())
         if let i = history.firstIndex(where: { $0.id == v.id }) { history.remove(at: i) }
         history.insert(entry, at: 0)
-        if history.count > Self.historyLimit { history.removeLast(history.count - Self.historyLimit) }
+        let evicted: [HistoryEntry]
+        if history.count > Self.historyLimit {
+            evicted = Array(history.suffix(history.count - Self.historyLimit))
+            history.removeLast(evicted.count)
+        } else {
+            evicted = []
+        }
+        if !applyingRemoteChange { profileJournal?.put(.history(entry)) }
+        if !applyingRemoteChange {
+            for old in evicted {
+                profileJournal?.delete(collection: HummingbirdProfileSchema.history,
+                                       key: HummingbirdProfileSchema.key(for: old.id))
+            }
+        }
     }
 
     func flushHistory() { Storage.save(history, name: "history") }
 
     func removeHistory(at offsets: IndexSet) {
+        let removed = offsets.map { history[$0] }
         history.remove(atOffsets: offsets)
         flushHistory()
+        for entry in removed {
+            profileJournal?.delete(collection: HummingbirdProfileSchema.history,
+                                   key: HummingbirdProfileSchema.key(for: entry.id))
+        }
     }
 
-    func clearHistory() { history = []; flushHistory() }
+    func clearHistory() {
+        let removed = history
+        history = []
+        flushHistory()
+        for entry in removed {
+            profileJournal?.delete(collection: HummingbirdProfileSchema.history,
+                                   key: HummingbirdProfileSchema.key(for: entry.id))
+        }
+    }
+
+    func applyRemote(_ entity: ProfileEntity, deleted: Bool) {
+        applyingRemoteChange = true
+        defer { applyingRemoteChange = false }
+        switch entity {
+        case .subscription(let value):
+            if deleted { unsubscribe(value.channelURL) }
+            else if let index = subscriptions.firstIndex(where: { $0.id == value.id }) {
+                subscriptions[index] = value; Storage.save(subscriptions, name: "subscriptions")
+            } else { subscriptions.append(value); Storage.save(subscriptions, name: "subscriptions") }
+        case .playlist(let value):
+            if deleted { deletePlaylist(value.id) }
+            else if let index = playlists.firstIndex(where: { $0.id == value.id }) {
+                playlists[index] = value; Storage.save(playlists, name: "playlists")
+            } else { playlists.append(value); Storage.save(playlists, name: "playlists") }
+        case .watchLater(let value):
+            if deleted {
+                watchLater.removeAll { $0.id == value.id }
+                watchLaterPositions[value.id] = nil
+            } else if let index = watchLater.firstIndex(where: { $0.id == value.id }) {
+                watchLater[index] = value.video
+                watchLaterPositions[value.id] = value.position
+            } else {
+                watchLater.append(value.video)
+                watchLaterPositions[value.id] = value.position
+            }
+            watchLater.sort {
+                let lhs = watchLaterPositions[$0.id] ?? .max
+                let rhs = watchLaterPositions[$1.id] ?? .max
+                return lhs == rhs ? $0.id < $1.id : lhs < rhs
+            }
+            Storage.save(watchLater, name: "watch_later")
+        case .history(let value):
+            history.removeAll { $0.id == value.id }
+            if !deleted { history.append(value); history.sort { $0.date > $1.date } }
+            flushHistory()
+        case .plugin:
+            break
+        }
+    }
+
+    func applyRemoteDelete(collection: NSID, key: RecordKey) {
+        applyingRemoteChange = true
+        defer { applyingRemoteChange = false }
+        if collection == HummingbirdProfileSchema.subscription {
+            for value in subscriptions where HummingbirdProfileSchema.key(for: value.id) == key { unsubscribe(value.id) }
+        } else if collection == HummingbirdProfileSchema.playlist {
+            for value in playlists where RecordKey(rawValue: value.id.uuidString.lowercased()) == key { deletePlaylist(value.id) }
+        } else if collection == HummingbirdProfileSchema.watchLater {
+            let removed = watchLater.filter { HummingbirdProfileSchema.key(for: $0.id) == key }
+            watchLater.removeAll { HummingbirdProfileSchema.key(for: $0.id) == key }
+            for value in removed { watchLaterPositions[value.id] = nil }
+            Storage.save(watchLater, name: "watch_later")
+        } else if collection == HummingbirdProfileSchema.history {
+            history.removeAll { HummingbirdProfileSchema.key(for: $0.id) == key }
+            flushHistory()
+        }
+    }
 
     // MARK: backup
 
@@ -160,5 +283,19 @@ final class LibraryStore {
         Storage.save(playlists, name: "playlists")
         Storage.save(watchLater, name: "watch_later")
         flushHistory()
+        for subscription in b.subscriptions { profileJournal?.put(.subscription(subscription)) }
+        for playlist in b.playlists { profileJournal?.put(.playlist(playlist)) }
+        for (position, video) in watchLater.enumerated() {
+            profileJournal?.put(.watchLater(.init(video: video, position: position)))
+        }
+        for entry in b.history { profileJournal?.put(.history(entry)) }
+    }
+
+    private func journalWatchLaterOrder() {
+        guard !applyingRemoteChange else { return }
+        for (position, video) in watchLater.enumerated() {
+            watchLaterPositions[video.id] = position
+            profileJournal?.put(.watchLater(.init(video: video, position: position)))
+        }
     }
 }

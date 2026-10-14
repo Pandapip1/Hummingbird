@@ -28,10 +28,14 @@ targets:
       path: Apps/iOS/Info.plist
       properties:
         CFBundleDisplayName: Hummingbird
+        ATProtoKeychainAccessGroup: $(AppIdentifierPrefix)com.eightybps.Hummingbird.shared
         CFBundleURLTypes:
           - CFBundleURLName: app.hummingbird.credential-login
             CFBundleURLSchemes:
               - hummingbird
+          - CFBundleURLName: com.eightybps.hummingbird.oauth
+            CFBundleURLSchemes:
+              - com.eightybps.hummingbird
         UILaunchScreen: {}
         UIBackgroundModes:
           - audio
@@ -50,6 +54,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.Hummingbird
+        CODE_SIGN_ENTITLEMENTS: Apps/iOS/Hummingbird.entitlements
         DEVELOPMENT_TEAM: NMM6M6QVAT
         TARGETED_DEVICE_FAMILY: "1,2,3,7"
         SUPPORTED_PLATFORMS: "appletvos appletvsimulator iphoneos iphonesimulator macosx xros xrsimulator"

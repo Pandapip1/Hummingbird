@@ -72,6 +72,8 @@ var targets: [Target] = [
             "AdvancedVideoPlayerKit",
             .target(name: "CMainThreadSampler", condition: .when(platforms: [.iOS])),
             "CSQLite",
+            .product(name: "ATProtoKit", package: "ATProtoKit"),
+            .product(name: "Security", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),
             .product(name: "Crypto", package: "swift-crypto"),
@@ -161,6 +163,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
         .package(url: "https://github.com/fwcd/swift-qrcode-generator.git", from: "1.0.0"),
         .package(path: "Vendor/SwiftOpenUI"),
+        .package(path: "Packages/ATProtoKit"),
     ],
     targets: targets,
     swiftLanguageModes: [.v6]

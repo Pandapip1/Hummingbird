@@ -57,6 +57,7 @@ rec {
       librsvg # gdk-pixbuf SVG loader, for icon assets
       webkitGTK # WebKitGTK 6 with upstream ICU routed to private ELF sonames
       libsoup_3 # WebKitGTK's public pkg-config dependency
+      libsecret # Security.framework-compatible credential persistence
 
       # Not linked against directly: these appear only in the
       # Requires.private chains of glib, gio, pango, fontconfig and libX11.

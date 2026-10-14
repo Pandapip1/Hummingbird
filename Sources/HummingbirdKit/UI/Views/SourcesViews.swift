@@ -425,6 +425,8 @@ struct SettingRow: View {
 
 @MainActor
 struct AppSettingsView: View {
+    @Environment(AppModel.self) private var app
+    @State private var accountIdentifier = ""
     @AppStorage("maxVideoHeight") private var maxHeight = 1080
     @AppStorage("preferAdaptive") private var preferAdaptive = true
     @AppStorage("showSubtitlesByDefault") private var subtitlesDefault = false
@@ -433,6 +435,32 @@ struct AppSettingsView: View {
 
     var body: some View {
         Form {
+            Section("Sync") {
+                if let account = app.profileAccount.account {
+                    LabeledContent("Account", value: app.profileAccount.handle ?? account.rawValue)
+                    if let sync = app.profileAccount.syncService {
+                        switch sync.state {
+                        case .idle: Text(sync.lastSyncedAt == nil ? "Ready to sync" : "Synced")
+                        case .syncing: ProgressView("Syncing…")
+                        case .offline: Text("Offline — changes are queued")
+                        case .failed(let message): Text(message).foregroundStyle(.red)
+                        }
+                    }
+                    Button("Sync Now") { Task { await app.profileAccount.sync() } }
+                    Button("Sign Out", role: .destructive) { app.profileAccount.signOut() }
+                } else {
+                    TextField("Handle or DID", text: $accountIdentifier)
+                        .settingsTextEntryStyle()
+                    Button("Sign In with AT Protocol") {
+                        Task { await app.profileAccount.signIn(identifier: accountIdentifier) }
+                    }
+                    .disabled(app.profileAccount.isSigningIn || accountIdentifier.isEmpty)
+                    if app.profileAccount.isSigningIn { ProgressView("Opening your account provider…") }
+                    if let message = app.profileAccount.errorMessage {
+                        Text(message).foregroundStyle(.red)
+                    }
+                }
+            }
             Section("Playback") {
                 Picker("Maximum resolution", selection: $maxHeight) {
                     ForEach([360, 480, 720, 1080, 1440, 2160], id: \.self) { Text("\($0)p").tag($0) }

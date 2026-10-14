@@ -37,6 +37,8 @@
                 fileset = lib.fileset.unions [
                   ./Package.swift
                   ./Sources
+                  ./Packages
+                  ./Apps/Linux/Info.json
                   # The manifest declares a test target, and SwiftPM validates every
                   # declared path even for a --product build.
                   ./Tests

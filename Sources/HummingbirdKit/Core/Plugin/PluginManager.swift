@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import DebugKit
+import ATProtoKit
 
 #if DEBUG
 private final class PluginDebugLogger: @unchecked Sendable {
@@ -83,6 +84,8 @@ final class PluginManager {
 
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
+    @ObservationIgnored private let profileJournal: ProfileMutationJournal?
+    @ObservationIgnored private var applyingRemoteChange = false
     @ObservationIgnored private let urlSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 30
@@ -96,8 +99,9 @@ final class PluginManager {
         let body: String?
     }
 
-    init(installed: [InstalledPlugin] = []) {
+    init(installed: [InstalledPlugin] = [], profileJournal: ProfileMutationJournal? = nil) {
         self.installed = installed
+        self.profileJournal = profileJournal
     }
 
     private func persist() { Storage.save(installed, name: "plugins") }
@@ -251,6 +255,7 @@ final class PluginManager {
         installed.sort { $0.config.name.localizedCaseInsensitiveCompare($1.config.name) == .orderedAscending }
         invalidate(entry.id)
         persist()
+        if !applyingRemoteChange { recordPlugin(entry) }
     }
 
     func remove(_ id: String) {
@@ -259,6 +264,9 @@ final class PluginManager {
         AuthKeychain.save(nil, pluginID: id, kind: "auth")
         AuthKeychain.save(nil, pluginID: id, kind: "captcha")
         persist()
+        if !applyingRemoteChange { profileJournal?.delete(collection: HummingbirdProfileSchema.plugin,
+                               key: HummingbirdProfileSchema.key(for: id))
+        }
     }
 
     func setEnabled(_ id: String, _ on: Bool) {
@@ -266,6 +274,7 @@ final class PluginManager {
         installed[i].enabled = on
         if !on { invalidate(id) }
         persist()
+        if !applyingRemoteChange { recordPlugin(installed[i]) }
     }
 
     // MARK: settings
@@ -279,6 +288,7 @@ final class PluginManager {
         installed[i].settings[key] = value
         invalidate(pluginID)
         persist()
+        if !applyingRemoteChange { recordPlugin(installed[i]) }
     }
 
     // MARK: credentials
@@ -354,5 +364,31 @@ final class PluginManager {
             throw InstallError.download("HTTP \(http.statusCode) from \(url.host ?? url.absoluteString)")
         }
         return data
+    }
+
+    /// Only the deliberately constrained `SyncedPlugin` crosses this boundary;
+    /// runtime source and SourceAuth/keychain data are structurally unavailable.
+    private func recordPlugin(_ plugin: InstalledPlugin) {
+        guard let synced = SyncedPlugin(plugin) else { return }
+        profileJournal?.put(.plugin(synced))
+    }
+
+    func applyRemote(_ plugin: SyncedPlugin) async throws {
+        let preview = try await prepareInstall(from: plugin.sourceURL)
+        applyingRemoteChange = true
+        defer { applyingRemoteChange = false }
+        commit(preview)
+        guard let index = installed.firstIndex(where: { $0.id == plugin.pluginID }) else { return }
+        installed[index].enabled = plugin.enabled
+        installed[index].settings = plugin.settings
+        invalidate(plugin.pluginID)
+        persist()
+    }
+
+    func applyRemoteDelete(key: RecordKey) {
+        guard let id = installed.first(where: { HummingbirdProfileSchema.key(for: $0.id) == key })?.id else { return }
+        applyingRemoteChange = true
+        defer { applyingRemoteChange = false }
+        remove(id)
     }
 }

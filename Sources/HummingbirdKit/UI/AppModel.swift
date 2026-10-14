@@ -1,6 +1,7 @@
 import Foundation
 import SwiftOpenUI
 import Observation
+import ATProtoKit
 #if DEBUG && os(iOS)
 import UIKit
 #endif
@@ -16,6 +17,8 @@ final class AppModel {
     let homeFeed: FeedModel
     let playbackQueue: PlaybackQueue
     let searchHistory: SearchHistory
+    let profileJournal: ProfileMutationJournal
+    let profileAccount: ProfileAccountService
     var incomingCredentialPairing: CredentialPairingRequest?
 
     /// Ordinary browser tabs, including app sections opened from the menu.
@@ -78,14 +81,21 @@ final class AppModel {
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
     init(persistence: AppPersistenceSnapshot = .empty) {
-        let plugins = PluginManager(installed: persistence.plugins)
-        let library = LibraryStore(snapshot: persistence.library)
+        let profileJournal = ProfileMutationJournal(
+            storageDirectory: Storage.directory.appendingPathComponent("profile-sync", isDirectory: true)
+        )
+        let plugins = PluginManager(installed: persistence.plugins, profileJournal: profileJournal)
+        let library = LibraryStore(snapshot: persistence.library, profileJournal: profileJournal)
         let platform = PlatformService(plugins: plugins)
         self.plugins = plugins
         self.library = library
         self.platform = platform
         self.playbackQueue = PlaybackQueue(restored: persistence.playbackQueue)
         self.searchHistory = SearchHistory(load: { persistence.searchHistory })
+        self.profileJournal = profileJournal
+        self.profileAccount = ProfileAccountService(
+            mutationJournal: profileJournal, library: library, plugins: plugins
+        )
         let initialTab = BrowserTab.hummingbirdTab()
         initialTab.push(.home, title: "Home")
         self.contentTabs = [initialTab]

@@ -7,6 +7,7 @@
   swiftpm,
   pkg-config,
   makeBinaryWrapper,
+  makeDesktopItem,
   writableTmpDirAsHomeHook,
   wrapGAppsHook4,
   gst_all_1,
@@ -93,6 +94,14 @@ let
     gst-plugins-ugly
     gst-libav
   ];
+  desktopItem = makeDesktopItem {
+    name = "com.eightybps.Hummingbird";
+    desktopName = "Hummingbird";
+    exec = "hummingbird-gtk %u";
+    terminal = false;
+    categories = [ "AudioVideo" "Video" ];
+    mimeTypes = [ "x-scheme-handler/com.eightybps.hummingbird" ];
+  };
 in
 stdenv.mkDerivation {
   pname = "hummingbird-gtk";
@@ -174,6 +183,7 @@ stdenv.mkDerivation {
     binPath="$(swiftpmBinPath)"
     mkdir -p $out/libexec/hummingbird $out/bin
     cp "$binPath/Hummingbird-gtk" $out/libexec/hummingbird/
+    cp Apps/Linux/Info.json $out/libexec/hummingbird/
 
     # SwiftPM resource bundles (the plugin prelude, the Material Symbols font)
     # are looked up next to the executable, so they travel with it.
@@ -183,6 +193,8 @@ stdenv.mkDerivation {
     done
 
     makeWrapper $out/libexec/hummingbird/Hummingbird-gtk $out/bin/hummingbird-gtk
+    mkdir -p $out/share/applications
+    cp ${desktopItem}/share/applications/*.desktop $out/share/applications/
 
     runHook postInstall
   '';

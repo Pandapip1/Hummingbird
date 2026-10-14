@@ -11,6 +11,13 @@ import UIKit
 @MainActor
 @Observable
 final class AppModel {
+    enum LocalNetworkSyncState: Equatable {
+        case disabled
+        case starting
+        case available
+        case failed(String)
+    }
+
     private static let localProfileIDKey = "appsync.localProfileID"
     private static let localNetworkSyncEnabledKey = "appsync.localNetworkSyncEnabled"
     let plugins: PluginManager
@@ -25,6 +32,7 @@ final class AppModel {
     let profileRegistry: AppSyncProfileRegistry?
     let peerService: AppSyncPeerService?
     private(set) var localNetworkSyncEnabled: Bool
+    private(set) var localNetworkSyncState: LocalNetworkSyncState
     var incomingCredentialPairing: CredentialPairingRequest?
 
     /// Ordinary browser tabs, including app sections opened from the menu.
@@ -133,9 +141,7 @@ final class AppModel {
         self.profileRegistry = profileRegistry
         self.peerService = peerService
         self.localNetworkSyncEnabled = localNetworkSyncEnabled
-        if localNetworkSyncEnabled, let profileRegistry {
-            Task { await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID]) }
-        }
+        self.localNetworkSyncState = localNetworkSyncEnabled ? .starting : .disabled
         self.profileAccount = ProfileAccountService(
             changes: profileChanges, library: library, plugins: plugins,
             peerService: peerService, localNetworkEnabled: localNetworkSyncEnabled
@@ -152,6 +158,7 @@ final class AppModel {
             },
             didUpdate: { [weak library] items in library?.updateHomeCache(items) }
         )
+        if localNetworkSyncEnabled { startLocalNetworkSync() }
         #if DEBUG && os(iOS)
         RenderStallMonitor.shared.start { [weak self] in
             guard let self else { return [:] }
@@ -206,13 +213,34 @@ final class AppModel {
         UserDefaults.standard.set(enabled, forKey: Self.localNetworkSyncEnabledKey)
         profileAccount.setLocalNetworkEnabled(enabled)
         if enabled {
-            guard let profileRegistry else { return }
-            Task {
-                await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID])
-                await profileAccount.sync()
-            }
+            startLocalNetworkSync()
         } else {
             profileRegistry?.concealAll()
+            localNetworkSyncState = .disabled
+        }
+    }
+
+    private func startLocalNetworkSync() {
+        guard let profileRegistry else {
+            localNetworkSyncState = .failed("Local profiles are unavailable.")
+            return
+        }
+        localNetworkSyncState = .starting
+        Task {
+            do {
+                try await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID])
+                guard localNetworkSyncEnabled else {
+                    profileRegistry.concealAll()
+                    return
+                }
+                localNetworkSyncState = .available
+                await profileAccount.sync()
+            } catch {
+                profileRegistry.concealAll()
+                if localNetworkSyncEnabled {
+                    localNetworkSyncState = .failed(error.localizedDescription)
+                }
+            }
         }
     }
 }

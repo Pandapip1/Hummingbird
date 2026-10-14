@@ -31,6 +31,22 @@ struct SyncSettingsView: View {
                                 set: { app.setLocalNetworkSyncEnabled($0) }
                             )
                         )
+                        switch app.localNetworkSyncState {
+                        case .disabled:
+                            EmptyView()
+                        case .starting:
+                            ProgressView("Starting local sync…")
+                        case .available:
+                            Label("Available to trusted instances nearby", systemImage: "checkmark.circle")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        case .failed(let message):
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label("Local sync is unavailable", systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.red)
+                                Text(message).font(.footnote).foregroundStyle(.secondary)
+                                Button("Try Again") { app.setLocalNetworkSyncEnabled(false); app.setLocalNetworkSyncEnabled(true) }
+                            }
+                        }
                     } footer: {
                         Text("When enabled, Hummingbird asks for local-network access, advertises this profile with DNS-SD, and exchanges encrypted sync data directly with trusted instances nearby. Your instance identity and offline changes remain stored when this is off.")
                     }

@@ -68,14 +68,15 @@ public final class AppSyncProfileRegistry: @unchecked Sendable {
 
     /// Keeps every profile visible concurrently. A profile gets its own DNS-SD
     /// service instance and signed registration, all using the common service type.
-    public func exposeAll(appIDs: Set<AppSyncAppID>) async {
-        guard let profiles = try? profiles() else { return }
-        await withTaskGroup(of: Void.self) { group in
+    public func exposeAll(appIDs: Set<AppSyncAppID>) async throws {
+        let profiles = try profiles()
+        try await withThrowingTaskGroup(of: Void.self) { group in
             for profile in profiles {
                 group.addTask {
-                    _ = try? await profile.peerService.startLANServer(appIDs: appIDs)
+                    _ = try await profile.peerService.startLANServer(appIDs: appIDs)
                 }
             }
+            try await group.waitForAll()
         }
     }
 

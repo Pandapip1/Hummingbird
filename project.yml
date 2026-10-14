@@ -98,6 +98,16 @@ targets:
         DEVELOPMENT_TEAM: NMM6M6QVAT
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Hummingbird
+  Hummingbird GTK Launcher:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Apps/GTKLauncher
+    dependencies:
+      - target: Hummingbird GTK
+    settings:
+      base:
+        PRODUCT_NAME: Hummingbird GTK
 aggregateTargets:
   Hummingbird GTK:
     buildScripts:
@@ -133,4 +143,7 @@ schemes:
   Hummingbird GTK:
     build:
       targets:
-        Hummingbird GTK: all
+        Hummingbird GTK Launcher: all
+    run:
+      executable: Hummingbird GTK Launcher
+      customWorkingDirectory: $(SRCROOT)

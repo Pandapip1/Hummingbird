@@ -35,8 +35,27 @@
           (mk "hb-run" ''exec swift run Hummingbird-gtk "$@"'')
         ]
         ++ lib.optionals isDarwin [
-          (mk "hb-build-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift build --scratch-path .build/gtk --product Hummingbird-gtk "$@"'')
-          (mk "hb-run-gtk" ''exec env SWIFTOPENUI_BACKEND=gtk swift run --scratch-path .build/gtk Hummingbird-gtk "$@"'')
+          (mk "hb-build-gtk" ''
+            env SWIFTOPENUI_BACKEND=gtk swift build --scratch-path .build/gtk --product Hummingbird-gtk "$@"
+            gtk_bin_path="$(env SWIFTOPENUI_BACKEND=gtk swift build --scratch-path .build/gtk --show-bin-path)"
+            signing_identity="$(security find-identity -v -p codesigning 2>/dev/null \
+              | awk '/Apple Development:/ { print $2; exit }')"
+            if [ -n "$signing_identity" ]; then
+              # Keep the same designated requirement as the native macOS app.
+              # Ad-hoc signing uses the changing cdhash as its identity, which
+              # makes every rebuild lose access to its own Keychain records.
+              codesign --force --sign "$signing_identity" \
+                --identifier com.pandapip1.Hummingbird \
+                "$gtk_bin_path/Hummingbird-gtk"
+            else
+              echo "warning: no Apple Development identity; GTK Keychain access will require reauthorization after rebuilds" >&2
+            fi
+          '')
+          (mk "hb-run-gtk" ''
+            hb-build-gtk
+            gtk_bin_path="$(env SWIFTOPENUI_BACKEND=gtk swift build --scratch-path .build/gtk --show-bin-path)"
+            exec "$gtk_bin_path/Hummingbird-gtk" "$@"
+          '')
           (mk "hb-xcode" ''
             xcodegen generate
             echo "Hummingbird.xcodeproj regenerated from project.yml"
@@ -101,10 +120,16 @@
           ];
 
         buildInputs = deps.baseLibs
+          ++ [ pkgs.gsettings-desktop-schemas ]
           ++ lib.optionals isLinux deps.gtkLibs
           ++ lib.optionals isDarwin deps.darwinGtkLibs;
 
-        env = lib.optionalAttrs isLinux {
+        env = {
+          # Nix stores compiled schemas below a package-specific directory
+          # rather than GLib's global prefix. Libadwaita needs these before it
+          # can construct its style manager, including on the macOS GTK port.
+          GSETTINGS_SCHEMA_DIR = pkgs.glib.getSchemaPath pkgs.gsettings-desktop-schemas;
+        } // lib.optionalAttrs isLinux {
           GST_PLUGIN_SYSTEM_PATH_1_0 = lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" deps.gstPlugins;
           # SwiftPM's system-library importer does not consume pkg-config
           # include flags for transitive C headers, so expose GStreamer dev
@@ -167,6 +192,10 @@
             # Data-only packages such as the icon theme have no lib output;
             # including them makes SwiftPM pass a nonexistent -L path.
             export LIBRARY_PATH="${lib.makeLibraryPath (deps.baseLibs ++ [ pkgs.fontconfig ] ++ lib.filter (dependency: dependency != deps.iconTheme) deps.darwinGtkLibs)}:''${LIBRARY_PATH:-}"
+            # Fontconfig has no system-wide configuration on macOS. Without
+            # the Nix configuration even fonts registered at runtime fail to
+            # resolve, leaving every Image(systemName:) as a missing glyph.
+            export FONTCONFIG_FILE="${pkgs.fontconfig.out}/etc/fonts/fonts.conf"
           ''}
 
           if [ ! -e Vendor/SwiftOpenUI/Package.swift ]; then

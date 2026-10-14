@@ -14,6 +14,23 @@ import AVFoundation
 import UniformTypeIdentifiers
 #endif
 
+/// A full-surface status presentation for loading, locked, empty, and error
+/// states. Keeping the centering contract here prevents backend stack sizing
+/// differences from pulling status content toward an edge.
+@MainActor
+struct CenteredStatusContainer<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack {
+            Spacer()
+            content()
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 @MainActor
 struct ExternalURLLink<Label: View>: View {
     let destination: URL
@@ -753,7 +770,7 @@ private struct SearchEntryModifier: ViewModifier {
                 placement: .navigationBarDrawer(displayMode: .always),
                 prompt: "Search or paste a link"
             )
-            #elseif os(macOS)
+            #elseif os(macOS) && !BACKEND_GTK
             content.browserTabToolbarItem(id: "search.field", placement: .principal) {
                 TextField("Search or paste a link", text: $query)
                     .textFieldStyle(.roundedBorder)

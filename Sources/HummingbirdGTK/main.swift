@@ -29,6 +29,13 @@ private struct GTKProfileRoot: View {
 }
 
 MainActor.assumeIsolated {
+    #if canImport(Security)
+    // This standalone backend-development executable is not the provisioned
+    // native app bundle. Give it its own Keychain service so macOS never tries
+    // to authorize every native-app legacy item against a different executable
+    // identity. It remains a real Keychain store, not a plaintext debug store.
+    AuthKeychain.store = KeychainCredentialStore(serviceNamespace: "gtk")
+    #endif
     // Register backend fonts before the WebKit bootstrap initializes GTK/Pango's
     // default font map, otherwise symbol labels are permanently resolved through
     // a fallback font for this process.

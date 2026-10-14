@@ -22,7 +22,13 @@ guard chdir(repository.path) == 0 else {
     exit(EXIT_FAILURE)
 }
 
-let arguments = [nix, "develop", "--command", executable]
+// Flake evaluation needs Git, but the project intentionally keeps it out of
+// its development shell. Match the command-line workflow and provide Git in a
+// throwaway shell while entering the real environment.
+let arguments = [
+    nix, "shell", "nixpkgs#git", "--command",
+    "nix", "develop", "--command", executable,
+]
 var pointers: [UnsafeMutablePointer<CChar>?] = arguments.map { argument in
     argument.withCString { strdup($0) }
 }

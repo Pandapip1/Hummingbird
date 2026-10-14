@@ -7,6 +7,8 @@ import SwiftOpenUI
 public struct PreparedHummingbirdRoot: View {
     @State private var root: HummingbirdRoot?
     @State private var profileID: UUID?
+    @State private var credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
+    @State private var unlockFailure: String?
     @Environment(\.openWindow) private var openWindow
     private let opensProfilesInNewWindows: Bool
 
@@ -34,11 +36,43 @@ public struct PreparedHummingbirdRoot: View {
                     }
                 )
             } else {
-                ProgressView("Loading Hummingbird…")
-                    .task(id: profileID) {
-                        if let profileID { root = await HummingbirdRoot.prepared(profileID: profileID) }
-                        else { root = await HummingbirdRoot.prepared() }
+                CenteredStatusContainer {
+                    VStack(spacing: 12) {
+                        if credentialsLocked {
+                            Image(systemName: "lock.fill").font(.largeTitle)
+                            Text("Unlock Hummingbird")
+                                .font(.title2.bold())
+                            Text("Unlock your protected plugin credentials to finish opening this profile.")
+                                .foregroundStyle(.secondary)
+                            Button("Unlock") {
+                                Task {
+                                    do {
+                                        try await Task.detached {
+                                            try AuthKeychain.store.requestUnlock()
+                                        }.value
+                                        credentialsLocked = false
+                                        unlockFailure = nil
+                                    } catch {
+                                        unlockFailure = error.localizedDescription
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            if let unlockFailure {
+                                Text("Hummingbird couldn’t unlock your credentials: \(unlockFailure)")
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            ProgressView("Loading Hummingbird…")
+                        }
                     }
+                    .padding()
+                }
+                .task(id: "\(credentialsLocked):\(profileID?.uuidString ?? "default")") {
+                    guard !credentialsLocked else { return }
+                    if let profileID { root = await HummingbirdRoot.prepared(profileID: profileID) }
+                    else { root = await HummingbirdRoot.prepared() }
+                }
             }
         }
     }

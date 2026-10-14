@@ -127,7 +127,7 @@ aggregateTargets:
             exit 1
           fi
           cd "$SRCROOT"
-          exec "$nix_bin" develop --command hb-build-gtk --disable-sandbox
+          exec "$nix_bin" shell nixpkgs#git --command nix develop --command hb-build-gtk --disable-sandbox
     settings:
       base:
         ENABLE_USER_SCRIPT_SANDBOXING: NO

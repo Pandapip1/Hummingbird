@@ -39,6 +39,8 @@ struct HummingbirdApp: App {
 private struct LaunchGate: View {
     @State private var preparedRoot: HummingbirdRoot?
     @State private var selectedProfileID: UUID?
+    @State private var credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
+    @State private var unlockFailure: String?
     @Environment(\.openWindow) private var openWindow
 
     init(profileID: UUID? = nil) {
@@ -72,11 +74,36 @@ private struct LaunchGate: View {
                         .frame(width: 128, height: 128)
                         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     Text("Hummingbird").font(.title.bold())
-                    ProgressView()
+                    if credentialsLocked {
+                        Text("Unlock your protected plugin credentials to continue.")
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                        Button("Unlock") {
+                            Task {
+                                do {
+                                    try await Task.detached {
+                                        try AuthKeychain.store.requestUnlock()
+                                    }.value
+                                    credentialsLocked = false
+                                    unlockFailure = nil
+                                } catch {
+                                    unlockFailure = error.localizedDescription
+                                }
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        if let unlockFailure {
+                            Text("Hummingbird couldn’t unlock your credentials: \(unlockFailure)")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ProgressView()
+                    }
                 }
                 .foregroundStyle(.white)
             }
-            .task(id: selectedProfileID) {
+            .task(id: "\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
+                guard !credentialsLocked else { return }
                 // Give SwiftUI a frame to put the splash on screen before the
                 // intentionally synchronous AVKit initialization begins.
                 try? await Task.sleep(nanoseconds: 50_000_000)

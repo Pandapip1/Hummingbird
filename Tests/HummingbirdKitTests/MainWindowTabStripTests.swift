@@ -14,7 +14,7 @@ final class MainWindowTabStripTests: XCTestCase {
         guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
 
         let model = makeTestAppModel()
-        model.openNewTab()
+        model.openInNewTab(.search, title: "Search")
         let contentID = model.activeTabID
         let root = widgetFromOpaque(gtkRenderView(RootView().environment(model)))
         let window = gtk_window_new()!
@@ -37,8 +37,8 @@ final class MainWindowTabStripTests: XCTestCase {
         let tabControlGroup = try XCTUnwrap(gtk_widget_get_parent(overviewButton))
         XCTAssertNotEqual(gtk_widget_has_css_class(tabControlGroup, "linked"), 0,
                           "new-tab and overview controls must be one joined native control")
-        XCTAssertNotNil(findFirst(ofType: "GtkButton", in: tabControlGroup),
-                        "the joined new-tab control must be a native button")
+        XCTAssertNotNil(findFirst(ofType: "GtkMenuButton", in: tabControlGroup),
+                        "the joined new-tab control must present destination choices")
         XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: root),
                      "top-level sections must no longer render a nested TabView sidebar")
         let tabView = try XCTUnwrap(swift_adw_tab_bar_get_view(tabBar))
@@ -48,7 +48,7 @@ final class MainWindowTabStripTests: XCTestCase {
         XCTAssertEqual(swift_adw_tab_page_get_pinned(homePage), 0)
         XCTAssertEqual(swift_adw_tab_page_get_pinned(contentPage), 0)
         XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(homePage))), "Home")
-        XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(contentPage))), "New Tab")
+        XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(contentPage))), "Search")
         let selectedContent = try XCTUnwrap(swift_adw_tab_page_get_child(contentPage))
         XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: selectedContent))
         let contentButtonCenter = try center(of: selectedContent, in: root)
@@ -100,7 +100,7 @@ final class MainWindowTabStripTests: XCTestCase {
     }
 
     @MainActor
-    func testNewTabButtonDirectlyOpensATab() throws {
+    func testNewTabControlPresentsDestinationsWithoutCreatingBlankTab() throws {
         try TestDisplaySession.start()
         guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
 
@@ -115,13 +115,17 @@ final class MainWindowTabStripTests: XCTestCase {
         pump()
         let overviewButton = try XCTUnwrap(findFirst(ofType: "AdwTabButton", in: root))
         let group = try XCTUnwrap(gtk_widget_get_parent(overviewButton))
-        let newTabButton = try XCTUnwrap(gtk_widget_get_first_child(group))
-        XCTAssertEqual(typeName(newTabButton), "GtkButton")
+        let newTabButton = try XCTUnwrap(findFirst(ofType: "GtkMenuButton", in: group))
+        XCTAssertEqual(typeName(newTabButton), "GtkMenuButton")
         let count = model.contentTabs.count
 
-        XCTAssertEqual(gtk_widget_activate(newTabButton), 1)
+        let popover = try XCTUnwrap(findFirst(ofType: "GtkPopover", in: newTabButton))
+        gtk_swift_popover_popup(popover)
         pump()
-        XCTAssertEqual(model.contentTabs.count, count + 1)
+        XCTAssertNotEqual(gtk_widget_get_visible(popover), 0)
+        XCTAssertEqual(model.contentTabs.count, count,
+                       "presenting the destination menu must not create a blank tab")
+        XCTAssertTrue(model.contentTabs.allSatisfy { $0.current != nil })
     }
 
     @MainActor

@@ -56,14 +56,6 @@ final class AppModel {
         activeTabID = tab.id
     }
 
-    /// Opens a blank start-page tab, matching the new-tab action in a browser
-    /// tab overview. Its first route replaces the start page in this tab.
-    func openNewTab() {
-        let tab = makeBrowserTab()
-        contentTabs.append(tab)
-        activeTabID = tab.id
-    }
-
     /// Opens one of the app's top-level sections as an ordinary browser tab.
     func openSection(_ route: Route, title: String) {
         openInNewTab(route, title: title)
@@ -78,7 +70,7 @@ final class AppModel {
         if let neighbor = contentTabs[safe: index] ?? contentTabs[safe: index - 1] {
             activeTabID = neighbor.id
         } else {
-            openNewTab()
+            openInNewTab(.home, title: "Home")
         }
     }
 
@@ -181,16 +173,27 @@ final class AppModel {
             localProfileID: localProfileID, changes: profileChanges, library: library, plugins: plugins,
             peerService: peerService, localNetworkEnabled: localNetworkSyncEnabled
         )
-        if let session = persistence.browserSession, !session.tabs.isEmpty {
-            let tabs = session.tabs.map {
-                BrowserTab.hummingbirdTab(
+        if let session = persistence.browserSession {
+            // Older builds could persist destination-less "New Tab" pages.
+            // They have no useful operation in Hummingbird and are discarded
+            // during restoration rather than preserving a dead tab forever.
+            let tabs: [BrowserTab] = session.tabs.compactMap {
+                guard !$0.history.isEmpty else { return nil }
+                return BrowserTab.hummingbirdTab(
                     id: $0.id, title: $0.title, history: $0.history.map(\.route),
                     historyIndex: $0.historyIndex
                 )
             }
-            self.contentTabs = tabs
-            self.activeTabID = tabs.contains { $0.id == session.activeTabID }
-                ? session.activeTabID : tabs[0].id
+            if !tabs.isEmpty {
+                self.contentTabs = tabs
+                self.activeTabID = tabs.contains { $0.id == session.activeTabID }
+                    ? session.activeTabID : tabs[0].id
+            } else {
+                let initialTab = BrowserTab.hummingbirdTab()
+                initialTab.push(.home, title: "Home")
+                self.contentTabs = [initialTab]
+                self.activeTabID = initialTab.id
+            }
         } else {
             let initialTab = BrowserTab.hummingbirdTab()
             initialTab.push(.home, title: "Home")

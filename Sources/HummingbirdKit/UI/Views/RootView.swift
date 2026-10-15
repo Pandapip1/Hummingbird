@@ -14,13 +14,10 @@ struct RootView: View {
         @Bindable var plugins = model.plugins
         BrowserTabContainer(items: browserTabItems, selection: activeTabBinding,
                             onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview,
-                            onNewTab: { app.openNewTab() },
                             newTabControl: {
-                                Button { app.openNewTab() } label: {
-                                    Image(systemName: "plus")
+                                NewTabDestinationMenu { route, title in
+                                    app.openSection(route, title: title)
                                 }
-                                .keyboardShortcut("t")
-                                .accessibilityLabel("New Tab")
                             }) { item in
             BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
         }
@@ -79,6 +76,19 @@ struct AppSectionMenu: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
+        NewTabDestinationMenu { route, title in
+            app.openSection(route, title: title)
+        }
+    }
+}
+
+/// Presents the useful destinations for a new tab. It deliberately has no
+/// default action because a destination-less tab is not meaningful here.
+@MainActor
+struct NewTabDestinationMenu: View {
+    let open: @MainActor @Sendable (Route, String) -> Void
+
+    var body: some View {
         AdaptiveActionMenu(
             title: "Open section in new tab",
             systemImage: "plus",
@@ -91,8 +101,9 @@ struct AppSectionMenu: View {
                 AdaptiveMenuItem(id: "settings", title: "Settings", systemImage: "gearshape", value: Route.settings),
             ]
         ) { route, title in
-            app.openSection(route, title: title)
+            open(route, title)
         }
+        .keyboardShortcut("t")
     }
 }
 

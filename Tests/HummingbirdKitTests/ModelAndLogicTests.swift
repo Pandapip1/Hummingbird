@@ -25,26 +25,22 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(home.current, .home)
         XCTAssertEqual(home.title, "Home")
 
-        model.openNewTab()
-        let blank = model.activeTab
-        XCTAssertNil(blank.current)
-
         model.openInNewTab(.content("first"), title: "First")
         let first = model.activeTab
         model.openInNewTab(.content("second"), title: "Second")
         let second = model.activeTab
-        XCTAssertEqual(model.contentTabs.map(\.id), [home.id, blank.id, first.id, second.id])
+        XCTAssertEqual(model.contentTabs.map(\.id), [home.id, first.id, second.id])
 
         model.activeTabID = first.id
         model.closeTab(first.id)
-        XCTAssertEqual(model.contentTabs.map(\.id), [home.id, blank.id, second.id])
+        XCTAssertEqual(model.contentTabs.map(\.id), [home.id, second.id])
         XCTAssertEqual(model.activeTabID, second.id)
         model.closeTab(second.id)
-        model.closeTab(blank.id)
         XCTAssertEqual(model.activeTabID, home.id)
         model.closeTab(home.id)
         XCTAssertEqual(model.contentTabs.count, 1)
-        XCTAssertNil(model.activeTab.current, "closing the last tab must leave a blank tab")
+        XCTAssertEqual(model.activeTab.current, .home,
+                       "closing the last tab must restore a useful destination")
     }
 
     @MainActor

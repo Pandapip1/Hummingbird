@@ -30,16 +30,16 @@ struct ChannelView: View {
 
     @ViewBuilder
     private func content(_ rt: PluginRuntime, _ info: ChannelInfo) -> some View {
-        List {
-            Section { header(rt, info) }.hiddenListRowSeparator().listRowInsets(EdgeInsets())
-
-            if caps.types.count > 1 || !caps.sorts.isEmpty {
-                Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header(rt, info)
+                if caps.types.count > 1 || !caps.sorts.isEmpty {
                     HStack {
                         if caps.types.count > 1 {
                             Picker("Type", selection: Binding(get: { type ?? caps.types.first ?? "" }, set: { type = $0; Task { await reloadFeed(rt, info) } })) {
                                 ForEach(caps.types, id: \.self) { Text(Self.label(for: $0)).tag($0) }
-                            }.pickerStyle(.menu)
+                            }
+                            .pickerStyle(.menu)
                         }
                         Spacer()
                         if !caps.sorts.isEmpty {
@@ -51,19 +51,24 @@ struct ChannelView: View {
                         }
                     }
                 }
-            }
 
-            if let feed {
-                ForEach(feed.items) { item in
-                    ContentRow(item: item).hiddenListRowSeparator()
-                        .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
+                if let feed {
+                    ContentPreviewGrid(items: feed.items) { _ in
+                        await feed.loadMore()
+                    }
+                    ForEach(feed.messages, id: \.self) {
+                        Label($0, systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                    if feed.isLoading {
+                        ProgressView().frame(maxWidth: .infinity)
+                    }
+                    LoadMoreButton(feed: feed)
                 }
-                ForEach(feed.messages, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange) }
-                if feed.isLoading { ProgressView().frame(maxWidth: .infinity) }
-                LoadMoreButton(feed: feed)
             }
+            .padding()
         }
-        .listStyle(.plain)
         .navigationTitle(info.name)
     }
 

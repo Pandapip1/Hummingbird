@@ -8,7 +8,10 @@ import AVFoundation
 /// Opt-in compatibility probe for the moving upstream plugin. Run with:
 /// HUMMINGBIRD_YOUTUBE_PLUGIN_DIR=/path/to/youtube swift test --filter YouTubePluginCompatibilityTests
 final class YouTubePluginCompatibilityTests: XCTestCase {
-    private let fixtureVideoURL = "https://www.youtube.com/watch?v=ukE4nf9WeQU"
+    private var fixtureVideoURL: String {
+        ProcessInfo.processInfo.environment["HUMMINGBIRD_YOUTUBE_VIDEO_URL"]
+            ?? "https://www.youtube.com/watch?v=ukE4nf9WeQU"
+    }
     private let fixtureCaptionURL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     private let fixtureChannelURL = "https://www.youtube.com/channel/UCIBNAd4nO5rk6G8YaEudqNw"
 
@@ -52,6 +55,11 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         }
         if runtime.has("getContentChapters") {
             _ = try await runtime.call("getContentChapters", [url, NSNull()], as: [CompatibilityChapter].self)
+        }
+        if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
+            for source in details.videoSources + details.audioSources {
+                print("[youtube source] type=\(source.pluginType) container=\(source.container) codec=\(source.codec) height=\(source.height) url=\(source.url.prefix(160))")
+            }
         }
         if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1",
            let source = details.videoSources.first(where: { $0.container == "video/mp4" }),

@@ -149,8 +149,10 @@
           # Keep the helper scripts anchored to the checkout even after a cd.
           export HUMMINGBIRD_ROOT="$PWD"
           export XDG_DATA_DIRS="${deps.iconTheme}/share:''${XDG_DATA_DIRS:-}"
+          # libsoup discovers TLS through GIO modules. This is required by both
+          # WebKitGTK on Linux and GStreamer's HTTPS source on Darwin.
+          export GIO_EXTRA_MODULES="${pkgs.glib-networking}/lib/gio/modules:''${GIO_EXTRA_MODULES:-}"
           ${lib.optionalString isLinux ''
-            export GIO_EXTRA_MODULES="${pkgs.glib-networking}/lib/gio/modules:''${GIO_EXTRA_MODULES:-}"
             # JSC's default 4 GiB structure heap and 512 MiB JIT reservation
             # consume real commit budget when Linux disables overcommit. Keep
             # JIT enabled, and let callers override these embedding defaults.

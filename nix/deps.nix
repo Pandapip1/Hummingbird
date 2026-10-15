@@ -102,6 +102,7 @@ rec {
     libadwaita
     appstream
     glib
+    glib-networking # GIO TLS backend used by GStreamer's libsoup source
     pcre2
     cairo
     pango

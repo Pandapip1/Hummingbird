@@ -171,7 +171,11 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     }
 
     private func interacted() {
-        controlsVisible = true
+        // Continuous pointer motion can fire many times before a click. Avoid
+        // invalidating the control subtree when it is already visible: GTK
+        // otherwise replaces the button currently under the pointer, so the
+        // subsequent release is delivered to a widget that no longer exists.
+        if !controlsVisible { controlsVisible = true }
         autoHide.task?.cancel()
         guard model.isPlaying, !menuPresented else { return }
         autoHide.task = Task { @MainActor in

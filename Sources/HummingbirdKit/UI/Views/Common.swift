@@ -112,6 +112,26 @@ struct ContentRow: View {
     }
 }
 
+/// An adaptive collection of media cards for surfaces where entries are
+/// previews rather than compact navigation rows (for example, creator pages).
+@MainActor
+struct ContentPreviewGrid: View {
+    let items: [ContentItem]
+    let loadMore: (ContentItem) async -> Void
+
+    init(items: [ContentItem], loadMore: @escaping (ContentItem) async -> Void = { _ in }) {
+        self.items = items
+        self.loadMore = loadMore
+    }
+
+    var body: some View {
+        AdaptiveGrid(items, minimumWidth: 240) { item in
+            ContentRow(item: item)
+                .loadsNextPageWhenLast(item.id == items.last?.id) { await loadMore(item) }
+        }
+    }
+}
+
 @MainActor
 struct FeedList: View {
     let feed: FeedModel

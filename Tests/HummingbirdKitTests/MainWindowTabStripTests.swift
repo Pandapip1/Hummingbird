@@ -15,6 +15,7 @@ final class MainWindowTabStripTests: XCTestCase {
 
         let model = makeTestAppModel()
         model.openInNewTab(.search, title: "Search")
+        model.activeTab.push(.settings, title: "Settings")
         let contentID = model.activeTabID
         let root = widgetFromOpaque(gtkRenderView(RootView().environment(model)))
         let window = gtk_window_new()!
@@ -48,7 +49,7 @@ final class MainWindowTabStripTests: XCTestCase {
         XCTAssertEqual(swift_adw_tab_page_get_pinned(homePage), 0)
         XCTAssertEqual(swift_adw_tab_page_get_pinned(contentPage), 0)
         XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(homePage))), "Home")
-        XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(contentPage))), "Search")
+        XCTAssertEqual(String(cString: try XCTUnwrap(swift_adw_tab_page_get_title(contentPage))), "Settings")
         let selectedContent = try XCTUnwrap(swift_adw_tab_page_get_child(contentPage))
         XCTAssertNil(findFirst(ofType: "AdwViewSwitcherSidebar", in: selectedContent))
         let contentButtonCenter = try center(of: selectedContent, in: root)
@@ -73,6 +74,21 @@ final class MainWindowTabStripTests: XCTestCase {
                         "AdwTabBar must be installed as an AdwToolbarView row")
         XCTAssertNil(ancestor(ofType: "GtkHeaderBar", from: tabBar),
                      "AdwTabBar must not receive a second header-bar treatment")
+        var historyButtons = try XCTUnwrap(findHistoryButtons(in: toolbarView))
+        XCTAssertNotEqual(gtk_widget_get_sensitive(historyButtons.back), 0)
+        XCTAssertEqual(gtk_widget_get_sensitive(historyButtons.forward), 0)
+        XCTAssertEqual(gtk_widget_activate(historyButtons.back), 1)
+        pump()
+        XCTAssertEqual(model.activeTab.current, .search)
+        historyButtons = try XCTUnwrap(findHistoryButtons(in: overview))
+        XCTAssertEqual(gtk_widget_get_sensitive(historyButtons.back), 0)
+        XCTAssertNotEqual(gtk_widget_get_sensitive(historyButtons.forward), 0)
+        XCTAssertEqual(gtk_widget_activate(historyButtons.forward), 1)
+        pump()
+        XCTAssertEqual(model.activeTab.current, .settings)
+        historyButtons = try XCTUnwrap(findHistoryButtons(in: overview))
+        XCTAssertNotEqual(gtk_widget_get_sensitive(historyButtons.back), 0)
+        XCTAssertEqual(gtk_widget_get_sensitive(historyButtons.forward), 0)
         let toolbarHeight = gtk_widget_get_height(toolbarView)
         swift_adw_tab_view_set_selected_page(tabView, homePage)
         pump()
@@ -164,6 +180,26 @@ final class MainWindowTabStripTests: XCTestCase {
         var child = gtk_widget_get_first_child(widget)
         while let current = child {
             if let found = findFirst(ofType: expected, in: current) { return found }
+            child = gtk_widget_get_next_sibling(current)
+        }
+        return nil
+    }
+
+    private func findHistoryButtons(
+        in widget: UnsafeMutablePointer<GtkWidget>
+    ) -> (back: UnsafeMutablePointer<GtkWidget>, forward: UnsafeMutablePointer<GtkWidget>)? {
+        if gtk_widget_has_css_class(widget, "linked") != 0,
+           findFirst(ofType: "AdwTabButton", in: widget) == nil,
+           let backRoot = gtk_widget_get_first_child(widget),
+           let forwardRoot = gtk_widget_get_next_sibling(backRoot),
+           gtk_widget_get_next_sibling(forwardRoot) == nil,
+           let back = findFirst(ofType: "GtkButton", in: backRoot),
+           let forward = findFirst(ofType: "GtkButton", in: forwardRoot) {
+            return (back, forward)
+        }
+        var child = gtk_widget_get_first_child(widget)
+        while let current = child {
+            if let buttons = findHistoryButtons(in: current) { return buttons }
             child = gtk_widget_get_next_sibling(current)
         }
         return nil

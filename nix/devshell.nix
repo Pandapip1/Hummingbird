@@ -129,8 +129,10 @@
           # rather than GLib's global prefix. Libadwaita needs these before it
           # can construct its style manager, including on the macOS GTK port.
           GSETTINGS_SCHEMA_DIR = pkgs.glib.getSchemaPath pkgs.gsettings-desktop-schemas;
+          GST_PLUGIN_SYSTEM_PATH_1_0 = lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" (
+            if isDarwin then deps.darwinGstPlugins else deps.gstPlugins
+          );
         } // lib.optionalAttrs isLinux {
-          GST_PLUGIN_SYSTEM_PATH_1_0 = lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" deps.gstPlugins;
           # SwiftPM's system-library importer does not consume pkg-config
           # include flags for transitive C headers, so expose GStreamer dev
           # headers explicitly to the GTK backend build.

@@ -25,9 +25,18 @@ let
     ln -s "${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0/libgsthls.dylib" \
       "$out/lib/gstreamer-1.0/libgsthls.dylib"
   '';
+  darwinGstPlugins = with pkgs.gst_all_1; [
+    gstreamer
+    gstreamer.dev
+    gst-plugins-base
+    gst-plugins-base.dev
+    gst-plugins-good
+    gst-libav
+    darwinGstHLS
+  ];
 in
 rec {
-  inherit gstPlugins webkitGTK;
+  inherit gstPlugins darwinGstPlugins webkitGTK;
   iconTheme = pkgs.adwaita-icon-theme;
 
   # Used by HummingbirdKit, SwiftSoup on every platform.
@@ -88,7 +97,7 @@ rec {
 
   # Development-only GTK backend on macOS. WebKitGTK is intentionally absent:
   # nixpkgs marks it broken on Darwin, and SwiftOpenUI excludes that adapter.
-  darwinGtkLibs = with pkgs; [
+  darwinGtkLibs = (with pkgs; [
     gtk4
     libadwaita
     appstream
@@ -107,15 +116,8 @@ rec {
     libepoxy
     libxdmcp
     librsvg
-    gst_all_1.gstreamer
-    gst_all_1.gstreamer.dev
-    gst_all_1.gst-plugins-base
-    gst_all_1.gst-plugins-base.dev
-    gst_all_1.gst-plugins-good
-    gst_all_1.gst-libav
-    darwinGstHLS
     iconTheme
     (pkgs.callPackage ./sysprof-capture-stub.nix { })
     (pkgs.callPackage ./libunwind-pc-stub.nix { })
-  ];
+  ]) ++ darwinGstPlugins;
 }

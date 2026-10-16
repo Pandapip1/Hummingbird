@@ -16,7 +16,7 @@ public struct PreparedHummingbirdRoot: View {
         return CredentialVaultManager.shared.requiresExplicitUnlock
     }()
     @State private var unlockFailure: String?
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openIdentifiedWindow) private var openIdentifiedWindow
     private let opensProfilesInNewWindows: Bool
 
     public init(profileID: UUID? = nil, opensProfilesInNewWindows: Bool = false) {
@@ -31,7 +31,7 @@ public struct PreparedHummingbirdRoot: View {
                     \.openHummingbirdProfile,
                     OpenHummingbirdProfileAction { id in
                         if opensProfilesInNewWindows {
-                            openWindow(value: id)
+                            openIdentifiedWindow(id)
                             return
                         }
                         Task {

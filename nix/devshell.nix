@@ -206,6 +206,19 @@
             echo "warning: Vendor/SwiftOpenUI is empty — run 'git submodule update --init'" >&2
           fi
 
+          # The hook is versioned with the repository. Configure each clone on
+          # first entry instead of asking contributors to copy hook files into
+          # .git by hand.
+          if git rev-parse --git-dir >/dev/null 2>&1; then
+            current_hooks_path="$(git config --local --get core.hooksPath || true)"
+            if [ -z "$current_hooks_path" ] || [ "$current_hooks_path" = ".githooks" ]; then
+              git config --local core.hooksPath .githooks
+            else
+              echo "warning: retaining custom Git hooks path: $current_hooks_path" >&2
+            fi
+            unset current_hooks_path
+          fi
+
           echo "Hummingbird dev shell (${system}) — swift $(swift --version 2>/dev/null | sed -n 's/.*version \([0-9.]*\).*/\1/p' | head -1)" >&2
           echo "  hb-build, hb-test${lib.optionalString isLinux ", hb-run (GTK app)"}${lib.optionalString isDarwin ", hb-build-gtk, hb-run-gtk, hb-xcode, hb-build-ios"}" >&2
         '';

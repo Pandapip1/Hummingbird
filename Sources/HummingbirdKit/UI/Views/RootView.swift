@@ -103,7 +103,7 @@ struct NewTabDestinationMenu: View {
         ) { route, title in
             open(route, title)
         }
-        .keyboardShortcut("t")
+        .browserNewTabKeyboardShortcut()
     }
 }
 

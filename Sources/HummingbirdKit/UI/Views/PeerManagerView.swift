@@ -211,7 +211,7 @@ private struct PeerVerificationCodeSheet: View {
                 }
                 Text("Scan this code on another instance to verify this instance directly.")
                     .multilineTextAlignment(.center).foregroundStyle(.secondary)
-                Text(code.rawValue).font(.caption.monospaced()).textSelection(.enabled)
+                Text(code.rawValue).font(.caption.monospaced()).copyableText()
             }
             .padding()
             .navigationTitle("Verify This Instance")
@@ -316,7 +316,7 @@ private struct PeerIdentityLabel: View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Instance \(peerID.rawValue.prefix(8))").font(.headline)
             Text(peerID.rawValue).font(.caption.monospaced()).foregroundStyle(.secondary)
-                .textSelection(.enabled)
+                .copyableText()
         }
     }
 }

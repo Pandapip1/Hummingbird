@@ -36,8 +36,8 @@ private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @un
 
     private func persist(_ payloads: [MXDiagnosticPayload]) {
         let hangs = payloads.compactMap { payload -> PendingHang? in
-            guard !(payload.hangDiagnostics?.isEmpty ?? true),
-                  let data = payload.jsonRepresentation() else { return nil }
+            guard !(payload.hangDiagnostics?.isEmpty ?? true) else { return nil }
+            let data = payload.jsonRepresentation()
             let begin = Int(payload.timeStampBegin.timeIntervalSince1970)
             let end = Int(payload.timeStampEnd.timeIntervalSince1970)
             return PendingHang(filename: "hang-\(begin)-\(end).json", data: data)

@@ -915,7 +915,7 @@ struct SettingsDetailContainer<Content: View>: View {
 
 enum QRCodeScanning {
     static let isAvailable: Bool = {
-        #if canImport(AVFoundation)
+        #if (os(iOS) || os(macOS)) && !BACKEND_GTK
         AVCaptureDevice.default(for: .video) != nil
         #else
         false

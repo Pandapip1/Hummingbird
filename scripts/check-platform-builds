@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repository"
+
+echo "==> Building native Swift package"
+swift build --scratch-path .build/pre-commit/native
+
+echo "==> Building GTK application"
+SWIFTOPENUI_BACKEND=gtk swift build \
+  --scratch-path .build/pre-commit/gtk \
+  --product Hummingbird-gtk
+
+if [[ "$(uname -s)" != Darwin ]]; then
+  exit 0
+fi
+
+clean_xcodebuild() {
+  local result
+  if env -u DEVELOPER_DIR -u SDKROOT -u TOOLCHAINS \
+    -u LD -u NIX_LDFLAGS -u NIX_CFLAGS_COMPILE -u LIBRARY_PATH \
+    -u PKG_CONFIG_PATH -u PKG_CONFIG_PATH_FOR_TARGET -u PKG_CONFIG \
+    PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    /usr/bin/xcodebuild \
+      -project Hummingbird.xcodeproj \
+      -scheme Hummingbird \
+      -destination "$1" \
+      -derivedDataPath .build/pre-commit/DerivedData \
+      ARCHS="$(uname -m)" \
+      ONLY_ACTIVE_ARCH=YES \
+      CODE_SIGNING_ALLOWED=NO \
+      build; then
+    result=0
+  else
+    result=$?
+  fi
+
+  # Keep package resolution and module caches, but bound disk consumption to
+  # one Apple destination's products. Every platform is rebuilt on each run.
+  rm -rf "$repository/.build/pre-commit/DerivedData/Build"
+  return "$result"
+}
+
+while IFS='|' read -r name destination; do
+  echo "==> Building $name"
+  clean_xcodebuild "$destination"
+done <<'PLATFORMS'
+macOS|generic/platform=macOS
+iOS|generic/platform=iOS Simulator
+tvOS|generic/platform=tvOS Simulator
+visionOS|generic/platform=visionOS Simulator
+PLATFORMS

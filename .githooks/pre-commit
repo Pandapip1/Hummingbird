@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${HUMMINGBIRD_SKIP_PLATFORM_BUILDS:-0}" == 1 ]]; then
+  echo "warning: skipping supported-platform builds" >&2
+  exit 0
+fi
+
+repository="$(git rev-parse --show-toplevel)"
+cd "$repository"
+
+nix_bin="$(command -v nix || true)"
+if [[ -z "$nix_bin" && -x /run/current-system/sw/bin/nix ]]; then
+  nix_bin=/run/current-system/sw/bin/nix
+fi
+if [[ -z "$nix_bin" && -x /nix/var/nix/profiles/default/bin/nix ]]; then
+  nix_bin=/nix/var/nix/profiles/default/bin/nix
+fi
+if [[ -z "$nix_bin" ]]; then
+  echo "error: Nix is required to verify every supported platform" >&2
+  exit 1
+fi
+
+exec "$nix_bin" develop --command ./scripts/check-platform-builds

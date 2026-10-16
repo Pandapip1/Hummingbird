@@ -1,5 +1,21 @@
 # Hummingbird
 
+## Development checks
+
+Entering the Nix development shell configures the repository's versioned
+`.githooks` directory. Before each commit, Hummingbird builds the native Swift
+package and GTK application. On macOS it also builds the macOS, iOS, tvOS, and
+visionOS application targets. Build products are reused under
+`.build/pre-commit`, including one shared Apple DerivedData tree, so repeated
+commits and different destinations do not create duplicate cache trees. Apple
+build products are discarded after each destination to bound disk usage while
+dependency and module caches are retained. The Apple checks compile the current
+machine's architecture for each destination.
+
+For an exceptional commit that cannot run the complete matrix, set
+`HUMMINGBIRD_SKIP_PLATFORM_BUILDS=1` explicitly. The hook prints a warning when
+this escape hatch is used.
+
 A [Grayjay](https://grayjay.app)-style plugin host: it loads JavaScript sources that expose home feeds, search,
 channels, video details and playback streams. One Swift codebase builds as a SwiftUI iOS app and as a Linux (GTK4)
 desktop app through [SwiftOpenUI](https://github.com/codelynx/SwiftOpenUI).

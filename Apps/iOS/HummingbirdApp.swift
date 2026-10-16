@@ -41,7 +41,7 @@ private struct LaunchGate: View {
     @State private var selectedProfileID: UUID?
     @State private var credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
     @State private var unlockFailure: String?
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openIdentifiedWindow) private var openIdentifiedWindow
 
     init(profileID: UUID? = nil) {
         _selectedProfileID = State(initialValue: profileID)
@@ -53,7 +53,7 @@ private struct LaunchGate: View {
                 \.openHummingbirdProfile,
                 OpenHummingbirdProfileAction { id in
                     #if os(macOS)
-                    openWindow(value: id)
+                    openIdentifiedWindow(id)
                     #else
                     Task {
                         await Storage.flush()

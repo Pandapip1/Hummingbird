@@ -19,30 +19,35 @@ struct RootView: View {
                                     app.openSection(route, title: title)
                                 }
                             }) { item in
-            BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
+            ZStack {
+                BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
+                if let loginTarget, loginTarget.tabID == item.id {
+                    LoginSheet(pluginID: loginTarget.pluginID) { self.loginTarget = nil }
+                }
+            }
         }
         .navigationTitle(windowTitle)
         .browserWindowChrome(model: model, overviewPresented: $showingTabOverview)
-        .overlay {
-            if let loginTarget {
-                LoginSheet(pluginID: loginTarget.value) { self.loginTarget = nil }
-            }
-        }
         .overlay {
             if let request = app.incomingCredentialPairing {
                 PairedDeviceLoginSheet(request: request) { app.incomingCredentialPairing = nil }
             }
         }
-        .overlay(alignment: .top) { ToastBanner() }
-        .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request) }
-        .alert("Login required", isPresented: loginBinding, presenting: model.plugins.pendingLogin) { id in
-            Button("Log in") { loginTarget = LoginTarget(value: id); model.plugins.pendingLogin = nil }
-            Button("Not now", role: .cancel) { model.plugins.pendingLogin = nil }
-        } message: { id in
-            Text("\(model.plugins.plugin(id)?.config.name ?? "This source") needs you to sign in to continue.")
+        .overlay(alignment: .top) {
+            VStack(spacing: 8) {
+                if let pluginID = plugins.pendingLogin {
+                    LoginRequiredBanner(
+                        sourceName: plugins.plugin(pluginID)?.config.name ?? "This source",
+                        onLogin: { beginLogin(pluginID) },
+                        onDismiss: { plugins.pendingLogin = nil }
+                    )
+                }
+                ToastBanner()
+            }
         }
+        .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request) }
         .onChange(of: plugins.pendingDirectLogin) { _, id in
-            if let id { loginTarget = LoginTarget(value: id); plugins.pendingDirectLogin = nil }
+            if let id { beginLogin(id); plugins.pendingDirectLogin = nil }
         }
         .task {
             let overview = $showingTabOverview
@@ -50,8 +55,9 @@ struct RootView: View {
         }
     }
 
-    private var loginBinding: Binding<Bool> {
-        Binding(get: { model.plugins.pendingLogin != nil }, set: { if !$0 { model.plugins.pendingLogin = nil } })
+    private func beginLogin(_ pluginID: String) {
+        loginTarget = LoginTarget(pluginID: pluginID, tabID: model.activeTabID)
+        model.plugins.pendingLogin = nil
     }
 
     private var windowTitle: String {
@@ -219,10 +225,40 @@ private extension BrowserTab {
     var historyIndexIdentity: Int { historyIndex }
 }
 
-/// Identifiable wrapper so a plugin id can drive a sheet.
+/// Associates an authentication browser with the tab that requested it. The
+/// browser remains mounted while another tab is active, preserving login state,
+/// but no longer obscures that tab's content.
 struct LoginTarget: Identifiable, Hashable {
-    let value: String
-    var id: String { value }
+    let pluginID: String
+    let tabID: UUID
+    var id: String { "\(tabID.uuidString):\(pluginID)" }
+}
+
+@MainActor
+private struct LoginRequiredBanner: View {
+    let sourceName: String
+    let onLogin: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+            Text("\(sourceName) needs you to sign in to continue.")
+                .font(.callout)
+            Spacer(minLength: 8)
+            Button("Not now", action: onDismiss)
+            Button("Sign in", action: onLogin)
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .transition(.move(edge: .top).combined(with: .opacity))
+        .accessibilityLabel("Login required for \(sourceName)")
+    }
 }
 
 @MainActor

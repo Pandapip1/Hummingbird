@@ -44,6 +44,29 @@ final class ModelAndLogicTests: XCTestCase {
     }
 
     @MainActor
+    func testLoginRequiredErrorRequestsLoginForItsPlugin() {
+        let model = makeTestAppModel()
+
+        _ = model.platform.surface(
+            PluginError.loginRequired("Sign in required"),
+            pluginID: "nebula"
+        )
+
+        XCTAssertEqual(model.plugins.pendingLogin, "nebula")
+    }
+
+    func testLoginBrowserIdentityIncludesOriginatingTab() {
+        let firstTab = UUID()
+        let secondTab = UUID()
+
+        let first = LoginTarget(pluginID: "nebula", tabID: firstTab)
+        let second = LoginTarget(pluginID: "nebula", tabID: secondTab)
+
+        XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual(first.id, second.id)
+    }
+
+    @MainActor
     func testSettingsSubmenuUsesBrowserHistory() {
         let tab = BrowserTab.hummingbirdTab()
         tab.push(.settings, title: "Settings")

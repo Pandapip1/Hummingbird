@@ -6,6 +6,9 @@ DerivedData/
 Hummingbird/Info.plist
 .build/
 Package.resolved
+.swiftpm/
+Containers/
+/log.txt
 
 # Nix
 result

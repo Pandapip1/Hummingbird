@@ -171,3 +171,19 @@ let package = Package(
     targets: targets,
     swiftLanguageModes: [.v6]
 )
+
+// The app itself (Apps/iOS), for building with xtool (https://xtool.sh) instead
+// of Xcode: `xtool dev build --triple arm64-apple-macosx` makes Hummingbird.app,
+// configured by xtool.yml. Xcode builds the same sources from project.yml.
+#if os(macOS)
+package.products.append(.library(name: "Hummingbird", targets: ["HummingbirdApp"]))
+package.targets.append(
+    .target(
+        name: "HummingbirdApp",
+        dependencies: ["HummingbirdKit", "DebugKit"],
+        path: "Apps/iOS",
+        // Packed by xtool from xtool.yml rather than built as sources.
+        exclude: ["Info.plist", "Hummingbird.icon", "Assets.xcassets", "Hummingbird.entitlements"]
+    )
+)
+#endif

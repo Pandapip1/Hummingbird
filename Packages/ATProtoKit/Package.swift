@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ATProtoKit",
-    platforms: [.iOS("17.4"), .macOS("14.4"), .tvOS("17.4"), .visionOS("1.1")],
+    platforms: [.iOS(.v18), .macOS(.v15), .tvOS(.v18), .visionOS(.v2)],
     products: [.library(name: "ATProtoKit", targets: ["ATProtoKit"])],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),

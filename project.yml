@@ -1,10 +1,10 @@
 name: Hummingbird
 options:
   deploymentTarget:
-    iOS: "17.4"
-    macOS: "14.4"
-    tvOS: "17.4"
-    visionOS: "1.1"
+    iOS: "18.0"
+    macOS: "15.0"
+    tvOS: "18.0"
+    visionOS: "2.0"
   createIntermediateGroups: true
 settings:
   base:

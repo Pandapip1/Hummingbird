@@ -37,19 +37,28 @@ namespaces resolve separately:
 | `com.eightybps.appsync.*` | `Lexicons/com/eightybps/appsync` | `_lexicon.appsync.eightybps.com` |
 | `com.eightybps.hummingbird.*` | `Lexicons/com/eightybps/hummingbird` | `_lexicon.hummingbird.eightybps.com` |
 
-The authority for both is currently `did:plc:ku5k2fkivxead2a3h46pht7x`. Each
-namespace may use its own DID instead; decide before publishing, because the
-DID is the permanent authority and changing a domain must not create a new one.
-For each namespace:
+Each namespace has its own authority DID, so that neither can publish, alter
+or revoke the other's schemas, and a key compromise or transfer of one doesn't
+touch the other. In particular, AppSync is a reusable protocol and must not
+depend on any one app's identity:
+
+| Namespace | Authority DID |
+| --- | --- |
+| `com.eightybps.appsync` | `did:plc:ku5k2fkivxead2a3h46pht7x` (`AppSyncAuthority.did`) |
+| `com.eightybps.hummingbird` | its own `did:plc`, not yet created |
+
+A DID is the permanent authority for its namespace: moving a namespace to a
+different domain changes only the TXT record, never the DID. For each
+namespace:
 
 1. Publish each JSON document in its directory as a
-   `com.atproto.lexicon.schema` record in the authority DID's public
-   repository. The record key is the document's full NSID.
-2. Add its TXT record, substituting that namespace's authority DID:
+   `com.atproto.lexicon.schema` record in that namespace's authority DID's
+   public repository. The record key is the document's full NSID.
+2. Add its TXT record, pointing at that namespace's own DID:
 
    `_lexicon.appsync.eightybps.com TXT "did=did:plc:ku5k2fkivxead2a3h46pht7x"`
 
-   `_lexicon.hummingbird.eightybps.com TXT "did=did:plc:ku5k2fkivxead2a3h46pht7x"`
+   `_lexicon.hummingbird.eightybps.com TXT "did=<Hummingbird's authority DID>"`
 
 ATAppSync currently sends Spaces records with server-side
 Lexicon validation disabled so development accounts work before publication.

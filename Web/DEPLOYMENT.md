@@ -2,11 +2,15 @@
 
 Each project gets its own (sub)domain:
 
-| Project | Domain | Published from |
-| --- | --- | --- |
-| Hummingbird (the app) | `hummingbird.eightybps.com` | `Web/hummingbird/` |
-| AppSync (the reusable sync protocol) | `appsync.eightybps.com` | DNS only, for now |
-| 80bps in general | `eightybps.com` | nothing yet |
+| Project | Domain | Source | Hosted by |
+| --- | --- | --- | --- |
+| Hummingbird (the app) | `hummingbird.eightybps.com` | `Web/hummingbird/` | GitHub Pages, [80bps/hummingbird.eightybps.com](https://github.com/80bps/hummingbird.eightybps.com) |
+| AppSync (the reusable sync protocol) | `appsync.eightybps.com` | that repository | GitHub Pages, [80bps/appsync.eightybps.com](https://github.com/80bps/appsync.eightybps.com) |
+| 80bps in general | `eightybps.com` | nothing yet | nothing yet |
+
+Each site is a `CNAME` DNS record for its subdomain pointing at
+`80bps.github.io`. Copy changes to `Web/hummingbird/` into its Pages
+repository; the copy here is the one the tests check.
 
 ## Hummingbird: OAuth client
 

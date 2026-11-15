@@ -1,30 +1,55 @@
-# Hummingbird atproto deployment
+# atproto deployment
 
-Serve `oauth-client-metadata.json` at exactly:
+Each project gets its own (sub)domain:
 
-`https://eightybps.com/oauth-client-metadata.json`
+| Project | Domain | Published from |
+| --- | --- | --- |
+| Hummingbird (the app) | `hummingbird.eightybps.com` | `Web/hummingbird/` |
+| AppSync (the reusable sync protocol) | `appsync.eightybps.com` | DNS only, for now |
+| 80bps in general | `eightybps.com` | nothing yet |
+
+## Hummingbird: OAuth client
+
+Serve `Web/hummingbird/` as the site root of `hummingbird.eightybps.com`, so
+the client metadata is at exactly:
+
+`https://hummingbird.eightybps.com/oauth-client-metadata.json`
 
 Use an `application/json` content type, HTTPS, and no redirect to a different
 origin. The URL is the OAuth public client identifier, so changing it later is
 an OAuth client migration rather than a transparent DNS change. Existing local
 sessions can continue until they require reauthorization.
 
-## Lexicon authority
+The host is fixed by the redirect URI: a native client's custom URI scheme must
+be its client ID's hostname in reverse-domain order, so
+`com.eightybps.hummingbird:/oauth/callback` requires a client ID on
+`hummingbird.eightybps.com`. `OAuthClientMetadataTests` checks this, and that
+the app's `ProfileAccountService.configuration` matches the published file.
 
-The reusable `com.eightybps.appsync` protocol and Hummingbird's
-`com.eightybps.hummingbird` application schema map to
-`appsync.eightybps.com`, backed by the stable authority
-`did:plc:ku5k2fkivxead2a3h46pht7x`. To publish the schemas:
+## Lexicon authorities
 
-1. Keep `did:plc:ku5k2fkivxead2a3h46pht7x` as the permanent protocol authority;
-   changing the domain must not create a new DID.
-2. Publish each JSON document under `Lexicons/com/eightybps/appsync` and
-   `Lexicons/com/eightybps/hummingbird` as a
-   `com.atproto.lexicon.schema` record in that DID's public repository. The
-   record key is the document's full NSID.
-3. Add this DNS TXT record (substituting the authority DID):
+An NSID's authority is its domain part reversed, without the final name
+segment, and is found through a `_lexicon` TXT record there. So the two
+namespaces resolve separately:
+
+| Namespace | Lexicons | TXT record |
+| --- | --- | --- |
+| `com.eightybps.appsync.*` | `Lexicons/com/eightybps/appsync` | `_lexicon.appsync.eightybps.com` |
+| `com.eightybps.hummingbird.*` | `Lexicons/com/eightybps/hummingbird` | `_lexicon.hummingbird.eightybps.com` |
+
+The authority for both is currently `did:plc:ku5k2fkivxead2a3h46pht7x`. Each
+namespace may use its own DID instead; decide before publishing, because the
+DID is the permanent authority and changing a domain must not create a new one.
+For each namespace:
+
+1. Publish each JSON document in its directory as a
+   `com.atproto.lexicon.schema` record in the authority DID's public
+   repository. The record key is the document's full NSID.
+2. Add its TXT record, substituting that namespace's authority DID:
 
    `_lexicon.appsync.eightybps.com TXT "did=did:plc:ku5k2fkivxead2a3h46pht7x"`
+
+   `_lexicon.hummingbird.eightybps.com TXT "did=did:plc:ku5k2fkivxead2a3h46pht7x"`
 
 ATAppSync currently sends Spaces records with server-side
 Lexicon validation disabled so development accounts work before publication.

@@ -21,8 +21,10 @@ final class ProfileAccountService {
     @ObservationIgnored private var localNetworkEnabled: Bool
     @ObservationIgnored private let currentAccountKey: String
 
-    static let configuration = OAuthClientConfiguration(
-        clientID: URL(string: "https://eightybps.com/oauth-client-metadata.json")!,
+    // An immutable Sendable constant: it needs no actor isolation, and must
+    // match the published Web/hummingbird/oauth-client-metadata.json.
+    nonisolated static let configuration = OAuthClientConfiguration(
+        clientID: URL(string: "https://hummingbird.eightybps.com/oauth-client-metadata.json")!,
         redirectURI: URL(string: "com.eightybps.hummingbird:/oauth/callback")!,
         scopes: [
             "atproto",

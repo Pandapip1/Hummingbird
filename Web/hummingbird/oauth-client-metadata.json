@@ -1,8 +1,8 @@
 {
-  "client_id": "https://eightybps.com/oauth-client-metadata.json",
+  "client_id": "https://hummingbird.eightybps.com/oauth-client-metadata.json",
   "application_type": "native",
   "client_name": "Hummingbird",
-  "client_uri": "https://eightybps.com/",
+  "client_uri": "https://hummingbird.eightybps.com/",
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],
   "redirect_uris": ["com.eightybps.hummingbird:/oauth/callback"],

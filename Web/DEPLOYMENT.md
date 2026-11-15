@@ -51,6 +51,17 @@ depend on any one app's identity:
 | `com.eightybps.appsync` | `did:plc:ku5k2fkivxead2a3h46pht7x` (`AppSyncAuthority.did`) |
 | `com.eightybps.hummingbird` | `did:plc:dee4dhxgm4ripgybxegi6eg2` |
 
+Each authority DID is also an atproto account whose handle is its project's
+subdomain, so the account and the domain vouch for each other:
+
+| Handle | DID | Verified by |
+| --- | --- | --- |
+| `appsync.eightybps.com` | `did:plc:ku5k2fkivxead2a3h46pht7x` | `_atproto.appsync.eightybps.com` TXT |
+| `hummingbird.eightybps.com` | `did:plc:dee4dhxgm4ripgybxegi6eg2` | `_atproto.hummingbird.eightybps.com` TXT, and `/.well-known/atproto-did` on its Pages site |
+
+Each `_atproto` TXT record is `"did=<that DID>"`, and the DID document's
+`alsoKnownAs` must name the handle in turn.
+
 A DID is the permanent authority for its namespace: moving a namespace to a
 different domain changes only the TXT record, never the DID. For each
 namespace:

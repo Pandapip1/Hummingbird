@@ -49,7 +49,7 @@ depend on any one app's identity:
 | Namespace | Authority DID |
 | --- | --- |
 | `com.eightybps.appsync` | `did:plc:ku5k2fkivxead2a3h46pht7x` (`AppSyncAuthority.did`) |
-| `com.eightybps.hummingbird` | its own `did:plc`, not yet created |
+| `com.eightybps.hummingbird` | `did:plc:dee4dhxgm4ripgybxegi6eg2` |
 
 A DID is the permanent authority for its namespace: moving a namespace to a
 different domain changes only the TXT record, never the DID. For each
@@ -62,7 +62,7 @@ namespace:
 
    `_lexicon.appsync.eightybps.com TXT "did=did:plc:ku5k2fkivxead2a3h46pht7x"`
 
-   `_lexicon.hummingbird.eightybps.com TXT "did=<Hummingbird's authority DID>"`
+   `_lexicon.hummingbird.eightybps.com TXT "did=did:plc:dee4dhxgm4ripgybxegi6eg2"`
 
 ATAppSync currently sends Spaces records with server-side
 Lexicon validation disabled so development accounts work before publication.

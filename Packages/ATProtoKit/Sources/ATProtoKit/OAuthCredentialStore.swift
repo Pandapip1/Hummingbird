@@ -14,15 +14,16 @@ public struct OAuthCredentialStore: Sendable {
     }
 
     public func save(_ credential: ATProtoOAuthCredential) throws {
-        let data = try JSONEncoder().encode(credential)
+        let secret = try SecureBytes(jsonEncoding: credential)
         let account = vaultAccount(credential.session.account.rawValue)
-        vault.save(data, account: account)
-        guard vault.load(account: account) == data else { throw CredentialStoreError.writeFailed }
+        vault.save(secret, account: account)
+        guard vault.load(account: account) == secret else { throw CredentialStoreError.writeFailed }
     }
 
     public func load(account: DID) throws -> ATProtoOAuthCredential? {
-        guard let data = vault.load(account: vaultAccount(account.rawValue)) else { return nil }
-        return try JSONDecoder().decode(ATProtoOAuthCredential.self, from: data)
+        guard let secret = vault.load(account: vaultAccount(account.rawValue)) else { return nil }
+        // Tokens and the DPoP key decode back into SecureBytes fields.
+        return try secret.decodeJSON(ATProtoOAuthCredential.self)
     }
 
     public func remove(account: DID) throws {

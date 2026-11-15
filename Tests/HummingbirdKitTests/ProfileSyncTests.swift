@@ -1,12 +1,8 @@
 import ATProtoKit
 import ATAppSync
+import CredentialStorage
 import XCTest
 @testable import HummingbirdKit
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 final class ProfileSyncTests: XCTestCase {
     func testProfileUsesOwnerSelfSpace() throws {
@@ -94,62 +90,11 @@ final class ProfileSyncTests: XCTestCase {
 
 private final class InMemoryCredentialStore: CredentialStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var values: [String: LockedSecret] = [:]
+    private var values: [String: SecureBytes] = [:]
 
-    func load(account: String) -> Data? { lock.withLock { values[account]?.data() } }
+    func load(account: String) -> SecureBytes? { lock.withLock { values[account] } }
 
-    func save(_ data: Data?, account: String) {
-        lock.withLock {
-            guard let data else {
-                values.removeValue(forKey: account)
-                return
-            }
-            guard let secret = LockedSecret(data) else {
-                preconditionFailure("Unable to lock credential memory")
-            }
-            values[account] = secret
-        }
+    func save(_ secret: SecureBytes?, account: String) {
+        lock.withLock { values[account] = secret }
     }
-}
-
-/// Test credentials remain in non-pageable storage between protocol-required `Data` copies.
-private final class LockedSecret: @unchecked Sendable {
-    private let bytes: UnsafeMutableRawPointer
-    private let count: Int
-
-    init?(_ data: Data) {
-        // `mlock` accepts arbitrary addresses and rounds the covered range to pages.
-        // Allocate at least one byte so the empty-secret case still has a valid lifetime.
-        count = data.count
-        bytes = .allocate(byteCount: max(data.count, 1), alignment: 1)
-        guard platformLockMemory(bytes, max(data.count, 1)) else {
-            bytes.deallocate()
-            return nil
-        }
-        data.copyBytes(to: bytes.assumingMemoryBound(to: UInt8.self), count: data.count)
-    }
-
-    func data() -> Data {
-        Data(bytes: bytes, count: count)
-    }
-
-    deinit {
-        platformZeroMemory(bytes, max(count, 1))
-        platformUnlockMemory(bytes, max(count, 1))
-        bytes.deallocate()
-    }
-}
-
-private func platformLockMemory(_ bytes: UnsafeMutableRawPointer, _ count: Int) -> Bool {
-    mlock(bytes, count) == 0
-}
-
-private func platformUnlockMemory(_ bytes: UnsafeMutableRawPointer, _ count: Int) {
-    _ = munlock(bytes, count)
-}
-
-private func platformZeroMemory(_ bytes: UnsafeMutableRawPointer, _ count: Int) {
-    // The allocation was exposed to the OS by `mlock`, so this externally visible
-    // write cannot be elided as a dead store before `munlock`.
-    memset(bytes, 0, count)
 }

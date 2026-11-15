@@ -1,5 +1,7 @@
 import Crypto
 import Foundation
+// Sessions hold their tokens as SecureBytes, so it is part of this API.
+@_exported import SecureMemory
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -47,8 +49,10 @@ public struct ATProtoOAuthSession: Codable, Hashable, Sendable {
     public let handle: String?
     public let pds: URL
     public let authorizationServer: URL
-    public var accessToken: String
-    public var refreshToken: String?
+    /// Held in protected memory; see `DPoPAuthorization` for where it
+    /// becomes an HTTP header.
+    public var accessToken: SecureBytes
+    public var refreshToken: SecureBytes?
     public var scope: String
     public var tokenType: String
     public var expiresAt: Date?
@@ -57,7 +61,7 @@ public struct ATProtoOAuthSession: Codable, Hashable, Sendable {
     public var dpopNonces: [String: String]
 
     public init(account: DID, handle: String?, pds: URL, authorizationServer: URL,
-                accessToken: String, refreshToken: String?, scope: String,
+                accessToken: SecureBytes, refreshToken: SecureBytes?, scope: String,
                 tokenType: String, expiresAt: Date?, dpopNonces: [String: String] = [:]) {
         self.account = account
         self.handle = handle
@@ -88,8 +92,8 @@ public struct ATProtoOAuthSession: Codable, Hashable, Sendable {
         handle = try values.decodeIfPresent(String.self, forKey: .handle)
         pds = try values.decode(URL.self, forKey: .pds)
         authorizationServer = try values.decode(URL.self, forKey: .authorizationServer)
-        accessToken = try values.decode(String.self, forKey: .accessToken)
-        refreshToken = try values.decodeIfPresent(String.self, forKey: .refreshToken)
+        accessToken = try values.decodeSecret(forKey: .accessToken)
+        refreshToken = try values.decodeSecretIfPresent(forKey: .refreshToken)
         scope = try values.decode(String.self, forKey: .scope)
         tokenType = try values.decode(String.self, forKey: .tokenType)
         expiresAt = try values.decodeIfPresent(Date.self, forKey: .expiresAt)
@@ -105,8 +109,8 @@ public struct ATProtoOAuthSession: Codable, Hashable, Sendable {
         try values.encodeIfPresent(handle, forKey: .handle)
         try values.encode(pds, forKey: .pds)
         try values.encode(authorizationServer, forKey: .authorizationServer)
-        try values.encode(accessToken, forKey: .accessToken)
-        try values.encodeIfPresent(refreshToken, forKey: .refreshToken)
+        try values.encodeSecret(accessToken, forKey: .accessToken)
+        if let refreshToken { try values.encodeSecret(refreshToken, forKey: .refreshToken) }
         try values.encode(scope, forKey: .scope)
         try values.encode(tokenType, forKey: .tokenType)
         try values.encodeIfPresent(expiresAt, forKey: .expiresAt)
@@ -128,15 +132,35 @@ public struct ATProtoOAuthCredential: Codable, Hashable, Sendable {
     public var session: ATProtoOAuthSession
     /// ANSI X9.63 private-key representation, stored only in the platform
     /// credential store and never included in application replication.
-    let dpopPrivateKey: Data
+    let dpopPrivateKey: SecureBytes
 
-    init(session: ATProtoOAuthSession, dpopKey: P256.Signing.PrivateKey) {
+    init(session: ATProtoOAuthSession, dpopPrivateKey: SecureBytes) {
         self.session = session
-        dpopPrivateKey = dpopKey.x963Representation
+        self.dpopPrivateKey = dpopPrivateKey
     }
 
+    /// A signer that owns a key restored straight from protected memory.
     func signer() throws -> DPoPSigner {
-        try DPoPSigner(key: P256.Signing.PrivateKey(x963Representation: dpopPrivateKey))
+        try DPoPSigner(x963Representation: dpopPrivateKey)
+    }
+
+    enum CodingKeys: String, CodingKey { case session, dpopPrivateKey }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        session = try values.decode(ATProtoOAuthSession.self, forKey: .session)
+        var key = try values.decode(Data.self, forKey: .dpopPrivateKey)
+        dpopPrivateKey = SecureBytes(wiping: &key)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(session, forKey: .session)
+        // Protection ends for this transient copy: JSON needs Data to base64
+        // it. It is wiped as soon as the encoder has consumed it.
+        var key = dpopPrivateKey.unsafeUnprotectedData()
+        defer { key.resetBytes(in: key.startIndex..<key.endIndex) }
+        try values.encode(key, forKey: .dpopPrivateKey)
     }
 }
 
@@ -149,7 +173,7 @@ public struct OAuthAuthorizationRequest: Sendable {
     let pds: URL
     let account: DID
     let loginHint: String?
-    let dpopKey: P256.Signing.PrivateKey
+    let dpopSigner: DPoPSigner
     let dpopNonce: String?
 }
 
@@ -230,5 +254,33 @@ extension Data {
         base64EncodedString().replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+}
+
+private struct SecretIsNotUTF8: Error {}
+
+extension KeyedDecodingContainer {
+    /// JSON delivers the secret as a `String`, which cannot be wiped; it is
+    /// moved into protected memory immediately and the string dropped.
+    func decodeSecret(forKey key: Key) throws -> SecureBytes {
+        SecureBytes(copyingUTF8: try decode(String.self, forKey: key))
+    }
+
+    func decodeSecretIfPresent(forKey key: Key) throws -> SecureBytes? {
+        try decodeIfPresent(String.self, forKey: key).map(SecureBytes.init(copyingUTF8:))
+    }
+}
+
+extension KeyedEncodingContainer {
+    /// Protection ends for the transient `String` JSON needs. Credentials
+    /// are encoded through `SecureBytes(jsonEncoding:)`, which wipes the
+    /// encoder's output once it is copied into protected memory.
+    mutating func encodeSecret(_ secret: SecureBytes, forKey key: Key) throws {
+        guard let string = secret.unsafeUnprotectedString() else {
+            throw EncodingError.invalidValue(secret, .init(
+                codingPath: codingPath + [key], debugDescription: "Secret is not valid UTF-8."
+            ))
+        }
+        try encode(string, forKey: key)
     }
 }

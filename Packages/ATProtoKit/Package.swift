@@ -15,6 +15,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "CredentialStorage", package: "SwiftOpenUI"),
+                .product(name: "SecureMemory", package: "SwiftOpenUI"),
                 .product(name: "AuthenticationServices", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
             ]
         ),

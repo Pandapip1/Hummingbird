@@ -1,4 +1,5 @@
 import Foundation
+import SecureMemory
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -9,6 +10,8 @@ public actor DPoPAuthorization: ATProtoAuthorizationProvider {
     private var credential: ATProtoOAuthCredential
     private let oauth: ATProtoOAuthClient
     private let store: OAuthCredentialStore?
+    /// Built once from the stored key; refreshes keep the same DPoP key.
+    private var cachedSigner: DPoPSigner?
 
     public init(credential: ATProtoOAuthCredential, oauth: ATProtoOAuthClient,
                 store: OAuthCredentialStore? = nil) {
@@ -26,12 +29,17 @@ public actor DPoPAuthorization: ATProtoAuthorizationProvider {
         guard let url = request.url, let method = request.httpMethod else { throw URLError(.badURL) }
         var request = request
         let token = credential.session.accessToken
-        request.setValue("DPoP \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue(
-            try credential.signer().proof(method: method, url: url,
-                                          nonce: credential.session.dpopNonce(for: url), accessToken: token),
-            forHTTPHeaderField: "DPoP"
+        let proof = try await signer().proof(
+            method: method, url: url, nonce: credential.session.dpopNonce(for: url), accessToken: token
         )
+        // Protection ends here: URLRequest headers are plain Strings, so the
+        // token is copied out of protected memory for as long as this request
+        // (and URLSession's copy of it) lives.
+        guard let tokenString = token.unsafeUnprotectedString() else {
+            throw OAuthError.tokenResponse("The stored access token is not valid UTF-8.")
+        }
+        request.setValue("DPoP \(tokenString)", forHTTPHeaderField: "Authorization")
+        request.setValue(proof, forHTTPHeaderField: "DPoP")
         return request
     }
 
@@ -48,6 +56,13 @@ public actor DPoPAuthorization: ATProtoAuthorizationProvider {
     }
 
     public func currentCredential() -> ATProtoOAuthCredential { credential }
+
+    private func signer() throws -> DPoPSigner {
+        if let cachedSigner { return cachedSigner }
+        let signer = try credential.signer()
+        cachedSigner = signer
+        return signer
+    }
 }
 
 private struct DPoPFailure: Decodable { let error: String? }

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 public struct MediaTrack: Hashable, Sendable {
     public enum Kind: String, Sendable { case video, audio, subtitles }

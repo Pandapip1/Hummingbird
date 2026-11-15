@@ -57,10 +57,17 @@ public struct InstanceIdentity: Sendable {
     fileprivate let signingKey: P256.Signing.PrivateKey
     fileprivate let encryptionKey: P256.KeyAgreement.PrivateKey
 
+    /// The vault form of an identity. Its key fields are ordinary `Data`
+    /// because JSON needs it; `wipe()` zeroes them once they have been used.
     fileprivate struct Stored: Codable {
         let id: UUID
-        let signingKey: Data
-        let encryptionKey: Data
+        var signingKey: Data
+        var encryptionKey: Data
+
+        mutating func wipe() {
+            signingKey.resetBytes(in: signingKey.startIndex..<signingKey.endIndex)
+            encryptionKey.resetBytes(in: encryptionKey.startIndex..<encryptionKey.endIndex)
+        }
     }
 
     private init(publicIdentity: InstancePublicIdentity, signingKey: P256.Signing.PrivateKey,
@@ -139,22 +146,25 @@ public final class InstanceIdentityStore: @unchecked Sendable {
     public func identity() throws -> InstanceIdentity {
         try lock.withLock {
             if let cached { return cached }
-            let profileData = credentialStore.load(account: account)
-            let storedData = profileData
+            let profileSecret = credentialStore.load(account: account)
+            let storedSecret = profileSecret
                 ?? (migrateLegacyIdentity ? credentialStore.load(account: Self.legacyAccount) : nil)
-            if let data = storedData,
-               let stored = try? JSONDecoder().decode(InstanceIdentity.Stored.self, from: data) {
+            if let secret = storedSecret,
+               var stored = try? secret.decodeJSON(InstanceIdentity.Stored.self) {
+                defer { stored.wipe() }
                 let identity = try InstanceIdentity(stored: stored)
-                if profileData == nil {
-                    credentialStore.save(data, account: account)
+                if profileSecret == nil {
+                    credentialStore.save(secret, account: account)
                 }
                 cached = identity
                 return identity
             }
             let identity = InstanceIdentity.generate()
-            let data = try JSONEncoder().encode(identity.stored)
-            credentialStore.save(data, account: account)
-            guard credentialStore.load(account: account) == data else {
+            var stored = identity.stored
+            defer { stored.wipe() }
+            let secret = try SecureBytes(jsonEncoding: stored)
+            credentialStore.save(secret, account: account)
+            guard credentialStore.load(account: account) == secret else {
                 throw InstanceMessagingError.credentialStoreUnavailable
             }
             cached = identity

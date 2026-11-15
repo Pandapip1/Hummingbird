@@ -18,9 +18,9 @@ public struct SourceAuth: Codable, Equatable, Sendable {
 
 /// Where per-plugin credentials are kept.
 public protocol CredentialStore: AppSyncCredentialStore, UnlockableCredentialVault {
-    func load(account: String) -> Data?
+    func load(account: String) -> SecureBytes?
     /// `nil` deletes the entry.
-    func save(_ data: Data?, account: String)
+    func save(_ secret: SecureBytes?, account: String)
     /// Whether protected credentials exist but this process cannot currently
     /// read them without involving the user.
     func requiresExplicitUnlock() -> Bool
@@ -44,12 +44,14 @@ public enum AuthKeychain {
     }
 
     public static func load(pluginID: String, kind: String, namespace: String = "") -> SourceAuth? {
-        guard let data = store.load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
-        return try? JSONDecoder().decode(SourceAuth.self, from: data)
+        guard let secret = store.load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
+        // Protection ends here: plugins consume cookies and headers as plain
+        // strings, so the decoded SourceAuth lives in ordinary memory.
+        return try? secret.decodeJSON(SourceAuth.self)
     }
 
     public static func save(_ auth: SourceAuth?, pluginID: String, kind: String, namespace: String = "") {
-        store.save(auth.flatMap { try? JSONEncoder().encode($0) }, account: "\(namespace)\(pluginID).\(kind)")
+        store.save(auth.flatMap { try? SecureBytes(jsonEncoding: $0) }, account: "\(namespace)\(pluginID).\(kind)")
     }
 }
 
@@ -74,8 +76,8 @@ public struct KeychainCredentialStore: CredentialStore {
         try vault.requestAccess(to: account)
     }
 
-    public func load(account: String) -> Data? { vault.load(account: account) }
-    public func save(_ data: Data?, account: String) { vault.save(data, account: account) }
+    public func load(account: String) -> SecureBytes? { vault.load(account: account) }
+    public func save(_ secret: SecureBytes?, account: String) { vault.save(secret, account: account) }
 
     private var activeInstanceAccount: String? {
         guard let raw = UserDefaults.standard.string(forKey: "appsync.localProfileID"),

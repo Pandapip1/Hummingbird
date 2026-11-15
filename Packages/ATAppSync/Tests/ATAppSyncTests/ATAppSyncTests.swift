@@ -184,7 +184,7 @@ final class ATAppSyncTests: XCTestCase {
         let pds = URL(string: "https://pds.example.com")!
         var session = ATProtoOAuthSession(
             account: DID(rawValue: "did:plc:example")!, handle: "alice.example.com", pds: pds,
-            authorizationServer: issuer, accessToken: "access", refreshToken: "refresh",
+            authorizationServer: issuer, accessToken: SecureBytes(copyingUTF8: "access"), refreshToken: SecureBytes(copyingUTF8: "refresh"),
             scope: "atproto", tokenType: "DPoP", expiresAt: nil
         )
         session.setDPoPNonce("authorization-nonce", for: issuer.appendingPathComponent("oauth/token"))
@@ -425,15 +425,15 @@ final class ATAppSyncTests: XCTestCase {
 
 private final class MemoryAppSyncCredentialStore: AppSyncCredentialStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var values: [String: Data] = [:]
+    private var values: [String: SecureBytes] = [:]
     private var loadCounts: [String: Int] = [:]
-    func load(account: String) -> Data? {
+    func load(account: String) -> SecureBytes? {
         lock.withLock {
             loadCounts[account, default: 0] += 1
             return values[account]
         }
     }
-    func save(_ data: Data?, account: String) { lock.withLock { values[account] = data } }
+    func save(_ secret: SecureBytes?, account: String) { lock.withLock { values[account] = secret } }
     func loadCount(account: String) -> Int { lock.withLock { loadCounts[account, default: 0] } }
     func resetLoadCounts() { lock.withLock { loadCounts.removeAll() } }
 }

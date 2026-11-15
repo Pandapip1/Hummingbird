@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import SecureMemory
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -26,7 +27,6 @@ public actor ATProtoOAuthClient {
         let verifier = OAuthRandom.token(bytes: 48)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()
         let state = OAuthRandom.token()
-        let key = P256.Signing.PrivateKey()
         var form = [
             "client_id": configuration.clientID.absoluteString,
             "response_type": "code",
@@ -38,7 +38,7 @@ public actor ATProtoOAuthClient {
             "login_hint": identifier,
         ]
         // Public native clients intentionally have no client secret or client assertion.
-        let signer = DPoPSigner(key: key)
+        let signer = DPoPSigner()
         let (data, response, nonce) = try await sendDPoPForm(
             to: metadata.pushedAuthorizationRequestEndpoint, form: form, signer: signer
         )
@@ -51,7 +51,7 @@ public actor ATProtoOAuthClient {
         return OAuthAuthorizationRequest(
             authorizationURL: authorizationURL, callback: callback, state: state,
             verifier: verifier, issuer: metadata.issuer, pds: identity.pds, account: identity.did,
-            loginHint: identity.handle, dpopKey: key, dpopNonce: nonce
+            loginHint: identity.handle, dpopSigner: signer, dpopNonce: nonce
         )
     }
 
@@ -70,12 +70,17 @@ public actor ATProtoOAuthClient {
             "redirect_uri": configuration.redirectURI.absoluteString,
             "code_verifier": request.verifier,
         ]
-        let signer = DPoPSigner(key: request.dpopKey)
-        let (data, response, nonce) = try await sendDPoPForm(
+        let signer = request.dpopSigner
+        // `data` is a var so the token response can be wiped after decoding.
+        var data: Data
+        let response: URLResponse, nonce: String?
+        (data, response, nonce) = try await sendDPoPForm(
             to: metadata.tokenEndpoint, form: form, signer: signer, initialNonce: request.dpopNonce
         )
         try Self.requireSuccess(response, data: data)
         let token = try JSONDecoder().decode(OAuthTokenResponse.self, from: data)
+        // Best effort: the response body held the tokens in ordinary memory.
+        data.resetBytes(in: data.startIndex..<data.endIndex)
         guard token.sub == request.account.rawValue else {
             throw OAuthError.tokenResponse("Account DID did not match the authorization request.")
         }
@@ -88,12 +93,12 @@ public actor ATProtoOAuthClient {
         }
         var session = ATProtoOAuthSession(
             account: request.account, handle: request.loginHint, pds: request.pds,
-            authorizationServer: request.issuer, accessToken: token.accessToken,
-            refreshToken: token.refreshToken, scope: token.scope, tokenType: token.tokenType,
+            authorizationServer: request.issuer, accessToken: SecureBytes(copyingUTF8: token.accessToken),
+            refreshToken: token.refreshToken.map(SecureBytes.init(copyingUTF8:)), scope: token.scope, tokenType: token.tokenType,
             expiresAt: token.expiresIn.map { Date().addingTimeInterval(TimeInterval($0)) }
         )
         session.setDPoPNonce(nonce, for: metadata.tokenEndpoint)
-        return ATProtoOAuthCredential(session: session, dpopKey: request.dpopKey)
+        return ATProtoOAuthCredential(session: session, dpopPrivateKey: await signer.exportForStorage())
     }
 
     public func refresh(_ credential: ATProtoOAuthCredential) async throws -> ATProtoOAuthCredential {
@@ -102,16 +107,26 @@ public actor ATProtoOAuthClient {
         }
         let metadata = try await authorizationMetadata(issuer: credential.session.authorizationServer)
         let signer = try credential.signer()
+        // Protection ends here: the form body needs the refresh token as a
+        // String. The copy lives only until the request has been sent.
+        guard let refreshTokenString = refreshToken.unsafeUnprotectedString() else {
+            throw OAuthError.tokenResponse("The stored refresh token is not valid UTF-8.")
+        }
         let form = [
-            "grant_type": "refresh_token", "refresh_token": refreshToken,
+            "grant_type": "refresh_token", "refresh_token": refreshTokenString,
             "client_id": configuration.clientID.absoluteString,
         ]
-        let (data, response, nonce) = try await sendDPoPForm(
+        // `data` is a var so the token response can be wiped after decoding.
+        var data: Data
+        let response: URLResponse, nonce: String?
+        (data, response, nonce) = try await sendDPoPForm(
             to: metadata.tokenEndpoint, form: form, signer: signer,
             initialNonce: credential.session.dpopNonce(for: metadata.tokenEndpoint)
         )
         try Self.requireSuccess(response, data: data)
         let token = try JSONDecoder().decode(OAuthTokenResponse.self, from: data)
+        // Best effort: the response body held the tokens in ordinary memory.
+        data.resetBytes(in: data.startIndex..<data.endIndex)
         guard token.sub == credential.session.account.rawValue else {
             throw OAuthError.tokenResponse("Refreshed account DID changed.")
         }
@@ -120,13 +135,14 @@ public actor ATProtoOAuthClient {
             throw OAuthError.tokenResponse("The refreshed token is not a valid atproto DPoP token.")
         }
         var updated = credential.session
-        updated.accessToken = token.accessToken
-        updated.refreshToken = token.refreshToken ?? refreshToken
+        updated.accessToken = SecureBytes(copyingUTF8: token.accessToken)
+        updated.refreshToken = token.refreshToken.map(SecureBytes.init(copyingUTF8:)) ?? refreshToken
         updated.tokenType = token.tokenType
         updated.scope = token.scope
         updated.expiresAt = token.expiresIn.map { Date().addingTimeInterval(TimeInterval($0)) }
         updated.setDPoPNonce(nonce, for: metadata.tokenEndpoint)
-        return ATProtoOAuthCredential(session: updated, dpopKey: signer.key)
+        // Same key as before; it is already in protected memory.
+        return ATProtoOAuthCredential(session: updated, dpopPrivateKey: credential.dpopPrivateKey)
     }
 
     private func discover(pds: URL) async throws -> OAuthAuthorizationServerMetadata {
@@ -161,7 +177,7 @@ public actor ATProtoOAuthClient {
             request.httpMethod = "POST"
             request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.setValue(try signer.proof(method: "POST", url: url, nonce: nonce), forHTTPHeaderField: "DPoP")
+            request.setValue(try await signer.proof(method: "POST", url: url, nonce: nonce), forHTTPHeaderField: "DPoP")
             request.httpBody = Self.formBody(form)
             let (data, response) = try await session.data(for: request)
             let receivedNonce = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "DPoP-Nonce")

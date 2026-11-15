@@ -22,7 +22,7 @@ final class ATProtoTypesTests: XCTestCase {
         let pds = URL(string: "https://pds.example.com")!
         var session = ATProtoOAuthSession(
             account: DID(rawValue: "did:plc:example")!, handle: "alice.example.com", pds: pds,
-            authorizationServer: issuer, accessToken: "access", refreshToken: "refresh",
+            authorizationServer: issuer, accessToken: SecureBytes(copyingUTF8: "access"), refreshToken: SecureBytes(copyingUTF8: "refresh"),
             scope: "atproto", tokenType: "DPoP", expiresAt: nil
         )
         session.setDPoPNonce("authorization-nonce", for: issuer.appendingPathComponent("oauth/token"))

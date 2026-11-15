@@ -9,6 +9,11 @@ fi
 repository="$(git rev-parse --show-toplevel)"
 cd "$repository"
 
+# Git exports the repository it is committing to (GIT_INDEX_FILE, and GIT_DIR
+# in a linked worktree) to hooks. Clear it so the builds' own git calls, such
+# as SwiftPM checking out dependencies, act on their own repositories.
+unset $(git rev-parse --local-env-vars)
+
 nix_bin="$(command -v nix || true)"
 if [[ -z "$nix_bin" && -x /run/current-system/sw/bin/nix ]]; then
   nix_bin=/run/current-system/sw/bin/nix

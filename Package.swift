@@ -181,7 +181,11 @@ package.products.append(.library(name: "Hummingbird", targets: ["HummingbirdApp"
 package.targets.append(
     .target(
         name: "HummingbirdApp",
-        dependencies: ["HummingbirdKit", "DebugKit"],
+        dependencies: [
+            "HummingbirdKit",
+            "DebugKit",
+            .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
+        ],
         path: "Apps/iOS",
         // Packed by xtool from xtool.yml rather than built as sources.
         exclude: ["Info.plist", "Hummingbird.icon", "Assets.xcassets", "Hummingbird.entitlements"]

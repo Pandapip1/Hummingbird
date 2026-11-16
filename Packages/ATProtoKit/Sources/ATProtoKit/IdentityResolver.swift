@@ -27,7 +27,7 @@ public actor ATProtoIdentityResolver {
             did = parsed
             handle = nil
         } else {
-            let normalized = trimmed.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            let normalized = Self.normalizedHandle(trimmed)
             guard normalized.contains("."),
                   let url = URL(string: "https://\(normalized)/.well-known/atproto-did") else {
                 throw OAuthError.invalidIdentifier
@@ -45,6 +45,14 @@ public actor ATProtoIdentityResolver {
             throw OAuthError.invalidMetadata("DID document has no HTTPS #atproto_pds service.")
         }
         return ResolvedIdentity(did: did, handle: handle, pds: pds)
+    }
+
+    /// A handle as typed, in canonical form: handles are case-insensitive and
+    /// are often written with a leading "@", which isn't part of the handle.
+    static func normalizedHandle(_ input: String) -> String {
+        var handle = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if handle.hasPrefix("@") { handle.removeFirst() }
+        return handle
     }
 
     private func didDocument(_ did: DID) async throws -> DIDDocument {

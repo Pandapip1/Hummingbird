@@ -35,7 +35,7 @@ public actor ATProtoOAuthClient {
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
-            "login_hint": identifier,
+            "login_hint": Self.loginHint(for: identity),
         ]
         // Public native clients intentionally have no client secret or client assertion.
         let signer = DPoPSigner()
@@ -53,6 +53,13 @@ public actor ATProtoOAuthClient {
             verifier: verifier, issuer: metadata.issuer, pds: identity.pds, account: identity.did,
             loginHint: identity.handle, dpopSigner: signer, dpopNonce: nonce
         )
+    }
+
+    /// What the authorization server gets as `login_hint`: the identity as
+    /// resolved, not as typed, so a displayed-form "@alice.example.com" or
+    /// stray capitals and spaces don't make it reject the request.
+    static func loginHint(for identity: ResolvedIdentity) -> String {
+        identity.handle ?? identity.did.rawValue
     }
 
     public func complete(_ request: OAuthAuthorizationRequest, callbackURL: URL) async throws -> ATProtoOAuthCredential {

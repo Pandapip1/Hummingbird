@@ -13,6 +13,7 @@ final class LibraryStore {
     private(set) var feedCache: [String: [SavedVideo]] = [:]
     private(set) var homeCache: [SavedVideo] = []
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
+    @ObservationIgnored private let storage: Storage
     @ObservationIgnored private let storagePrefix: String
     @ObservationIgnored private var applyingRemoteChange = false
     @ObservationIgnored private var watchLaterPositions: [String: Int] = [:]
@@ -20,8 +21,9 @@ final class LibraryStore {
     static let historyLimit = 2000
 
     init(snapshot: LibraryPersistenceSnapshot = .empty, profileChanges: ProfileChangeStore? = nil,
-         storagePrefix: String = "") {
+         storage: Storage, storagePrefix: String = "") {
         self.profileChanges = profileChanges
+        self.storage = storage
         self.storagePrefix = storagePrefix
         subscriptions = snapshot.subscriptions
         playlists = snapshot.playlists
@@ -33,7 +35,7 @@ final class LibraryStore {
     }
 
     private func save<T: Encodable & Sendable>(_ value: T, name: String) {
-        Storage.save(value, name: storagePrefix + name)
+        storage.save(value, name: storagePrefix + name)
     }
 
     // MARK: subscriptions

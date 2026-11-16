@@ -106,7 +106,8 @@ final class GTKPlaybackTests: XCTestCase {
         let (audioManifest, audioExecutor) = try await generatedPresentation(
             runtime, url: videoURL, sourceType: "DashManifestRawAudioSource"
         )
-        let playbackURL = try await PluginMediaProxy.shared.register(
+        let mediaProxy = makeTestStores().mediaProxy
+        let playbackURL = try await mediaProxy.register(
             videoManifest: manifest, videoRuntime: runtime, videoExecutor: executor,
             audioManifest: audioManifest, audioRuntime: runtime, audioExecutor: audioExecutor
         )

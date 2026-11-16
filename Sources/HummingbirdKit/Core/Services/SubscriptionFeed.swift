@@ -19,10 +19,12 @@ final class SubscriptionFeed {
     @ObservationIgnored private let library: LibraryStore
     @ObservationIgnored private let plugins: PluginManager
     @ObservationIgnored private let platform: PlatformService
+    @ObservationIgnored private let preferences: PreferencesDomain
     private static let maxConcurrent = 6
 
-    init(library: LibraryStore, plugins: PluginManager, platform: PlatformService) {
+    init(library: LibraryStore, plugins: PluginManager, platform: PlatformService, preferences: PreferencesDomain) {
         self.library = library; self.plugins = plugins; self.platform = platform
+        self.preferences = preferences
         // Show cached items immediately on launch.
         items = Self.merge(library.feedCache.values.flatMap { $0 }.map { ContentItem(saved: $0) })
     }
@@ -33,7 +35,7 @@ final class SubscriptionFeed {
         failures = [:]
         defer { isRefreshing = false }
 
-        let userLimit = UserDefaults.standard.integer(forKey: "subscriptionFetchLimit")   // 0 = unlimited
+        let userLimit = preferences.defaults.integer(forKey: PlaybackPreferenceKey.subscriptionFetchLimit)   // 0 = unlimited
         var jobs: [Subscription] = []
         var cached: [ContentItem] = []
 

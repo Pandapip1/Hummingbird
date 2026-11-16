@@ -93,6 +93,8 @@ final class PluginManager {
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
+    @ObservationIgnored private let storage: Storage
+    @ObservationIgnored private let credentialStore: any CredentialStore
     @ObservationIgnored private let storageName: String
     @ObservationIgnored private let credentialNamespace: String
     @ObservationIgnored private var applyingRemoteChange = false
@@ -118,15 +120,18 @@ final class PluginManager {
     }
 
     init(installed: [InstalledPlugin] = [], profileChanges: ProfileChangeStore? = nil,
+         storage: Storage, credentialStore: any CredentialStore,
          storageName: String = "plugins", credentialNamespace: String = "") {
         self.installed = installed
         self.profileChanges = profileChanges
+        self.storage = storage
+        self.credentialStore = credentialStore
         self.storageName = storageName
         self.credentialNamespace = credentialNamespace
         for plugin in installed { loadCredentials(for: plugin.id) }
     }
 
-    private func persist() { Storage.save(installed, name: storageName) }
+    private func persist() { storage.save(installed, name: storageName) }
 
     // MARK: lookup
 
@@ -290,8 +295,8 @@ final class PluginManager {
         invalidate(id)
         installed.removeAll { $0.id == id }
         do {
-            try AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
-            try AuthKeychain.save(nil, pluginID: id, kind: "captcha", namespace: credentialNamespace)
+            try credentialStore.saveSourceAuth(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
+            try credentialStore.saveSourceAuth(nil, pluginID: id, kind: "captcha", namespace: credentialNamespace)
             storedCredentials[id] = nil
         } catch {
             recordCredentialFailure(error)
@@ -347,8 +352,8 @@ final class PluginManager {
         guard storedCredentials[id] == nil else { return }
         var loaded = PluginCredentials()
         do {
-            loaded.auth = try AuthKeychain.load(pluginID: id, kind: "auth", namespace: credentialNamespace)
-            loaded.captcha = try AuthKeychain.load(pluginID: id, kind: "captcha", namespace: credentialNamespace)
+            loaded.auth = try credentialStore.loadSourceAuth(pluginID: id, kind: "auth", namespace: credentialNamespace)
+            loaded.captcha = try credentialStore.loadSourceAuth(pluginID: id, kind: "captcha", namespace: credentialNamespace)
         } catch {
             recordCredentialFailure(error)
         }
@@ -357,7 +362,7 @@ final class PluginManager {
 
     func saveAuth(_ auth: SourceAuth, pluginID: String) {
         do {
-            try AuthKeychain.save(auth, pluginID: pluginID, kind: "auth", namespace: credentialNamespace)
+            try credentialStore.saveSourceAuth(auth, pluginID: pluginID, kind: "auth", namespace: credentialNamespace)
             storedCredentials[pluginID, default: PluginCredentials()].auth = auth
             clearCredentialFailure()
         } catch {
@@ -370,7 +375,7 @@ final class PluginManager {
 
     func saveCaptcha(_ data: SourceAuth, pluginID: String) {
         do {
-            try AuthKeychain.save(data, pluginID: pluginID, kind: "captcha", namespace: credentialNamespace)
+            try credentialStore.saveSourceAuth(data, pluginID: pluginID, kind: "captcha", namespace: credentialNamespace)
             storedCredentials[pluginID, default: PluginCredentials()].captcha = data
         } catch {
             recordCredentialFailure(error)
@@ -381,7 +386,7 @@ final class PluginManager {
 
     func logout(_ id: String) {
         do {
-            try AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
+            try credentialStore.saveSourceAuth(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
             storedCredentials[id, default: PluginCredentials()].auth = nil
         } catch {
             recordCredentialFailure(error)

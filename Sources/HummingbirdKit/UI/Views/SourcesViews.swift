@@ -429,12 +429,37 @@ struct SettingRow: View {
 
 @MainActor
 struct AppSettingsView: View {
-    @AppStorage("maxVideoHeight") private var maxHeight = 1080
-    @AppStorage("preferAdaptive") private var preferAdaptive = true
-    @AppStorage("showSubtitlesByDefault") private var subtitlesDefault = false
-    @AppStorage("subscriptionFetchLimit") private var fetchLimit = 0
-    @Environment(\.openRoute) private var openRoute
+    @Environment(AppModel.self) private var app
     let browserToolbar: BrowserToolbarContext?
+
+    var body: some View {
+        AppSettingsForm(stores: app.stores, browserToolbar: browserToolbar)
+    }
+}
+
+/// The settings live in the stores' preferences domain, not necessarily
+/// `UserDefaults.standard`, so each setting names its store.
+@MainActor
+private struct AppSettingsForm: View {
+    @AppStorage private var maxHeight: Int
+    @AppStorage private var preferAdaptive: Bool
+    @AppStorage private var subtitlesDefault: Bool
+    @AppStorage private var fetchLimit: Int
+    @Environment(\.openRoute) private var openRoute
+    private let stores: AppDataStores
+    let browserToolbar: BrowserToolbarContext?
+
+    init(stores: AppDataStores, browserToolbar: BrowserToolbarContext?) {
+        self.stores = stores
+        self.browserToolbar = browserToolbar
+        let defaults = stores.defaults
+        _maxHeight = AppStorage(wrappedValue: 1080, PlaybackPreferenceKey.maxVideoHeight, store: defaults)
+        _preferAdaptive = AppStorage(wrappedValue: true, PlaybackPreferenceKey.preferAdaptive, store: defaults)
+        _subtitlesDefault = AppStorage(
+            wrappedValue: false, PlaybackPreferenceKey.showSubtitlesByDefault, store: defaults
+        )
+        _fetchLimit = AppStorage(wrappedValue: 0, PlaybackPreferenceKey.subscriptionFetchLimit, store: defaults)
+    }
 
     var body: some View {
         Form {
@@ -446,7 +471,7 @@ struct AppSettingsView: View {
                 }
             }
             #if os(macOS) && !BACKEND_GTK
-            if let store = AuthKeychain.keychain {
+            if let store = stores.keychain {
                 CredentialStorageSettingsSection(store: store)
             }
             #endif

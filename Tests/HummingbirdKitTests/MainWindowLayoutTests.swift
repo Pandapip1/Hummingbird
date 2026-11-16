@@ -11,7 +11,7 @@ final class MainWindowLayoutTests: XCTestCase {
     func testMainContentFillsWindow() async throws {
         try TestDisplaySession.start()
         guard gtk_init_check() != 0 else { throw XCTSkip("GTK display required") }
-        let root = widgetFromOpaque(gtkRenderView(HummingbirdRoot()))
+        let root = widgetFromOpaque(gtkRenderView(HummingbirdRoot(stores: makeTestStores())))
         gtk_widget_set_hexpand(root, 1)
         gtk_widget_set_vexpand(root, 1)
         gtk_widget_set_halign(root, GTK_ALIGN_FILL)

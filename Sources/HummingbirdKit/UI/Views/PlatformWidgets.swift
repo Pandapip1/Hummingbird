@@ -405,7 +405,8 @@ private struct ApplicationLifecycleModifier: ViewModifier {
             if phase == .background {
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
-                Task.detached { await Storage.flush() }
+                let stores = model.stores
+                Task.detached { await stores.flush() }
             }
         }
         #else
@@ -431,9 +432,11 @@ extension View {
 
 @MainActor
 struct DebugSceneSelection<Content: View>: View {
+    let stores: AppDataStores
     let content: Content
 
-    init(@ViewBuilder content: () -> Content) {
+    init(stores: AppDataStores, @ViewBuilder content: () -> Content) {
+        self.stores = stores
         self.content = content()
     }
 
@@ -441,7 +444,7 @@ struct DebugSceneSelection<Content: View>: View {
     var body: some View {
         #if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
         switch ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] {
-        case "player": TVPlayerDebugScene()
+        case "player": TVPlayerDebugScene(stores: stores)
         case "player-seek": TVSeekDebugScene()
         case "install-preview": TVInstallPreviewDebugScene()
         default: content

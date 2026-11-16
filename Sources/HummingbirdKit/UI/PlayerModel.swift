@@ -34,6 +34,16 @@ enum SubtitleSizeChoice: Double, CaseIterable, Sendable {
     }
 }
 
+/// Device-local playback settings, kept in the stores' preferences domain.
+enum PlaybackPreferenceKey {
+    static let maxVideoHeight = "maxVideoHeight"
+    static let preferAdaptive = "preferAdaptive"
+    static let showSubtitlesByDefault = "showSubtitlesByDefault"
+    static let subscriptionFetchLimit = "subscriptionFetchLimit"
+    static let subtitleColor = "subtitleColor"
+    static let subtitleSize = "subtitleSize"
+}
+
 @MainActor
 @Observable
 final class PlayerModel: AdvancedVideoPlayerControlling {
@@ -62,12 +72,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
     private(set) var playbackRate: Float = 1
-    private(set) var subtitleColorChoice = SubtitleColorChoice(
-        rawValue: UserDefaults.standard.string(forKey: "subtitleColor") ?? "white"
-    ) ?? .white
-    private(set) var subtitleSizeChoice = SubtitleSizeChoice(
-        rawValue: UserDefaults.standard.double(forKey: "subtitleSize")
-    ) ?? .medium
+    private(set) var subtitleColorChoice: SubtitleColorChoice
+    private(set) var subtitleSizeChoice: SubtitleSizeChoice
     private(set) var isFullscreen = false
     var title: String { details?.item.name ?? "" }
     var onPlaybackEnded: (() -> Void)?
@@ -88,9 +94,20 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var declaredDuration: Double = 0
     @ObservationIgnored private var pendingSeekTask: Task<Void, Never>?
     @ObservationIgnored private var playbackRequested = false
+    @ObservationIgnored private let preferences: PreferencesDomain
+    @ObservationIgnored private let mediaProxy: PluginMediaProxy
 
-    init(backend: MediaBackend? = nil) {
+    init(stores: AppDataStores, backend: MediaBackend? = nil) {
         self.backend = backend
+        preferences = stores.preferences
+        mediaProxy = stores.mediaProxy
+        let defaults = stores.defaults
+        subtitleColorChoice = SubtitleColorChoice(
+            rawValue: defaults.string(forKey: PlaybackPreferenceKey.subtitleColor) ?? "white"
+        ) ?? .white
+        subtitleSizeChoice = SubtitleSizeChoice(
+            rawValue: defaults.double(forKey: PlaybackPreferenceKey.subtitleSize)
+        ) ?? .medium
     }
 
     // MARK: loading
@@ -117,8 +134,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         isPreparing = true
         defer { isPreparing = false; preparationMessage = nil }
 
-        let maxHeight = UserDefaults.standard.object(forKey: "maxVideoHeight") as? Int ?? 1080
-        let preferAdaptive = UserDefaults.standard.object(forKey: "preferAdaptive") as? Bool ?? true
+        let maxHeight = preferences.defaults.object(forKey: PlaybackPreferenceKey.maxVideoHeight) as? Int ?? 1080
+        let preferAdaptive = preferences.defaults.object(forKey: PlaybackPreferenceKey.preferAdaptive) as? Bool ?? true
         let engine = backend ?? makeMediaBackend()
         backend = engine
         engine.onTick = { [weak self] seconds in self?.tick(seconds) }
@@ -177,7 +194,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
 
         if let first = details.subtitles.first(where: { $0.language?.hasPrefix(Locale.current.language.languageCode?.identifier ?? "en") == true }),
-           UserDefaults.standard.bool(forKey: "showSubtitlesByDefault") {
+           preferences.defaults.bool(forKey: PlaybackPreferenceKey.showSubtitlesByDefault) {
             await chooseSubtitle(first)
         }
         await startTracker()
@@ -274,11 +291,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
     func setSubtitleColor(_ choice: SubtitleColorChoice) {
         subtitleColorChoice = choice
-        UserDefaults.standard.set(choice.rawValue, forKey: "subtitleColor")
+        preferences.defaults.set(choice.rawValue, forKey: PlaybackPreferenceKey.subtitleColor)
     }
     func setSubtitleSize(_ choice: SubtitleSizeChoice) {
         subtitleSizeChoice = choice
-        UserDefaults.standard.set(choice.rawValue, forKey: "subtitleSize")
+        preferences.defaults.set(choice.rawValue, forKey: PlaybackPreferenceKey.subtitleSize)
     }
     func skip(by seconds: Double) {
         seek(to: playbackTime + seconds, coalescing: false)
@@ -422,7 +439,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard let audioExecutor = try await runtime.handleFromCall(audioHandle, "getRequestExecutor") else {
             throw PluginError.execution("The generated audio source did not provide a request executor")
         }
-        let url = try await PluginMediaProxy.shared.register(
+        let url = try await mediaProxy.register(
             videoManifest: videoManifest, videoRuntime: runtime, videoExecutor: videoExecutor.handle,
             audioManifest: audioManifest, audioRuntime: runtime, audioExecutor: audioExecutor.handle,
             failure: { [weak self] error in
@@ -446,7 +463,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             guard let executor = try await runtime.handleFromCall(handle, "getRequestExecutor") else {
                 throw PluginError.execution("The generated media source did not provide a request executor")
             }
-            let url = try await PluginMediaProxy.shared.register(
+            let url = try await mediaProxy.register(
                 manifest: manifest, runtime: runtime, executor: executor.handle,
                 prefetchExecutorFactory: { [source, sourceURL = loadedURL] in
                     guard let sourceURL else {

@@ -8,7 +8,6 @@ import DebugKit
 /// The player requests ordinary HLS URLs while segment bytes remain owned by
 /// the plugin's request executor.
 actor PluginMediaProxy {
-    static let shared = PluginMediaProxy()
     typealias PrefetchExecutorFactory = @Sendable () async throws -> (PluginRuntime, Int)
 
     private struct Presentation: Sendable {
@@ -32,8 +31,13 @@ actor PluginMediaProxy {
     private var starting: Task<Channel, Error>?
     private var foregroundRequests = 0
     private var lastForegroundRequest: Date?
+    private let mediaCache: UMPMediaCache
 
-    private init() {}
+    /// One proxy serves every window of a set of stores (`AppDataStores`),
+    /// caching media in their caches directory.
+    init(cache: UMPMediaCache) {
+        mediaCache = cache
+    }
 
     func register(manifest: String, runtime: PluginRuntime, executor: Int, prefetch: Bool = true,
                   useCache: Bool = true,
@@ -50,7 +54,7 @@ actor PluginMediaProxy {
         // v2 invalidates entries that may have been populated by an isolated
         // executor belonging to a different generated source rendition.
         let cacheKey = "generated-dash-v2:\(manifest)" + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
-        let cache = try await useCache ? UMPMediaCache.shared.open(.init(
+        let cache = try await useCache ? mediaCache.open(.init(
             key: cacheKey,
             allocationBytes: cacheAllocationBytes ?? playlists.estimatedBytes,
             isExact: false
@@ -144,7 +148,7 @@ actor PluginMediaProxy {
                 try? await Task.sleep(for: .milliseconds(10))
             }
             if let cache = presentation.cache,
-               (try? await UMPMediaCache.shared.read(cache, name: resource.upstream)) != nil {
+               (try? await mediaCache.read(cache, name: resource.upstream)) != nil {
                 continue
             }
             do {
@@ -154,7 +158,7 @@ actor PluginMediaProxy {
                 )
                 if let cache = presentation.cache {
                     do {
-                        try await UMPMediaCache.shared.write(data, to: cache, name: resource.upstream)
+                        try await mediaCache.write(data, to: cache, name: resource.upstream)
                     } catch {
                         DebugServer.record("plugin_media_proxy", "cache_write_failed", fields: [
                             "message": error.localizedDescription,
@@ -224,7 +228,7 @@ actor PluginMediaProxy {
             if let query = components.percentEncodedQuery { upstream += "?" + query }
             do {
                 if let cache = presentation.cache,
-                   let cached = try await UMPMediaCache.shared.read(cache, name: upstream) {
+                   let cached = try await mediaCache.read(cache, name: upstream) {
                     let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
                     return (.ok, contentType, cached)
                 }
@@ -242,7 +246,7 @@ actor PluginMediaProxy {
                     // into a 502 response. The cache is an optimization; AVPlayer
                     // still needs the bytes the plugin already returned.
                     do {
-                        try await UMPMediaCache.shared.write(data, to: cache, name: upstream)
+                        try await mediaCache.write(data, to: cache, name: upstream)
                     } catch {
                         DebugServer.record("plugin_media_proxy", "cache_write_failed", fields: [
                             "message": error.localizedDescription,

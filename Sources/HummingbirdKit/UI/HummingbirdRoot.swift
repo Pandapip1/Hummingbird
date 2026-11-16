@@ -7,39 +7,30 @@ import ATAppSync
 @MainActor
 public struct HummingbirdRoot: View {
     @State private var model: AppModel
-    public init() {
-        _model = State(wrappedValue: AppModel())
+    /// Opens the profile `stores` last selected, without restoring its state.
+    public init(stores: AppDataStores) {
+        self.init(stores: stores, profileID: nil, persistence: .empty)
+    }
+
+    private init(stores: AppDataStores, profileID: UUID?, persistence: AppPersistenceSnapshot) {
+        _model = State(wrappedValue: AppModel(
+            persistence: persistence, stores: stores, localProfileID: profileID
+        ))
         // Start the opt-in debug transport as soon as the root is created.
         // Relying only on a view task made the server unavailable before (and
         // occasionally throughout) early navigation failures on macOS.
         DebugServer.shared.startFromEnvironment()
     }
 
-    private init(profileID: UUID, persistence: AppPersistenceSnapshot) {
-        _model = State(wrappedValue: AppModel(
-            persistence: persistence, localProfileID: profileID
-        ))
-        DebugServer.shared.startFromEnvironment()
-    }
-
-    private init(persistence: AppPersistenceSnapshot) {
-        _model = State(wrappedValue: AppModel(persistence: persistence))
-        DebugServer.shared.startFromEnvironment()
-    }
-
     /// Loads and decodes persisted state away from the main actor before any
-    /// observable model is constructed.
-    public static func prepared() async -> HummingbirdRoot {
-        let persistence = await AppPersistenceSnapshot.load()
-        return HummingbirdRoot(persistence: persistence)
-    }
-
-    public static func prepared(profileID: UUID) async -> HummingbirdRoot {
-        let persistence = await AppPersistenceSnapshot.load(profileID: profileID)
-        return HummingbirdRoot(profileID: profileID, persistence: persistence)
+    /// observable model is constructed. Without a `profileID`, opens the
+    /// profile `stores` last selected.
+    public static func prepared(stores: AppDataStores, profileID: UUID? = nil) async -> HummingbirdRoot {
+        let persistence = await AppPersistenceSnapshot.load(stores: stores, profileID: profileID)
+        return HummingbirdRoot(stores: stores, profileID: profileID, persistence: persistence)
     }
     public var body: some View {
-        DebugSceneSelection {
+        DebugSceneSelection(stores: model.stores) {
             RootView()
                 .environment(model)
                 .configuresVisualAuditRoute(configureVisualAuditRoute)
@@ -87,7 +78,11 @@ public struct HummingbirdRoot: View {
 #if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
 @MainActor
 struct TVPlayerDebugScene: View {
-    @State private var player = PlayerModel(backend: AVMediaBackend())
+    @State private var player: PlayerModel
+
+    init(stores: AppDataStores) {
+        _player = State(wrappedValue: PlayerModel(stores: stores, backend: AVMediaBackend()))
+    }
 
     var body: some View {
         ZStack {

@@ -72,19 +72,23 @@ public protocol LoginKeychainFallbackConsentStore: Sendable {
 /// Keeps the answer in this device's user defaults, which are not synced.
 public struct UserDefaultsLoginKeychainFallbackConsentStore: LoginKeychainFallbackConsentStore {
     public let key: String
+    public let preferences: PreferencesDomain
 
-    public init(key: String) { self.key = key }
+    public init(key: String, preferences: PreferencesDomain) {
+        self.key = key
+        self.preferences = preferences
+    }
 
     public func consent() -> LoginKeychainFallbackConsent {
-        UserDefaults.standard.string(forKey: key).flatMap(LoginKeychainFallbackConsent.init(rawValue:))
+        preferences.defaults.string(forKey: key).flatMap(LoginKeychainFallbackConsent.init(rawValue:))
             ?? .undecided
     }
 
     public func setConsent(_ consent: LoginKeychainFallbackConsent) {
         if consent == .undecided {
-            UserDefaults.standard.removeObject(forKey: key)
+            preferences.defaults.removeObject(forKey: key)
         } else {
-            UserDefaults.standard.set(consent.rawValue, forKey: key)
+            preferences.defaults.set(consent.rawValue, forKey: key)
         }
     }
 }
@@ -112,11 +116,12 @@ public final class KeychainCredentialStore: CredentialStore {
     /// availability probe and its secret cache, so each item is read from the
     /// keychain at most once per process. (A login-keychain read is a
     /// potential access prompt.)
-    public static func shared(serviceNamespace: String? = nil) -> KeychainCredentialStore {
+    public static func shared(serviceNamespace: String? = nil,
+                              preferences: PreferencesDomain) -> KeychainCredentialStore {
         sharedStores.withLock { stores in
             let key = service(namespace: serviceNamespace)
             if let store = stores[key] { return store }
-            let store = KeychainCredentialStore(serviceNamespace: serviceNamespace)
+            let store = KeychainCredentialStore(serviceNamespace: serviceNamespace, preferences: preferences)
             stores[key] = store
             return store
         }
@@ -127,6 +132,8 @@ public final class KeychainCredentialStore: CredentialStore {
     /// reads of an item produce one access (and at most one prompt).
     private let secrets = Mutex<[String: CachedSecret]>([:])
     private let preferred: PlatformCredentialVault
+    /// Where the open profile is recorded, to find the item an unlock reads.
+    private let preferences: PreferencesDomain
     #if os(macOS)
     private let fallback: PlatformCredentialVault
     private let consentStore: any LoginKeychainFallbackConsentStore
@@ -135,18 +142,30 @@ public final class KeychainCredentialStore: CredentialStore {
     private let preferredAvailability = Mutex<CredentialVaultAvailability?>(nil)
     #endif
 
+    /// In a test process the system keychain is reachable only when the run
+    /// opted in with `HUMMINGBIRD_SYSTEM_KEYCHAIN_TESTS=1`, and then only
+    /// under a per-test service namespace (`tests.<unique>`); anything else
+    /// stops the process (see `LiveData`). Tests otherwise pass a fake backend.
     #if os(macOS)
     public init(serviceNamespace: String? = nil, backend: any KeychainItemBackend = SystemKeychainBackend(),
-                consentStore: (any LoginKeychainFallbackConsentStore)? = nil) {
+                consentStore: (any LoginKeychainFallbackConsentStore)? = nil,
+                preferences: PreferencesDomain) {
         let service = Self.service(namespace: serviceNamespace)
+        if backend is SystemKeychainBackend { LiveData.requireTestKeychainAccess(serviceNamespace: serviceNamespace) }
         preferred = PlatformCredentialVault(service: service, backend: backend)
         fallback = PlatformCredentialVault(service: service, mode: .legacyLoginKeychain, backend: backend)
+        self.preferences = preferences
         self.consentStore = consentStore
-            ?? UserDefaultsLoginKeychainFallbackConsentStore(key: "\(service).loginKeychainFallback")
+            ?? UserDefaultsLoginKeychainFallbackConsentStore(
+                key: "\(service).loginKeychainFallback", preferences: preferences
+            )
     }
     #else
-    public init(serviceNamespace: String? = nil, backend: any KeychainItemBackend = SystemKeychainBackend()) {
+    public init(serviceNamespace: String? = nil, backend: any KeychainItemBackend = SystemKeychainBackend(),
+                preferences: PreferencesDomain) {
+        if backend is SystemKeychainBackend { LiveData.requireTestKeychainAccess(serviceNamespace: serviceNamespace) }
         preferred = PlatformCredentialVault(service: Self.service(namespace: serviceNamespace), backend: backend)
+        self.preferences = preferences
     }
     #endif
 
@@ -235,7 +254,7 @@ public final class KeychainCredentialStore: CredentialStore {
     }
 
     private var activeInstanceAccount: String? {
-        guard let raw = UserDefaults.standard.string(forKey: "appsync.localProfileID"),
+        guard let raw = preferences.defaults.string(forKey: AppDataStores.localProfileIDKey),
               let id = UUID(uuidString: raw) else { return nil }
         return "com.eightybps.appsync.profile.\(id.uuidString.lowercased()).instance-identity.v1"
     }

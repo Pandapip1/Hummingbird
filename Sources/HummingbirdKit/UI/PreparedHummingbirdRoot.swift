@@ -8,19 +8,22 @@ import CredentialStorage
 public struct PreparedHummingbirdRoot: View {
     @State private var root: HummingbirdRoot?
     @State private var profileID: UUID?
-    @State private var credentialsLocked = {
-        AuthKeychain.registerVault()
-        // The access probe is non-interactive. Only present the explicit
-        // ceremony when protected credentials actually require user presence;
-        // an already-accessible or empty vault can proceed immediately.
-        return CredentialVaultManager.shared.requiresExplicitUnlock
-    }()
+    @State private var credentialsLocked: Bool
     @State private var unlockFailure: String?
     @Environment(\.openIdentifiedWindow) private var openIdentifiedWindow
+    private let stores: AppDataStores
     private let opensProfilesInNewWindows: Bool
 
-    public init(profileID: UUID? = nil, opensProfilesInNewWindows: Bool = false) {
+    public init(stores: AppDataStores, profileID: UUID? = nil, opensProfilesInNewWindows: Bool = false) {
+        self.stores = stores
         _profileID = State(wrappedValue: profileID)
+        _credentialsLocked = State(wrappedValue: {
+            stores.registerCredentialVault()
+            // The access probe is non-interactive. Only present the explicit
+            // ceremony when protected credentials actually require user presence;
+            // an already-accessible or empty vault can proceed immediately.
+            return CredentialVaultManager.shared.requiresExplicitUnlock
+        }())
         self.opensProfilesInNewWindows = opensProfilesInNewWindows
     }
 
@@ -35,8 +38,7 @@ public struct PreparedHummingbirdRoot: View {
                             return
                         }
                         Task {
-                            await Storage.flush()
-                            UserDefaults.standard.set(id.uuidString, forKey: "appsync.localProfileID")
+                            await stores.selectLocalProfile(id)
                             profileID = id
                             self.root = nil
                         }
@@ -77,8 +79,7 @@ public struct PreparedHummingbirdRoot: View {
                 }
                 .task(id: "\(credentialsLocked):\(profileID?.uuidString ?? "default")") {
                     guard !credentialsLocked else { return }
-                    if let profileID { root = await HummingbirdRoot.prepared(profileID: profileID) }
-                    else { root = await HummingbirdRoot.prepared() }
+                    root = await HummingbirdRoot.prepared(stores: stores, profileID: profileID)
                 }
             }
         }

@@ -1,51 +1,41 @@
 import CSQLite
 import Foundation
 
-/// App persistence backed by one SQLite database. Existing JSON stores are
-/// imported lazily, so upgrades retain user data without a separate migration.
-public enum Storage {
-    public static let directory: URL = {
-        #if os(tvOS)
-        // tvOS does not provide durable application-managed local storage.
-        // Its Caches directory is the supported local home for downloaded data
-        // and, unlike Application Support on tvOS, is present in the app container.
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        #else
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        #endif
-        let dir = base.appendingPathComponent("Hummingbird", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
+/// App persistence backed by one SQLite database (`storage.sqlite3`) in a
+/// data directory. Existing JSON stores are imported lazily, so upgrades
+/// retain user data without a separate migration.
+///
+/// Writes are encoded and committed in submission order on a background
+/// queue, so the main actor never waits for JSON or SQLite.
+final class Storage: Sendable {
+    private let backend: StorageBackend
+    private let writer = DispatchQueue(label: "app.hummingbird.storage", qos: .utility)
 
-    private static let backend = StorageBackend(directory: directory)
+    init(directory: URL) {
+        backend = StorageBackend(directory: directory)
+    }
 
-    static func load<T: Decodable>(_ type: T.Type, name: String) -> T? {
+    private init(backend: StorageBackend) {
+        self.backend = backend
+    }
+
+    /// A private in-memory database with no files at all, for tests.
+    static func inMemory() -> Storage {
+        Storage(backend: StorageBackend(directory: nil))
+    }
+
+    func load<T: Decodable>(_ type: T.Type, name: String) -> T? {
         backend.load(type, name: name)
     }
 
-    static func save<T: Encodable & Sendable>(_ value: T, name: String) {
-        StorageWriter.shared.save(value, name: name, backend: backend)
+    func save<T: Encodable & Sendable>(_ value: T, name: String) {
+        writer.async { [backend] in backend.save(value, name: name) }
     }
 
-    public static func flush() async {
-        await StorageWriter.shared.flush()
-    }
-}
-
-/// Encodes and writes immutable model snapshots in submission order without
-/// making the main actor wait for JSON or SQLite.
-final class StorageWriter: @unchecked Sendable {
-    static let shared = StorageWriter()
-    private let queue = DispatchQueue(label: "app.hummingbird.storage", qos: .utility)
-
-    func save<T: Encodable & Sendable>(_ value: T, name: String, backend: StorageBackend) {
-        queue.async { backend.save(value, name: name) }
-    }
-
+    /// Waits for every write submitted so far.
     func flush() async {
         await withCheckedContinuation { continuation in
-            queue.async { continuation.resume() }
+            writer.async { continuation.resume() }
         }
     }
 }
@@ -55,18 +45,26 @@ final class StorageWriter: @unchecked Sendable {
 /// the durable fallback from a failed SQLite write.
 final class StorageBackend: @unchecked Sendable {
     private let lock = NSLock()
-    private let directory: URL
+    /// Nil for an in-memory database, which has no legacy files.
+    private let directory: URL?
     private let database: StorageDatabase
 
-    init(directory: URL) {
+    init(directory: URL?) {
         self.directory = directory
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"))
+        if let directory {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"))
+        } else {
+            database = StorageDatabase(path: ":memory:")
+        }
     }
 
     func load<T: Decodable>(_ type: T.Type, name: String) -> T? {
         lock.lock()
         defer { lock.unlock() }
+        guard let directory else {
+            return database.load(name: name).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+        }
         let legacyURL = directory.appendingPathComponent(name + ".json")
         if let data = try? Data(contentsOf: legacyURL),
            let value = try? JSONDecoder().decode(T.self, from: data) {
@@ -83,6 +81,10 @@ final class StorageBackend: @unchecked Sendable {
         guard let data = try? encoder.encode(value) else { return }
         lock.lock()
         defer { lock.unlock() }
+        guard let directory else {
+            database.save(data, name: name)
+            return
+        }
         let legacyURL = directory.appendingPathComponent(name + ".json")
         if database.save(data, name: name) {
             do { try FileManager.default.removeItem(at: legacyURL) }
@@ -108,10 +110,20 @@ final class StorageDatabase: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: OpaquePointer?
 
-    init(url: URL) {
+    convenience init(url: URL) {
+        self.init(path: url.path)
+        #if os(iOS)
+        for path in [url.path, url.path + "-wal", url.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
+            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: path)
+        }
+        #endif
+    }
+
+    /// `":memory:"` opens a private in-memory database.
+    init(path: String) {
         var opened: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
-        if sqlite3_open_v2(url.path, &opened, flags, nil) == SQLITE_OK {
+        if sqlite3_open_v2(path, &opened, flags, nil) == SQLITE_OK {
             handle = opened
             sqlite3_busy_timeout(opened, 2_000)
             if sqlite3_exec(opened, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK ||
@@ -122,11 +134,6 @@ final class StorageDatabase: @unchecked Sendable {
         } else if let opened {
             sqlite3_close(opened)
         }
-        #if os(iOS)
-        for path in [url.path, url.path + "-wal", url.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
-            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: path)
-        }
-        #endif
     }
 
     deinit { if let handle { sqlite3_close(handle) } }

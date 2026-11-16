@@ -10,8 +10,9 @@ import AVKit
 struct HummingbirdApp: App {
     init() {
         #if DEBUG && os(iOS)
-        RenderHangDiagnostics.start()
-        if let root = try? RenderDiagnosticsStorage.root() {
+        let diagnostics = AppDataStores.live().diagnosticsDirectory
+        RenderHangDiagnostics.start(diagnosticsDirectory: diagnostics)
+        if let root = try? RenderDiagnosticsStorage.root(diagnostics) {
             DebugServer.shared.registerDiagnosticDirectory("render-stalls", url: root)
             DebugServer.shared.registerDiagnosticDirectory("metric-hangs", url: root.appendingPathComponent("metric-hangs"))
         }
@@ -39,15 +40,22 @@ private struct LaunchGate: View {
     @State private var preparedRoot: HummingbirdRoot?
     @State private var selectedProfileID: UUID?
     #if os(macOS)
-    /// Probes the credential store before anything is written to it.
-    @State private var storageDecision = AuthKeychain.keychain.flatMap(CredentialStorageDecision.pending(for:))
+    @State private var storageDecision: CredentialStorageDecision?
     #endif
-    @State private var credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
+    @State private var credentialsLocked: Bool
     @State private var unlockFailure: String?
     @Environment(\.openIdentifiedWindow) private var openIdentifiedWindow
 
+    /// The user's real data. This entry point is the only place that opens it.
+    private let stores = AppDataStores.live()
+
     init(profileID: UUID? = nil) {
         _selectedProfileID = State(initialValue: profileID)
+        #if os(macOS)
+        // Probes the credential store before anything is written to it.
+        _storageDecision = State(initialValue: stores.keychain.flatMap(CredentialStorageDecision.pending(for:)))
+        #endif
+        _credentialsLocked = State(initialValue: stores.credentialStore.requiresExplicitUnlock())
     }
 
     var body: some View {
@@ -59,8 +67,7 @@ private struct LaunchGate: View {
                     openIdentifiedWindow(id)
                     #else
                     Task {
-                        await Storage.flush()
-                        UserDefaults.standard.set(id.uuidString, forKey: "appsync.localProfileID")
+                        await stores.selectLocalProfile(id)
                         selectedProfileID = id
                         self.preparedRoot = nil
                     }
@@ -78,10 +85,10 @@ private struct LaunchGate: View {
                         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     Text("Hummingbird").font(.title.bold())
                     #if os(macOS)
-                    if let storageDecision, let store = AuthKeychain.keychain {
+                    if let storageDecision, let store = stores.keychain {
                         CredentialStorageDecisionView(decision: storageDecision, store: store) {
                             self.storageDecision = nil
-                            credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
+                            credentialsLocked = stores.credentialStore.requiresExplicitUnlock()
                         }
                     } else {
                         unlockOrProgress
@@ -101,11 +108,7 @@ private struct LaunchGate: View {
                 #if os(iOS) || os(tvOS)
                 prewarmAVKit()
                 #endif
-                if let selectedProfileID {
-                    preparedRoot = await HummingbirdRoot.prepared(profileID: selectedProfileID)
-                } else {
-                    preparedRoot = await HummingbirdRoot.prepared()
-                }
+                preparedRoot = await HummingbirdRoot.prepared(stores: stores, profileID: selectedProfileID)
             }
         }
     }
@@ -130,7 +133,7 @@ private struct LaunchGate: View {
                 Task {
                     do {
                         try await Task.detached {
-                            try AuthKeychain.store.requestUnlock()
+                            try stores.credentialStore.requestUnlock()
                         }.value
                         credentialsLocked = false
                         unlockFailure = nil

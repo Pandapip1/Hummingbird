@@ -12,16 +12,23 @@ final class KeychainCredentialStoreTests: XCTestCase {
 
     private func makeStore(_ keychain: FakeKeychainBackend,
                            consent: MemoryFallbackConsentStore = .init()) -> KeychainCredentialStore {
-        KeychainCredentialStore(serviceNamespace: "tests", backend: keychain, consentStore: consent)
+        KeychainCredentialStore(
+            serviceNamespace: "tests", backend: keychain, consentStore: consent, preferences: makeTestPreferences()
+        )
     }
 
-    /// `swift test` binaries are not team-signed, like Hummingbird.app built
+    /// Opt-in (`HUMMINGBIRD_SYSTEM_KEYCHAIN_TESTS=1`): uses the real keychain,
+    /// under a service of its own. `swift test` binaries are not team-signed, like Hummingbird.app built
     /// from source with xtool, so this exercises the real Security.framework
     /// path. It only probes the Data Protection Keychain; nothing reaches the
     /// login keychain because no consent is given.
     func testUnsignedProcessIsAskedForConsentByTheRealKeychain() throws {
+        try XCTSkipUnless(
+            LiveData.systemKeychainTestsEnabled, "Set \(LiveData.systemKeychainTestsVariable)=1 to use the real keychain."
+        )
         let store = KeychainCredentialStore(
-            serviceNamespace: "tests.\(UUID().uuidString.lowercased())", consentStore: MemoryFallbackConsentStore()
+            serviceNamespace: "tests.\(UUID().uuidString.lowercased())", consentStore: MemoryFallbackConsentStore(),
+            preferences: makeTestPreferences()
         )
         if store.status == .dataProtection {
             throw XCTSkip("This test process is entitled to the Data Protection Keychain.")
@@ -180,21 +187,20 @@ final class KeychainCredentialStoreTests: XCTestCase {
     }
 
     /// One installed plugin with a sign-in saved by an earlier launch, behind
-    /// an opted-in login-keychain store installed as `AuthKeychain.store`.
+    /// an opted-in login-keychain store that the session's stores use.
     private struct PluginSession {
         let keychain: FakeKeychainBackend
         let store: KeychainCredentialStore
         let pluginAccount: String
         let profileID: UUID
         let persistence: AppPersistenceSnapshot
-        let storageDirectory: URL
+        let stores: AppDataStores
 
+        /// Every window shares the session's stores, as an app's windows do.
         @MainActor
         func openWindow() -> AppModel {
             AppModel(
-                persistence: persistence, credentialStore: store,
-                profileStorageDirectory: storageDirectory.appendingPathComponent("profile-sync", isDirectory: true),
-                appSyncStorageDirectory: storageDirectory,
+                persistence: persistence, stores: stores,
                 localProfileID: profileID, localNetworkSyncEnabled: false
             )
         }
@@ -211,23 +217,15 @@ final class KeychainCredentialStoreTests: XCTestCase {
             account: pluginAccount
         )
         let store = makeStore(keychain, consent: consent)
-        let previousStore = AuthKeychain.store
-        AuthKeychain.store = store
         let configJSON = #"{"name":"Example","id":"example","sourceUrl":"https://plugins.example/config.json"}"#
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(configJSON.utf8))
         var persistence = AppPersistenceSnapshot.empty
         persistence.plugins = [InstalledPlugin(config: config, script: "plugin = {};")]
-        let storageDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "HummingbirdKeychainSession-\(UUID())", isDirectory: true
-        )
-        addTeardownBlock { @MainActor in
-            AuthKeychain.store = previousStore
-            try? FileManager.default.removeItem(at: storageDirectory)
-        }
+        let stores = makeTestStores(credentialStore: store)
         keychain.resetAccesses()
         return PluginSession(
             keychain: keychain, store: store, pluginAccount: pluginAccount, profileID: profileID,
-            persistence: persistence, storageDirectory: storageDirectory
+            persistence: persistence, stores: stores
         )
     }
 
@@ -300,14 +298,8 @@ final class KeychainCredentialStoreTests: XCTestCase {
     @MainActor
     func testAppModelExplainsWhyThePeerIdentityIsMissing() {
         let keychain = FakeKeychainBackend(dataProtectionStatus: CredentialVaultError.missingEntitlementStatus)
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "HummingbirdKeychainTests-\(UUID())", isDirectory: true
-        )
-        defer { try? FileManager.default.removeItem(at: root) }
         let app = AppModel(
-            credentialStore: makeStore(keychain, consent: .init(.declined)),
-            profileStorageDirectory: root.appendingPathComponent("profile-sync", isDirectory: true),
-            appSyncStorageDirectory: root,
+            stores: makeTestStores(credentialStore: makeStore(keychain, consent: .init(.declined))),
             localProfileID: UUID(),
             localNetworkSyncEnabled: false
         )

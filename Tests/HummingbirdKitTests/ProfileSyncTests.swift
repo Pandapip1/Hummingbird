@@ -31,17 +31,15 @@ final class ProfileSyncTests: XCTestCase {
 
     @MainActor
     func testPluginSettingsAreReplicatedButCredentialsAreNot() throws {
-        let previousStore = AuthKeychain.store
-        AuthKeychain.store = InMemoryCredentialStore()
-        defer { AuthKeychain.store = previousStore }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let directory = makeTestDirectory()
         let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
         let recorder = ProfileChangeStore(mutationLog: mutationLog)
+        let stores = makeTestStores()
         let configJSON = #"{"name":"Example","id":"example","sourceUrl":"https://plugins.example/config.json"}"#
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(configJSON.utf8))
         let manager = PluginManager(
             installed: [InstalledPlugin(config: config, script: "secret executable")],
-            profileChanges: recorder
+            profileChanges: recorder, storage: stores.storage, credentialStore: stores.credentialStore
         )
 
         manager.setSetting(pluginID: "example", key: "region", value: "ca")
@@ -58,9 +56,11 @@ final class ProfileSyncTests: XCTestCase {
 
     @MainActor
     func testLibraryDeletionLeavesDurableTombstone() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let directory = makeTestDirectory()
         let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
-        let library = LibraryStore(profileChanges: ProfileChangeStore(mutationLog: mutationLog))
+        let library = LibraryStore(
+            profileChanges: ProfileChangeStore(mutationLog: mutationLog), storage: makeTestStores().storage
+        )
         let playlist = library.createPlaylist(name: "Offline")
         library.deletePlaylist(playlist.id)
 
@@ -70,8 +70,7 @@ final class ProfileSyncTests: XCTestCase {
     }
 
     func testLocalProfileChangesPersistWithoutAnAccount() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let directory = makeTestDirectory()
         let recorder = ProfileChangeStore(storageDirectory: directory)
         let profileID = UUID()
         let first = try recorder.activate(localProfileID: profileID)
@@ -88,17 +87,3 @@ final class ProfileSyncTests: XCTestCase {
     }
 }
 
-private final class InMemoryCredentialStore: CredentialStore, @unchecked Sendable {
-    private let lock = NSLock()
-    private var values: [String: SecureBytes] = [:]
-
-    func load(account: String) -> SecureBytes? { lock.withLock { values[account] } }
-
-    func save(_ secret: SecureBytes, account: String) {
-        lock.withLock { values[account] = secret }
-    }
-
-    func delete(account: String) {
-        lock.withLock { values[account] = nil }
-    }
-}

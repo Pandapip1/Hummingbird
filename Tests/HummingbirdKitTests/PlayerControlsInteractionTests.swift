@@ -13,7 +13,7 @@ final class PlayerControlsInteractionTests: XCTestCase {
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
         let backend = ControlsBackend()
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         model.togglePlayback()
         let root = widgetFromOpaque(gtkRenderView(PlayerControls(model: model, isFullscreen: false)))
         let window = gtk_window_new()!
@@ -59,7 +59,7 @@ final class PlayerControlsInteractionTests: XCTestCase {
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
         let backend = ControlsBackend()
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         model.togglePlayback()
         let root = widgetFromOpaque(gtkRenderView(PlayerControls(model: model, isFullscreen: false)))
         let window = gtk_window_new()!

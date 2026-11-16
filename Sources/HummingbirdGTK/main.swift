@@ -23,20 +23,26 @@ private struct GTKProfileRoot: View {
 
     var body: some View {
         PreparedHummingbirdRoot(
-            profileID: profileID, opensProfilesInNewWindows: true
+            stores: liveStores(), profileID: profileID, opensProfilesInNewWindows: true
         )
     }
 }
 
-MainActor.assumeIsolated {
+/// The user's real data. This entry point is the only place that opens it.
+private func liveStores() -> AppDataStores {
     #if canImport(Security)
     // This standalone backend-development executable is not the provisioned
     // native app bundle. Give it its own Keychain service so macOS never tries
     // to authorize every native-app legacy item against a different executable
     // identity. It remains a real Keychain store, not a plaintext debug store.
-    AuthKeychain.store = KeychainCredentialStore.shared(serviceNamespace: "gtk")
-    AuthKeychain.registerVault()
+    AppDataStores.live(credentialServiceNamespace: "gtk")
+    #else
+    AppDataStores.live()
     #endif
+}
+
+MainActor.assumeIsolated {
+    liveStores().registerCredentialVault()
     // Register backend fonts before the WebKit bootstrap initializes GTK/Pango's
     // default font map, otherwise symbol labels are permanently resolved through
     // a fallback font for this process.
@@ -47,7 +53,12 @@ MainActor.assumeIsolated {
     // on their serial worker queues.
     do {
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
-        let page = WebPage()
+        // The page only loads the inline HTML below, so it gets its own
+        // ephemeral network session: nothing is read from or written to the
+        // persistent WebKit data directory.
+        var configuration = WebPage.Configuration()
+        configuration.websiteDataStore = .nonPersistent()
+        let page = WebPage(configuration: configuration)
         let widget = widgetFromOpaque(WebView(page).gtkCreateWidget())
         let window = gtk_window_new()!
         gtk_window_set_decorated(windowPointer(window), 0)

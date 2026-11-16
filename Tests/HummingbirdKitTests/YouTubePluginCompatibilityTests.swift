@@ -241,7 +241,8 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         defer { Task { await runtime.stop() } }
         let url = fixtureVideoURL
         let (manifest, executor) = try await Self.generatedPresentation(runtime, url: url)
-        let playbackURL = try await PluginMediaProxy.shared.register(
+        let mediaProxy = makeTestStores().mediaProxy
+        let playbackURL = try await mediaProxy.register(
             manifest: manifest, runtime: runtime, executor: executor, prefetch: true,
             useCache: true, cacheAllocationBytes: 1,
             prefetchExecutorFactory: {
@@ -274,7 +275,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         let (audioManifest, audioExecutor) = try await Self.generatedPresentation(
             runtime, url: url, sourceType: "DashManifestRawAudioSource"
         )
-        let combinedURL = try await PluginMediaProxy.shared.register(
+        let combinedURL = try await mediaProxy.register(
             videoManifest: manifest, videoRuntime: runtime, videoExecutor: executor,
             audioManifest: audioManifest, audioRuntime: runtime, audioExecutor: audioExecutor
         )

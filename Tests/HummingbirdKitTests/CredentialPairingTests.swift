@@ -43,7 +43,7 @@ final class CredentialPairingTests: XCTestCase {
         let auth = SourceAuth(cookieMap: ["nebula.tv": ["session": "paired"]])
         var receivedAuth: SourceAuth?
         let receiver = CredentialPairingReceiver(
-            pluginID: "nebula", pluginSourceURL: source, identity: .generate()
+            pluginID: "nebula", pluginSourceURL: source, stores: makeTestStores(), identity: .generate()
         ) { value in
             receivedAuth = value
             received.fulfill()
@@ -79,7 +79,7 @@ final class CredentialPairingTests: XCTestCase {
     func testEitherDeviceCanRejectAnEmojiMismatch() async throws {
         let rejected = expectation(description: "remote rejection callback")
         let receiver = CredentialPairingReceiver(
-            pluginID: "nebula", pluginSourceURL: source, identity: .generate(),
+            pluginID: "nebula", pluginSourceURL: source, stores: makeTestStores(), identity: .generate(),
             onReceive: { _ in XCTFail("Rejection delivered credentials") },
             onReject: { rejected.fulfill() }
         )
@@ -103,7 +103,7 @@ final class CredentialPairingTests: XCTestCase {
         XCTAssertEqual(rejectedStatus, .rejected)
 
         let localReceiver = CredentialPairingReceiver(
-            pluginID: "nebula", pluginSourceURL: source, identity: .generate(), onReceive: { _ in }
+            pluginID: "nebula", pluginSourceURL: source, stores: makeTestStores(), identity: .generate(), onReceive: { _ in }
         )
         defer { localReceiver.stop() }
         let localAdvertised = try await localReceiver.start()

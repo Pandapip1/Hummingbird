@@ -35,33 +35,25 @@ public extension CredentialStore {
     func requestUnlock() throws {}
 }
 
-/// Facade used by the rest of the app. Platform storage is supplied by
-/// SwiftOpenUI (Data Protection Keychain or Secret Service) through
-/// `KeychainCredentialStore`, which owns the login-keychain fallback policy.
-public enum AuthKeychain {
-    nonisolated(unsafe) public static var store: CredentialStore = KeychainCredentialStore.shared()
-
-    /// The platform store, when `store` is one, for storage-mode decisions.
-    public static var keychain: KeychainCredentialStore? { store as? KeychainCredentialStore }
-
-    public static func registerVault() {
-        CredentialVaultManager.shared.register(store)
-    }
-
-    public static func load(pluginID: String, kind: String, namespace: String = "") throws -> SourceAuth? {
-        guard let secret = try store.load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
+/// Plugin sign-ins and captcha cookies in a credential store. Platform storage
+/// is supplied by SwiftOpenUI (Data Protection Keychain or Secret Service)
+/// through `KeychainCredentialStore`, which owns the login-keychain fallback
+/// policy; the store itself comes from the window's `AppDataStores`.
+public extension CredentialStore {
+    func loadSourceAuth(pluginID: String, kind: String, namespace: String = "") throws -> SourceAuth? {
+        guard let secret = try load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
         // Protection ends here: plugins consume cookies and headers as plain
         // strings, so the decoded SourceAuth lives in ordinary memory.
         return try secret.decodeJSON(SourceAuth.self)
     }
 
     /// `nil` deletes the stored value.
-    public static func save(_ auth: SourceAuth?, pluginID: String, kind: String, namespace: String = "") throws {
+    func saveSourceAuth(_ auth: SourceAuth?, pluginID: String, kind: String, namespace: String = "") throws {
         let account = "\(namespace)\(pluginID).\(kind)"
         if let auth {
-            try store.save(SecureBytes(jsonEncoding: auth), account: account)
+            try save(SecureBytes(jsonEncoding: auth), account: account)
         } else {
-            try store.delete(account: account)
+            try delete(account: account)
         }
     }
 }

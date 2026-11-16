@@ -10,8 +10,13 @@ import Glibc
 /// video and selected formats. Media is stored in one preallocated file and
 /// addressed by an atomic sidecar index.
 actor UMPMediaCache {
-    static let shared = UMPMediaCache()
     private static let cacheDirectoryName = "UMP-v2"
+    /// The app's caches directory; the cache lives in its `UMP-v2` folder.
+    private let parent: URL
+
+    init(directory parent: URL) {
+        self.parent = parent
+    }
 
     struct Handle: Hashable, Sendable { fileprivate let id: String }
     struct Descriptor: Sendable {
@@ -38,7 +43,7 @@ actor UMPMediaCache {
     func open(_ descriptor: Descriptor) throws -> Handle {
         let id = Self.digest(descriptor.key)
         if entries[id] != nil { return Handle(id: id) }
-        let root = try Self.cacheRoot()
+        let root = try cacheRoot()
         let file = root.appendingPathComponent("\(id).media")
         let indexFile = root.appendingPathComponent("\(id).json")
         let decoded: Index?
@@ -103,13 +108,10 @@ actor UMPMediaCache {
         entries[handle.id] = entry
     }
 
-    private static func cacheRoot() throws -> URL {
-        let base = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
-                                               appropriateFor: nil, create: true)
-        let parent = base.appendingPathComponent("Hummingbird", isDirectory: true)
+    private func cacheRoot() throws -> URL {
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        try removeObsoleteCacheDirectories(in: parent, keeping: cacheDirectoryName)
-        let root = parent.appendingPathComponent(cacheDirectoryName, isDirectory: true)
+        try Self.removeObsoleteCacheDirectories(in: parent, keeping: Self.cacheDirectoryName)
+        let root = parent.appendingPathComponent(Self.cacheDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }

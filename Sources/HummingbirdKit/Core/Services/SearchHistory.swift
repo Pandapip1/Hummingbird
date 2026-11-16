@@ -8,9 +8,7 @@ final class SearchHistory {
     @ObservationIgnored private let save: ([String]) -> Void
     private let limit: Int
 
-    init(limit: Int = 30,
-         load: () -> [String] = { Storage.load([String].self, name: "search_history") ?? [] },
-         save: @escaping ([String]) -> Void = { Storage.save($0, name: "search_history") }) {
+    init(limit: Int = 30, load: () -> [String], save: @escaping ([String]) -> Void) {
         self.limit = max(1, limit)
         self.save = save
         queries = Array(load().prefix(max(1, limit)))

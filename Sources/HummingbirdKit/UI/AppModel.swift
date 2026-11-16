@@ -11,8 +11,9 @@ import UIKit
 @MainActor
 @Observable
 final class AppModel {
-    fileprivate static let localProfileIDKey = "appsync.localProfileID"
     private static let localNetworkSyncEnabledKey = "appsync.localNetworkSyncEnabled"
+    /// Where this window's state outlives the process.
+    let stores: AppDataStores
     let plugins: PluginManager
     let localProfileID: UUID
     let library: LibraryStore
@@ -86,7 +87,7 @@ final class AppModel {
     /// session should continue until this tab navigates elsewhere or is closed.
     func player(forTab id: BrowserTab.ID) -> PlayerModel {
         if let player = tabPlayers[id] { return player }
-        let player = PlayerModel()
+        let player = PlayerModel(stores: stores)
         tabPlayers[id] = player
         return player
     }
@@ -107,7 +108,7 @@ final class AppModel {
         }
         guard let firstTab = tabs.first else { return }
         let activeTabID = tabs.contains { $0.id == activeTabID } ? activeTabID : firstTab.id
-        Storage.save(
+        stores.storage.save(
             PersistedBrowserSession(tabs: tabs, activeTabID: activeTabID),
             name: "profile.\(localProfileID.uuidString.lowercased()).browser-session"
         )
@@ -115,28 +116,26 @@ final class AppModel {
 
     @ObservationIgnored private var homeFeedPluginIDs: [String] = []
 
+    /// Everything this window persists goes to `stores`. In particular the
+    /// local-profile registry there lists every profile, each opened (and its
+    /// identity keys read from the credential store) when local sync starts.
     init(persistence: AppPersistenceSnapshot = .empty,
-         credentialStore: any CredentialStore = AuthKeychain.store,
-         profileStorageDirectory: URL = Storage.directory.appendingPathComponent(
-            "profile-sync", isDirectory: true
-         ),
-         // Holds the local-profile registry, instance inboxes and trust facts.
-         // Every profile listed there is opened, and its identity keys read,
-         // when local sync starts, so tests must never use the real one.
-         appSyncStorageDirectory: URL = Storage.directory,
+         stores: AppDataStores,
          localProfileID suppliedLocalProfileID: UUID? = nil,
          localNetworkSyncEnabled suppliedLocalNetworkSyncEnabled: Bool? = nil,
          permissions suppliedPermissions: PermissionGate? = nil) {
+        let defaults = stores.defaults
         let localProfileID: UUID
         if let suppliedLocalProfileID {
             localProfileID = suppliedLocalProfileID
-        } else if let stored = UserDefaults.standard.string(forKey: Self.localProfileIDKey),
-           let restored = UUID(uuidString: stored) {
+        } else if let restored = stores.selectedLocalProfileID {
             localProfileID = restored
         } else {
             localProfileID = UUID()
-            UserDefaults.standard.set(localProfileID.uuidString, forKey: Self.localProfileIDKey)
+            defaults.set(localProfileID.uuidString, forKey: AppDataStores.localProfileIDKey)
         }
+        let credentialStore = stores.credentialStore
+        let storage = stores.storage
         // Opening the profile reads (or creates) this instance's identity keys
         // in the credential store. A store that refuses them leaves the
         // profile without peer messaging; the reason is kept and shown rather
@@ -146,7 +145,7 @@ final class AppModel {
         var peerServiceFailure: (any Error)?
         do {
             let registry = try AppSyncProfileRegistry(
-                credentialStore: credentialStore, storageDirectory: appSyncStorageDirectory
+                credentialStore: credentialStore, storageDirectory: stores.appSyncDirectory
             )
             profileRegistry = registry
             do {
@@ -161,10 +160,10 @@ final class AppModel {
             peerServiceFailure = error
         }
         let localNetworkSyncEnabled = suppliedLocalNetworkSyncEnabled
-            ?? UserDefaults.standard.bool(forKey: Self.localNetworkSyncEnabledKey)
+            ?? defaults.bool(forKey: Self.localNetworkSyncEnabledKey)
         let storagePrefix = "profile.\(localProfileID.uuidString.lowercased())."
         let profileChanges = ProfileChangeStore(
-            storageDirectory: profileStorageDirectory,
+            storageDirectory: stores.profileSyncDirectory,
             signer: try? peerService?.peer.mutationSigner()
         )
         do {
@@ -174,32 +173,34 @@ final class AppModel {
         }
         let plugins = PluginManager(
             installed: persistence.plugins, profileChanges: profileChanges,
+            storage: storage, credentialStore: credentialStore,
             storageName: storagePrefix + "plugins", credentialNamespace: storagePrefix
         )
         let library = LibraryStore(
             snapshot: persistence.library, profileChanges: profileChanges,
-            storagePrefix: storagePrefix
+            storage: storage, storagePrefix: storagePrefix
         )
         let platform = PlatformService(
-            plugins: plugins, detailsCacheStorageName: storagePrefix + "details_cache"
+            plugins: plugins, storage: storage, detailsCacheStorageName: storagePrefix + "details_cache"
         )
+        self.stores = stores
         self.plugins = plugins
         self.localProfileID = localProfileID
         self.library = library
         self.platform = platform
         self.playbackQueue = PlaybackQueue(
-            storageName: storagePrefix + "playback_queue", restored: persistence.playbackQueue
+            storage: storage, storageName: storagePrefix + "playback_queue", restored: persistence.playbackQueue
         )
         self.searchHistory = SearchHistory(
             load: { persistence.searchHistory },
-            save: { Storage.save($0, name: storagePrefix + "search_history") }
+            save: { storage.save($0, name: storagePrefix + "search_history") }
         )
         self.profileChanges = profileChanges
         self.profileRegistry = profileRegistry
         self.peerService = peerService
         self.peerServiceFailure = peerServiceFailure?.localizedDescription
         let permissions = suppliedPermissions ?? PermissionGate(
-            system: PlatformPermissions(), ledger: FilePermissionLedger()
+            system: PlatformPermissions(), ledger: FilePermissionLedger(directory: stores.permissionsDirectory)
         )
         self.permissions = permissions
         plugins.localNetworkAccess = PluginLocalNetworkAccess(gate: permissions)
@@ -210,7 +211,8 @@ final class AppModel {
         let oauthPresenter: any ATProtoOAuthPresenter =
             if let oauthTabPresenter { oauthTabPresenter } else { WebAuthenticationSessionPresenter() }
         self.profileAccount = ProfileAccountService(
-            localProfileID: localProfileID, changes: profileChanges, library: library, plugins: plugins,
+            localProfileID: localProfileID, stores: stores,
+            changes: profileChanges, library: library, plugins: plugins,
             peerService: peerService, peerServiceFailure: peerServiceFailure,
             // Off until this instance may use the local network; the
             // controller below turns it on once the gate has passed.
@@ -227,7 +229,9 @@ final class AppModel {
                 },
                 conceal: { profileRegistry?.concealAll() }
             ),
-            persist: { UserDefaults.standard.set($0, forKey: Self.localNetworkSyncEnabledKey) },
+            persist: { [preferences = stores.preferences] in
+                preferences.defaults.set($0, forKey: Self.localNetworkSyncEnabledKey)
+            },
             activeChanged: { active in
                 profileAccount.setLocalNetworkEnabled(active)
                 if active { Task { await profileAccount.sync() } }
@@ -260,7 +264,9 @@ final class AppModel {
             self.contentTabs = [initialTab]
             self.activeTabID = initialTab.id
         }
-        self.subscriptionFeed = SubscriptionFeed(library: library, plugins: plugins, platform: platform)
+        self.subscriptionFeed = SubscriptionFeed(
+            library: library, plugins: plugins, platform: platform, preferences: stores.preferences
+        )
         self.homeFeed = FeedModel(
             initialItems: library.homeCache.map(ContentItem.init(saved:)),
             report: { [platform] error, runtime in
@@ -275,7 +281,7 @@ final class AppModel {
         let localNetworkSync = self.localNetworkSync
         Task { await localNetworkSync.applyStoredSetting() }
         #if DEBUG && os(iOS)
-        RenderStallMonitor.shared.start { [weak self] in
+        RenderStallMonitor.shared.start(diagnosticsDirectory: stores.diagnosticsDirectory) { [weak self] in
             guard let self else { return [:] }
             let player = self.activePlayerForDebug
             return [
@@ -368,24 +374,24 @@ struct AppPersistenceSnapshot: Sendable {
         searchHistory: [], browserSession: nil
     )
 
-    static func load(profileID: UUID? = nil) async -> Self {
+    /// Without a `profileID`, loads the profile `stores` last selected.
+    static func load(stores: AppDataStores, profileID: UUID? = nil) async -> Self {
         await Task.detached(priority: .userInitiated) {
-            let resolvedProfileID = profileID ?? UserDefaults.standard.string(
-                forKey: "appsync.localProfileID"
-            ).flatMap(UUID.init(uuidString:))
+            let resolvedProfileID = profileID ?? stores.selectedLocalProfileID
             let prefix = resolvedProfileID.map {
                 "profile.\($0.uuidString.lowercased())."
             } ?? ""
             let legacyOwnerKey = "appsync.legacyStorageProfileID"
-            let defaults = UserDefaults.standard
+            let defaults = stores.defaults
             if defaults.string(forKey: legacyOwnerKey) == nil, let resolvedProfileID {
                 defaults.set(resolvedProfileID.uuidString, forKey: legacyOwnerKey)
             }
             let mayLoadLegacy = resolvedProfileID?.uuidString
                 == defaults.string(forKey: legacyOwnerKey)
+            let storage = stores.storage
             func load<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
-                Storage.load(type, name: prefix + name)
-                    ?? (mayLoadLegacy ? Storage.load(type, name: name) : nil)
+                storage.load(type, name: prefix + name)
+                    ?? (mayLoadLegacy ? storage.load(type, name: name) : nil)
             }
             return Self(
                 plugins: load([InstalledPlugin].self, "plugins") ?? [],
@@ -400,7 +406,7 @@ struct AppPersistenceSnapshot: Sendable {
                 playbackQueue: load(PersistedPlaybackQueue.self, "playback_queue"),
                 searchHistory: load([String].self, "search_history") ?? [],
                 browserSession: resolvedProfileID.flatMap {
-                    Storage.load(
+                    storage.load(
                         PersistedBrowserSession.self,
                         name: "profile.\($0.uuidString.lowercased()).browser-session"
                     )
@@ -414,9 +420,9 @@ struct AppPersistenceSnapshot: Sendable {
 private actor RenderStallLogWriter {
     static let shared = RenderStallLogWriter()
 
-    func append(_ data: Data) {
+    func append(_ data: Data, diagnosticsDirectory: URL) {
         do {
-            let root = try RenderDiagnosticsStorage.root()
+            let root = try RenderDiagnosticsStorage.root(diagnosticsDirectory)
             let url = root.appendingPathComponent("render-stalls.jsonl")
             if !FileManager.default.fileExists(atPath: url.path) {
                 FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -438,9 +444,11 @@ private final class RenderStallMonitor: NSObject {
     private var displayLink: CADisplayLink?
     private var previousTimestamp: CFTimeInterval?
     private var context: (() -> [String: String])?
+    private var diagnosticsDirectory: URL?
 
-    func start(context: @escaping () -> [String: String]) {
+    func start(diagnosticsDirectory: URL, context: @escaping () -> [String: String]) {
         self.context = context
+        self.diagnosticsDirectory = diagnosticsDirectory
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
@@ -464,9 +472,10 @@ private final class RenderStallMonitor: NSObject {
         event["time"] = ISO8601DateFormatter().string(from: Date())
         event["launchID"] = launchID
         event["gapMilliseconds"] = Int((gap * 1_000).rounded())
-        guard var data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
+        guard let diagnosticsDirectory,
+              var data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
         data.append(0x0a)
-        Task { await RenderStallLogWriter.shared.append(data) }
+        Task { await RenderStallLogWriter.shared.append(data, diagnosticsDirectory: diagnosticsDirectory) }
     }
 }
 #endif

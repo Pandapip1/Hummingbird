@@ -350,6 +350,9 @@ private struct PairedDeviceLoginSheet: View {
     @State private var verified = false
     @State private var remoteAccepted = false
     @State private var senderIdentity: AppSyncPeer?
+    /// This device's identity in the pairing: the profile's peer, or the
+    /// device-wide pairing identity when the profile has none.
+    @State private var sender: AppSyncPeerIdentity?
     @State private var savedAuth: SourceAuth?
     @State private var useFreshLogin = false
 
@@ -371,7 +374,7 @@ private struct PairedDeviceLoginSheet: View {
                         .foregroundStyle(.secondary)
                     HStack {
                         Button("They don’t match", role: .destructive) {
-                            Task { try? await request.reject(); onClose() }
+                            Task { if let sender { try? await request.reject(sender: sender) }; onClose() }
                         }
                         Button("They match") { verified = true }
                     }
@@ -383,7 +386,7 @@ private struct PairedDeviceLoginSheet: View {
                 VStack(spacing: 16) {
                     ProgressView("Waiting for the TV to confirm…")
                     Button("Cancel pairing", role: .cancel) {
-                        Task { try? await request.reject(); onClose() }
+                        Task { if let sender { try? await request.reject(sender: sender) }; onClose() }
                     }
                 }
             } else if let savedAuth, !useFreshLogin {
@@ -434,7 +437,11 @@ private struct PairedDeviceLoginSheet: View {
                 return
             }
             app.permissions.recordUse(of: .localNetwork)
-            do { senderIdentity = try await request.announceSender(peerService: app.peerService) }
+            do {
+                let identity = try app.peerService?.peer ?? app.stores.pairingIdentity()
+                sender = identity
+                senderIdentity = try await request.announceSender(identity, peerService: app.peerService)
+            }
             catch { self.error = error.localizedDescription; return }
             while !Task.isCancelled && !remoteAccepted && error == nil {
                 do {
@@ -462,7 +469,8 @@ private struct PairedDeviceLoginSheet: View {
         Task {
             do {
                 do {
-                    try await request.send(auth)
+                    guard let sender else { throw PairingError.unavailable }
+                    try await request.send(auth, sender: sender)
                 } catch {
                     // The QR endpoint is preferred and works without Internet.
                     // If the devices leave the same LAN, use the recipient's

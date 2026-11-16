@@ -27,6 +27,7 @@ final class ProfileAccountService {
     @ObservationIgnored private var localNetworkEnabled: Bool
     @ObservationIgnored private let currentAccountKey: String
     @ObservationIgnored private var signInConfirmationReply: CheckedContinuation<Bool, Never>?
+    @ObservationIgnored private let preferences: PreferencesDomain
 
     // An immutable Sendable constant: it needs no actor isolation, and must
     // match the published Web/hummingbird/oauth-client-metadata.json.
@@ -59,7 +60,8 @@ final class ProfileAccountService {
         "Your server doesn’t support Hummingbird’s profile-space permission yet, so profile sync will "
         + "stay off; local network sync still works. Sign in anyway?"
 
-    init(localProfileID: UUID, changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
+    init(localProfileID: UUID, stores: AppDataStores,
+         changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
          localNetworkEnabled: Bool = false,
          oauthPresenter: any ATProtoOAuthPresenter,
@@ -69,9 +71,10 @@ final class ProfileAccountService {
         self.authenticator = authenticator ?? ATProtoOAuthAuthenticator(client: oauth, presenter: oauthPresenter)
         credentialStore = OAuthCredentialStore(
             service: "com.eightybps.hummingbird.atproto.\(localProfileID.uuidString.lowercased())",
-            vault: AuthKeychain.store
+            vault: stores.credentialStore
         )
         currentAccountKey = "profile.\(localProfileID.uuidString.lowercased()).atproto.currentAccount"
+        preferences = stores.preferences
         self.changes = changes
         self.peerService = peerService
         self.localNetworkEnabled = localNetworkEnabled
@@ -106,7 +109,7 @@ final class ProfileAccountService {
                 await self?.confirmSignIn(prepared) ?? false
             }
             try credentialStore.save(credential)
-            UserDefaults.standard.set(credential.session.account.rawValue, forKey: currentAccountKey)
+            preferences.defaults.set(credential.session.account.rawValue, forKey: currentAccountKey)
             install(credential)
             syncService?.bootstrapCurrentProfile()
             await syncService?.sync()
@@ -193,7 +196,7 @@ final class ProfileAccountService {
                 errorMessage = "Signed out, but the saved session couldn’t be removed: \(error.localizedDescription)"
             }
         }
-        UserDefaults.standard.removeObject(forKey: currentAccountKey)
+        preferences.defaults.removeObject(forKey: currentAccountKey)
         account = nil
         handle = nil
         profileSyncNotice = nil
@@ -201,7 +204,7 @@ final class ProfileAccountService {
     }
 
     private func restore() {
-        guard let raw = UserDefaults.standard.string(forKey: currentAccountKey),
+        guard let raw = preferences.defaults.string(forKey: currentAccountKey),
               let did = DID(rawValue: raw) else { return }
         do {
             guard let credential = try credentialStore.load(account: did) else { return }

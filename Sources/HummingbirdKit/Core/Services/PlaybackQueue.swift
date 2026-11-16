@@ -30,17 +30,14 @@ final class PlaybackQueue {
     private(set) var repeatMode: QueueRepeatMode
     @ObservationIgnored private var nextIndexHint: Int?
 
-    @ObservationIgnored private let backend: StorageBackend?
+    @ObservationIgnored private let storage: Storage
     @ObservationIgnored private let storageName: String
 
-    init(backend: StorageBackend? = nil, storageName: String = "playback_queue",
+    init(storage: Storage, storageName: String = "playback_queue",
          restored: PersistedPlaybackQueue? = nil) {
-        self.backend = backend
+        self.storage = storage
         self.storageName = storageName
-        let saved: PersistedPlaybackQueue?
-        if let restored { saved = restored }
-        else if let backend { saved = backend.load(PersistedPlaybackQueue.self, name: storageName) }
-        else { saved = nil }
+        let saved = restored ?? storage.load(PersistedPlaybackQueue.self, name: storageName)
         items = saved?.items ?? []
         currentID = saved?.currentID
         repeatMode = saved?.repeatMode ?? .off
@@ -157,7 +154,6 @@ final class PlaybackQueue {
     private func persist() {
         let value = PersistedPlaybackQueue(items: items, currentID: currentID, repeatMode: repeatMode,
                                            nextIndexHint: nextIndexHint)
-        if let backend { backend.save(value, name: storageName) }
-        else { Storage.save(value, name: storageName) }
+        storage.save(value, name: storageName)
     }
 }

@@ -201,12 +201,8 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("history.json").path))
     }
 
-    func testStorageWriterEncodesOffMainAndPreservesSubmissionOrder() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("HummingbirdStorageWriter-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let backend = StorageBackend(directory: directory)
-        let writer = StorageWriter()
+    func testStorageEncodesOffMainAndPreservesSubmissionOrder() async throws {
+        let storage = Storage.inMemory()
         let encoded = expectation(description: "encoded away from main thread")
 
         struct Value: Encodable, Sendable {
@@ -221,12 +217,12 @@ final class ModelAndLogicTests: XCTestCase {
             }
         }
 
-        writer.save(Value(number: 1, encoded: { encoded.fulfill() }), name: "ordered", backend: backend)
-        writer.save(Value(number: 2, encoded: {}), name: "ordered", backend: backend)
+        storage.save(Value(number: 1, encoded: { encoded.fulfill() }), name: "ordered")
+        storage.save(Value(number: 2, encoded: {}), name: "ordered")
         await fulfillment(of: [encoded], timeout: 1)
-        await writer.flush()
+        await storage.flush()
 
-        let restored: [String: Int]? = backend.load([String: Int].self, name: "ordered")
+        let restored: [String: Int]? = storage.load([String: Int].self, name: "ordered")
         XCTAssertEqual(restored?["number"], 2)
     }
 
@@ -257,18 +253,15 @@ final class ModelAndLogicTests: XCTestCase {
     }
 
     @MainActor
-    func testPlaybackQueuePersistsOrderingAndRepeatState() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("HummingbirdQueueTests-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let backend = StorageBackend(directory: directory)
+    func testPlaybackQueuePersistsOrderingAndRepeatState() async throws {
+        let storage = Storage.inMemory()
         func video(_ name: String) throws -> SavedVideo {
             SavedVideo(try decode(ContentItem.self,
                 #"{"contentType":1,"id":{"pluginId":"test","value":"\#(name)"},"name":"\#(name)","url":"https://test/\#(name)"}"#))
         }
         let one = try video("one"), two = try video("two"), three = try video("three")
 
-        let queue = PlaybackQueue(backend: backend)
+        let queue = PlaybackQueue(storage: storage)
         queue.beginPlaying(one)
         queue.enqueue(three)
         queue.playNext(two)
@@ -277,13 +270,14 @@ final class ModelAndLogicTests: XCTestCase {
         queue.moveDown(two)
         queue.cycleRepeatMode()
 
-        let restored = PlaybackQueue(backend: backend)
+        await storage.flush()
+        let restored = PlaybackQueue(storage: storage)
         XCTAssertEqual(restored.items.map(\.name), ["one", "three", "two"])
         XCTAssertEqual(restored.current?.name, "two")
         XCTAssertEqual(restored.repeatMode, .all)
         XCTAssertEqual(restored.advanceAfterPlayback()?.name, "one")
 
-        let removalQueue = PlaybackQueue(backend: backend, storageName: "removal_queue")
+        let removalQueue = PlaybackQueue(storage: storage, storageName: "removal_queue")
         removalQueue.beginPlaying(one)
         removalQueue.enqueue(two)
         removalQueue.enqueue(three)
@@ -293,22 +287,23 @@ final class ModelAndLogicTests: XCTestCase {
         removalQueue.remove(three)
         XCTAssertNil(removalQueue.advanceAfterPlayback())
 
-        let firstRemoval = PlaybackQueue(backend: backend, storageName: "first_removal_queue")
+        let firstRemoval = PlaybackQueue(storage: storage, storageName: "first_removal_queue")
         firstRemoval.beginPlaying(one)
         firstRemoval.enqueue(two)
         firstRemoval.remove(one)
         XCTAssertEqual(firstRemoval.advanceAfterPlayback()?.name, "two")
 
-        let multipleRemoval = PlaybackQueue(backend: backend, storageName: "multiple_removal_queue")
+        let multipleRemoval = PlaybackQueue(storage: storage, storageName: "multiple_removal_queue")
         multipleRemoval.beginPlaying(one)
         multipleRemoval.enqueue(two)
         multipleRemoval.enqueue(three)
         multipleRemoval.beginPlaying(two)
         multipleRemoval.remove(at: IndexSet([0, 1]))
-        let restoredRemoval = PlaybackQueue(backend: backend, storageName: "multiple_removal_queue")
+        await storage.flush()
+        let restoredRemoval = PlaybackQueue(storage: storage, storageName: "multiple_removal_queue")
         XCTAssertEqual(restoredRemoval.advanceAfterPlayback()?.name, "three")
 
-        let subsequentRemoval = PlaybackQueue(backend: backend, storageName: "subsequent_removal_queue")
+        let subsequentRemoval = PlaybackQueue(storage: storage, storageName: "subsequent_removal_queue")
         subsequentRemoval.beginPlaying(one)
         subsequentRemoval.enqueue(two)
         subsequentRemoval.enqueue(three)

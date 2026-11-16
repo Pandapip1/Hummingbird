@@ -288,7 +288,7 @@ final class FilePermissionLedger: PermissionLedger {
     private let fileURL: URL
     private var record: Record
 
-    init(directory: URL = Storage.directory.appendingPathComponent("permissions", isDirectory: true),
+    init(directory: URL,
          instance: String = AppSigningIdentity.current(),
          legacyInstance: String = AppSigningIdentity.legacyKey()) {
         // Lowercased: the system treats identifiers differing only in case as one app.

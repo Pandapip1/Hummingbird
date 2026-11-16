@@ -7,7 +7,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
         let video = MediaTrack(id: "video-0", kind: .video, language: nil, label: "Main")
         let alternate = MediaTrack(id: "video-1", kind: .video, language: nil, label: "Alternate")
         let backend = SelectionBackend(tracks: [video, alternate], selected: [.video: video])
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
 
         XCTAssertEqual(model.selectedTrack(ofKind: .video), video)
         model.selectTrack(MediaTrack(id: "video-missing", kind: .video, language: nil, label: nil))
@@ -18,7 +18,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
 
     func testSupersededLoadDoesNotReplaceNewerSelection() async {
         let backend = SupersedingBackend()
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         let first = playbackOption(id: "first", url: "https://example.com/first.mp4")
         let second = playbackOption(id: "second", url: "https://example.com/second.mp4")
 
@@ -34,7 +34,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
 
     func testFailedReplacementKeepsExistingSelection() async {
         let backend = FailingReplacementBackend()
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         let first = playbackOption(id: "first", url: "https://example.com/first.mp4")
         let second = playbackOption(id: "second", url: "https://example.com/second.mp4")
 
@@ -47,7 +47,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
 
     func testFailedReplacementLetsInstalledLoadFinish() async {
         let backend = InstalledLoadBackend()
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         let first = playbackOption(id: "first", url: "https://example.com/first.mp4")
         let second = playbackOption(id: "second", url: "https://example.com/second.mp4")
 
@@ -65,7 +65,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
 
     func testCancelledLoadBeforeCommitDoesNotSelectOption() async {
         let backend = CancellableLoadBackend(installsFirstItem: false)
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         let option = playbackOption(id: "first", url: "https://example.com/first.mp4")
 
         let task = Task { await model.select(option) }
@@ -80,7 +80,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
 
     func testCancelledInstalledLoadDoesNotWaitForSuspendedReplacement() async {
         let backend = CancellableLoadBackend(installsFirstItem: true)
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         let first = playbackOption(id: "first", url: "https://example.com/first.mp4")
         let second = playbackOption(id: "second", url: "https://example.com/second.mp4")
 
@@ -100,7 +100,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
 
     func testQualitySelectionPreservesPositionAndPausedState() async {
         let backend = RecordingSelectionBackend(currentTime: 42, isPlaying: false)
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         let option = playbackOption(id: "720p", url: "https://example.com/720.mp4")
 
         await model.select(option)
@@ -129,7 +129,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
 
     func testSuccessfulQualityRetryClearsPreviousError() async {
         let backend = RecoveringReplacementBackend()
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
         let initial = playbackOption(id: "initial", url: "https://example.com/initial.mp4")
         let broken = playbackOption(id: "broken", url: "https://example.com/broken.mp4")
         let recovered = playbackOption(id: "recovered", url: "https://example.com/recovered.mp4")

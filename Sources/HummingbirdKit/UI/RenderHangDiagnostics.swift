@@ -7,8 +7,15 @@ import Foundation
 /// subsequent launch rather than at the instant a hang occurs.
 @MainActor
 public enum RenderHangDiagnostics {
-    public static func start() {
-        MetricHangRecorder.shared.start()
+    private static var recorder: MetricHangRecorder?
+
+    /// Starts recording into `diagnosticsDirectory`
+    /// (`AppDataStores.diagnosticsDirectory`). Later calls do nothing.
+    public static func start(diagnosticsDirectory: URL) {
+        guard recorder == nil else { return }
+        let recorder = MetricHangRecorder(diagnosticsDirectory: diagnosticsDirectory)
+        self.recorder = recorder
+        recorder.start()
     }
 }
 
@@ -17,14 +24,15 @@ private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @un
         let filename: String
         let data: Data
     }
-    @MainActor static let shared = MetricHangRecorder()
     private let writer = DispatchQueue(label: "app.hummingbird.metric-hangs", qos: .utility)
-    private var started = false
+    private let diagnosticsDirectory: URL
+
+    init(diagnosticsDirectory: URL) {
+        self.diagnosticsDirectory = diagnosticsDirectory
+    }
 
     @MainActor
     func start() {
-        guard !started else { return }
-        started = true
         let manager = MXMetricManager.shared
         manager.add(self)
         persist(manager.pastDiagnosticPayloads)
@@ -43,9 +51,10 @@ private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @un
             return PendingHang(filename: "hang-\(begin)-\(end).json", data: data)
         }
         guard !hangs.isEmpty else { return }
+        let diagnosticsDirectory = diagnosticsDirectory
         writer.async {
             do {
-                let directory = try Self.directory()
+                let directory = try Self.directory(in: diagnosticsDirectory)
                 for hang in hangs {
                     let url = directory.appendingPathComponent(hang.filename)
                     try hang.data.write(to: url, options: .atomic)
@@ -56,23 +65,18 @@ private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @un
         }
     }
 
-    private static func directory() throws -> URL {
-        let directory = try RenderDiagnosticsStorage.root()
+    private static func directory(in diagnosticsDirectory: URL) throws -> URL {
+        let directory = try RenderDiagnosticsStorage.root(diagnosticsDirectory)
             .appendingPathComponent("metric-hangs", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
 }
 
+/// Debug diagnostics live in `AppDataStores.diagnosticsDirectory`.
 public enum RenderDiagnosticsStorage {
-    public static func root() throws -> URL {
-        let applicationSupport = try FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask,
-            appropriateFor: nil, create: true
-        )
-        let root = applicationSupport
-            .appendingPathComponent("Hummingbird", isDirectory: true)
-            .appendingPathComponent("Diagnostics", isDirectory: true)
+    /// Creates `root`, excluded from backups, and returns it.
+    public static func root(_ root: URL) throws -> URL {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true

@@ -24,7 +24,7 @@ final class PlayerLayoutTests: XCTestCase {
     @MainActor
     func testSurfaceTransferRestoresPlaybackIntentWithoutOverridingUserPause() {
         let backend = SurfaceTransferBackend()
-        let model = PlayerModel(backend: backend)
+        let model = makeTestPlayerModel(backend: backend)
 
         model.togglePlayback()
         backend.pause()
@@ -40,7 +40,7 @@ final class PlayerLayoutTests: XCTestCase {
 
     @MainActor
     func testMediaTeardownPreservesViewOwnedFullscreenPresenter() {
-        let model = PlayerModel()
+        let model = makeTestPlayerModel()
         var presentationCount = 0
         model.installFullscreenPresenter(
             present: { presentationCount += 1 },
@@ -85,7 +85,7 @@ extension PlayerLayoutTests {
         if gtk_is_initialized() == 0 { _ = gtk_init_check() }
         guard gtk_is_initialized() != 0 else { throw XCTSkip("no GTK display") }
         for (width, viewportHeight) in [(800, 800), (1100, 400), (800, 150), (320, 600), (390, 600), (200, 600)] {
-            let model = PlayerModel(backend: LayoutBackend())
+            let model = makeTestPlayerModel(backend: LayoutBackend())
             let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://example.com/test.mp4"}"#.utf8))
             await model.select(PlaybackOption(id: "layout", label: "Video", kind: .progressive,
                                               video: source, audio: nil, height: 1080))

@@ -62,7 +62,7 @@ struct WebAuthSheet: View {
                 }
             }
             .navigationTitle(spec.title)
-            .task { await pairing.start(peerService: app.peerService, permissions: app.permissions) }
+            .task { await pairing.start(stores: app.stores, peerService: app.peerService, permissions: app.permissions) }
             .task { await pairing.observeSender() }
             .task { await pairing.observeCredentialStore { app.plugins.auth(for: $0) } }
             .onDisappear { pairing.stop() }
@@ -97,7 +97,7 @@ private final class CredentialPairingModel {
 
     /// Runs after the user chose to sign in, so the system may prompt for
     /// local network access straight away.
-    func start(peerService: AppSyncPeerService?, permissions: PermissionGate) async {
+    func start(stores: AppDataStores, peerService: AppSyncPeerService?, permissions: PermissionGate) async {
         guard request == nil, error == nil, receiver == nil else { return }
         guard let pluginID, let sourceURL else {
             error = "This plugin has no source URL to share with the sign-in device."
@@ -106,6 +106,7 @@ private final class CredentialPairingModel {
         let receiver = CredentialPairingReceiver(
             pluginID: pluginID,
             pluginSourceURL: sourceURL,
+            stores: stores,
             identity: peerService?.peer,
             messageStore: peerService?.messageStore,
             peerService: peerService,

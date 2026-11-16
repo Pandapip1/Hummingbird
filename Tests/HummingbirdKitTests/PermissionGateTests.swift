@@ -202,10 +202,7 @@ final class PermissionGateTests: XCTestCase {
 
     func testAppModelLaunchWithSyncedSettingWaitsForConsent() async throws {
         let model = AppModel(
-            credentialStore: TestCredentialStore(),
-            profileStorageDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(
-                "HummingbirdPermissionTests-\(UUID())", isDirectory: true
-            ),
+            stores: makeTestStores(),
             localProfileID: UUID(), localNetworkSyncEnabled: true, permissions: gate
         )
         let prompt = try await waitForPrompt()
@@ -266,9 +263,7 @@ final class PermissionGateTests: XCTestCase {
     }
 
     func testFileLedgerIsPerInstance() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PermissionLedger-\(UUID())", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let directory = makeTestDirectory("PermissionLedger")
         let xcode = FilePermissionLedger(directory: directory, instance: "identifier A")
         xcode.recordUse(of: .localNetwork)
         xcode.setDeclined("x", true)

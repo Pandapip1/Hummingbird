@@ -5,10 +5,6 @@ import NIOCore
 import NIOHTTP1
 import NIOPosix
 
-private enum PairingIdentityProvider {
-    static let store = AppSyncPeerIdentityStore(credentialStore: AuthKeychain.store)
-}
-
 struct CredentialPairingRequest: Codable, Equatable, Sendable {
     static let scheme = "hummingbird"
     static let host = "credential-login"
@@ -172,7 +168,10 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     private let onReceive: @MainActor (SourceAuth) -> Void
     private let onReject: @MainActor () -> Void
 
+    /// Without an `identity`, the device-wide pairing identity in `stores`
+    /// is used; without a `messageStore`, its inbox in `stores`.
     init(pluginID: String, pluginSourceURL: URL,
+         stores: AppDataStores,
          identity: AppSyncPeerIdentity? = nil,
          messageStore suppliedMessageStore: AppSyncMessageStore? = nil,
          peerService: AppSyncPeerService? = nil,
@@ -182,7 +181,7 @@ final class CredentialPairingReceiver: @unchecked Sendable {
         self.pluginSourceURL = pluginSourceURL
         let resolvedIdentity: AppSyncPeerIdentity?
         do {
-            resolvedIdentity = try identity ?? PairingIdentityProvider.store.identity()
+            resolvedIdentity = try identity ?? stores.pairingIdentity()
             identityFailure = nil
         } catch {
             resolvedIdentity = nil
@@ -193,7 +192,7 @@ final class CredentialPairingReceiver: @unchecked Sendable {
         if let suppliedMessageStore {
             messageStore = suppliedMessageStore
         } else if let resolvedIdentity {
-            let file = Storage.directory.appendingPathComponent("peer-messages", isDirectory: true)
+            let file = stores.peerMessagesDirectory
                 .appendingPathComponent("\(resolvedIdentity.publicIdentity.id.uuidString.lowercased()).json")
             messageStore = try? AppSyncMessageStore(identity: resolvedIdentity, fileURL: file)
         } else {
@@ -433,9 +432,8 @@ private final class CredentialPairingHTTPHandler: ChannelInboundHandler, @unchec
 }
 
 extension CredentialPairingRequest {
-    func send(_ auth: SourceAuth, sender supplied: AppSyncPeerIdentity? = nil,
+    func send(_ auth: SourceAuth, sender: AppSyncPeerIdentity,
               session: URLSession = .shared) async throws {
-        let sender = try supplied ?? PairingIdentityProvider.store.identity()
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = try JSONEncoder().encode(AppSyncSealedMessage.seal(
@@ -448,8 +446,7 @@ extension CredentialPairingRequest {
         guard (response as? HTTPURLResponse)?.statusCode == 204 else { throw PairingError.rejected }
     }
 
-    func reject(sender supplied: AppSyncPeerIdentity? = nil, session: URLSession = .shared) async throws {
-        let sender = try supplied ?? PairingIdentityProvider.store.identity()
+    func reject(sender: AppSyncPeerIdentity, session: URLSession = .shared) async throws {
         let envelope = try AppSyncSealedMessage.seal(
             PairingPayload.rejection, appID: HummingbirdProfileSchema.appID,
             from: sender, to: receiver
@@ -458,10 +455,12 @@ extension CredentialPairingRequest {
     }
 
 
-    func announceSender(_ supplied: AppSyncPeerIdentity? = nil,
+    /// With a `peerService`, `identity` is its peer: the trust fact is signed
+    /// by the profile, and the receiver accepts credentials only from the
+    /// sender introduced here.
+    func announceSender(_ identity: AppSyncPeerIdentity,
                         peerService: AppSyncPeerService? = nil,
                         session: URLSession = .shared) async throws -> AppSyncPeer {
-        let identity = try supplied ?? peerService?.peer ?? PairingIdentityProvider.store.identity()
         let fact: AppSyncTrustFact
         if let peerService {
             fact = try peerService.signedTrustFact(with: receiver)

@@ -93,10 +93,17 @@ var targets: [Target] = [
             .unsafeFlags(["-Xlinker", "--allow-shlib-undefined"], .when(platforms: [.linux])),
         ]
     ),
+    // Installs the tests' real-data guard when the test bundle loads, before
+    // any test runs (see Tests/HummingbirdKitTests/Support/RealDataGuard.swift).
+    .target(
+        name: "HummingbirdTestBootstrap",
+        path: "Tests/HummingbirdTestBootstrap"
+    ),
     .testTarget(
         name: "HummingbirdKitTests",
         dependencies: [
             "HummingbirdKit",
+            "HummingbirdTestBootstrap",
             .product(name: "ATProtoKit", package: "ATProtoKit"),
             .product(name: "ATAppSync", package: "ATAppSync"),
             .product(name: "CredentialStorage", package: "SwiftOpenUI"),

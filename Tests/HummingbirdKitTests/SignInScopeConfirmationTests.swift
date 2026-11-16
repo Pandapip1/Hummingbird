@@ -63,23 +63,20 @@ private final class CountingPresenter: ATProtoOAuthPresenter {
 @MainActor
 final class SignInScopeConfirmationTests: XCTestCase {
     private let bluesky = ["atproto", "transition:email", "transition:generic", "transition:chat.bsky"]
-    private var previousStore: (any CredentialStore)?
     private var model: AppModel!
 
     override func setUp() async throws {
-        previousStore = AuthKeychain.store
-        AuthKeychain.store = TestCredentialStore()
         model = makeTestAppModel()
     }
 
     override func tearDown() async throws {
-        if let previousStore { AuthKeychain.store = previousStore }
         model = nil
     }
 
     private func account(_ flow: ScriptedFlow, _ presenter: CountingPresenter) -> ProfileAccountService {
         ProfileAccountService(
-            localProfileID: UUID(), changes: model.profileChanges, library: model.library, plugins: model.plugins,
+            localProfileID: UUID(), stores: model.stores,
+            changes: model.profileChanges, library: model.library, plugins: model.plugins,
             peerService: nil, oauthPresenter: presenter,
             authenticator: ATProtoOAuthAuthenticator(flow: flow, presenter: presenter)
         )

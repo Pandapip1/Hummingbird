@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Regenerates the gitignored Hummingbird.xcodeproj from project.yml when
+# project.yml differs between two commits, so a checkout or pull never leaves
+# Xcode building with stale settings. Never fails the git operation.
+# Usage: regenerate-xcode-project <old-commit> <new-commit>
+set -uo pipefail
+
+[[ "$(uname -s)" == Darwin ]] || exit 0
+old=$1 new=$2
+
+repository="$(git rev-parse --show-toplevel)"
+cd "$repository" || exit 0
+# A fresh clone has no previous commit; otherwise skip if project.yml is unchanged.
+if [[ "$old" != 0000000000000000000000000000000000000000 ]] \
+    && git diff --quiet "$old" "$new" -- project.yml 2>/dev/null; then
+  exit 0
+fi
+# Hooks inherit the repository Git is operating on; xcodegen should see none.
+unset $(git rev-parse --local-env-vars)
+
+echo "project.yml changed; regenerating Hummingbird.xcodeproj" >&2
+if command -v xcodegen >/dev/null; then
+  xcodegen generate --quiet
+else
+  nix_bin="$(command -v nix || true)"
+  for candidate in /run/current-system/sw/bin/nix /nix/var/nix/profiles/default/bin/nix; do
+    [[ -z "$nix_bin" && -x "$candidate" ]] && nix_bin=$candidate
+  done
+  if [[ -n "$nix_bin" ]]; then
+    "$nix_bin" shell nixpkgs#xcodegen --command xcodegen generate --quiet
+  else
+    false
+  fi
+fi || echo "warning: couldn't regenerate Hummingbird.xcodeproj; run \`xcodegen generate\` (or hb-xcode)" >&2
+exit 0

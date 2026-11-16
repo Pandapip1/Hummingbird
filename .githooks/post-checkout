@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# $3 is 1 for a branch checkout (including clones), 0 for checking out files.
+[[ "${3:-0}" == 1 ]] || exit 0
+exec "$(dirname "$0")/regenerate-xcode-project" "$1" "$2"

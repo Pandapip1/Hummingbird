@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# After a rebase, including `git pull --rebase` ($1 is "amend" or "rebase").
+[[ "${1:-}" == rebase ]] || exit 0
+exec "$(dirname "$0")/regenerate-xcode-project" ORIG_HEAD HEAD

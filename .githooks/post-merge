@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# After a merge, including `git pull`.
+exec "$(dirname "$0")/regenerate-xcode-project" ORIG_HEAD HEAD

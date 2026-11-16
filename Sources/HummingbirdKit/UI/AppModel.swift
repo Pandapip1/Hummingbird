@@ -281,6 +281,7 @@ final class AppModel {
         // network here: the gate explains it before the system can prompt.
         let localNetworkSync = self.localNetworkSync
         Task { await localNetworkSync.applyStoredSetting() }
+        HummingbirdDebug.register(self)
         #if DEBUG && os(iOS)
         RenderStallMonitor.shared.start { [weak self] in
             guard let self else { return [:] }

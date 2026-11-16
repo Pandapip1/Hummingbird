@@ -79,7 +79,7 @@ targets:
         ENABLE_APP_SANDBOX: YES
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES
-        # Used by DebugKit during development and by device sync.
+        # Device sync (AppSync over the local network) and credential pairing listen for peers.
         ENABLE_INCOMING_NETWORK_CONNECTIONS: YES
         ENABLE_RESOURCE_ACCESS_CAMERA: YES
         REGISTER_APP_GROUPS: YES
@@ -147,14 +147,41 @@ aggregateTargets:
       base:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
 schemes:
+  # Day-to-day debugging: Main Thread Checker and Thread Performance Checker
+  # on (Xcode's defaults, stated here so they stay on), Hummingbird's lldb
+  # formatters and `hb` commands loaded. See Documentation/Debugging.md.
   Hummingbird:
     build:
       targets:
         Hummingbird: all
+    run:
+      customLLDBInit: $(SRCROOT)/Tools/lldb/lldbinit
+      disableMainThreadChecker: false
+      stopOnEveryMainThreadCheckerIssue: true
+      disableThreadPerformanceChecker: false
     test:
+      customLLDBInit: $(SRCROOT)/Tools/lldb/lldbinit
       targets:
         - HummingbirdTVUITests
         - HummingbirdIOSUITests
+  # Memory errors and undefined behaviour (Address Sanitizer, Undefined
+  # Behavior Sanitizer). Slower; run it when chasing crashes.
+  Hummingbird (Address Sanitizer):
+    build:
+      targets:
+        Hummingbird: all
+    run:
+      customLLDBInit: $(SRCROOT)/Tools/lldb/lldbinit
+      enableAddressSanitizer: true
+      enableUBSanitizer: true
+  # Data races (Thread Sanitizer; cannot be combined with Address Sanitizer).
+  Hummingbird (Thread Sanitizer):
+    build:
+      targets:
+        Hummingbird: all
+    run:
+      customLLDBInit: $(SRCROOT)/Tools/lldb/lldbinit
+      enableThreadSanitizer: true
   Hummingbird GTK:
     build:
       targets:

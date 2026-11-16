@@ -1,0 +1,56 @@
+# Hummingbird's lldb formatters and commands.
+#
+# Xcode loads this for the Hummingbird scheme (project.yml: customLLDBInit
+# via Tools/lldb/lldbinit). Elsewhere, including lldb on Linux:
+#   (lldb) command source Tools/lldb/hummingbird.lldb
+# or add that line to ~/.lldbinit. Nothing here uses Apple-only types, so it
+# works for the GTK build too. See Documentation/Debugging.md.
+
+# ---------------------------------------------------------------------------
+# Formatters, in their own category so they can be listed or turned off:
+#   (lldb) type category disable hummingbird
+#
+# `p` and `frame variable` read memory directly and ignore Swift's
+# CustomDebugStringConvertible, so types that hold secrets get a summary and a
+# child filter here; `po` uses the Swift conformances in DebugDescriptions.swift.
+
+# Plugin sign-in cookies and headers: show counts and the user agent only.
+type summary add -w hummingbird --summary-string "cookies for ${var.cookieMap}, headers for ${var.headers}, values redacted" HummingbirdKit.SourceAuth
+type filter add -w hummingbird --child userAgent HummingbirdKit.SourceAuth
+
+# Credential pairing requests carry a shared secret.
+type summary add -w hummingbird --summary-string "plugin ${var.pluginID}, secret redacted" HummingbirdKit.CredentialPairingRequest
+type filter add -w hummingbird --child endpoint --child pluginID --child pluginSourceURL --child receiver HummingbirdKit.CredentialPairingRequest
+
+# Installed plugins: the script is large and setting values can be tokens.
+type summary add -w hummingbird --summary-string "${var.config.id} v${var.config.version} enabled=${var.enabled}" HummingbirdKit.InstalledPlugin
+type filter add -w hummingbird --child config --child enabled HummingbirdKit.InstalledPlugin
+
+# OAuth token responses hold bearer tokens as strings.
+type summary add -w hummingbird --summary-string "${var.tokenType} scope=${var.scope}, tokens redacted" ATProtoKit.OAuthTokenResponse
+type filter add -w hummingbird --child tokenType --child scope --child sub --child expiresIn ATProtoKit.OAuthTokenResponse
+
+# Short summaries for types `p` otherwise shows as walls of fields.
+type summary add -w hummingbird --summary-string "${var.config.name} (${var.config.id}) v${var.config.version}" HummingbirdKit.PluginRuntime
+type summary add -w hummingbird --summary-string "playing=${var._isPlaying} ${var._playbackTime}/${var._duration}s preparing=${var._isPreparing} fullscreen=${var._isFullscreen} error=${var._errorMessage}" HummingbirdKit.PlayerModel
+type summary add -w hummingbird --summary-string "${var._contentTabs%#} tabs, active ${var._activeTabID}" HummingbirdKit.AppModel
+type summary add -w hummingbird --summary-string "${var.name} (${var.id}) v${var.version}" HummingbirdKit.PluginConfig
+type summary add -w hummingbird --summary-string "${var.rawValue}" ATProtoKit.DID ATProtoKit.NSID ATProtoKit.RecordKey
+
+type category enable hummingbird
+
+# ---------------------------------------------------------------------------
+# `hb` commands: app state and actions, replacing the old HTTP debug server.
+# Run them while stopped on the main thread (Debug > Pause stops there; so do
+# breakpoints in UI code). Actions take effect when the process continues.
+#
+#   hb state         active window, tab and player (was GET /state)
+#   hb plugins       installed plugins, without setting values
+#   hb reports       stored MetricKit reports
+#   hb play          toggle playback            (was togglePlayback)
+#   hb seek <secs>   skip, e.g. hb seek 60 / hb seek -30
+#   hb fullscreen    toggle fullscreen
+#   hb tabs          toggle the tab overview
+#   hb open <url>    open content in a new tab  (was openDebugContent)
+#   hb log           how to stream the logs
+command regex hb -h "Hummingbird app state and actions (hb state | plugins | reports | play | seek <s> | fullscreen | tabs | open <url> | log)" -s "hb state" -- 's/^state$/expression -l Swift -O -- HummingbirdKit.HummingbirdDebug.state()/' 's/^plugins$/expression -l Swift -O -- HummingbirdKit.HummingbirdDebug.plugins()/' 's/^reports$/expression -l Swift -O -- HummingbirdKit.HummingbirdDebug.reports()/' 's/^play$/expression -l Swift -- HummingbirdKit.HummingbirdDebug.togglePlayback()/' 's/^seek (-?[0-9.]+)$/expression -l Swift -- HummingbirdKit.HummingbirdDebug.skip(by: %1)/' 's/^fullscreen$/expression -l Swift -- HummingbirdKit.HummingbirdDebug.toggleFullscreen()/' 's/^tabs$/expression -l Swift -- HummingbirdKit.HummingbirdDebug.toggleTabOverview()/' 's/^open (.+)$/expression -l Swift -- HummingbirdKit.HummingbirdDebug.open("%1")/' 's/^log$/script print("Logs (details in the Debugging guide under Documentation). macOS: log stream --level debug --predicate subsystem==com.eightybps.hummingbird; Linux: journalctl --user -f OSLOG_SUBSYSTEM=com.eightybps.hummingbird")/' 's/^(.*)$/script print("usage: hb state | plugins | reports | play | seek <secs> | fullscreen | tabs | open <url> | log")/'

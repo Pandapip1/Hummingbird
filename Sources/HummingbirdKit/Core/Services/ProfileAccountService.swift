@@ -10,6 +10,9 @@ final class ProfileAccountService {
     private(set) var handle: String?
     private(set) var isSigningIn = false
     private(set) var errorMessage: String?
+    /// Why profile sync is off for the signed-in account, when that is not
+    /// an error: the server granted fewer scopes than Hummingbird asked for.
+    private(set) var profileSyncNotice: String?
     private(set) var syncService: ProfileSyncService?
 
     @ObservationIgnored private let oauth: ATProtoOAuthClient
@@ -28,9 +31,25 @@ final class ProfileAccountService {
         redirectURI: URL(string: "com.eightybps.hummingbird:/oauth/callback")!,
         scopes: [
             "atproto",
-            "space:com.eightybps.hummingbird.profile?authority=self&skey=self&manage=create",
+            "space:\(profileSpaceType)?authority=self&skey=self&manage=create",
         ]
     )
+
+    /// The permissioned-space type profile sync is stored in.
+    nonisolated static let profileSpaceType = "com.eightybps.hummingbird.profile"
+
+    /// Whether a grant includes the profile-space permission. The server may
+    /// grant fewer scopes than requested (only `atproto` is required), and
+    /// may write the permission's parameters differently, so this matches
+    /// the space type rather than the exact requested string.
+    nonisolated static func grantsProfileSpace(_ grantedScopes: Set<String>) -> Bool {
+        grantedScopes.contains { scope in
+            scope == "space:\(profileSpaceType)" || scope.hasPrefix("space:\(profileSpaceType)?")
+        }
+    }
+
+    nonisolated static let profileSpaceNotGrantedNotice =
+        "Your server didn’t grant Hummingbird’s profile-space permission, so profile sync is off."
 
     init(localProfileID: UUID, changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
@@ -142,6 +161,7 @@ final class ProfileAccountService {
         UserDefaults.standard.removeObject(forKey: currentAccountKey)
         account = nil
         handle = nil
+        profileSyncNotice = nil
         syncService?.disconnectAccount()
     }
 
@@ -156,11 +176,19 @@ final class ProfileAccountService {
         }
     }
 
-    private func install(_ credential: ATProtoOAuthCredential) {
+    /// Adopts a signed-in account. Profile sync through the account's PDS
+    /// is connected only when the profile-space permission was granted.
+    func install(_ credential: ATProtoOAuthCredential) {
         account = credential.session.account
         handle = credential.session.handle
+        profileSyncNotice = nil
         guard syncService != nil else {
             errorMessage = "The local profile could not be opened."
+            return
+        }
+        guard Self.grantsProfileSpace(credential.session.grantedScopes) else {
+            syncService?.disconnectAccount()
+            profileSyncNotice = Self.profileSpaceNotGrantedNotice
             return
         }
         syncService?.connect(

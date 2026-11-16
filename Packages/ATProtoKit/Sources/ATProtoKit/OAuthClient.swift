@@ -90,16 +90,7 @@ public actor ATProtoOAuthClient {
         let token = try JSONDecoder().decode(OAuthTokenResponse.self, from: data)
         // Best effort: the response body held the tokens in ordinary memory.
         data.resetBytes(in: data.startIndex..<data.endIndex)
-        guard token.sub == request.account.rawValue else {
-            throw OAuthError.tokenResponse("Account DID did not match the authorization request.")
-        }
-        let granted = Set(token.scope.split(separator: " ").map(String.init))
-        guard token.tokenType.caseInsensitiveCompare("DPoP") == .orderedSame else {
-            throw OAuthError.tokenResponse("The authorization server did not issue a DPoP-bound token.")
-        }
-        guard Set(configuration.scopes).isSubset(of: granted) else {
-            throw OAuthError.tokenResponse("The authorization server omitted a requested scope.")
-        }
+        try Self.validate(token, account: request.account, requiredScopes: configuration.requiredScopes)
         var session = ATProtoOAuthSession(
             account: request.account, handle: request.loginHint, pds: request.pds,
             authorizationServer: request.issuer, accessToken: SecureBytes(copyingUTF8: token.accessToken),
@@ -108,6 +99,26 @@ public actor ATProtoOAuthClient {
         )
         session.setDPoPNonce(nonce, for: metadata.tokenEndpoint)
         return ATProtoOAuthCredential(session: session, dpopPrivateKey: await signer.exportForStorage())
+    }
+
+    /// Checks an authorization-code token response. A server may grant less
+    /// than was requested; that grant stands and is recorded on the session,
+    /// so only the required scopes are checked. The token must be for the
+    /// account that was resolved and must be DPoP-bound.
+    static func validate(_ token: OAuthTokenResponse, account: DID, requiredScopes: Set<String>) throws {
+        guard token.sub == account.rawValue else {
+            throw OAuthError.tokenResponse("Account DID did not match the authorization request.")
+        }
+        guard token.tokenType.caseInsensitiveCompare("DPoP") == .orderedSame else {
+            throw OAuthError.tokenResponse("The authorization server did not issue a DPoP-bound token.")
+        }
+        let granted = Set(token.scope.split(separator: " ").map(String.init))
+        let missing = requiredScopes.union(["atproto"]).subtracting(granted)
+        guard missing.isEmpty else {
+            throw OAuthError.tokenResponse(
+                "The authorization server did not grant \(missing.sorted().joined(separator: ", "))."
+            )
+        }
     }
 
     public func refresh(_ credential: ATProtoOAuthCredential) async throws -> ATProtoOAuthCredential {

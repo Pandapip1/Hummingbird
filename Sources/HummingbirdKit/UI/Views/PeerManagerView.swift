@@ -128,6 +128,9 @@ struct SyncSettingsView: View {
     @ViewBuilder private var accountControls: some View {
         if let account = app.profileAccount.account {
             LabeledContent("Account", value: app.profileAccount.handle ?? account.rawValue)
+            if let notice = app.profileAccount.profileSyncNotice {
+                Text(notice).foregroundStyle(.secondary)
+            }
             if let sync = app.profileAccount.syncService {
                 switch sync.state {
                 case .idle: Text(sync.lastSyncedAt == nil ? "Ready to sync" : "Synced")

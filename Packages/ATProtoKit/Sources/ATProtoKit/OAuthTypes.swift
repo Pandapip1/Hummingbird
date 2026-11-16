@@ -9,12 +9,32 @@ import FoundationNetworking
 public struct OAuthClientConfiguration: Codable, Hashable, Sendable {
     public let clientID: URL
     public let redirectURI: URL
+    /// Every scope the client asks for.
     public let scopes: [String]
+    /// The scopes without which a sign-in fails. An authorization server may
+    /// grant fewer scopes than requested (RFC 6749 section 3.3), and the
+    /// granted scope is authoritative; the client should check
+    /// ``ATProtoOAuthSession/grantedScopes`` before using an optional one.
+    /// `atproto` is always required.
+    public let requiredScopes: Set<String>
 
-    public init(clientID: URL, redirectURI: URL, scopes: [String]) {
+    public init(clientID: URL, redirectURI: URL, scopes: [String], requiredScopes: Set<String> = ["atproto"]) {
         self.clientID = clientID
         self.redirectURI = redirectURI
         self.scopes = scopes
+        self.requiredScopes = requiredScopes.union(["atproto"])
+    }
+
+    enum CodingKeys: String, CodingKey { case clientID, redirectURI, scopes, requiredScopes }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            clientID: try values.decode(URL.self, forKey: .clientID),
+            redirectURI: try values.decode(URL.self, forKey: .redirectURI),
+            scopes: try values.decode([String].self, forKey: .scopes),
+            requiredScopes: try values.decodeIfPresent(Set<String>.self, forKey: .requiredScopes) ?? ["atproto"]
+        )
     }
 }
 
@@ -59,6 +79,10 @@ public struct ATProtoOAuthSession: Codable, Hashable, Sendable {
     /// DPoP nonces are scoped to the server origin that issued them. An
     /// authorization server nonce must never be sent to a distinct PDS origin.
     public var dpopNonces: [String: String]
+
+    /// The scopes the authorization server granted, which may be fewer than
+    /// the client requested.
+    public var grantedScopes: Set<String> { Set(scope.split(separator: " ").map(String.init)) }
 
     public init(account: DID, handle: String?, pds: URL, authorizationServer: URL,
                 accessToken: SecureBytes, refreshToken: SecureBytes?, scope: String,

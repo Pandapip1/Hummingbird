@@ -65,6 +65,9 @@ final class ProfileSyncService {
 
     func disconnectAccount() { appSync = nil; spaces = nil }
 
+    /// Whether profile changes sync through the signed-in account's PDS.
+    var isAccountConnected: Bool { appSync != nil }
+
     func bootstrapCurrentProfile() {
         guard let library, let plugins, changes.mutationLog?.isEmpty == true else { return }
         for value in library.subscriptions { changes.put(.subscription(value)) }

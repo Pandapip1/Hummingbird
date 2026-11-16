@@ -37,9 +37,20 @@ public final class ATProtoOAuthAuthenticator {
         self.presenter = presenter
     }
 
-    public func signIn(identifier: String) async throws -> ATProtoOAuthCredential {
+    /// Signs in to the account named by `identifier`.
+    ///
+    /// The account's authorization server is examined first, and `proceed`
+    /// sees what will be requested before anything opens; returning false
+    /// stops the sign-in with ``OAuthError/cancelled`` without presenting
+    /// anything. A required scope the server does not support fails here too.
+    public func signIn(
+        identifier: String,
+        proceed: @MainActor (ATProtoPreparedAuthorization) async -> Bool = { _ in true }
+    ) async throws -> ATProtoOAuthCredential {
+        let prepared = try await client.prepare(identifier: identifier)
+        guard await proceed(prepared) else { throw OAuthError.cancelled }
         do {
-            return try await attempt(identifier: identifier)
+            return try await attempt(prepared)
         } catch let error as OAuthError where error.isRequestDeviceMismatch {
             // The page was loaded once, but the network delivered that load
             // twice (CFNetwork re-sends a GET on a new connection when the
@@ -47,12 +58,12 @@ public final class ATProtoOAuthAuthenticator {
             // a device cookie this page never received. That request is
             // spent; a fresh one, with new PKCE, state and DPoP key, is not
             // affected. Retry once, so a persistent problem still surfaces.
-            return try await attempt(identifier: identifier)
+            return try await attempt(prepared)
         }
     }
 
-    private func attempt(identifier: String) async throws -> ATProtoOAuthCredential {
-        let pending = try await client.begin(identifier: identifier)
+    private func attempt(_ prepared: ATProtoPreparedAuthorization) async throws -> ATProtoOAuthCredential {
+        let pending = try await client.begin(prepared)
         let callbackURL = try await presenter.authorize(pending.authorizationURL, callback: pending.callback)
         return try await client.complete(pending, callbackURL: callbackURL)
     }
@@ -61,7 +72,8 @@ public final class ATProtoOAuthAuthenticator {
 /// The two server round trips around presenting the authorization page.
 /// ``ATProtoOAuthClient`` is the implementation; tests substitute fakes.
 protocol OAuthAuthorizationFlow: Sendable {
-    func begin(identifier: String) async throws -> OAuthAuthorizationRequest
+    func prepare(identifier: String) async throws -> ATProtoPreparedAuthorization
+    func begin(_ prepared: ATProtoPreparedAuthorization) async throws -> OAuthAuthorizationRequest
     func complete(_ request: OAuthAuthorizationRequest, callbackURL: URL) async throws -> ATProtoOAuthCredential
 }
 

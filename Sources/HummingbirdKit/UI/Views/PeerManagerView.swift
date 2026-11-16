@@ -137,6 +137,30 @@ struct SyncSettingsView: View {
         } message: {
             Text("This ends trust in both directions for observers that accept the revocation. The instance can be verified again later.")
         }
+        // Asked before the sign-in tab opens, when the account's server
+        // cannot grant the profile-space permission.
+        .confirmationDialog(
+            "Sign in without profile sync?",
+            isPresented: Binding(
+                get: { app.profileAccount.signInConfirmation != nil },
+                // Dismissing without choosing is Cancel. The buttons answer
+                // first; this only answers if neither did.
+                set: { presented in
+                    guard !presented else { return }
+                    Task { @MainActor in
+                        if app.profileAccount.signInConfirmation != nil {
+                            app.profileAccount.answerSignInConfirmation(false)
+                        }
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Sign In") { app.profileAccount.answerSignInConfirmation(true) }
+            Button("Cancel", role: .cancel) { app.profileAccount.answerSignInConfirmation(false) }
+        } message: {
+            Text(app.profileAccount.signInConfirmation ?? "")
+        }
     }
 
     @ViewBuilder private var accountControls: some View {

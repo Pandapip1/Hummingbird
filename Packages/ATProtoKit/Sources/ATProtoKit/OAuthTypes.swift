@@ -53,7 +53,9 @@ public struct OAuthAuthorizationServerMetadata: Decodable, Sendable {
     public let authorizationEndpoint: URL
     public let tokenEndpoint: URL
     public let pushedAuthorizationRequestEndpoint: URL
-    public let scopesSupported: [String]
+    /// The scopes the server advertises; a hint, not a complete list. See
+    /// ``OAuthScopeAvailability``.
+    public let scopesSupported: [String]?
 
     enum CodingKeys: String, CodingKey {
         case issuer
@@ -241,6 +243,9 @@ public enum OAuthError: LocalizedError, Sendable {
     case handleNotVerified(String)
     /// Neither DNS nor HTTPS gave the handle a DID.
     case handleNotResolved(HandleResolutionFailure)
+    /// The authorization server does not support scopes the client cannot
+    /// work without. Raised before anything is shown to the user.
+    case requiredScopesUnsupported(server: URL, scopes: [String])
     /// The authorization server redirected back with an error, such as the
     /// user declining (`access_denied`).
     case authorizationDenied(error: String, description: String?)
@@ -257,6 +262,9 @@ public enum OAuthError: LocalizedError, Sendable {
         case .cancelled: "Sign-in was cancelled."
         case .handleNotVerified(let reason): "The handle could not be verified: \(reason)"
         case .handleNotResolved(let failure): failure.summary
+        case .requiredScopesUnsupported(let server, let scopes):
+            "\(server.host ?? server.absoluteString) doesn’t support the permissions this app needs: "
+                + "\(scopes.joined(separator: ", "))."
         case .authorizationDenied(let error, let description):
             if let description, !description.isEmpty {
                 "The account provider refused the sign-in: \(description) (\(error))"

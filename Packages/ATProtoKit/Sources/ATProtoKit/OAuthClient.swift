@@ -17,12 +17,32 @@ public actor ATProtoOAuthClient {
         self.resolver = resolver ?? ATProtoIdentityResolver(session: session)
     }
 
-    public func begin(identifier: String) async throws -> OAuthAuthorizationRequest {
+    /// Resolves the account and examines its authorization server without
+    /// contacting it on the user's behalf: nothing is shown and no request
+    /// is pushed. Throws ``OAuthError/requiredScopesUnsupported(server:scopes:)``
+    /// when the server does not support a required scope; optional scopes
+    /// it does not support are reported and will not be requested.
+    public func prepare(identifier: String) async throws -> ATProtoPreparedAuthorization {
         guard configuration.scopes.contains("atproto") else {
             throw OAuthError.invalidMetadata("The atproto scope is required.")
         }
         let identity = try await resolver.resolve(identifier)
         let metadata = try await discover(pds: identity.pds)
+        return try ATProtoPreparedAuthorization(
+            identity: identity, metadata: metadata,
+            scopes: configuration.scopes, requiredScopes: configuration.requiredScopes
+        )
+    }
+
+    public func begin(identifier: String) async throws -> OAuthAuthorizationRequest {
+        try await begin(try await prepare(identifier: identifier))
+    }
+
+    /// Pushes an authorization request for the prepared account, asking only
+    /// for its supported scopes, and returns the page to present.
+    public func begin(_ prepared: ATProtoPreparedAuthorization) async throws -> OAuthAuthorizationRequest {
+        let identity = prepared.identity
+        let metadata = prepared.metadata
         let callback = try callbackMatcher()
         let verifier = OAuthRandom.token(bytes: 48)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()
@@ -31,7 +51,7 @@ public actor ATProtoOAuthClient {
             "client_id": configuration.clientID.absoluteString,
             "response_type": "code",
             "redirect_uri": configuration.redirectURI.absoluteString,
-            "scope": configuration.scopes.joined(separator: " "),
+            "scope": prepared.requestedScopes.joined(separator: " "),
             "state": state,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
@@ -177,8 +197,8 @@ public actor ATProtoOAuthClient {
     private func authorizationMetadata(issuer: URL) async throws -> OAuthAuthorizationServerMetadata {
         let url = try Self.wellKnown("oauth-authorization-server", on: issuer)
         let metadata: OAuthAuthorizationServerMetadata = try await getJSON(url)
-        guard metadata.issuer == issuer, metadata.scopesSupported.contains("atproto") else {
-            throw OAuthError.invalidMetadata("Authorization-server issuer or scopes are invalid.")
+        guard metadata.issuer == issuer else {
+            throw OAuthError.invalidMetadata("Authorization-server issuer is invalid.")
         }
         return metadata
     }

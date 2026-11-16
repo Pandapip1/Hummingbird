@@ -89,39 +89,3 @@ final class OAuthCallbackTests: XCTestCase {
     }
 }
 
-/// Begins a fresh request each time and completes with scripted outcomes.
-private actor FakeFlow: OAuthAuthorizationFlow {
-    private var outcomes: [Result<Void, any Error>]
-    private(set) var begun = 0
-
-    init(outcomes: [Result<Void, any Error>]) { self.outcomes = outcomes }
-
-    func begin(identifier: String) async throws -> OAuthAuthorizationRequest {
-        begun += 1
-        return OAuthAuthorizationRequest(
-            authorizationURL: URL(string: "https://auth.example/authorize?request_uri=req-\(begun)")!,
-            callback: .customScheme("com.example.app"), state: "state-\(begun)", verifier: "v",
-            issuer: URL(string: "https://auth.example")!, pds: URL(string: "https://pds.example")!,
-            account: DID(rawValue: "did:plc:alice")!, loginHint: nil, dpopSigner: DPoPSigner(), dpopNonce: nil
-        )
-    }
-
-    func complete(_ request: OAuthAuthorizationRequest, callbackURL: URL) async throws -> ATProtoOAuthCredential {
-        try outcomes.removeFirst().get()
-        let session = ATProtoOAuthSession(
-            account: request.account, handle: nil, pds: request.pds, authorizationServer: request.issuer,
-            accessToken: SecureBytes(copyingUTF8: "a"), refreshToken: nil, scope: "atproto",
-            tokenType: "DPoP", expiresAt: nil
-        )
-        return ATProtoOAuthCredential(session: session, dpopPrivateKey: await request.dpopSigner.exportForStorage())
-    }
-}
-
-@MainActor
-private final class ImmediatePresenter: ATProtoOAuthPresenter {
-    var presented: [URL] = []
-    func authorize(_ authorizationURL: URL, callback: OAuthCallbackMatcher) async throws -> URL {
-        presented.append(authorizationURL)
-        return URL(string: "com.example.app:/cb?code=c")!
-    }
-}

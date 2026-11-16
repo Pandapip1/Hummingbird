@@ -13,6 +13,9 @@ final class ProfileAccountService {
     /// Why profile sync is off for the signed-in account, when that is not
     /// an error: the server granted fewer scopes than Hummingbird asked for.
     private(set) var profileSyncNotice: String?
+    /// A question to answer before the sign-in page opens, when the server
+    /// cannot grant everything Hummingbird asks for.
+    private(set) var signInConfirmation: String?
     private(set) var syncService: ProfileSyncService?
 
     @ObservationIgnored private let oauth: ATProtoOAuthClient
@@ -23,6 +26,7 @@ final class ProfileAccountService {
     @ObservationIgnored private let peerService: AppSyncPeerService?
     @ObservationIgnored private var localNetworkEnabled: Bool
     @ObservationIgnored private let currentAccountKey: String
+    @ObservationIgnored private var signInConfirmationReply: CheckedContinuation<Bool, Never>?
 
     // An immutable Sendable constant: it needs no actor isolation, and must
     // match the published Web/hummingbird/oauth-client-metadata.json.
@@ -51,13 +55,18 @@ final class ProfileAccountService {
     nonisolated static let profileSpaceNotGrantedNotice =
         "Your server didn’t grant Hummingbird’s profile-space permission, so profile sync is off."
 
+    nonisolated static let profileSpaceUnsupportedPrompt =
+        "Your server doesn’t support Hummingbird’s profile-space permission yet, so profile sync will "
+        + "stay off; local network sync still works. Sign in anyway?"
+
     init(localProfileID: UUID, changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
          localNetworkEnabled: Bool = false,
-         oauthPresenter: any ATProtoOAuthPresenter) {
+         oauthPresenter: any ATProtoOAuthPresenter,
+         authenticator: ATProtoOAuthAuthenticator? = nil) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
         self.oauth = oauth
-        authenticator = ATProtoOAuthAuthenticator(client: oauth, presenter: oauthPresenter)
+        self.authenticator = authenticator ?? ATProtoOAuthAuthenticator(client: oauth, presenter: oauthPresenter)
         credentialStore = OAuthCredentialStore(
             service: "com.eightybps.hummingbird.atproto.\(localProfileID.uuidString.lowercased())",
             vault: AuthKeychain.store
@@ -93,7 +102,9 @@ final class ProfileAccountService {
         errorMessage = nil
         defer { isSigningIn = false }
         do {
-            let credential = try await authenticator.signIn(identifier: identifier)
+            let credential = try await authenticator.signIn(identifier: identifier) { [weak self] prepared in
+                await self?.confirmSignIn(prepared) ?? false
+            }
             try credentialStore.save(credential)
             UserDefaults.standard.set(credential.session.account.rawValue, forKey: currentAccountKey)
             install(credential)
@@ -108,6 +119,30 @@ final class ProfileAccountService {
             errorMessage = error.localizedDescription
             print("[atproto sign-in] \(String(reflecting: error))")
         }
+    }
+
+    /// Asks before opening the sign-in page when the server does not
+    /// support the profile-space permission. When it does, or when it does
+    /// not say (no `scopes_supported`), the page opens directly.
+    func confirmSignIn(_ prepared: ATProtoPreparedAuthorization) async -> Bool {
+        guard prepared.unsupportedScopes.contains(where: { Self.grantsProfileSpace([$0]) }) else { return true }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { reply in
+                signInConfirmationReply?.resume(returning: false)
+                signInConfirmationReply = reply
+                signInConfirmation = Self.profileSpaceUnsupportedPrompt
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.answerSignInConfirmation(false) }
+        }
+    }
+
+    /// The answer to ``signInConfirmation``: Sign In (true) or Cancel.
+    func answerSignInConfirmation(_ proceed: Bool) {
+        signInConfirmation = nil
+        let reply = signInConfirmationReply
+        signInConfirmationReply = nil
+        reply?.resume(returning: proceed)
     }
 
     func sync() async { await syncService?.sync() }

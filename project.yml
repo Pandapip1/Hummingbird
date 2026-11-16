@@ -54,6 +54,10 @@ targets:
           NSAllowsLocalNetworking: true
         # Local network privacy only allows the DNS-SD types listed here;
         # ATAppSync advertises and browses AppSyncAuthority.bonjourServiceType.
+        # All encryption is standard and goes through Apple's frameworks
+        # (CryptoKit, Security, URLSession); see Web/DEPLOYMENT.md and
+        # EncryptionExportTests.
+        ITSAppUsesNonExemptEncryption: false
         NSBonjourServices:
           - _atproto-appsync._tcp
         NSLocalNetworkUsageDescription: Hummingbird uses your local network to sync with your other devices, transfer plugin sign-in credentials and load locally hosted plugins.

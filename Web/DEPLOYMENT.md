@@ -27,6 +27,26 @@ desktop entry). Not to be confused with AppSync's app ID and the lexicon
 namespaces under `com.eightybps.hummingbird`, which are protocol names, not
 bundle IDs, and must not change with it.
 
+### Export compliance
+
+`ITSAppUsesNonExemptEncryption` is `false`. Hummingbird encrypts data
+(AppSync's device-to-device inbox: P-256 key agreement and AES-GCM; plugin
+credential pairing: AES-GCM and HMAC-SHA256), verifies RSA plugin signatures
+and uses HTTPS. But on Apple platforms every one of those is a standard
+algorithm run by Apple's own frameworks: CryptoKit (swift-crypto's `Crypto`
+re-exports it there), Security, and URLSession's TLS. The encryption only
+protects the user's own data between their own devices, ancillary to a media
+app. So neither documentation trigger applies (no proprietary or
+non-standard algorithms, and no standard algorithms instead of or in addition
+to the OS's). In App Store Connect, answer that the app uses no encryption
+outside Apple's operating system.
+
+`EncryptionExportTests` checks the declaration, that `Crypto` is CryptoKit,
+and that no BoringSSL or libsodium code is linked into the Apple build. Those
+are only used on Linux. If it fails, revisit this and the App Store Connect
+answers. This is a reading of Apple's form, not legal advice; reconsider it
+if Hummingbird's main purpose ever becomes security or communications.
+
 ## Hummingbird: OAuth client
 
 Serve `Web/hummingbird/` as the site root of `hummingbird.eightybps.com`, so

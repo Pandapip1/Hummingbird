@@ -639,6 +639,16 @@ public enum InstanceMessagingError: LocalizedError, Equatable {
     case instanceIdentityNotConfigured, credentialNotPersisted
     case encryptionFailed, invalidSignature, wrongRecipient, conflictingReplay
     case serverUnavailable
+    /// DNS-SD refused to advertise or browse this instance on the LAN.
+    case localNetworkDiscoveryFailed(operation: LocalNetworkDiscoveryOperation, code: Int32)
+
+    public enum LocalNetworkDiscoveryOperation: String, Sendable {
+        case advertise = "advertise this instance"
+        case browse = "look for other instances"
+    }
+
+    /// kDNSServiceErr_PolicyDenied: local network privacy blocked the request.
+    static let dnsServicePolicyDenied: Int32 = -65570
 
     public var errorDescription: String? {
         switch self {
@@ -651,6 +661,10 @@ public enum InstanceMessagingError: LocalizedError, Equatable {
         case .wrongRecipient: "The inbox message belongs to another instance."
         case .conflictingReplay: "A different inbox message reused an existing identifier."
         case .serverUnavailable: "The local inbox server is unavailable."
+        case let .localNetworkDiscoveryFailed(operation, code) where code == Self.dnsServicePolicyDenied:
+            "Local network privacy stopped Hummingbird from trying to \(operation.rawValue). Allow it under System Settings › Privacy & Security › Local Network."
+        case let .localNetworkDiscoveryFailed(operation, code):
+            "Couldn't \(operation.rawValue) on the local network (DNS-SD error \(code))."
         }
     }
 }

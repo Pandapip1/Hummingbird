@@ -6,6 +6,10 @@ public enum AppSyncAuthority {
     public static let domain = "appsync.eightybps.com"
     public static let protocolID = NSID(rawValue: "com.eightybps.appsync")!
     public static let protocolAppID = AppSyncAppID(rawValue: "com.eightybps.appsync")!
+    /// The DNS-SD service type instances advertise and browse on the LAN.
+    /// Apple platforms only allow it if the app lists it in its Info.plist's
+    /// NSBonjourServices.
+    public static let bonjourServiceType = "_atproto-appsync._tcp"
 }
 
 /// Reverse-DNS identifiers understood by an instance. Registrations are signed

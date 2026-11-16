@@ -50,8 +50,12 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Used to scan QR codes that add plugin sources.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_atproto-appsync._tcp</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Hummingbird uses your local network to transfer plugin sign-in credentials and load locally hosted plugins.</string>
+	<string>Hummingbird uses your local network to sync with your other devices, transfer plugin sign-in credentials and load locally hosted plugins.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

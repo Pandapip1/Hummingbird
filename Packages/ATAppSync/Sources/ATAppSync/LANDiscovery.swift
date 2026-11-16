@@ -9,7 +9,7 @@ import FoundationNetworking
 /// routable HTTP endpoint and expected key digest; the signed registration at
 /// that endpoint remains the authority for identity, capabilities, and apps.
 final class AppSyncLANDiscovery: @unchecked Sendable {
-    private static let serviceType = "_atproto-appsync._tcp"
+    private static let serviceType = AppSyncAuthority.bonjourServiceType
     private static let lifetime: TimeInterval = 90
 
     private struct Seen {
@@ -46,7 +46,8 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
             )
         }
         guard registerError == kDNSServiceErr_NoError, let registerRef else {
-            throw InstanceMessagingError.serverUnavailable
+            throw InstanceMessagingError.localNetworkDiscoveryFailed(
+                operation: .advertise, code: registerError)
         }
 
         var browseRef: DNSServiceRef?
@@ -55,7 +56,8 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
         )
         guard browseError == kDNSServiceErr_NoError, let browseRef else {
             DNSServiceRefDeallocate(registerRef)
-            throw InstanceMessagingError.serverUnavailable
+            throw InstanceMessagingError.localNetworkDiscoveryFailed(
+                operation: .browse, code: browseError)
         }
         lock.withLock {
             self.registrationRef = registerRef

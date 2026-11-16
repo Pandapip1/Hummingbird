@@ -52,7 +52,11 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
-        NSLocalNetworkUsageDescription: Hummingbird uses your local network to transfer plugin sign-in credentials and load locally hosted plugins.
+        # Local network privacy only allows the DNS-SD types listed here;
+        # ATAppSync advertises and browses AppSyncAuthority.bonjourServiceType.
+        NSBonjourServices:
+          - _atproto-appsync._tcp
+        NSLocalNetworkUsageDescription: Hummingbird uses your local network to sync with your other devices, transfer plugin sign-in credentials and load locally hosted plugins.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown

@@ -18,9 +18,10 @@ public struct SourceAuth: Codable, Equatable, Sendable {
 
 /// Where per-plugin credentials are kept.
 public protocol CredentialStore: AppSyncCredentialStore, UnlockableCredentialVault {
-    func load(account: String) -> SecureBytes?
-    /// `nil` deletes the entry.
-    func save(_ secret: SecureBytes?, account: String)
+    /// Returns `nil` only when no item exists; a store that cannot be used throws.
+    func load(account: String) throws -> SecureBytes?
+    func save(_ secret: SecureBytes, account: String) throws
+    func delete(account: String) throws
     /// Whether protected credentials exist but this process cannot currently
     /// read them without involving the user.
     func requiresExplicitUnlock() -> Bool
@@ -35,54 +36,32 @@ public extension CredentialStore {
 }
 
 /// Facade used by the rest of the app. Platform storage is supplied by
-/// SwiftOpenUI (Data Protection Keychain or Secret Service).
+/// SwiftOpenUI (Data Protection Keychain or Secret Service) through
+/// `KeychainCredentialStore`, which owns the login-keychain fallback policy.
 public enum AuthKeychain {
     nonisolated(unsafe) public static var store: CredentialStore = KeychainCredentialStore()
+
+    /// The platform store, when `store` is one, for storage-mode decisions.
+    public static var keychain: KeychainCredentialStore? { store as? KeychainCredentialStore }
 
     public static func registerVault() {
         CredentialVaultManager.shared.register(store)
     }
 
-    public static func load(pluginID: String, kind: String, namespace: String = "") -> SourceAuth? {
-        guard let secret = store.load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
+    public static func load(pluginID: String, kind: String, namespace: String = "") throws -> SourceAuth? {
+        guard let secret = try store.load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
         // Protection ends here: plugins consume cookies and headers as plain
         // strings, so the decoded SourceAuth lives in ordinary memory.
-        return try? secret.decodeJSON(SourceAuth.self)
+        return try secret.decodeJSON(SourceAuth.self)
     }
 
-    public static func save(_ auth: SourceAuth?, pluginID: String, kind: String, namespace: String = "") {
-        store.save(auth.flatMap { try? SecureBytes(jsonEncoding: $0) }, account: "\(namespace)\(pluginID).\(kind)")
+    /// `nil` deletes the stored value.
+    public static func save(_ auth: SourceAuth?, pluginID: String, kind: String, namespace: String = "") throws {
+        let account = "\(namespace)\(pluginID).\(kind)"
+        if let auth {
+            try store.save(SecureBytes(jsonEncoding: auth), account: account)
+        } else {
+            try store.delete(account: account)
+        }
     }
-}
-
-/// App-facing adapter around SwiftOpenUI's platform credential vault.
-public struct KeychainCredentialStore: CredentialStore {
-    private let vault: PlatformCredentialVault
-
-    public init(serviceNamespace: String? = nil) {
-        let suffix = serviceNamespace.map { ".\($0)" } ?? ""
-        vault = PlatformCredentialVault(service: "app.hummingbird\(suffix).credentials.v3")
-    }
-
-    public var credentialVaultID: String { vault.service }
-
-    public func requiresExplicitUnlock() -> Bool {
-        guard let account = activeInstanceAccount else { return false }
-        return vault.access(to: account) == .locked
-    }
-
-    public func requestUnlock() throws {
-        guard let account = activeInstanceAccount else { return }
-        try vault.requestAccess(to: account)
-    }
-
-    public func load(account: String) -> SecureBytes? { vault.load(account: account) }
-    public func save(_ secret: SecureBytes?, account: String) { vault.save(secret, account: account) }
-
-    private var activeInstanceAccount: String? {
-        guard let raw = UserDefaults.standard.string(forKey: "appsync.localProfileID"),
-              let id = UUID(uuidString: raw) else { return nil }
-        return "com.eightybps.appsync.profile.\(id.uuidString.lowercased()).instance-identity.v1"
-    }
-
 }

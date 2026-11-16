@@ -11,8 +11,12 @@ final class TestCredentialStore: CredentialStore, @unchecked Sendable {
         lock.withLock { values[account] }
     }
 
-    func save(_ secret: SecureBytes?, account: String) {
+    func save(_ secret: SecureBytes, account: String) {
         lock.withLock { values[account] = secret }
+    }
+
+    func delete(account: String) {
+        lock.withLock { values[account] = nil }
     }
 }
 

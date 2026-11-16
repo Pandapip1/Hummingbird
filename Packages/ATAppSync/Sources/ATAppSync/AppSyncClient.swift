@@ -44,6 +44,8 @@ public actor AppSyncClient {
     private let recognizedAppIDs: Set<AppSyncAppID>
     private let journalEngine: SpaceSyncEngine
     private let messaging: InstanceMessagingService?
+    /// Why `messaging` is absent, thrown by operations that need it.
+    private let messagingUnavailable: any Error
     private let lanSync: AppSyncLANClient?
     private var localNetworkEnabled: Bool
     private var advertisement: InstanceInboxAdvertisement?
@@ -52,13 +54,15 @@ public actor AppSyncClient {
     public init(spaces: SpacesClient, mutationLog: AppSyncMutationLog, repo: DID,
                 space: SpaceReference, appID: AppSyncAppID,
                 recognizedAppIDs: Set<AppSyncAppID>? = nil,
-                messaging: InstanceMessagingService?, localNetworkEnabled: Bool = false) {
+                messaging: InstanceMessagingService?, messagingFailure: (any Error)? = nil,
+                localNetworkEnabled: Bool = false) {
         self.spaces = spaces
         self.repo = repo
         self.space = space
         self.appID = appID
         self.recognizedAppIDs = recognizedAppIDs ?? [appID]
         self.messaging = messaging
+        messagingUnavailable = messagingFailure ?? InstanceMessagingError.instanceIdentityNotConfigured
         self.localNetworkEnabled = localNetworkEnabled
         lanSync = messaging.map {
             AppSyncLANClient(messaging: $0, journal: mutationLog, appID: appID)
@@ -182,7 +186,7 @@ public actor AppSyncClient {
         _ code: AppSyncPeerVerificationCode,
         including discovered: [AppSyncInstanceRegistration] = []
     ) async throws -> AppSyncPeerTrustSummary {
-        guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        guard let messaging else { throw messagingUnavailable }
         let registrations = try await mergedRegistrations(including: discovered)
         let compatible = messaging.trustStore.peers(
             among: registrations, localAppIDs: recognizedAppIDs
@@ -202,13 +206,13 @@ public actor AppSyncClient {
 
     @discardableResult
     public func trust(_ peer: AppSyncPeer) throws -> AppSyncTrustFact {
-        guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        guard let messaging else { throw messagingUnavailable }
         return try messaging.trust(peer)
     }
 
     @discardableResult
     public func distrust(_ peer: AppSyncPeer) throws -> AppSyncTrustFact {
-        guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        guard let messaging else { throw messagingUnavailable }
         return try messaging.revokeTrust(with: peer)
     }
 
@@ -224,7 +228,7 @@ public actor AppSyncClient {
     }
 
     public func sendMessage(_ payload: JSONValue, to recipient: InstancePublicIdentity) async throws {
-        guard let messaging else { throw InstanceMessagingError.credentialStoreUnavailable }
+        guard let messaging else { throw messagingUnavailable }
         guard messaging.trusts(recipient) else { throw AppSyncTrustError.incompleteFact }
         let envelope = try InstanceInboxEnvelope.seal(
             payload, appID: appID, from: messaging.identity, to: recipient

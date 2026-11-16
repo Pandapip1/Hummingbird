@@ -81,6 +81,9 @@ final class PluginManager {
     /// live outside the observable plugin array, so views otherwise keep the
     /// state they read during their previous body evaluation.
     private(set) var credentialRevision = 0
+    /// The latest failure to read or write a plugin credential, shown on the
+    /// plugin screen instead of the credential silently going missing.
+    private(set) var credentialStorageError: String?
 
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
@@ -124,12 +127,23 @@ final class PluginManager {
         if let existing = runtimePreparation[id] {
             preparation = existing
         } else {
-            let created = Task.detached(priority: .userInitiated) {
-                PluginRuntime(
+            let namespace = credentialNamespace
+            let created = Task.detached(priority: .userInitiated) { [weak self] in
+                var failure: (any Error)?
+                func stored(_ kind: String) -> SourceAuth? {
+                    do {
+                        return try AuthKeychain.load(pluginID: id, kind: kind, namespace: namespace)
+                    } catch {
+                        failure = error
+                        return nil
+                    }
+                }
+                let runtime = PluginRuntime(
                     config: p.config, script: p.script, settings: p.settings,
-                    auth: AuthKeychain.load(pluginID: id, kind: "auth", namespace: self.credentialNamespace),
-                    captcha: AuthKeychain.load(pluginID: id, kind: "captcha", namespace: self.credentialNamespace)
+                    auth: stored("auth"), captcha: stored("captcha")
                 )
+                if let failure { await self?.recordCredentialFailure(failure) }
+                return runtime
             }
             runtimePreparation[id] = created
             preparation = created
@@ -266,8 +280,12 @@ final class PluginManager {
     func remove(_ id: String) {
         invalidate(id)
         installed.removeAll { $0.id == id }
-        AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
-        AuthKeychain.save(nil, pluginID: id, kind: "captcha", namespace: credentialNamespace)
+        do {
+            try AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
+            try AuthKeychain.save(nil, pluginID: id, kind: "captcha", namespace: credentialNamespace)
+        } catch {
+            recordCredentialFailure(error)
+        }
         persist()
         if !applyingRemoteChange { profileChanges?.delete(collection: HummingbirdProfileSchema.plugin,
                                key: HummingbirdProfileSchema.key(for: id))
@@ -303,27 +321,57 @@ final class PluginManager {
         return auth(for: id) != nil
     }
 
+    /// The stored sign-in, or `nil` when there is none or it cannot be read.
+    /// Read failures are reported through `credentialStorageError`; views
+    /// call this while rendering, so the report is deferred to the next turn.
     func auth(for id: String) -> SourceAuth? {
-        AuthKeychain.load(pluginID: id, kind: "auth", namespace: credentialNamespace)
+        do {
+            return try AuthKeychain.load(pluginID: id, kind: "auth", namespace: credentialNamespace)
+        } catch {
+            Task { self.recordCredentialFailure(error) }
+            return nil
+        }
     }
 
     func saveAuth(_ auth: SourceAuth, pluginID: String) {
-        AuthKeychain.save(auth, pluginID: pluginID, kind: "auth", namespace: credentialNamespace)
+        do {
+            try AuthKeychain.save(auth, pluginID: pluginID, kind: "auth", namespace: credentialNamespace)
+            clearCredentialFailure()
+        } catch {
+            recordCredentialFailure(error)
+        }
         credentialRevision &+= 1
         invalidate(pluginID)
         pendingLogin = nil
     }
 
     func saveCaptcha(_ data: SourceAuth, pluginID: String) {
-        AuthKeychain.save(data, pluginID: pluginID, kind: "captcha", namespace: credentialNamespace)
+        do {
+            try AuthKeychain.save(data, pluginID: pluginID, kind: "captcha", namespace: credentialNamespace)
+        } catch {
+            recordCredentialFailure(error)
+        }
         invalidate(pluginID)
         pendingCaptcha = nil
     }
 
     func logout(_ id: String) {
-        AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
+        do {
+            try AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
+        } catch {
+            recordCredentialFailure(error)
+        }
         credentialRevision &+= 1
         invalidate(id)
+    }
+
+    private func recordCredentialFailure(_ error: any Error) {
+        let message = error.localizedDescription
+        if credentialStorageError != message { credentialStorageError = message }
+    }
+
+    private func clearCredentialFailure() {
+        if credentialStorageError != nil { credentialStorageError = nil }
     }
 
     // MARK: updates

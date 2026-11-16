@@ -33,7 +33,8 @@ final class ProfileAccountService {
     )
 
     init(localProfileID: UUID, changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
-         peerService: AppSyncPeerService?, localNetworkEnabled: Bool = false,
+         peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
+         localNetworkEnabled: Bool = false,
          oauthPresenter: any ATProtoOAuthPresenter) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
         self.oauth = oauth
@@ -49,7 +50,8 @@ final class ProfileAccountService {
         if let mutationLog = changes.mutationLog {
             syncService = ProfileSyncService(
                 changes: changes, mutationLog: mutationLog,
-                library: library, plugins: plugins, peerService: peerService,
+                library: library, plugins: plugins,
+                peerService: peerService, peerServiceFailure: peerServiceFailure,
                 localNetworkEnabled: localNetworkEnabled
             )
             syncService?.bootstrapCurrentProfile()
@@ -127,7 +129,13 @@ final class ProfileAccountService {
     }
 
     func signOut() {
-        if let account { try? credentialStore.remove(account: account) }
+        if let account {
+            do {
+                try credentialStore.remove(account: account)
+            } catch {
+                errorMessage = "Signed out, but the saved session couldn’t be removed: \(error.localizedDescription)"
+            }
+        }
         UserDefaults.standard.removeObject(forKey: currentAccountKey)
         account = nil
         handle = nil
@@ -136,8 +144,13 @@ final class ProfileAccountService {
 
     private func restore() {
         guard let raw = UserDefaults.standard.string(forKey: currentAccountKey),
-              let did = DID(rawValue: raw), let credential = try? credentialStore.load(account: did) else { return }
-        install(credential)
+              let did = DID(rawValue: raw) else { return }
+        do {
+            guard let credential = try credentialStore.load(account: did) else { return }
+            install(credential)
+        } catch {
+            errorMessage = "Your AT Protocol session couldn’t be restored: \(error.localizedDescription)"
+        }
     }
 
     private func install(_ credential: ATProtoOAuthCredential) {

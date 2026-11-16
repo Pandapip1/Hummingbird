@@ -94,7 +94,11 @@ private final class InMemoryCredentialStore: CredentialStore, @unchecked Sendabl
 
     func load(account: String) -> SecureBytes? { lock.withLock { values[account] } }
 
-    func save(_ secret: SecureBytes?, account: String) {
+    func save(_ secret: SecureBytes, account: String) {
         lock.withLock { values[account] = secret }
+    }
+
+    func delete(account: String) {
+        lock.withLock { values[account] = nil }
     }
 }

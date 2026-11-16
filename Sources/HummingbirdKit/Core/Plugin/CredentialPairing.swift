@@ -160,6 +160,8 @@ final class CredentialPairingReceiver: @unchecked Sendable {
     private var stopped = false
     private var requestValue: CredentialPairingRequest?
     private let identity: AppSyncPeerIdentity?
+    /// Why `identity` is absent, reported when pairing starts.
+    private let identityFailure: (any Error)?
     private let messageStore: AppSyncMessageStore?
     private let peerService: AppSyncPeerService?
     private var senderIdentity: AppSyncPeer?
@@ -178,7 +180,14 @@ final class CredentialPairingReceiver: @unchecked Sendable {
          onReject: @escaping @MainActor () -> Void = {}) {
         self.pluginID = pluginID
         self.pluginSourceURL = pluginSourceURL
-        let resolvedIdentity = identity ?? (try? PairingIdentityProvider.store.identity())
+        let resolvedIdentity: AppSyncPeerIdentity?
+        do {
+            resolvedIdentity = try identity ?? PairingIdentityProvider.store.identity()
+            identityFailure = nil
+        } catch {
+            resolvedIdentity = nil
+            identityFailure = error
+        }
         self.identity = resolvedIdentity
         self.peerService = peerService
         if let suppliedMessageStore {
@@ -198,7 +207,7 @@ final class CredentialPairingReceiver: @unchecked Sendable {
 
     func start() async throws -> CredentialPairingRequest {
         if let requestValue { return requestValue }
-        guard let identity else { throw AppSyncPeerError.credentialStoreUnavailable }
+        guard let identity else { throw identityFailure ?? AppSyncPeerError.instanceIdentityNotConfigured }
         let secret = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
         let receiver = PairingWeakReference(self)
         let bootstrap = ServerBootstrap(group: group)

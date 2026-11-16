@@ -433,7 +433,8 @@ private final class MemoryAppSyncCredentialStore: AppSyncCredentialStore, @unche
             return values[account]
         }
     }
-    func save(_ secret: SecureBytes?, account: String) { lock.withLock { values[account] = secret } }
+    func save(_ secret: SecureBytes, account: String) { lock.withLock { values[account] = secret } }
+    func delete(account: String) { lock.withLock { values[account] = nil } }
     func loadCount(account: String) -> Int { lock.withLock { loadCounts[account, default: 0] } }
     func resetLoadCounts() { lock.withLock { loadCounts.removeAll() } }
 }

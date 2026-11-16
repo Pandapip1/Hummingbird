@@ -280,6 +280,10 @@ struct PluginDetailView: View {
                                 app.plugins.pendingDirectLogin = pluginID
                             }
                         }
+                        if let failure = app.plugins.credentialStorageError {
+                            Label(failure, systemImage: "exclamationmark.triangle")
+                                .font(.footnote).foregroundStyle(.red)
+                        }
                     }
                 }
 
@@ -441,6 +445,11 @@ struct AppSettingsView: View {
                     Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
+            #if os(macOS) && !BACKEND_GTK
+            if let store = AuthKeychain.keychain {
+                CredentialStorageSettingsSection(store: store)
+            }
+            #endif
             Section("Playback") {
                 Picker("Maximum resolution", selection: $maxHeight) {
                     ForEach([360, 480, 720, 1080, 1440, 2160], id: \.self) { Text("\($0)p").tag($0) }

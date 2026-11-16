@@ -32,6 +32,8 @@ final class AppModel {
     let profileAccount: ProfileAccountService
     let profileRegistry: AppSyncProfileRegistry?
     let peerService: AppSyncPeerService?
+    /// Why `peerService` is absent, e.g. the credential store refused its keys.
+    let peerServiceFailure: String?
     private(set) var localNetworkSyncEnabled: Bool
     private(set) var localNetworkSyncState: LocalNetworkSyncState
     var incomingCredentialPairing: CredentialPairingRequest?
@@ -136,13 +138,29 @@ final class AppModel {
             localProfileID = UUID()
             UserDefaults.standard.set(localProfileID.uuidString, forKey: Self.localProfileIDKey)
         }
-        let profileRegistry = try? AppSyncProfileRegistry(
-            credentialStore: credentialStore, storageDirectory: Storage.directory
-        )
-        let activeProfile = try? profileRegistry?.ensureProfile(
-            id: localProfileID, migrateLegacyIdentity: true
-        )
-        let peerService = activeProfile?.peerService
+        // Opening the profile reads (or creates) this instance's identity keys
+        // in the credential store. A store that refuses them leaves the
+        // profile without peer messaging; the reason is kept and shown rather
+        // than reported later as a generic "unavailable".
+        let profileRegistry: AppSyncProfileRegistry?
+        var peerService: AppSyncPeerService?
+        var peerServiceFailure: (any Error)?
+        do {
+            let registry = try AppSyncProfileRegistry(
+                credentialStore: credentialStore, storageDirectory: Storage.directory
+            )
+            profileRegistry = registry
+            do {
+                peerService = try registry.ensureProfile(
+                    id: localProfileID, migrateLegacyIdentity: true
+                ).peerService
+            } catch {
+                peerServiceFailure = error
+            }
+        } catch {
+            profileRegistry = nil
+            peerServiceFailure = error
+        }
         let localNetworkSyncEnabled = suppliedLocalNetworkSyncEnabled
             ?? UserDefaults.standard.bool(forKey: Self.localNetworkSyncEnabledKey)
         let storagePrefix = "profile.\(localProfileID.uuidString.lowercased())."
@@ -180,6 +198,7 @@ final class AppModel {
         self.profileChanges = profileChanges
         self.profileRegistry = profileRegistry
         self.peerService = peerService
+        self.peerServiceFailure = peerServiceFailure?.localizedDescription
         self.localNetworkSyncEnabled = localNetworkSyncEnabled
         self.localNetworkSyncState = localNetworkSyncEnabled ? .starting : .disabled
         // Sign in inside a browser tab where this build can render one; the
@@ -190,7 +209,8 @@ final class AppModel {
             if let oauthTabPresenter { oauthTabPresenter } else { WebAuthenticationSessionPresenter() }
         self.profileAccount = ProfileAccountService(
             localProfileID: localProfileID, changes: profileChanges, library: library, plugins: plugins,
-            peerService: peerService, localNetworkEnabled: localNetworkSyncEnabled,
+            peerService: peerService, peerServiceFailure: peerServiceFailure,
+            localNetworkEnabled: localNetworkSyncEnabled,
             oauthPresenter: oauthPresenter
         )
         if let session = persistence.browserSession {

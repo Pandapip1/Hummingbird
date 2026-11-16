@@ -40,6 +40,10 @@ struct HummingbirdApp: App {
 private struct LaunchGate: View {
     @State private var preparedRoot: HummingbirdRoot?
     @State private var selectedProfileID: UUID?
+    #if os(macOS)
+    /// Probes the credential store before anything is written to it.
+    @State private var storageDecision = AuthKeychain.keychain.flatMap(CredentialStorageDecision.pending(for:))
+    #endif
     @State private var credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
     @State private var unlockFailure: String?
     @Environment(\.openIdentifiedWindow) private var openIdentifiedWindow
@@ -75,36 +79,23 @@ private struct LaunchGate: View {
                         .frame(width: 128, height: 128)
                         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     Text("Hummingbird").font(.title.bold())
-                    if credentialsLocked {
-                        Text("Unlock your protected plugin credentials to continue.")
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.secondary)
-                        Button("Unlock") {
-                            Task {
-                                do {
-                                    try await Task.detached {
-                                        try AuthKeychain.store.requestUnlock()
-                                    }.value
-                                    credentialsLocked = false
-                                    unlockFailure = nil
-                                } catch {
-                                    unlockFailure = error.localizedDescription
-                                }
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        if let unlockFailure {
-                            Text("Hummingbird couldn’t unlock your credentials: \(unlockFailure)")
-                                .foregroundStyle(.secondary)
+                    #if os(macOS)
+                    if let storageDecision, let store = AuthKeychain.keychain {
+                        CredentialStorageDecisionView(decision: storageDecision, store: store) {
+                            self.storageDecision = nil
+                            credentialsLocked = AuthKeychain.store.requiresExplicitUnlock()
                         }
                     } else {
-                        ProgressView()
+                        unlockOrProgress
                     }
+                    #else
+                    unlockOrProgress
+                    #endif
                 }
                 .foregroundStyle(.white)
             }
-            .task(id: "\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
-                guard !credentialsLocked else { return }
+            .task(id: "\(awaitingStorageDecision):\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
+                guard !awaitingStorageDecision, !credentialsLocked else { return }
                 // Give SwiftUI a frame to put the splash on screen before the
                 // intentionally synchronous AVKit initialization begins.
                 try? await Task.sleep(nanoseconds: 50_000_000)
@@ -118,6 +109,45 @@ private struct LaunchGate: View {
                     preparedRoot = await HummingbirdRoot.prepared()
                 }
             }
+        }
+    }
+
+    /// Opening a profile reads and writes credentials, so any storage question
+    /// is answered first.
+    private var awaitingStorageDecision: Bool {
+        #if os(macOS)
+        storageDecision != nil
+        #else
+        false
+        #endif
+    }
+
+    @ViewBuilder
+    private var unlockOrProgress: some View {
+        if credentialsLocked {
+            Text("Unlock your protected plugin credentials to continue.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Button("Unlock") {
+                Task {
+                    do {
+                        try await Task.detached {
+                            try AuthKeychain.store.requestUnlock()
+                        }.value
+                        credentialsLocked = false
+                        unlockFailure = nil
+                    } catch {
+                        unlockFailure = error.localizedDescription
+                    }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            if let unlockFailure {
+                Text("Hummingbird couldn’t unlock your credentials: \(unlockFailure)")
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            ProgressView()
         }
     }
 

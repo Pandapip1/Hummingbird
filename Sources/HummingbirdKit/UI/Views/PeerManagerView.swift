@@ -58,7 +58,9 @@ struct SyncSettingsView: View {
                             PeerIdentityLabel(peerID: service.peer.publicIdentity.stableID)
                             Button("Show Verification Code") { showingLocalCode = true }
                         } else {
-                            Text("Local peer identity is unavailable.").foregroundStyle(.secondary)
+                            Text(app.peerServiceFailure.map { "Local peer identity is unavailable: \($0)" }
+                                 ?? "Local peer identity is unavailable.")
+                                .foregroundStyle(.secondary)
                         }
                     }
 

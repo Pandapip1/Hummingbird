@@ -18,11 +18,13 @@ final class ProfileSyncService {
     @ObservationIgnored private weak var library: LibraryStore?
     @ObservationIgnored private weak var plugins: PluginManager?
     @ObservationIgnored private let peerService: AppSyncPeerService?
+    @ObservationIgnored private let peerServiceFailure: (any Error)?
     @ObservationIgnored private var localNetworkEnabled: Bool
 
     init(changes: ProfileChangeStore, mutationLog: AppSyncMutationLog,
          library: LibraryStore, plugins: PluginManager,
-         peerService: AppSyncPeerService?, localNetworkEnabled: Bool = false) {
+         peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
+         localNetworkEnabled: Bool = false) {
         lanSync = peerService.map {
             AppSyncLANClient(
                 messaging: $0, journal: mutationLog, appID: HummingbirdProfileSchema.appID
@@ -32,6 +34,7 @@ final class ProfileSyncService {
         self.library = library
         self.plugins = plugins
         self.peerService = peerService
+        self.peerServiceFailure = peerServiceFailure
         self.localNetworkEnabled = localNetworkEnabled
     }
 
@@ -54,7 +57,8 @@ final class ProfileSyncService {
         self.appSync = AppSyncClient(
             spaces: spaces, mutationLog: mutationLog,
             repo: credential.session.account, space: space,
-            appID: HummingbirdProfileSchema.appID, messaging: peerService,
+            appID: HummingbirdProfileSchema.appID,
+            messaging: peerService, messagingFailure: peerServiceFailure,
             localNetworkEnabled: localNetworkEnabled
         )
     }

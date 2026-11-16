@@ -146,15 +146,15 @@ public final class InstanceIdentityStore: @unchecked Sendable {
     public func identity() throws -> InstanceIdentity {
         try lock.withLock {
             if let cached { return cached }
-            let profileSecret = credentialStore.load(account: account)
-            let storedSecret = profileSecret
+            let profileSecret = try credentialStore.load(account: account)
+            let storedSecret = try profileSecret
                 ?? (migrateLegacyIdentity ? credentialStore.load(account: Self.legacyAccount) : nil)
             if let secret = storedSecret,
                var stored = try? secret.decodeJSON(InstanceIdentity.Stored.self) {
                 defer { stored.wipe() }
                 let identity = try InstanceIdentity(stored: stored)
                 if profileSecret == nil {
-                    credentialStore.save(secret, account: account)
+                    try credentialStore.save(secret, account: account)
                 }
                 cached = identity
                 return identity
@@ -163,9 +163,9 @@ public final class InstanceIdentityStore: @unchecked Sendable {
             var stored = identity.stored
             defer { stored.wipe() }
             let secret = try SecureBytes(jsonEncoding: stored)
-            credentialStore.save(secret, account: account)
-            guard credentialStore.load(account: account) == secret else {
-                throw InstanceMessagingError.credentialStoreUnavailable
+            try credentialStore.save(secret, account: account)
+            guard try credentialStore.load(account: account) == secret else {
+                throw InstanceMessagingError.credentialNotPersisted
             }
             cached = identity
             return identity
@@ -636,12 +636,16 @@ private final class InboxAppendHTTPHandler: ChannelInboundHandler, @unchecked Se
 }
 
 public enum InstanceMessagingError: LocalizedError, Equatable {
-    case credentialStoreUnavailable, encryptionFailed, invalidSignature, wrongRecipient, conflictingReplay
+    case instanceIdentityNotConfigured, credentialNotPersisted
+    case encryptionFailed, invalidSignature, wrongRecipient, conflictingReplay
     case serverUnavailable
 
     public var errorDescription: String? {
         switch self {
-        case .credentialStoreUnavailable: "A protected credential store is unavailable."
+        case .instanceIdentityNotConfigured:
+            "This instance has no identity keys, so peer messaging and trust changes are unavailable."
+        case .credentialNotPersisted:
+            "The credential store accepted this instance's identity keys but returned something else when they were read back."
         case .encryptionFailed: "The message could not be encrypted."
         case .invalidSignature: "The inbox message signature is invalid."
         case .wrongRecipient: "The inbox message belongs to another instance."

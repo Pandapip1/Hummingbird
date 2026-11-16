@@ -32,6 +32,8 @@ func makeTestAppModel(persistence: AppPersistenceSnapshot = .empty) -> AppModel 
         profileStorageDirectory: root.appendingPathComponent("profile-sync", isDirectory: true),
         appSyncStorageDirectory: root,
         localProfileID: UUID(),
-        localNetworkSyncEnabled: false
+        localNetworkSyncEnabled: false,
+        // Never touch this machine's permission record from tests.
+        permissions: PermissionGate(system: PlatformPermissions(), ledger: InMemoryPermissionLedger())
     )
 }

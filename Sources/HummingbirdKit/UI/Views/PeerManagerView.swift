@@ -27,13 +27,27 @@ struct SyncSettingsView: View {
                         Toggle(
                             "Local Network Sync",
                             isOn: Binding(
-                                get: { app.localNetworkSyncEnabled },
-                                set: { app.setLocalNetworkSyncEnabled($0) }
+                                get: { app.localNetworkSync.isOnHere },
+                                // A flip of the toggle is a direct request, so
+                                // the system may prompt straight away.
+                                set: { enabled in Task { await app.localNetworkSync.setEnabled(enabled) } }
                             )
                         )
-                        switch app.localNetworkSyncState {
+                        switch app.localNetworkSync.state {
                         case .disabled:
                             EmptyView()
+                        case .awaitingPermission:
+                            Label("Waiting for you to allow local network access", systemImage: "hand.raised")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        case .postponed:
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label("Paused on this device until local network access is allowed", systemImage: "pause.circle")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                                Button("Allow and Start") { Task { await app.localNetworkSync.retry() } }
+                            }
+                        case .offOnThisDevice:
+                            Label("Turned off on this instance. Turn it on here to sync from this instance too.", systemImage: "info.circle")
+                                .font(.footnote).foregroundStyle(.secondary)
                         case .starting:
                             ProgressView("Starting local sync…")
                         case .available:
@@ -44,7 +58,7 @@ struct SyncSettingsView: View {
                                 Label("Local sync is unavailable", systemImage: "exclamationmark.triangle")
                                     .foregroundStyle(.red)
                                 Text(message).font(.footnote).foregroundStyle(.secondary)
-                                Button("Try Again") { app.setLocalNetworkSyncEnabled(false); app.setLocalNetworkSyncEnabled(true) }
+                                Button("Try Again") { Task { await app.localNetworkSync.retry() } }
                             }
                         }
                     } footer: {

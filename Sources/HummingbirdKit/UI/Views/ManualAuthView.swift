@@ -62,7 +62,7 @@ struct WebAuthSheet: View {
                 }
             }
             .navigationTitle(spec.title)
-            .task { await pairing.start(peerService: app.peerService) }
+            .task { await pairing.start(peerService: app.peerService, permissions: app.permissions) }
             .task { await pairing.observeSender() }
             .task { await pairing.observeCredentialStore { app.plugins.auth(for: $0) } }
             .onDisappear { pairing.stop() }
@@ -95,7 +95,9 @@ private final class CredentialPairingModel {
         self.onFinish = onFinish
     }
 
-    func start(peerService: AppSyncPeerService?) async {
+    /// Runs after the user chose to sign in, so the system may prompt for
+    /// local network access straight away.
+    func start(peerService: AppSyncPeerService?, permissions: PermissionGate) async {
         guard request == nil, error == nil, receiver == nil else { return }
         guard let pluginID, let sourceURL else {
             error = "This plugin has no source URL to share with the sign-in device."
@@ -111,6 +113,14 @@ private final class CredentialPairingModel {
             onReject: { [weak self] in self?.error = "The other device reported that the verification emoji did not match." }
         )
         self.receiver = receiver
+        guard await permissions.authorize(
+            .localNetwork, for: "credential-pairing", origin: .userAction, explanation: .credentialPairing
+        ) == .allowed else {
+            error = "Local network access is needed to receive a sign-in from another device."
+            self.receiver = nil
+            return
+        }
+        defer { permissions.recordUse(of: .localNetwork) }
         do { request = try await receiver.start() }
         catch { self.error = error.localizedDescription; self.receiver = nil }
     }

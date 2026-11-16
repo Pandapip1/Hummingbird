@@ -11,13 +11,6 @@ import UIKit
 @MainActor
 @Observable
 final class AppModel {
-    enum LocalNetworkSyncState: Equatable {
-        case disabled
-        case starting
-        case available
-        case failed(String)
-    }
-
     fileprivate static let localProfileIDKey = "appsync.localProfileID"
     private static let localNetworkSyncEnabledKey = "appsync.localNetworkSyncEnabled"
     let plugins: PluginManager
@@ -34,8 +27,9 @@ final class AppModel {
     let peerService: AppSyncPeerService?
     /// Why `peerService` is absent, e.g. the credential store refused its keys.
     let peerServiceFailure: String?
-    private(set) var localNetworkSyncEnabled: Bool
-    private(set) var localNetworkSyncState: LocalNetworkSyncState
+    /// Gates every use of a resource the system guards with a permission prompt.
+    let permissions: PermissionGate
+    let localNetworkSync: LocalNetworkSyncController
     var incomingCredentialPairing: CredentialPairingRequest?
 
     /// Ordinary browser tabs, including app sections opened from the menu.
@@ -131,7 +125,8 @@ final class AppModel {
          // when local sync starts, so tests must never use the real one.
          appSyncStorageDirectory: URL = Storage.directory,
          localProfileID suppliedLocalProfileID: UUID? = nil,
-         localNetworkSyncEnabled suppliedLocalNetworkSyncEnabled: Bool? = nil) {
+         localNetworkSyncEnabled suppliedLocalNetworkSyncEnabled: Bool? = nil,
+         permissions suppliedPermissions: PermissionGate? = nil) {
         let localProfileID: UUID
         if let suppliedLocalProfileID {
             localProfileID = suppliedLocalProfileID
@@ -203,8 +198,10 @@ final class AppModel {
         self.profileRegistry = profileRegistry
         self.peerService = peerService
         self.peerServiceFailure = peerServiceFailure?.localizedDescription
-        self.localNetworkSyncEnabled = localNetworkSyncEnabled
-        self.localNetworkSyncState = localNetworkSyncEnabled ? .starting : .disabled
+        let permissions = suppliedPermissions ?? PermissionGate(
+            system: PlatformPermissions(), ledger: FilePermissionLedger()
+        )
+        self.permissions = permissions
         // Sign in inside a browser tab where this build can render one; the
         // tab presenter is pointed at this model once it is initialized.
         let oauthTabPresenter = OAuthTabPresenter.isSupported ? OAuthTabPresenter() : nil
@@ -214,8 +211,26 @@ final class AppModel {
         self.profileAccount = ProfileAccountService(
             localProfileID: localProfileID, changes: profileChanges, library: library, plugins: plugins,
             peerService: peerService, peerServiceFailure: peerServiceFailure,
-            localNetworkEnabled: localNetworkSyncEnabled,
+            // Off until this instance may use the local network; the
+            // controller below turns it on once the gate has passed.
+            localNetworkEnabled: false,
             oauthPresenter: oauthPresenter
+        )
+        let profileAccount = self.profileAccount
+        self.localNetworkSync = LocalNetworkSyncController(
+            isEnabled: localNetworkSyncEnabled, gate: permissions,
+            transport: .init(
+                expose: {
+                    guard let profileRegistry else { throw LocalNetworkSyncUnavailable.noLocalProfiles }
+                    try await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID])
+                },
+                conceal: { profileRegistry?.concealAll() }
+            ),
+            persist: { UserDefaults.standard.set($0, forKey: Self.localNetworkSyncEnabledKey) },
+            activeChanged: { active in
+                profileAccount.setLocalNetworkEnabled(active)
+                if active { Task { await profileAccount.sync() } }
+            }
         )
         if let session = persistence.browserSession {
             // Older builds could persist destination-less "New Tab" pages.
@@ -254,7 +269,10 @@ final class AppModel {
         )
         for tab in contentTabs { tab.onChange { [weak self] in self?.persistBrowserSession() } }
         oauthTabPresenter?.host = self
-        if localNetworkSyncEnabled { startLocalNetworkSync() }
+        // A restored or synced setting is applied without touching the
+        // network here: the gate explains it before the system can prompt.
+        let localNetworkSync = self.localNetworkSync
+        Task { await localNetworkSync.applyStoredSetting() }
         #if DEBUG && os(iOS)
         RenderStallMonitor.shared.start { [weak self] in
             guard let self else { return [:] }
@@ -309,7 +327,7 @@ final class AppModel {
 
     func createLocalProfile() -> UUID? {
         guard let profile = try? profileRegistry?.createProfile() else { return nil }
-        if localNetworkSyncEnabled {
+        if localNetworkSync.isActive {
             Task { try? await profile.peerService.startLANServer(
                 appIDs: [HummingbirdProfileSchema.appID]
             ) }
@@ -318,43 +336,11 @@ final class AppModel {
     }
 
     func saveBrowserSession() { persistBrowserSession() }
+}
 
-    func setLocalNetworkSyncEnabled(_ enabled: Bool) {
-        guard enabled != localNetworkSyncEnabled else { return }
-        localNetworkSyncEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.localNetworkSyncEnabledKey)
-        profileAccount.setLocalNetworkEnabled(enabled)
-        if enabled {
-            startLocalNetworkSync()
-        } else {
-            profileRegistry?.concealAll()
-            localNetworkSyncState = .disabled
-        }
-    }
-
-    private func startLocalNetworkSync() {
-        guard let profileRegistry else {
-            localNetworkSyncState = .failed("Local profiles are unavailable.")
-            return
-        }
-        localNetworkSyncState = .starting
-        Task {
-            do {
-                try await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID])
-                guard localNetworkSyncEnabled else {
-                    profileRegistry.concealAll()
-                    return
-                }
-                localNetworkSyncState = .available
-                await profileAccount.sync()
-            } catch {
-                profileRegistry.concealAll()
-                if localNetworkSyncEnabled {
-                    localNetworkSyncState = .failed(error.localizedDescription)
-                }
-            }
-        }
-    }
+private enum LocalNetworkSyncUnavailable: LocalizedError {
+    case noLocalProfiles
+    var errorDescription: String? { "Local profiles are unavailable." }
 }
 
 struct LibraryPersistenceSnapshot: Sendable {

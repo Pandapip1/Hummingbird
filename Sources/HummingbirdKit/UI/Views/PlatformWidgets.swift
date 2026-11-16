@@ -927,16 +927,39 @@ enum QRCodeScanning {
 struct QRCodeScanner: View {
     let instruction: String
     let onCode: (String) -> Void
+    #if (os(iOS) || os(macOS)) && !BACKEND_GTK
+    @Environment(AppModel.self) private var app
+    @State private var access: PermissionDecision?
+    #endif
 
     var body: some View {
         #if (os(iOS) || os(macOS)) && !BACKEND_GTK
-        QRScannerView(onCode: onCode)
-            #if os(iOS)
-            .ignoresSafeArea()
-            #endif
-            .overlay(alignment: .bottom) {
-                Text(instruction).padding(10).background(.thinMaterial, in: Capsule()).padding()
+        Group {
+            switch access {
+            case .allowed:
+                QRScannerView(onCode: onCode)
+                    #if os(iOS)
+                    .ignoresSafeArea()
+                    #endif
+                    .overlay(alignment: .bottom) {
+                        Text(instruction).padding(10).background(.thinMaterial, in: Capsule()).padding()
+                    }
+            case nil:
+                ProgressView("Waiting for camera access…")
+            case .notNow, .declinedOnThisDevice, .deniedBySystem:
+                ContentUnavailableView(
+                    "Camera access is off", systemImage: "camera",
+                    description: Text("Allow camera access for Hummingbird in Settings to scan codes, or paste the URL instead.")
+                )
             }
+        }
+        .task {
+            // The scanner only appears after the user taps Scan, so the system
+            // prompt answers that tap and can show straight away.
+            access = await app.permissions.authorize(
+                .camera, for: "qr-scanner", origin: .userAction, explanation: .qrScanner
+            )
+        }
         #else
         Text("QR scanning is not available on this platform. Paste the URL instead.")
         #endif

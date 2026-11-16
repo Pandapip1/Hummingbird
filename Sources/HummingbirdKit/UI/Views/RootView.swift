@@ -46,6 +46,7 @@ struct RootView: View {
             }
         }
         .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request) }
+        .permissionPrompts(model.permissions)
         .onChange(of: plugins.pendingDirectLogin) { _, id in
             if let id { beginLogin(id); plugins.pendingDirectLogin = nil }
         }
@@ -423,6 +424,16 @@ private struct PairedDeviceLoginSheet: View {
             catch { self.error = error.localizedDescription }
         }
         .task {
+            // Opened from a pairing code the user just scanned, so the system
+            // may prompt for local network access straight away.
+            guard await app.permissions.authorize(
+                .localNetwork, for: "credential-pairing", origin: .userAction,
+                explanation: .credentialPairing
+            ) == .allowed else {
+                error = "Local network access is needed to reach the other device."
+                return
+            }
+            app.permissions.recordUse(of: .localNetwork)
             do { senderIdentity = try await request.announceSender(peerService: app.peerService) }
             catch { self.error = error.localizedDescription; return }
             while !Task.isCancelled && !remoteAccepted && error == nil {

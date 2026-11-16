@@ -9,7 +9,7 @@ final class ModelAndLogicTests: XCTestCase {
     @MainActor
     func testAppStartsWithDurableLocalProfileBeforeLogin() throws {
         let model = makeTestAppModel()
-        XCTAssertFalse(model.localNetworkSyncEnabled)
+        XCTAssertFalse(model.localNetworkSync.isEnabled)
         XCTAssertNil(model.profileAccount.account)
         let changes = try XCTUnwrap(model.profileChanges.mutationLog)
 

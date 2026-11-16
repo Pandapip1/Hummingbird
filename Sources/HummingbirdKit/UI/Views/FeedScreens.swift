@@ -1,5 +1,5 @@
 import Foundation
-import DebugKit
+import os
 import SwiftOpenUI
 
 // MARK: - Home
@@ -139,11 +139,7 @@ struct SearchView: View {
         if text.contains("://") {
             let routes = await app.platform.recognizedRoutes(for: text)
             guard generation == searchGeneration else { return }
-            DebugServer.record("routing", "manual_url_matches", fields: [
-                "content": String(routes.contains(.content(text))),
-                "channel": String(routes.contains(.channel(text))),
-                "playlist": String(routes.contains(.playlist(text))),
-            ])
+            Logger.routing.info("manual_url_matches content=\(routes.contains(.content(text))) channel=\(routes.contains(.channel(text))) playlist=\(routes.contains(.playlist(text)))")
             if routes.count == 1, let route = routes.first {
                 openRoute(route)
             } else if routes.isEmpty {

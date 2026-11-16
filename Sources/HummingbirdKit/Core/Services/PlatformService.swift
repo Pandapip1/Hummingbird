@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import DebugKit
+import os
 
 private func capture<T: Sendable>(_ op: @Sendable () async throws -> T) async -> Result<T, Error> {
     do { return .success(try await op()) } catch { return .failure(error) }
@@ -88,7 +88,7 @@ final class PlatformService {
     }
 
     func details(url: String) async throws -> (PluginRuntime, ContentDetails) {
-        DebugServer.record("routing", "content_details", fields: ["host": URL(string: url)?.host ?? "unknown"])
+        Logger.routing.info("content_details host=\(URL(string: url)?.host ?? "unknown", privacy: .public)")
         guard let rt = await route(url: url, check: "isContentDetailsUrl") else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getContentDetails", [url], kind: "details") }
@@ -144,7 +144,7 @@ final class PlatformService {
     }
 
     func channel(url: String) async throws -> (PluginRuntime, ChannelInfo) {
-        DebugServer.record("routing", "channel", fields: ["host": URL(string: url)?.host ?? "unknown"])
+        Logger.routing.info("channel host=\(URL(string: url)?.host ?? "unknown", privacy: .public)")
         guard let rt = await route(url: url, check: "isChannelUrl") else { throw PluginError.notInstalled }
         do {
             let info = try await withReload(rt) { try await rt.call("getChannel", [url], as: ChannelInfo.self) }
@@ -153,7 +153,7 @@ final class PlatformService {
     }
 
     func playlist(url: String) async throws -> (PluginRuntime, PlaylistDetailsPayload, PluginPager<ContentItem>) {
-        DebugServer.record("routing", "playlist", fields: ["host": URL(string: url)?.host ?? "unknown"])
+        Logger.routing.info("playlist host=\(URL(string: url)?.host ?? "unknown", privacy: .public)")
         guard let rt = await route(url: url, check: "isPlaylistUrl", requires: ["getPlaylist", "isPlaylistUrl"]) else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getPlaylist", [url], kind: "playlist") }

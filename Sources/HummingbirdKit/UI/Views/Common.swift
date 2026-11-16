@@ -1,5 +1,5 @@
 import Foundation
-import DebugKit
+import os
 import SwiftOpenUI
 
 @MainActor
@@ -32,7 +32,7 @@ struct ContentRow: View {
                 if let u = item.unlockUrl.flatMap(URL.init(string:)) { ExternalURLLink(destination: u) { card } } else { card }
             case .channel:
                 Button {
-                    DebugServer.record("routing", "content_row_open", fields: ["kind": "channel"])
+                    Logger.routing.info("content_row_open kind=channel")
                     openRoute(.channel(item.url), title: item.name)
                 } label: { channelCard }
             case .playlist:
@@ -40,7 +40,7 @@ struct ContentRow: View {
             default:
                 ZStack(alignment: .topTrailing) {
                     Button {
-                        DebugServer.record("routing", "content_row_open", fields: ["kind": String(describing: item.kind)])
+                        Logger.routing.info("content_row_open kind=\(String(describing: item.kind), privacy: .public)")
                         openRoute(.item(item), title: item.name)
                     } label: { card }
                     if item.kind == .video {

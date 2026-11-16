@@ -5,6 +5,7 @@ import CredentialStorage
 import NIOCore
 import NIOHTTP1
 import NIOPosix
+import os
 
 /// Semantic application-facing names. Instance registration and inbox records
 /// are wire details; applications communicate with peers using sealed messages.
@@ -414,6 +415,17 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
     }
 
     private func syncResponse(_ data: Data, appIDs: Set<AppSyncAppID>) -> LANHTTPResponse {
+        let signposter = AppSyncDiagnostics.lanSignposter
+        let signpost = signposter.beginInterval("LANServe", id: signposter.makeSignpostID(), "path=sync")
+        let response = makeSyncResponse(data, appIDs: appIDs)
+        signposter.endInterval("LANServe", signpost, "status=\(response.status.code)")
+        if response.status != .ok {
+            AppSyncDiagnostics.lan.notice("lan_sync_refused status=\(response.status.code)")
+        }
+        return response
+    }
+
+    private func makeSyncResponse(_ data: Data, appIDs: Set<AppSyncAppID>) -> LANHTTPResponse {
         guard let envelope = try? JSONDecoder().decode(InstanceInboxEnvelope.self, from: data),
               appIDs.contains(envelope.appID), trustStore.trusts(envelope.sender.stableID),
               let request = try? inbox.open(envelope, as: AppSyncLANRequest.self),

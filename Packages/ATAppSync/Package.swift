@@ -25,6 +25,7 @@ let package = Package(
                 "CDNSService",
                 .product(name: "ATProtoKit", package: "ATProtoKit"),
                 .product(name: "CredentialStorage", package: "SwiftOpenUI"),
+                .product(name: "os", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),

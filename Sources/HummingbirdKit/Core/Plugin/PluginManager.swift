@@ -1,25 +1,7 @@
 import Foundation
 import Observation
-import DebugKit
+import os
 import ATProtoKit
-
-#if DEBUG
-private final class PluginDebugLogger: @unchecked Sendable {
-    static let shared = PluginDebugLogger()
-    private let lock = NSLock()
-    private let writer = DispatchQueue(label: "app.hummingbird.plugin.debug-log", qos: .utility)
-    private var nextSequence: UInt64 = 0
-
-    func submit(pluginID: String, message: String) {
-        lock.lock()
-        nextSequence &+= 1
-        let sequence = nextSequence
-        lock.unlock()
-        let bounded = message.count > 2_000 ? String(message.prefix(2_000)) + "… [truncated]" : message
-        writer.async { print("[plugin \(pluginID) #\(sequence)] \(bounded)") }
-    }
-}
-#endif
 
 /// A plugin as stored on this device.
 struct InstalledPlugin: Codable, Identifiable, Hashable, Sendable {
@@ -169,30 +151,22 @@ final class PluginManager {
             return existing
         }
         r.onToast = { [weak self] msg in
-            DebugServer.record("plugin", "alert", fields: [
-                "plugin": id,
-                "message": String(msg.prefix(500)),
-            ])
+            Logger.plugin.notice("alert plugin=\(id, privacy: .public) message=\(msg.prefix(500))")
             Task { @MainActor in self?.toast = msg }
         }
         r.onLog = { msg in
             let lower = msg.lowercased()
-            let safeUMPLog = lower.hasPrefix("ump ")
-                || lower.hasPrefix("ump:")
-                || lower.hasPrefix("ump descriptor ")
-                || lower.hasPrefix("====== ump")
-                || lower.hasPrefix("abr enabled:")
-            if safeUMPLog {
-                DebugServer.record("plugin", "ump_log", fields: [
-                    "plugin": id,
-                    "message": String(msg.prefix(500)),
-                ])
+            let umpProgress = lower.hasPrefix("ump ") || lower.hasPrefix("ump:") || lower.hasPrefix("ump descriptor ")
+                || lower.hasPrefix("====== ump") || lower.hasPrefix("abr enabled:")
+            if umpProgress {
+                // UMP progress lines are kept at info level so they survive in
+                // the log store for diagnosing playback after the fact.
+                Logger.player.info("ump_log plugin=\(id, privacy: .public) \(msg.prefix(500))")
             }
-            #if DEBUG
-            // Plugins can log complete HTML/API responses. Keep console I/O off
-            // their serial runtime queues while retaining deterministic log order.
-            PluginDebugLogger.shared.submit(pluginID: id, message: msg)
-            #endif
+            // Plugins can log whole HTML and API responses: private, debug level
+            // (streamed but not persisted), and bounded.
+            let bounded = msg.count > 2_000 ? String(msg.prefix(2_000)) + "… [truncated]" : msg
+            Logger.pluginConsole.debug("plugin=\(id, privacy: .public) \(bounded)")
         }
         runtimes[id] = r
         return r

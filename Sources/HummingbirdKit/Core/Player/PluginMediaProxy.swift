@@ -2,7 +2,7 @@ import Foundation
 import NIOCore
 import NIOHTTP1
 import NIOPosix
-import DebugKit
+import os
 
 /// Exposes plugin-generated DASH media as a loopback fMP4 HLS presentation.
 /// The player requests ordinary HLS URLs while segment bytes remain owned by
@@ -152,18 +152,25 @@ actor PluginMediaProxy {
                 continue
             }
             do {
-                let data = try await prefetchRuntime.callHandleBytes(
-                    prefetchExecutor, "executeRequest",
-                    [resource.upstream, [String: String]()]
+                let prefetchSignpost = OSSignposter.mediaProxy.beginInterval(
+                    "UMPPrefetch", id: OSSignposter.mediaProxy.makeSignpostID()
                 )
+                let data: Data
+                do {
+                    data = try await prefetchRuntime.callHandleBytes(
+                        prefetchExecutor, "executeRequest",
+                        [resource.upstream, [String: String]()]
+                    )
+                    OSSignposter.mediaProxy.endInterval("UMPPrefetch", prefetchSignpost, "bytes=\(data.count)")
+                } catch {
+                    OSSignposter.mediaProxy.endInterval("UMPPrefetch", prefetchSignpost, "failed")
+                    throw error
+                }
                 if let cache = presentation.cache {
                     do {
                         try await mediaCache.write(data, to: cache, name: resource.upstream)
                     } catch {
-                        DebugServer.record("plugin_media_proxy", "cache_write_failed", fields: [
-                            "message": error.localizedDescription,
-                            "prefetch": "true",
-                        ])
+                        Logger.mediaProxy.error("cache_write_failed prefetch=true message=\(error.localizedDescription)")
                         return
                     }
                 }
@@ -206,6 +213,16 @@ actor PluginMediaProxy {
     }
 
     private func response(for uri: String) async -> (HTTPResponseStatus, String, Data) {
+        let signposter = OSSignposter.mediaProxy
+        let signpost = signposter.beginInterval("ProxyRequest", id: signposter.makeSignpostID())
+        var status = HTTPResponseStatus.internalServerError
+        defer { signposter.endInterval("ProxyRequest", signpost, "status=\(status.code)") }
+        let result = await route(uri)
+        status = result.0
+        return result
+    }
+
+    private func route(_ uri: String) async -> (HTTPResponseStatus, String, Data) {
         guard let components = URLComponents(string: uri) else { return (.badRequest, "text/plain", Data()) }
         let parts = components.path.split(separator: "/").map(String.init)
         guard parts.count >= 2 else { return (.notFound, "text/plain", Data()) }
@@ -229,6 +246,7 @@ actor PluginMediaProxy {
             do {
                 if let cache = presentation.cache,
                    let cached = try await mediaCache.read(cache, name: upstream) {
+                    OSSignposter.mediaProxy.emitEvent("UMPCacheHit", "track=\(parts[1], privacy: .public) bytes=\(cached.count)")
                     let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
                     return (.ok, contentType, cached)
                 }
@@ -237,10 +255,20 @@ actor PluginMediaProxy {
                 let usesAudioExecutor = parts[1] == "audio"
                 let requestRuntime = usesAudioExecutor ? presentation.audioRuntime ?? presentation.runtime : presentation.runtime
                 let requestExecutor = usesAudioExecutor ? presentation.audioExecutor ?? presentation.executor : presentation.executor
-                let data = try await requestRuntime.callHandleBytes(
-                    requestExecutor, "executeRequest",
-                    [upstream, [String: String]()]
+                let segment = OSSignposter.mediaProxy.beginInterval(
+                    "UMPSegment", id: OSSignposter.mediaProxy.makeSignpostID(), "track=\(parts[1], privacy: .public)"
                 )
+                let data: Data
+                do {
+                    data = try await requestRuntime.callHandleBytes(
+                        requestExecutor, "executeRequest",
+                        [upstream, [String: String]()]
+                    )
+                    OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "bytes=\(data.count)")
+                } catch {
+                    OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "failed")
+                    throw error
+                }
                 if let cache = presentation.cache {
                     // Cache exhaustion must never turn successfully fetched media
                     // into a 502 response. The cache is an optimization; AVPlayer
@@ -248,10 +276,7 @@ actor PluginMediaProxy {
                     do {
                         try await mediaCache.write(data, to: cache, name: upstream)
                     } catch {
-                        DebugServer.record("plugin_media_proxy", "cache_write_failed", fields: [
-                            "message": error.localizedDescription,
-                            "prefetch": "false",
-                        ])
+                        Logger.mediaProxy.error("cache_write_failed prefetch=false message=\(error.localizedDescription)")
                     }
                 }
                 let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"

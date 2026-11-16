@@ -2,6 +2,7 @@ import ATProtoKit
 import ATAppSync
 import Foundation
 import Observation
+import os
 
 @MainActor
 @Observable
@@ -84,9 +85,14 @@ final class ProfileSyncService {
     func sync() async {
         guard state != .syncing else { return }
         state = .syncing
+        let signposter = OSSignposter.sync
+        let pass = signposter.beginInterval("SyncPass", id: signposter.makeSignpostID())
+        defer { signposter.endInterval("SyncPass", pass, "\(String(describing: self.state), privacy: .private(mask: .hash))") }
         var completedTransport = false
         if localNetworkEnabled, let lanSync {
+            let lanPull = signposter.beginInterval("LANPull", id: signposter.makeSignpostID())
             let remote = await lanSync.pull()
+            signposter.endInterval("LANPull", lanPull, "mutations=\(remote.count)")
             do {
                 try await apply(remote, needsUpload: true)
                 completedTransport = true
@@ -103,7 +109,9 @@ final class ProfileSyncService {
             try await ensureOwnerSpace()
             // Pull before pushing so a newer edit from another device cannot be
             // overwritten merely because this device happened to reconnect.
+            let pdsPull = signposter.beginInterval("PDSPull", id: signposter.makeSignpostID())
             let remote = try await appSync.pullMutations()
+            signposter.endInterval("PDSPull", pdsPull, "mutations=\(remote.count)")
             try await apply(remote, needsUpload: false)
             try await appSync.pushMutations()
             let messages = try await appSync.syncMessages()

@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import SwiftOpenUI
 import AdvancedVideoPlayerKit
-import DebugKit
+import os
 
 enum SubtitleColorChoice: String, CaseIterable, Sendable {
     case white, yellow, green, cyan
@@ -120,7 +120,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     private func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore,
                       sourceURL: String, reloadAttempt: Int, resumeOverride: Double?, autoplay: Bool) async {
-        DebugServer.record("player", "load_started", fields: ["plugin": runtime.id, "host": URL(string: sourceURL)?.host ?? "unknown"])
+        let host = URL(string: sourceURL)?.host ?? "unknown"
+        Logger.player.info("load_started plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .public) attempt=\(reloadAttempt)")
+        let signpost = OSSignposter.player.beginInterval("LoadContent", id: OSSignposter.player.makeSignpostID(), "plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .public)")
+        defer { OSSignposter.player.endInterval("LoadContent", signpost, "error=\(self.errorMessage != nil)") }
         teardown()
         loadedURL = sourceURL
         self.details = details
@@ -148,13 +151,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             .map { "\($0.key):\($0.value.count)" }
             .sorted()
             .joined(separator: ",")
-        DebugServer.record("player", "source_inventory", fields: [
-            "types": sourceTypes,
-        ])
+        Logger.player.info("source_inventory types=\(sourceTypes, privacy: .public)")
         options = PlaybackSelector.options(for: details, preferredLanguage: preferredLanguage)
             .filter { _ in true }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
-            DebugServer.record("player", "no_playable_source", fields: ["options": String(options.count)])
+            Logger.player.error("no_playable_source options=\(self.options.count)")
             errorMessage = options.isEmpty
                 ? "This video has no source this device can play (it offers only formats the player does not support, such as WebM, DASH or DRM-protected streams)."
                 : "No playable source found."
@@ -174,7 +175,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                          normalizeSavedPosition: resumeOverride == nil,
                          reloadOnBlockedBootstrap: reloadAttempt == 0) else {
             if let reload = requestedPluginReload, reloadAttempt < 2 {
-                DebugServer.record("player", "plugin_reload", fields: ["attempt": String(reloadAttempt + 1), "message": reload.message])
+                Logger.player.notice("plugin_reload attempt=\(reloadAttempt + 1) message=\(reload.message)")
                 await runtime.reload(reloadData: reload.data)
                 do {
                     let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
@@ -187,7 +188,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                                resumeOverride: resumeOverride, autoplay: autoplay)
                 } catch {
                     errorMessage = error.localizedDescription
-                    DebugServer.record("player", "plugin_reload_failed", fields: ["message": error.localizedDescription])
+                    Logger.player.error("plugin_reload_failed error=\(String(reflecting: type(of: error)), privacy: .public) message=\(error.localizedDescription)")
                 }
             }
             return
@@ -345,12 +346,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         isPreparing = true
         defer { isPreparing = false }
         do {
-            DebugServer.record("player", "source_selected", fields: [
-                "kind": String(describing: option.kind),
-                "videoType": option.video.pluginType,
-                "videoHost": URL(string: option.video.url)?.host ?? "generated",
-                "audioHost": option.audio.flatMap { URL(string: $0.url)?.host } ?? "none",
-            ])
+            let videoHost = URL(string: option.video.url)?.host ?? "generated"
+            let audioHost = option.audio.flatMap { URL(string: $0.url)?.host } ?? "none"
+            Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) videoHost=\(videoHost, privacy: .public) audioHost=\(audioHost, privacy: .public)")
             let video: ResolvedMedia
             let audio: ResolvedMedia?
             if option.kind == .generated,
@@ -396,7 +394,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             self.duration = backend.duration
             isPlaying = backend.isPlaying
             playbackRequested = autoplay
-            DebugServer.record("player", "load_completed", fields: ["playing": String(isPlaying)])
+            Logger.player.info("load_completed playing=\(self.isPlaying)")
             return true
         } catch let PluginError.reloadRequired(message, reloadData) {
             requestedPluginReload = (message, reloadData)
@@ -406,10 +404,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         } catch is CancellationError {
             return false
         } catch {
-            DebugServer.record("player", "load_failed", fields: [
-                "errorType": String(reflecting: type(of: error)),
-                "message": error.localizedDescription,
-            ])
+            Logger.player.error("load_failed error=\(String(reflecting: type(of: error)), privacy: .public) message=\(error.localizedDescription)")
             errorMessage = (error as? PluginError)?.localizedDescription ?? error.localizedDescription
             return false
         }
@@ -451,11 +446,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     private func resolve(_ source: MediaSource, generation: Int,
                          reloadOnBlockedBootstrap: Bool = false) async throws -> ResolvedMedia {
-        DebugServer.record("player", "resolve_source", fields: [
-            "type": source.pluginType,
-            "host": URL(string: source.url)?.host ?? "generated",
-            "hasModifier": String(source.requestModifier != nil),
-        ])
+        let host = URL(string: source.url)?.host ?? "generated"
+        Logger.player.info("resolve_source type=\(source.pluginType, privacy: .public) host=\(host, privacy: .public) hasModifier=\(source.requestModifier != nil)")
+        let signpost = OSSignposter.player.beginInterval("ResolveSource", id: OSSignposter.player.makeSignpostID(), "type=\(source.pluginType, privacy: .public)")
+        defer { OSSignposter.player.endInterval("ResolveSource", signpost) }
         if ["DashManifestRawSource", "DashManifestRawAudioSource"].contains(source.pluginType),
            let handle = source.handle, let runtime {
             let manifestData = try await runtime.callHandle(handle, "generate")
@@ -530,10 +524,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         guard umpRefreshAttempts < 2 else {
             errorMessage = "YouTube playback details expired repeatedly. Please retry playback."
-            DebugServer.record("player", "ump_refresh_exhausted", fields: [
-                "attempts": String(umpRefreshAttempts),
-                "message": reason,
-            ])
+            Logger.player.error("ump_refresh_exhausted attempts=\(self.umpRefreshAttempts) reason=\(reason)")
+            OSSignposter.player.emitEvent("UMPRefreshExhausted")
             return
         }
         let position = backend?.currentTime ?? playbackTime
@@ -546,10 +538,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         // Keep presenting whatever AVPlayer has already buffered while the
         // isolated plugin runtime obtains replacement playback details.
-        DebugServer.record("player", "ump_refresh_started", fields: [
-            "attempt": String(umpRefreshAttempts),
-            "position": String(position),
-        ])
+        Logger.player.notice("ump_refresh_started attempt=\(self.umpRefreshAttempts) position=\(position)")
+        let signpost = OSSignposter.player.beginInterval("UMPRefresh", id: OSSignposter.player.makeSignpostID(), "attempt=\(self.umpRefreshAttempts)")
+        defer { OSSignposter.player.endInterval("UMPRefresh", signpost) }
         await runtime.reload(reloadData: reloadData)
         do {
             let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
@@ -562,7 +553,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                        reloadAttempt: 1, resumeOverride: latestPosition, autoplay: latestAutoplay)
         } catch {
             errorMessage = error.localizedDescription
-            DebugServer.record("player", "ump_refresh_failed", fields: ["message": error.localizedDescription])
+            Logger.player.error("ump_refresh_failed error=\(String(reflecting: type(of: error)), privacy: .public) message=\(error.localizedDescription)")
         }
     }
 

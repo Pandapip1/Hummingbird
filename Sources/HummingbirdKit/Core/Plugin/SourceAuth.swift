@@ -1,6 +1,7 @@
 import Foundation
 import ATAppSync
 import CredentialStorage
+import os
 
 /// Credentials captured by the login (or captcha) web view: cookies and headers keyed by domain.
 public struct SourceAuth: Codable, Equatable, Sendable {
@@ -41,7 +42,14 @@ public extension CredentialStore {
 /// policy; the store itself comes from the window's `AppDataStores`.
 public extension CredentialStore {
     func loadSourceAuth(pluginID: String, kind: String, namespace: String = "") throws -> SourceAuth? {
-        guard let secret = try load(account: "\(namespace)\(pluginID).\(kind)") else { return nil }
+        // Keychain reads can block on the Secret Service or an unlock prompt,
+        // so they are signposted. The account is not logged.
+        let secret = try OSSignposter.account.withIntervalSignpost(
+            "KeychainRead", id: OSSignposter.account.makeSignpostID(), "kind=\(kind, privacy: .public)"
+        ) {
+            try load(account: "\(namespace)\(pluginID).\(kind)")
+        }
+        guard let secret else { return nil }
         // Protection ends here: plugins consume cookies and headers as plain
         // strings, so the decoded SourceAuth lives in ordinary memory.
         return try secret.decodeJSON(SourceAuth.self)

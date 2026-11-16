@@ -1,5 +1,5 @@
 import Foundation
-import DebugKit
+import os
 import Crypto
 
 /// Hosts one plugin in its own JavaScript context (JavaScriptCore, see `JSEngines`).
@@ -96,18 +96,10 @@ final class PluginRuntime: @unchecked Sendable {
         self.savedState = savedState
         self.queue = DispatchQueue(label: "app.hummingbird.plugin.\(config.id)", qos: .userInitiated)
         if !compatibility.applied.isEmpty {
-            DebugServer.record("plugin", "compatibility_patches", fields: [
-                "plugin": config.id,
-                "version": String(config.version),
-                "patches": compatibility.applied.joined(separator: ","),
-            ])
+            Logger.plugin.info("compatibility_patches plugin=\(config.id, privacy: .public) version=\(config.version) patches=\(compatibility.applied.joined(separator: ","), privacy: .public)")
         }
         if !compatibility.failed.isEmpty {
-            DebugServer.record("plugin", "compatibility_patch_failures", fields: [
-                "plugin": config.id,
-                "version": String(config.version),
-                "failures": compatibility.failed.joined(separator: ","),
-            ])
+            Logger.plugin.error("compatibility_patch_failures plugin=\(config.id, privacy: .public) version=\(config.version) failures=\(compatibility.failed.joined(separator: ","), privacy: .public)")
         }
     }
 
@@ -248,11 +240,7 @@ final class PluginRuntime: @unchecked Sendable {
         guard reportedUnsupportedCapabilities.insert(key).inserted else { return }
         let message = "Plugin \(config.id) requested unsupported \(kind) \"\(name)\""
         onLog?("Warning: \(message)")
-        DebugServer.record("plugin", "unsupported_capability", fields: [
-            "plugin": config.id,
-            "kind": kind,
-            "name": name,
-        ])
+        Logger.plugin.notice("unsupported_capability plugin=\(self.config.id, privacy: .public) kind=\(kind, privacy: .public) name=\(name, privacy: .public)")
 #endif
     }
 
@@ -359,7 +347,11 @@ final class PluginRuntime: @unchecked Sendable {
         var result = initial
         let deadline = Date().addingTimeInterval(timeout)
         while let id = pendingPromise(in: result) {
-            guard Date() < deadline else { throw PluginError.execution("The plugin's asynchronous operation timed out") }
+            guard Date() < deadline else {
+                Logger.plugin.error("call_timeout plugin=\(self.config.id, privacy: .public) seconds=\(timeout)")
+                OSSignposter.plugin.emitEvent("PluginTimeout", "plugin=\(self.config.id, privacy: .public)")
+                throw PluginError.execution("The plugin's asynchronous operation timed out")
+            }
             try await Task.sleep(for: .milliseconds(10))
             result = try await perform {
                 guard self.contextGeneration == generation else { throw CancellationError() }
@@ -445,13 +437,22 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Invokes `source.<name>(...args)`; `kind` is "value", "pager" or "details". Returns the JSON of the result.
     func callRaw(_ name: String, _ args: [Any] = [], kind: String = "value") async throws -> Data {
+        let signposter = OSSignposter.plugin
+        let signpost = signposter.beginInterval(
+            "PluginCall", id: signposter.makeSignpostID(),
+            "plugin=\(self.config.id, privacy: .public) function=\(name, privacy: .public) kind=\(kind, privacy: .public)"
+        )
+        var outcome = "failed"
+        defer { signposter.endInterval("PluginCall", signpost, "\(outcome, privacy: .public)") }
         let encodedArgs = try argsJSON(args)
         let (result, generation) = try await perform {
             try self.enableLocked()
             let js = "__jb.invoke(\(jsString(name)), \(jsString(encodedArgs)), \(jsString(kind)))"
             return (try self.evalResult(js), self.contextGeneration)
         }
-        return try await unwrapAwaiting(result, generation: generation)
+        let data = try await unwrapAwaiting(result, generation: generation)
+        outcome = "ok"
+        return data
     }
 
     func call<T: Decodable>(_ name: String, _ args: [Any] = [], as type: T.Type = T.self) async throws -> T {

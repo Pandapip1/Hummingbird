@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import os
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
@@ -342,7 +343,7 @@ final class FilePermissionLedger: PermissionLedger {
             #endif
         } catch {
             // Losing the record costs one extra explanation, never a silent prompt.
-            print("Couldn't save the permission record: \(error.localizedDescription)")
+            Logger.permissions.error("record_save_failed error=\(String(reflecting: type(of: error)), privacy: .public) message=\(error.localizedDescription)")
         }
     }
 

@@ -1,6 +1,7 @@
 import ATProtoKit
 import ATAppSync
 import Foundation
+import os
 import Observation
 
 @MainActor
@@ -103,24 +104,41 @@ final class ProfileAccountService {
         guard !identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isSigningIn = true
         errorMessage = nil
-        defer { isSigningIn = false }
+        let signposter = OSSignposter.account
+        let signpost = signposter.beginInterval("OAuthSignIn", id: signposter.makeSignpostID())
+        var outcome = "failed"
+        defer {
+            isSigningIn = false
+            signposter.endInterval("OAuthSignIn", signpost, "\(outcome, privacy: .public)")
+        }
         do {
-            let credential = try await authenticator.signIn(identifier: identifier) { [weak self] prepared in
-                await self?.confirmSignIn(prepared) ?? false
+            let authorize = signposter.beginInterval("OAuthAuthorize", id: signposter.makeSignpostID())
+            let credential: ATProtoOAuthCredential
+            do {
+                credential = try await authenticator.signIn(identifier: identifier) { [weak self] prepared in
+                    await self?.confirmSignIn(prepared) ?? false
+                }
+                signposter.endInterval("OAuthAuthorize", authorize)
+            } catch {
+                signposter.endInterval("OAuthAuthorize", authorize, "failed")
+                throw error
             }
-            try credentialStore.save(credential)
+            try signposter.withIntervalSignpost("SaveCredential") { try credentialStore.save(credential) }
+            Logger.account.notice("signed_in")
             preferences.defaults.set(credential.session.account.rawValue, forKey: currentAccountKey)
             install(credential)
             syncService?.bootstrapCurrentProfile()
             await syncService?.sync()
+            outcome = "ok"
         } catch OAuthError.cancelled {
+            outcome = "cancelled"
             // The user closed the sign-in page; that is not an error to show.
         } catch is CancellationError {
         } catch {
             // People get one readable line; the full error, with any
             // underlying network errors, goes to the log.
             errorMessage = error.localizedDescription
-            print("[atproto sign-in] \(String(reflecting: error))")
+            Logger.account.error("sign_in_failed error=\(String(reflecting: type(of: error)), privacy: .public) detail=\(String(reflecting: error))")
         }
     }
 

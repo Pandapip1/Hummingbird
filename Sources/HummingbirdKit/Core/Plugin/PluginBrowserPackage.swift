@@ -2,7 +2,7 @@ import Foundation
 
 #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
 import WebKit
-import DebugKit
+import os
 
 /// Grayjay's optional `Browser` package: a hidden page that plugins use as a
 /// script host. YouTube loads youtube.com here and calls BotGuard's minter in
@@ -175,6 +175,10 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     private var pendingEvaluations = 0
     private var pendingCallbacks: Set<String> = []
     private let webView: WKWebView
+    /// Signpost intervals: the page load, and each script until its result
+    /// or callback arrives (BotGuard minting shows up as `BrowserScript`).
+    private var loadSignpost: OSSignpostIntervalState?
+    private var scriptSignposts: [String: OSSignpostIntervalState] = [:]
 
     private let created = Date()
 
@@ -225,6 +229,9 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
             let rules = await SubresourceRules.shared.list()
             guard let self, self.webView.navigationDelegate != nil else { return }
             if let rules { self.webView.configuration.userContentController.add(rules) }
+            self.loadSignpost = OSSignposter.plugin.beginInterval(
+                "BrowserPageLoad", id: OSSignposter.plugin.makeSignpostID(), "host=\(url.host ?? "unknown", privacy: .public)"
+            )
             self.webView.load(URLRequest(url: url))
         }
     }
@@ -241,6 +248,11 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     /// as YouTube's minter) is created by the page's own scripts after load.
     func evaluate(_ script: String, callbackID: String, returnsValue: Bool, retryUntil: Date?) {
         if !returnsValue { pendingCallbacks.insert(callbackID) }
+        if scriptSignposts[callbackID] == nil {
+            scriptSignposts[callbackID] = OSSignposter.plugin.beginInterval(
+                "BrowserScript", id: OSSignposter.plugin.makeSignpostID(), "returnsValue=\(returnsValue)"
+            )
+        }
         pendingEvaluations += 1
         activity()
         webView.evaluateJavaScript(script) { [weak self] value, error in
@@ -257,7 +269,10 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
             guard returnsValue else {
                 // The script reports back through `__GJ.callback`; if it threw,
                 // nothing will, so the controller need not wait for it.
-                if error != nil { self.pendingCallbacks.remove(callbackID) }
+                if error != nil {
+                    self.pendingCallbacks.remove(callbackID)
+                    self.endScriptSignpost(callbackID, outcome: "threw")
+                }
                 return
             }
             let result: String
@@ -266,6 +281,7 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
                     let data = try? JSONSerialization.data(withJSONObject: value),
                     let json = String(data: data, encoding: .utf8) { result = json }
             else { result = error?.localizedDescription ?? "" }
+            self.endScriptSignpost(callbackID, outcome: error == nil ? "ok" : "threw")
             self.callback(callbackID, result)
         }
     }
@@ -275,6 +291,7 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "hummingbirdBrowser")
         webView.navigationDelegate = nil
         pendingCallbacks.removeAll()
+        for (id, _) in scriptSignposts { endScriptSignpost(id, outcome: "closed") }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { signalLoaded() }
@@ -285,13 +302,23 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
                                didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let id = body["id"] as? String else { return }
         pendingCallbacks.remove(id)
+        endScriptSignpost(id, outcome: "callback")
         activity()
         callback(id, body["value"] as? String ?? "")
+    }
+
+    private func endScriptSignpost(_ id: String, outcome: StaticString) {
+        guard let state = scriptSignposts.removeValue(forKey: id) else { return }
+        OSSignposter.plugin.endInterval("BrowserScript", state, "\(outcome, privacy: .public)")
     }
 
     private func signalLoaded() {
         guard !didFinish else { return }
         didFinish = true
+        if let loadSignpost {
+            OSSignposter.plugin.endInterval("BrowserPageLoad", loadSignpost)
+            self.loadSignpost = nil
+        }
         loaded.signal()
     }
 }
@@ -317,9 +344,7 @@ private final class SubresourceRules {
                     forIdentifier: Self.identifier, encodedContentRuleList: Self.json
                 )
             } catch {
-                DebugServer.record("plugin_browser", "content_rules_failed", fields: [
-                    "message": error.localizedDescription,
-                ])
+                Logger.pluginBrowser.error("content_rules_failed message=\(error.localizedDescription)")
                 return nil
             }
         }

@@ -1,5 +1,6 @@
 import Foundation
 import ATProtoKit
+import os
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -72,6 +73,10 @@ public final class AppSyncLANClient: @unchecked Sendable {
         }
         endpoint.deleteLastPathComponent()
         endpoint.append(path: "appsync/v1/sync")
+        let signposter = AppSyncDiagnostics.lanSignposter
+        let signpost = signposter.beginInterval("LANRequest", id: signposter.makeSignpostID(), "path=sync")
+        var outcome = "failed"
+        defer { signposter.endInterval("LANRequest", signpost, "\(outcome, privacy: .public)") }
         let nonce = UUID()
         let envelope = try InstanceInboxEnvelope.seal(
             AppSyncLANRequest(nonce: nonce, appID: appID), appID: appID,
@@ -91,6 +96,7 @@ public final class AppSyncLANClient: @unchecked Sendable {
         }
         let snapshot = try messaging.inbox.open(sealed, as: AppSyncLANSnapshot.self)
         guard snapshot.nonce == nonce else { throw InstanceMessagingError.conflictingReplay }
+        outcome = "ok"
         return snapshot
     }
 }

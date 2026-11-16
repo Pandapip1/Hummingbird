@@ -3,7 +3,7 @@ import Foundation
 import AVFoundation
 import SwiftOpenUI
 import AdvancedVideoPlayerKit
-import DebugKit
+import os
 #if canImport(AVKit)
 import AVKit
 #endif
@@ -91,11 +91,7 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
-        DebugServer.record("avplayer", "load_started", fields: [
-            "videoHost": request.video.url.host ?? "unknown",
-            "audioHost": request.audio?.url.host ?? "none",
-            "separateAudio": String(request.audio != nil),
-        ])
+        Logger.avPlayer.info("load_started videoHost=\(request.video.url.host ?? "unknown", privacy: .public) audioHost=\(request.audio?.url.host ?? "none", privacy: .public) separateAudio=\(request.audio != nil)")
         loadGeneration &+= 1
         let generation = loadGeneration
         activeLoadGenerations.insert(generation)
@@ -199,20 +195,15 @@ final class AVMediaBackend: MediaBackend {
             case .failed: "status_failed"
             @unknown default: "status_other"
             }
-            var fields: [String: String] = [:]
-            if let error = item?.error {
-                fields["errorType"] = String(reflecting: type(of: error))
-                fields["message"] = error.localizedDescription
-                fields["code"] = String((error as NSError).code)
-                fields["domain"] = (error as NSError).domain
+            if let error = item?.error as NSError? {
+                Logger.avPlayer.error("\(name, privacy: .public) domain=\(error.domain, privacy: .public) code=\(error.code) message=\(error.localizedDescription)")
+            } else {
+                Logger.avPlayer.info("\(name, privacy: .public)")
             }
-            if let event = item?.errorLog()?.events.last {
-                fields["httpStatus"] = String(event.errorStatusCode)
-                fields["server"] = event.serverAddress ?? ""
-                fields["uriHost"] = event.uri.flatMap { URL(string: $0)?.host } ?? ""
-                fields["comment"] = event.errorComment ?? ""
+            if status == .failed, let event = item?.errorLog()?.events.last {
+                let uriHost = event.uri.flatMap { URL(string: $0)?.host } ?? ""
+                Logger.avPlayer.error("error_log httpStatus=\(event.errorStatusCode) uriHost=\(uriHost, privacy: .public) server=\(event.serverAddress ?? "") comment=\(event.errorComment ?? "")")
             }
-            DebugServer.record("avplayer", name, fields: fields)
             if status == .failed, let message = item?.error?.localizedDescription {
                 Task { @MainActor in self?.onFailure?(message) }
             }
@@ -223,10 +214,8 @@ final class AVMediaBackend: MediaBackend {
             queue: nil
         ) { notification in
             let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
-            DebugServer.record("avplayer", "failed_to_end", fields: [
-                "message": error?.localizedDescription ?? "unknown",
-                "code": error.map { String(($0 as NSError).code) } ?? "",
-            ])
+            let nsError = error.map { $0 as NSError }
+            Logger.avPlayer.error("failed_to_end domain=\(nsError?.domain ?? "unknown", privacy: .public) code=\(nsError?.code ?? 0) message=\(nsError?.localizedDescription ?? "unknown")")
         }
     }
 

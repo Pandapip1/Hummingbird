@@ -70,6 +70,8 @@ var targets: [Target] = [
             .product(name: "ATAppSync", package: "ATAppSync"),
             .product(name: "CredentialStorage", package: "SwiftOpenUI"),
             .product(name: "Security", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
+            .product(name: "os", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
+            .product(name: "MetricKit", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
             .product(name: "SwiftSoup", package: "SwiftSoup"),
             .product(name: "Crypto", package: "swift-crypto"),

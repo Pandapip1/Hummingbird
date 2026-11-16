@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 private final class HTTPBatchState: @unchecked Sendable {
     let requests: [[String: Any]]
@@ -15,6 +16,10 @@ private final class HTTPBatchState: @unchecked Sendable {
     }
 
     func snapshot() -> [[String: Any]] { lock.withLock { results } }
+}
+
+private final class LocalNetworkDecision: Sendable {
+    let allowed = Mutex(false)
 }
 
 private final class HTTPTaskResult: @unchecked Sendable {
@@ -53,6 +58,7 @@ final class HostHTTP: NSObject, @unchecked Sendable {
     private let sleep: (TimeInterval) -> Void
     private var rateLimits: [String: (until: Date, failures: Int)] = [:]
     private var rateLimitGenerations: [String: UInt64] = [:]
+    private let localNetworkAccess: (@Sendable (URL) async -> Bool)?
 
     init(
         config: PluginConfig,
@@ -60,7 +66,8 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         captcha: SourceAuth?,
         session: URLSession? = nil,
         now: @escaping () -> Date = Date.init,
-        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+        localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil
     ) {
         self.config = config
         self.auth = auth
@@ -74,6 +81,7 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         self.session = session ?? URLSession(configuration: cfg)
         self.now = now
         self.sleep = sleep
+        self.localNetworkAccess = localNetworkAccess
         super.init()
         clients["default-anon"] = makeState(withAuth: false)
         clients["default-auth"] = makeState(withAuth: true)
@@ -88,6 +96,23 @@ final class HostHTTP: NSObject, @unchecked Sendable {
             for (d, m) in captcha.cookieMap { current[d, default: [:]].merge(m) { _, new in new } }
         }
         return ClientState(withAuth: withAuth, currentCookies: current)
+    }
+
+    /// Whether the plugin may reach `url`, asking the permission gate first
+    /// when it is on the local network. Plugin requests run on the plugin's
+    /// own queue, so waiting here for the gate (on the main actor) is safe.
+    func mayReach(_ url: URL) -> Bool {
+        guard let localNetworkAccess, LocalNetworkAddress.isLocalNetwork(url) else { return true }
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        let decision = LocalNetworkDecision()
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            let allowed = await localNetworkAccess(url)
+            decision.allowed.withLock { $0 = allowed }
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return decision.allowed.withLock { $0 }
     }
 
     // MARK: entry point
@@ -128,6 +153,9 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         guard config.allowsHost(host) else {
             return ["error": "Attempted to access non-whitelisted url: \(urlString). Add the host to allowUrls in the plugin config.",
                     "errorType": "ScriptImplementationException"]
+        }
+        guard mayReach(url) else {
+            return ["error": LocalNetworkAccessDeclined(host: host).localizedDescription]
         }
 
         let clientId = req["clientId"] as? String ?? "default-anon"
@@ -456,6 +484,11 @@ private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked 
         guard let host = request.url?.host?.lowercased() else { completionHandler(nil); return }
         guard owner.config.allowsHost(host) else {
             violation = "Attempted to access non-whitelisted url: \(request.url?.absoluteString ?? host) (redirect)"
+            completionHandler(nil)
+            return
+        }
+        if let url = request.url, !owner.mayReach(url) {
+            violation = LocalNetworkAccessDeclined(host: host).localizedDescription
             completionHandler(nil)
             return
         }

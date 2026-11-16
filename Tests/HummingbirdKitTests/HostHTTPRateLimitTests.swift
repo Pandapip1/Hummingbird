@@ -274,4 +274,49 @@ final class HostHTTPRateLimitTests: XCTestCase {
         XCTAssertNil(HostHTTP.retryDelay(from: "1e9", now: now))
         XCTAssertNil(HostHTTP.retryDelay(from: String(repeating: "9", count: 400), now: now))
     }
+
+    private func runOffMain(_ host: HostHTTP, url: String) -> String {
+        let output = Locked("")
+        let finished = expectation(description: "request finished")
+        DispatchQueue.global().async {
+            let result = host.execute(json: #"[{"method":"GET","url":"\#(url)"}]"#, parallel: false)
+            output.withValue { $0 = result }
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 5)
+        return output.read()
+    }
+
+    private func makeLANHost(allowed: Bool, asked: Locked<[URL]>) throws -> HostHTTP {
+        let data = Data(#"{"name":"Test","id":"test","scriptUrl":"test.js","version":1,"allowUrls":["192.168.1.20","example.test"]}"#.utf8)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        return HostHTTP(
+            config: try JSONDecoder().decode(PluginConfig.self, from: data), auth: nil, captcha: nil,
+            session: URLSession(configuration: configuration),
+            localNetworkAccess: { url in
+                asked.withValue { $0.append(url) }
+                return allowed
+            }
+        )
+    }
+
+    func testDeclinedLocalNetworkRequestNeverReachesTheNetwork() throws {
+        StubProtocol.reset([(200, [:], "ok")])
+        let asked = Locked<[URL]>([])
+        let output = runOffMain(try makeLANHost(allowed: false, asked: asked), url: "http://192.168.1.20/items")
+        XCTAssertEqual(asked.read().map(\.host), ["192.168.1.20"])
+        XCTAssertEqual(StubProtocol.requestCount, 0)
+        XCTAssertTrue(output.contains("isn’t allowed on this device"), output)
+    }
+
+    func testAllowedLocalNetworkRequestProceedsAndPublicHostsAreNotAsked() throws {
+        StubProtocol.reset([(200, [:], "ok"), (200, [:], "ok")])
+        let asked = Locked<[URL]>([])
+        let host = try makeLANHost(allowed: true, asked: asked)
+        XCTAssertTrue(runOffMain(host, url: "http://192.168.1.20/items").contains("\"code\":200"))
+        XCTAssertTrue(runOffMain(host, url: "https://example.test/resource").contains("\"code\":200"))
+        XCTAssertEqual(asked.read().count, 1)
+        XCTAssertEqual(StubProtocol.requestCount, 2)
+    }
 }

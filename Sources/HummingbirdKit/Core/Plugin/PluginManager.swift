@@ -96,6 +96,9 @@ final class PluginManager {
     @ObservationIgnored private let storageName: String
     @ObservationIgnored private let credentialNamespace: String
     @ObservationIgnored private var applyingRemoteChange = false
+    /// Puts downloads and plugin requests to local-network hosts behind the
+    /// permission gate. Nil (tests, previews) lets them through.
+    @ObservationIgnored var localNetworkAccess: PluginLocalNetworkAccess?
     @ObservationIgnored private let urlSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 30
@@ -139,10 +142,12 @@ final class PluginManager {
             preparation = existing
         } else {
             let stored = credentials(for: id)
+            let localNetworkCheck = localNetworkAccess?.runtimeCheck(source: p.config.name)
             let created = Task.detached(priority: .userInitiated) {
                 PluginRuntime(
                     config: p.config, script: p.script, settings: p.settings,
-                    auth: stored.auth, captcha: stored.captcha
+                    auth: stored.auth, captcha: stored.captcha,
+                    localNetworkAccess: localNetworkCheck
                 )
             }
             runtimePreparation[id] = created
@@ -209,7 +214,7 @@ final class PluginManager {
     func fetchConfig(from rawURL: URL) async throws -> PluginConfig {
         guard ["http", "https"].contains(rawURL.scheme?.lowercased()) else { throw InstallError.badURL }
         let data: Data
-        do { data = try await download(rawURL) } catch { throw InstallError.download(error.localizedDescription) }
+        do { data = try await download(rawURL, origin: .userAction, source: nil) } catch { throw InstallError.download(error.localizedDescription) }
         var config: PluginConfig
         do { config = try JSONDecoder().decode(PluginConfig.self, from: data) }
         catch { throw InstallError.invalidConfig(error.localizedDescription) }
@@ -219,14 +224,16 @@ final class PluginManager {
     }
 
     /// Downloads and checks a plugin. Nothing is stored until `commit` is called.
-    func prepareInstall(from rawURL: String) async throws -> InstallPreview {
+    /// `origin` is `.settings` when nobody on this instance asked for it (a
+    /// plugin synced from another instance).
+    func prepareInstall(from rawURL: String, origin: PermissionOrigin = .userAction) async throws -> InstallPreview {
         var text = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         // QR codes may wrap the config URL; accept the config URL directly or after a custom-scheme prefix.
         if let r = text.range(of: "grayjay://plugin/") { text = String(text[r.upperBound...]).removingPercentEncoding ?? String(text[r.upperBound...]) }
         guard let url = URL(string: text), let scheme = url.scheme, ["http", "https"].contains(scheme) else { throw InstallError.badURL }
 
         let configData: Data
-        do { configData = try await download(url) } catch { throw InstallError.download(error.localizedDescription) }
+        do { configData = try await download(url, origin: origin, source: nil) } catch { throw InstallError.download(error.localizedDescription) }
         var config: PluginConfig
         do { config = try JSONDecoder().decode(PluginConfig.self, from: configData) }
         catch { throw InstallError.invalidConfig(error.localizedDescription) }
@@ -235,7 +242,7 @@ final class PluginManager {
         let base = URL(string: config.sourceUrl ?? "") ?? url
         guard let scriptURL = config.resolve(config.scriptUrl, base: base) else { throw InstallError.invalidConfig("scriptUrl is missing") }
         let scriptData: Data
-        do { scriptData = try await download(scriptURL) } catch { throw InstallError.download(error.localizedDescription) }
+        do { scriptData = try await download(scriptURL, origin: origin, source: config.name) } catch { throw InstallError.download(error.localizedDescription) }
         guard let script = String(data: scriptData, encoding: .utf8), !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw InstallError.emptyScript
         }
@@ -252,7 +259,8 @@ final class PluginManager {
             warnings.insert(("Different author", "This plugin is signed with a different key than the version you have installed."), at: 0)
         }
         // Dry run so unsupported packages or missing entry points are reported before installing.
-        let probe = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let probe = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil,
+                                  localNetworkAccess: localNetworkAccess?.runtimeCheck(source: config.name))
         do { try await probe.validate() } catch { await probe.stop(); throw InstallError.invalid(error.localizedDescription) }
         await probe.stop()
 
@@ -394,18 +402,19 @@ final class PluginManager {
     // MARK: updates
 
     /// Re-downloads each plugin's config and records newer versions. The user applies them explicitly.
-    func checkForUpdates() async {
+    /// `origin` is `.settings` for the automatic check at launch.
+    func checkForUpdates(origin: PermissionOrigin) async {
         for p in installed {
-            _ = try? await checkForUpdate(p.id)
+            _ = try? await checkForUpdate(p.id, origin: origin)
         }
     }
 
     /// Checks one plugin immediately and reports whether a newer version exists.
     @discardableResult
-    func checkForUpdate(_ id: String) async throws -> Int? {
+    func checkForUpdate(_ id: String, origin: PermissionOrigin = .userAction) async throws -> Int? {
         guard let p = plugin(id), let src = p.config.sourceUrl,
               let url = URL(string: src) else { throw InstallError.badURL }
-        let data = try await download(url)
+        let data = try await download(url, origin: origin, source: p.config.name)
         let fresh: PluginConfig
         do { fresh = try JSONDecoder().decode(PluginConfig.self, from: data) }
         catch { throw InstallError.invalidConfig(error.localizedDescription) }
@@ -430,7 +439,10 @@ final class PluginManager {
 
     // MARK: networking
 
-    private func download(_ url: URL) async throws -> Data {
+    private func download(_ url: URL, origin: PermissionOrigin, source: String?) async throws -> Data {
+        if let localNetworkAccess, !(await localNetworkAccess.authorize(url, source: source, origin: origin)) {
+            throw LocalNetworkAccessDeclined(host: url.host ?? url.absoluteString)
+        }
         var req = URLRequest(url: url)
         req.setValue("Hummingbird/0.1", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await urlSession.data(for: req)
@@ -448,7 +460,7 @@ final class PluginManager {
     }
 
     func applyRemote(_ plugin: SyncedPlugin) async throws {
-        let preview = try await prepareInstall(from: plugin.sourceURL)
+        let preview = try await prepareInstall(from: plugin.sourceURL, origin: .settings)
         applyingRemoteChange = true
         defer { applyingRemoteChange = false }
         commit(preview)

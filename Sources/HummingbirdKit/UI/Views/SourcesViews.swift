@@ -45,7 +45,7 @@ struct SourcesView: View {
             } message: {
                 Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.")
             }
-            .refreshable { await app.plugins.checkForUpdates() }
+            .refreshable { await app.plugins.checkForUpdates(origin: .userAction) }
         }
         .browserTabToolbarItem(id: "sources.add", placement: .trailing) {
             Button { showAdd = true } label: { Image(systemName: "square.and.arrow.down") }

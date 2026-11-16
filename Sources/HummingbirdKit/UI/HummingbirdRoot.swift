@@ -43,7 +43,7 @@ public struct HummingbirdRoot: View {
             RootView()
                 .environment(model)
                 .configuresVisualAuditRoute(configureVisualAuditRoute)
-                .task { await model.plugins.checkForUpdates() }
+                .task { await model.plugins.checkForUpdates(origin: .settings) }
                 .task { configureDebugServer() }
                 .onOpenURL { model.handleIncomingURL($0) }
                 .observesApplicationLifecycle(model)

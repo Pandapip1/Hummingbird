@@ -202,6 +202,7 @@ final class AppModel {
             system: PlatformPermissions(), ledger: FilePermissionLedger()
         )
         self.permissions = permissions
+        plugins.localNetworkAccess = PluginLocalNetworkAccess(gate: permissions)
         // Sign in inside a browser tab where this build can render one; the
         // tab presenter is pointed at this model once it is initialized.
         let oauthTabPresenter = OAuthTabPresenter.isSupported ? OAuthTabPresenter() : nil

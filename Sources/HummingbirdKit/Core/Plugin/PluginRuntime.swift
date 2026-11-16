@@ -14,6 +14,8 @@ final class PluginRuntime: @unchecked Sendable {
     private let auth: SourceAuth?
     private let captcha: SourceAuth?
     private let queue: DispatchQueue
+    /// Asked before each request to a local-network host; nil lets them through.
+    private let localNetworkAccess: (@Sendable (URL) async -> Bool)?
 
     private var context: JSContextHost?
     private let dom = DOMStore()
@@ -70,7 +72,9 @@ final class PluginRuntime: @unchecked Sendable {
             .joined()
     }
 
-    init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?, savedState: String? = nil) {
+    init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?, savedState: String? = nil,
+         localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil) {
+        self.localNetworkAccess = localNetworkAccess
         let compatibility = PluginCompatibilityPatches.apply(
             pluginID: config.id,
             version: config.version,
@@ -124,7 +128,7 @@ final class PluginRuntime: @unchecked Sendable {
     private func startLocked() throws {
         if started { return }
         contextGeneration &+= 1
-        let host = HostHTTP(config: config, auth: auth, captcha: captcha)
+        let host = HostHTTP(config: config, auth: auth, captcha: captcha, localNetworkAccess: localNetworkAccess)
         http = host
         let ctx: JSContextHost
         do {
@@ -210,6 +214,9 @@ final class PluginRuntime: @unchecked Sendable {
             return ""
         case "sleep": Thread.sleep(forTimeInterval: max(0, Double(a) ?? 0) / 1000); return ""
         case "http": return http?.execute(json: a, parallel: b == "1") ?? "[]"
+        case "browser.load" where URL(string: a).map { http?.mayReach($0) == false } == true:
+            // A page on the local network waits for the permission gate like any request.
+            return ""
         case let operation where operation.hasPrefix("browser."):
             return browser?.call(String(operation.dropFirst(8)), payload: a) ?? ""
         case "setTimeout":
@@ -411,7 +418,8 @@ final class PluginRuntime: @unchecked Sendable {
     /// Handles and mutable executor state are intentionally not shared.
     func isolatedClone() -> PluginRuntime {
         let clone = PluginRuntime(config: config, script: originalScript, settings: storedSettings,
-                                  auth: auth, captcha: captcha, savedState: savedState)
+                                  auth: auth, captcha: captcha, savedState: savedState,
+                                  localNetworkAccess: localNetworkAccess)
         clone.onLog = onLog
         clone.onToast = onToast
         return clone

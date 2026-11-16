@@ -142,21 +142,32 @@ struct SyncSettingsView: View {
     @ViewBuilder private var accountControls: some View {
         if let account = app.profileAccount.account {
             LabeledContent("Account", value: app.profileAccount.handle ?? account.rawValue)
-            if let notice = app.profileAccount.profileSyncNotice {
-                Text(notice).foregroundStyle(.secondary)
+            let profileSyncNotice = app.profileAccount.profileSyncNotice
+            if let profileSyncNotice {
+                Label(profileSyncNotice, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
             }
-            if let sync = app.profileAccount.syncService {
-                switch sync.state {
-                case .idle: Text(sync.lastSyncedAt == nil ? "Ready to sync" : "Synced")
-                case .syncing: ProgressView("Syncing…")
-                case .offline: Text("Offline — changes are queued")
-                case .failed(let message): Text(message).foregroundStyle(.red)
+            // The sync service also syncs with local devices. Without profile
+            // sync, its status and Sync Now only concern those, so they're
+            // shown (and named) only while local network sync is on here.
+            let localOnly = profileSyncNotice != nil
+            if !localOnly || app.localNetworkSync.isOnHere {
+                if let sync = app.profileAccount.syncService {
+                    switch sync.state {
+                    case .idle:
+                        Text(sync.lastSyncedAt == nil
+                             ? (localOnly ? "Ready to sync with local devices" : "Ready to sync")
+                             : (localOnly ? "Synced with local devices" : "Synced"))
+                    case .syncing: ProgressView(localOnly ? "Syncing with local devices…" : "Syncing…")
+                    case .offline: Text("Offline — changes are queued")
+                    case .failed(let message): Text(message).foregroundStyle(.red)
+                    }
                 }
-            }
-            Button("Sync Now") {
-                Task {
-                    await app.profileAccount.sync()
-                    await reload()
+                Button(localOnly ? "Sync with Local Devices" : "Sync Now") {
+                    Task {
+                        await app.profileAccount.sync()
+                        await reload()
+                    }
                 }
             }
             Button("Sign Out", role: .destructive) {

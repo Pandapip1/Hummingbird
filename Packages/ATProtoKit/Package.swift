@@ -10,6 +10,12 @@ let package = Package(
         .package(path: "../../Vendor/SwiftOpenUI"),
     ],
     targets: [
+        // Handle resolution's DNS TXT lookup on Linux. Apple platforms query
+        // through dnssd (mDNSResponder) instead.
+        .target(
+            name: "CATProtoResolv",
+            linkerSettings: [.linkedLibrary("resolv", .when(platforms: [.linux]))]
+        ),
         .target(
             name: "ATProtoKit",
             dependencies: [
@@ -17,6 +23,7 @@ let package = Package(
                 .product(name: "CredentialStorage", package: "SwiftOpenUI"),
                 .product(name: "SecureMemory", package: "SwiftOpenUI"),
                 .product(name: "AuthenticationServices", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
+                .target(name: "CATProtoResolv", condition: .when(platforms: [.linux])),
             ]
         ),
         .testTarget(name: "ATProtoKitTests", dependencies: [

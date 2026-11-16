@@ -212,6 +212,9 @@ public enum OAuthError: LocalizedError, Sendable {
     case tokenResponse(String)
     /// The user dismissed the authorization page before it redirected back.
     case cancelled
+    /// Neither handle resolution method found a DID, or the DID document
+    /// does not claim the handle back.
+    case handleNotVerified(String)
 
     public var errorDescription: String? {
         switch self {
@@ -223,6 +226,7 @@ public enum OAuthError: LocalizedError, Sendable {
         case .authorizationFailed(let reason): "Authorization failed: \(reason)"
         case .tokenResponse(let reason): "Invalid token response: \(reason)"
         case .cancelled: "Sign-in was cancelled."
+        case .handleNotVerified(let reason): "The handle could not be verified: \(reason)"
         }
     }
 }

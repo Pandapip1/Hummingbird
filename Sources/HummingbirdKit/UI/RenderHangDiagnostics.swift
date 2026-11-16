@@ -63,4 +63,22 @@ private final class MetricHangRecorder: NSObject, MXMetricManagerSubscriber, @un
         return directory
     }
 }
+
+public enum RenderDiagnosticsStorage {
+    public static func root() throws -> URL {
+        let applicationSupport = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        )
+        let root = applicationSupport
+            .appendingPathComponent("Hummingbird", isDirectory: true)
+            .appendingPathComponent("Diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutableRoot = root
+        try? mutableRoot.setResourceValues(values)
+        return root
+    }
+}
 #endif

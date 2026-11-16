@@ -44,11 +44,6 @@ var products: [Product] = [
 ]
 var targets: [Target] = [
     .target(
-        name: "CMainThreadSampler",
-        path: "Sources/CMainThreadSampler",
-        publicHeadersPath: "include"
-    ),
-    .target(
         name: "DebugKit",
         path: "Sources/DebugKit"
     ),
@@ -70,7 +65,6 @@ var targets: [Target] = [
             "DebugKit",
             "DynamicTabbingKit",
             "AdvancedVideoPlayerKit",
-            .target(name: "CMainThreadSampler", condition: .when(platforms: [.iOS])),
             "CSQLite",
             .product(name: "ATProtoKit", package: "ATProtoKit"),
             .product(name: "ATAppSync", package: "ATAppSync"),

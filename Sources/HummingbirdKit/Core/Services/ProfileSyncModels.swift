@@ -104,10 +104,13 @@ enum ProfileEntity: Hashable, Sendable {
     }
 }
 
-/// Synchronous mutation boundary used by local stores. Returning from a user
-/// edit means its outbox entry is already durable; connectivity is irrelevant.
+/// Mutation boundary used by local stores. Each edit is appended to the
+/// journal in submission order on a background queue, because every append
+/// rewrites the journal file: an edit made on the main actor never waits for
+/// that. Connectivity is irrelevant; `flush()` waits for queued appends.
 final class ProfileChangeStore: @unchecked Sendable {
     private let lock = NSLock()
+    private let writer = DispatchQueue(label: "com.eightybps.hummingbird.profile-changes", qos: .utility)
     private let storageDirectory: URL?
     private var active: AppSyncMutationLog?
     private var activeProfileID: UUID?
@@ -164,19 +167,47 @@ final class ProfileChangeStore: @unchecked Sendable {
     }
 
     func put(_ entity: ProfileEntity) {
-        do {
-            guard let mutationLog else { return }
-            try mutationLog.appendPut(collection: entity.collection, key: entity.recordKey, value: entity.json())
-            lock.withLock { mutationHandler }?()
-        } catch {
-            lock.withLock { storedError = error }
+        writer.async { [self] in
+            record { mutationLog in
+                try mutationLog.appendPut(collection: entity.collection, key: entity.recordKey, value: entity.json())
+            }
         }
     }
 
     func delete(collection: NSID, key: RecordKey) {
+        writer.async { [self] in
+            record { mutationLog in try mutationLog.appendDelete(collection: collection, key: key) }
+        }
+    }
+
+    /// Records `entities` as the profile's starting state if the journal has
+    /// no events yet. The check runs in order with queued edits, so it sees
+    /// every edit submitted before it.
+    func bootstrap(_ entities: [ProfileEntity]) {
+        writer.async { [self] in
+            guard let mutationLog, mutationLog.isEmpty, !entities.isEmpty else { return }
+            do {
+                for entity in entities {
+                    try mutationLog.appendPut(collection: entity.collection, key: entity.recordKey, value: entity.json())
+                }
+                lock.withLock { mutationHandler }?()
+            } catch {
+                lock.withLock { storedError = error }
+            }
+        }
+    }
+
+    /// Waits until every edit submitted so far is in the journal.
+    func flush() async {
+        await withCheckedContinuation { continuation in
+            writer.async { continuation.resume() }
+        }
+    }
+
+    private func record(_ append: (AppSyncMutationLog) throws -> Void) {
         do {
             guard let mutationLog else { return }
-            try mutationLog.appendDelete(collection: collection, key: key)
+            try append(mutationLog)
             lock.withLock { mutationHandler }?()
         } catch {
             lock.withLock { storedError = error }

@@ -92,6 +92,13 @@ public final class AppDataStores: Sendable {
         return liveStores.withLock { stores in
             let key = credentialServiceNamespace ?? ""
             if let existing = stores[key] { return existing }
+            #if DEBUG
+            if let root = ProcessInfo.processInfo.environment[debugDataRootVariable], !root.isEmpty {
+                let created = debugIsolated(root: URL(fileURLWithPath: root, isDirectory: true))
+                stores[key] = created
+                return created
+            }
+            #endif
             #if os(tvOS)
             // tvOS does not provide durable application-managed local storage.
             // Its Caches directory is the supported local home for downloaded data
@@ -113,6 +120,23 @@ public final class AppDataStores: Sendable {
         }
     }
 
+    #if DEBUG
+    /// Debug builds only: launch with `HUMMINGBIRD_DEBUG_DATA_ROOT=<directory>`
+    /// to keep everything under that directory, with a UserDefaults suite of
+    /// its own and an in-memory credential store, so profiling or trying out
+    /// a build never touches the real profile, library or keychain.
+    public static let debugDataRootVariable = "HUMMINGBIRD_DEBUG_DATA_ROOT"
+
+    private static func debugIsolated(root: URL) -> AppDataStores {
+        AppDataStores(
+            dataDirectory: root.appendingPathComponent("Application Support", isDirectory: true),
+            cachesDirectory: root.appendingPathComponent("Caches", isDirectory: true),
+            preferences: .suite(root.appendingPathComponent("preferences", isDirectory: false).path),
+            credentialStore: EphemeralCredentialStore()
+        )
+    }
+    #endif
+
     /// The store, when it is the platform keychain, for storage-mode decisions.
     public var keychain: KeychainCredentialStore? { credentialStore as? KeychainCredentialStore }
 
@@ -121,3 +145,15 @@ public final class AppDataStores: Sendable {
         CredentialVaultManager.shared.register(credentialStore)
     }
 }
+
+#if DEBUG
+/// Credentials kept in memory for the life of the process, for debug launches
+/// isolated with `HUMMINGBIRD_DEBUG_DATA_ROOT`.
+final class EphemeralCredentialStore: CredentialStore {
+    private let values = Mutex<[String: SecureBytes]>([:])
+
+    func load(account: String) -> SecureBytes? { values.withLock { $0[account] } }
+    func save(_ secret: SecureBytes, account: String) { values.withLock { $0[account] = secret } }
+    func delete(account: String) { values.withLock { $0[account] = nil } }
+}
+#endif

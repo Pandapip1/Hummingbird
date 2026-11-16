@@ -24,6 +24,7 @@ final class ProfileAccountService {
     @ObservationIgnored private let credentialStore: OAuthCredentialStore
     @ObservationIgnored private let changes: ProfileChangeStore
     @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private let peerService: AppSyncPeerService?
     @ObservationIgnored private var localNetworkEnabled: Bool
     @ObservationIgnored private let currentAccountKey: String
@@ -123,7 +124,9 @@ final class ProfileAccountService {
                 signposter.endInterval("OAuthAuthorize", authorize, "failed")
                 throw error
             }
-            try signposter.withIntervalSignpost("SaveCredential") { try credentialStore.save(credential) }
+            let save = signposter.beginInterval("SaveCredential", id: signposter.makeSignpostID())
+            defer { signposter.endInterval("SaveCredential", save) }
+            try await Self.save(credential, in: credentialStore)
             Logger.account.notice("signed_in")
             preferences.defaults.set(credential.session.account.rawValue, forKey: currentAccountKey)
             install(credential)
@@ -175,14 +178,15 @@ final class ProfileAccountService {
 
     func peers() async throws -> [AppSyncPeerTrustSummary] {
         if let syncService { return try await syncService.peers() }
-        return peerService?.peers(appIDs: [HummingbirdProfileSchema.appID]) ?? []
+        guard let peerService else { return [] }
+        return await PeerTrust.peers(peerService)
     }
 
     func verifyPeer(_ code: AppSyncPeerVerificationCode) async throws {
         if let syncService {
             try await syncService.verifyPeer(code)
         } else if let peerService {
-            _ = try peerService.verifyPeer(code, appIDs: [HummingbirdProfileSchema.appID])
+            try await PeerTrust.verify(code, with: peerService)
         } else {
             throw PairingError.unavailable
         }
@@ -192,7 +196,7 @@ final class ProfileAccountService {
         if let syncService {
             try await syncService.distrustPeer(peer)
         } else if let peerService {
-            _ = try peerService.revokeTrust(with: peer)
+            try await PeerTrust.revoke(peer, with: peerService)
         } else {
             throw PairingError.unavailable
         }
@@ -207,11 +211,14 @@ final class ProfileAccountService {
     }
 
     func signOut() {
+        restoreTask?.cancel()
         if let account {
-            do {
-                try credentialStore.remove(account: account)
-            } catch {
-                errorMessage = "Signed out, but the saved session couldn’t be removed: \(error.localizedDescription)"
+            let credentialStore = credentialStore
+            Task { [weak self] in
+                do { try await Self.remove(account, from: credentialStore) }
+                catch {
+                    self?.errorMessage = "Signed out, but the saved session couldn’t be removed: \(error.localizedDescription)"
+                }
             }
         }
         preferences.defaults.removeObject(forKey: currentAccountKey)
@@ -221,15 +228,42 @@ final class ProfileAccountService {
         syncService?.disconnectAccount()
     }
 
+    /// Reads the saved session away from the main actor; keychain reads can
+    /// take a while, and the login keychain may even ask first.
     private func restore() {
         guard let raw = preferences.defaults.string(forKey: currentAccountKey),
               let did = DID(rawValue: raw) else { return }
-        do {
-            guard let credential = try credentialStore.load(account: did) else { return }
-            install(credential)
-        } catch {
-            errorMessage = "Your AT Protocol session couldn’t be restored: \(error.localizedDescription)"
+        let credentialStore = credentialStore
+        restoreTask = Task { [weak self] in
+            let result: Result<ATProtoOAuthCredential?, any Error>
+            do { result = .success(try await Self.load(did, from: credentialStore)) }
+            catch { result = .failure(error) }
+            guard let self, !Task.isCancelled, self.account == nil else { return }
+            switch result {
+            case .success(let credential?): self.install(credential)
+            case .success(nil): break
+            case .failure(let error):
+                self.errorMessage = "Your AT Protocol session couldn’t be restored: \(error.localizedDescription)"
+            }
         }
+    }
+
+    /// Waits for the saved session, if any, to be restored.
+    func restored() async { await restoreTask?.value }
+
+    @concurrent
+    private static func load(_ account: DID, from store: OAuthCredentialStore) async throws -> ATProtoOAuthCredential? {
+        try store.load(account: account)
+    }
+
+    @concurrent
+    private static func save(_ credential: ATProtoOAuthCredential, in store: OAuthCredentialStore) async throws {
+        try store.save(credential)
+    }
+
+    @concurrent
+    private static func remove(_ account: DID, from store: OAuthCredentialStore) async throws {
+        try store.remove(account: account)
     }
 
     /// Adopts a signed-in account. Profile sync through the account's PDS

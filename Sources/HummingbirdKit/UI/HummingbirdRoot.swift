@@ -8,21 +8,34 @@ public struct HummingbirdRoot: View {
     @State private var model: AppModel
     /// Opens the profile `stores` last selected, without restoring its state.
     public init(stores: AppDataStores) {
-        self.init(stores: stores, profileID: nil, persistence: .empty)
+        self.init(stores: stores, profileID: nil, persistence: .empty, profile: nil)
     }
 
-    private init(stores: AppDataStores, profileID: UUID?, persistence: AppPersistenceSnapshot) {
+    private init(stores: AppDataStores, profileID: UUID?, persistence: AppPersistenceSnapshot,
+                 profile: OpenedLocalProfile?, pluginCredentials: PreloadedPluginCredentials? = nil) {
         _model = State(wrappedValue: AppModel(
-            persistence: persistence, stores: stores, localProfileID: profileID
+            persistence: persistence, stores: stores, localProfileID: profileID, openedProfile: profile,
+            pluginCredentials: pluginCredentials
         ))
     }
 
-    /// Loads and decodes persisted state away from the main actor before any
-    /// observable model is constructed. Without a `profileID`, opens the
+    /// Loads and decodes persisted state, and opens the local profile, away
+    /// from the main actor before any observable model is constructed. Without a `profileID`, opens the
     /// profile `stores` last selected.
     public static func prepared(stores: AppDataStores, profileID: UUID? = nil) async -> HummingbirdRoot {
         let persistence = await AppPersistenceSnapshot.load(stores: stores, profileID: profileID)
-        return HummingbirdRoot(stores: stores, profileID: profileID, persistence: persistence)
+        // Identity keys and the change journal are read away from the main
+        // actor too; keychain reads can take a while. After the snapshot, as
+        // before, since opening may create the first profile.
+        let profile = await OpenedLocalProfile.openInBackground(stores: stores, localProfileID: profileID)
+        let pluginCredentials = await PreloadedPluginCredentials.load(
+            pluginIDs: persistence.plugins.map(\.id), from: stores.credentialStore,
+            namespace: profile.storagePrefix
+        )
+        return HummingbirdRoot(
+            stores: stores, profileID: profileID, persistence: persistence, profile: profile,
+            pluginCredentials: pluginCredentials
+        )
     }
     public var body: some View {
         DebugSceneSelection(stores: model.stores) {

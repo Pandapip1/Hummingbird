@@ -73,7 +73,7 @@ Signposts (`OSSignposter`, same subsystem) mark the slow paths:
 | `account` | `OAuthSignIn`, `OAuthAuthorize`, `SaveCredential`, `KeychainRead` | |
 | `sync` | `SyncPass`, `LANPull`, `PDSPull` | |
 | `appsync.lan` | `LANRequest`, `LANServe` | |
-| `performance` | | `RenderStall` (debug iOS builds: frame gaps of 250 ms or more) |
+| `performance` | `RenderStall` (debug builds: the main thread answering 250 ms or more late) | |
 
 To see them, either add the **os_signpost** instrument (filter on the
 subsystem) or use the Hummingbird instrument, which shows them as a timeline
@@ -99,7 +99,21 @@ template. The repository doesn't include a `.tracetemplate`, because Instruments
 only writes that binary format from its UI.
 
 The SwiftUI template is useful for slow view updates. Hangs and Hitches show
-hangs with their stacks, and the `RenderStall` events line up with them.
+hangs with their stacks, and the `RenderStall` intervals line up with them.
+
+### Main-thread stalls in debug builds
+
+Debug builds on Apple platforms run `MainThreadWatchdog`: a background
+thread that pings the main queue and times the reply, like the system's hang
+detection. A reply 250 ms or more late is a stall. Each stall becomes a
+`RenderStall` signpost interval, a `render_stall ms=… <context>` log entry in
+the `performance` category (the active tab, its route, the player's state),
+and a record in `<caches>/Stalls/stalls.json` (the newest 500, none older than
+7 days). Settings › Diagnostics exports those records with the MetricKit
+reports, under `"stalls"`, so a device's stalls can be shared with one tap.
+Time the app is inactive or in the background, system sleep, and time the
+whole process was stopped (a breakpoint) are not counted. The watchdog does
+not run under XCTest.
 
 ## Crashes, hangs and MetricKit
 

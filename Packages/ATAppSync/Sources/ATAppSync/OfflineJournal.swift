@@ -393,23 +393,38 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     /// Returns true only when the event changes the materialized winner.
     @discardableResult
     public func merge(_ mutation: JournalMutation, needsUpload: Bool) throws -> Bool {
+        try merge([mutation], needsUpload: needsUpload).contains { $0.id == mutation.id }
+    }
+
+    /// Unions several immutable events with a single durable write, which a
+    /// pull of many events needs: the journal is rewritten whole on every
+    /// write. Returns, in order, the events that changed their record's
+    /// materialized winner at the moment they were merged.
+    @discardableResult
+    public func merge(_ mutations: [JournalMutation], needsUpload: Bool) throws -> [JournalMutation] {
         lock.lock()
         defer { lock.unlock() }
-        guard !knownEventIDs.contains(mutation.id) else { return false }
         var updated = snapshot
-        updated.events.append(mutation)
-        if needsUpload { updated.pending.append(mutation) }
-        updated.clock.observe(mutation.timestamp)
-        let path = Self.path(mutation.collection, mutation.recordKey)
-        let wins = updated.versions[path].map({ $0 < mutation.version }) ?? true
-        if wins {
-            updated.versions[path] = mutation.version
-            updated.tombstones[path] = mutation.operation == .delete ? mutation.version : nil
+        var known = knownEventIDs
+        var winners: [JournalMutation] = []
+        for mutation in mutations where !known.contains(mutation.id) {
+            updated.events.append(mutation)
+            if needsUpload { updated.pending.append(mutation) }
+            updated.clock.observe(mutation.timestamp)
+            let path = Self.path(mutation.collection, mutation.recordKey)
+            let wins = updated.versions[path].map({ $0 < mutation.version }) ?? true
+            if wins {
+                updated.versions[path] = mutation.version
+                updated.tombstones[path] = mutation.operation == .delete ? mutation.version : nil
+                winners.append(mutation)
+            }
+            known.insert(mutation.id)
         }
+        guard known.count != knownEventIDs.count else { return [] }
         try persist(updated)
         snapshot = updated
-        knownEventIDs.insert(mutation.id)
-        return wins
+        knownEventIDs = known
+        return winners
     }
 
     public func acknowledge(_ ids: Set<UUID>) throws {

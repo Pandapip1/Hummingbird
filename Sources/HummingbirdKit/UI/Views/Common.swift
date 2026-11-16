@@ -215,6 +215,7 @@ struct RouteContent: View {
                 NavigationStack {
                     SyncSettingsView()
                 }
+            case .oauthAuthorization(let id): OAuthAuthorizationView(id: id)
             }
         }
     }

@@ -25,7 +25,8 @@ enum PersistedRoute: Codable, Sendable {
     case home, subscriptions, manageSubscriptions, search, library, sources, settings, syncSettings
     case content(String), channel(String), playlist(String), plugin(String)
 
-    init(_ route: Route) {
+    /// Nil for routes that cannot outlive this launch.
+    init?(_ route: Route) {
         switch route {
         case .home: self = .home
         case .subscriptions: self = .subscriptions
@@ -40,6 +41,7 @@ enum PersistedRoute: Codable, Sendable {
         case .plugin(let value): self = .plugin(value)
         case .settings: self = .settings
         case .syncSettings: self = .syncSettings
+        case .oauthAuthorization: return nil
         }
     }
 
@@ -88,6 +90,7 @@ extension DynamicTab where Page == Route {
         case .plugin: return "Plugin"
         case .settings: return "Settings"
         case .syncSettings: return "Sync"
+        case .oauthAuthorization: return "Sign In"
         }
     }
 }

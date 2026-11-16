@@ -43,6 +43,11 @@ final class AppModel {
 
     @ObservationIgnored private var tabPlayers: [BrowserTab.ID: PlayerModel] = [:]
 
+    /// atproto sign-ins in progress, each shown in its own browser tab.
+    private(set) var oauthAuthorizations: [OAuthTabAuthorization.ID: OAuthTabAuthorization] = [:]
+    @ObservationIgnored private var oauthReturnTabs: [OAuthTabAuthorization.ID: BrowserTab.ID] = [:]
+    @ObservationIgnored private let oauthTabPresenter: OAuthTabPresenter?
+
     var activeTab: BrowserTab {
         contentTabs.first { $0.id == activeTabID } ?? contentTabs[0]
     }
@@ -63,6 +68,12 @@ final class AppModel {
 
     func closeTab(_ id: BrowserTab.ID) {
         guard let index = contentTabs.firstIndex(where: { $0.id == id }) else { return }
+        // Closing a sign-in tab abandons that sign-in.
+        for route in contentTabs[index].history {
+            if case .oauthAuthorization(let authorizationID) = route {
+                oauthAuthorizations[authorizationID]?.cancel()
+            }
+        }
         tabPlayers.removeValue(forKey: id)?.teardown()
         contentTabs.remove(at: index)
         persistBrowserSession()
@@ -91,15 +102,17 @@ final class AppModel {
     }
 
     private func persistBrowserSession() {
-        guard !contentTabs.isEmpty else { return }
+        // A tab holding a route that cannot outlive this launch, such as a
+        // pending sign-in, is not restored.
+        let tabs: [PersistedBrowserSession.Tab] = contentTabs.compactMap { tab in
+            let history = tab.history.compactMap(PersistedRoute.init)
+            guard history.count == tab.history.count else { return nil }
+            return .init(id: tab.id, title: tab.title, history: history, historyIndex: tab.historyIndex)
+        }
+        guard let firstTab = tabs.first else { return }
+        let activeTabID = tabs.contains { $0.id == activeTabID } ? activeTabID : firstTab.id
         Storage.save(
-            PersistedBrowserSession(
-                tabs: contentTabs.map {
-                    .init(id: $0.id, title: $0.title,
-                          history: $0.history.map(PersistedRoute.init),
-                          historyIndex: $0.historyIndex)
-                }, activeTabID: activeTabID
-            ),
+            PersistedBrowserSession(tabs: tabs, activeTabID: activeTabID),
             name: "profile.\(localProfileID.uuidString.lowercased()).browser-session"
         )
     }
@@ -169,9 +182,16 @@ final class AppModel {
         self.peerService = peerService
         self.localNetworkSyncEnabled = localNetworkSyncEnabled
         self.localNetworkSyncState = localNetworkSyncEnabled ? .starting : .disabled
+        // Sign in inside a browser tab where this build can render one; the
+        // tab presenter is pointed at this model once it is initialized.
+        let oauthTabPresenter = OAuthTabPresenter.isSupported ? OAuthTabPresenter() : nil
+        self.oauthTabPresenter = oauthTabPresenter
+        let oauthPresenter: any ATProtoOAuthPresenter =
+            if let oauthTabPresenter { oauthTabPresenter } else { WebAuthenticationSessionPresenter() }
         self.profileAccount = ProfileAccountService(
             localProfileID: localProfileID, changes: profileChanges, library: library, plugins: plugins,
-            peerService: peerService, localNetworkEnabled: localNetworkSyncEnabled
+            peerService: peerService, localNetworkEnabled: localNetworkSyncEnabled,
+            oauthPresenter: oauthPresenter
         )
         if let session = persistence.browserSession {
             // Older builds could persist destination-less "New Tab" pages.
@@ -209,6 +229,7 @@ final class AppModel {
             didUpdate: { [weak library] items in library?.updateHomeCache(items) }
         )
         for tab in contentTabs { tab.onChange { [weak self] in self?.persistBrowserSession() } }
+        oauthTabPresenter?.host = self
         if localNetworkSyncEnabled { startLocalNetworkSync() }
         #if DEBUG && os(iOS)
         RenderStallMonitor.shared.start { [weak self] in
@@ -445,4 +466,32 @@ private final class RenderStallMonitor: NSObject {
 
 private extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+extension AppModel: OAuthTabHost {
+    /// Opens the authorization page in a new tab, remembering which tab the
+    /// sign-in started from so it can be returned to.
+    func presentOAuthAuthorization(_ authorization: OAuthTabAuthorization) {
+        oauthAuthorizations[authorization.id] = authorization
+        oauthReturnTabs[authorization.id] = activeTabID
+        openInNewTab(.oauthAuthorization(authorization.id), title: "Sign In")
+    }
+
+    /// Closes the sign-in's tab, if the user has not already, and returns
+    /// to the tab it was started from when the sign-in tab was in front.
+    func dismissOAuthAuthorization(_ authorization: OAuthTabAuthorization) {
+        oauthAuthorizations[authorization.id] = nil
+        let returnTabID = oauthReturnTabs.removeValue(forKey: authorization.id)
+        #if (canImport(WebKit) && !BACKEND_GTK && (os(macOS) || os(iOS) || os(visionOS))) || BACKEND_GTK_WEBKIT
+        OAuthWebPageStore.shared.remove(authorization)
+        #endif
+        guard let tab = contentTabs.first(where: { $0.current == .oauthAuthorization(authorization.id) }) else {
+            return
+        }
+        let wasActive = tab.id == activeTabID
+        closeTab(tab.id)
+        if wasActive, let returnTabID, contentTabs.contains(where: { $0.id == returnTabID }) {
+            activeTabID = returnTabID
+        }
+    }
 }

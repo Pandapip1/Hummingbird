@@ -290,6 +290,8 @@ enum Route: Hashable {
     case plugin(String)
     case settings
     case syncSettings
+    /// An atproto sign-in page, shown while that authorization is pending.
+    case oauthAuthorization(UUID)
 }
 
 // MARK: - Merged feeds

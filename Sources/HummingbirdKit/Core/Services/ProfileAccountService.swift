@@ -33,10 +33,11 @@ final class ProfileAccountService {
     )
 
     init(localProfileID: UUID, changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
-         peerService: AppSyncPeerService?, localNetworkEnabled: Bool = false) {
+         peerService: AppSyncPeerService?, localNetworkEnabled: Bool = false,
+         oauthPresenter: any ATProtoOAuthPresenter) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
         self.oauth = oauth
-        authenticator = ATProtoOAuthAuthenticator(client: oauth)
+        authenticator = ATProtoOAuthAuthenticator(client: oauth, presenter: oauthPresenter)
         credentialStore = OAuthCredentialStore(
             service: "com.eightybps.hummingbird.atproto.\(localProfileID.uuidString.lowercased())",
             vault: AuthKeychain.store
@@ -77,6 +78,9 @@ final class ProfileAccountService {
             install(credential)
             syncService?.bootstrapCurrentProfile()
             await syncService?.sync()
+        } catch OAuthError.cancelled {
+            // The user closed the sign-in page; that is not an error to show.
+        } catch is CancellationError {
         } catch {
             errorMessage = error.localizedDescription
         }

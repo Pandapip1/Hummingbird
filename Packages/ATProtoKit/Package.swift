@@ -22,6 +22,7 @@ let package = Package(
         .testTarget(name: "ATProtoKitTests", dependencies: [
             "ATProtoKit",
             .product(name: "CredentialStorage", package: "SwiftOpenUI"),
+            .product(name: "AuthenticationServices", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
         ]),
     ],
     swiftLanguageModes: [.v6]

@@ -191,6 +191,15 @@ public enum OAuthCallbackMatcher: Hashable, Sendable {
             return nil
         }
     }
+
+    /// Whether `url` is the redirect this matcher describes.
+    public func matches(_ url: URL) -> Bool {
+        switch self {
+        case .customScheme(let scheme): url.scheme?.lowercased() == scheme.lowercased()
+        case .https(let host, let path):
+            url.scheme?.lowercased() == "https" && url.host?.lowercased() == host.lowercased() && url.path == path
+        }
+    }
 }
 
 public enum OAuthError: LocalizedError, Sendable {
@@ -201,6 +210,8 @@ public enum OAuthError: LocalizedError, Sendable {
     case issuerMismatch
     case authorizationFailed(String)
     case tokenResponse(String)
+    /// The user dismissed the authorization page before it redirected back.
+    case cancelled
 
     public var errorDescription: String? {
         switch self {
@@ -211,6 +222,7 @@ public enum OAuthError: LocalizedError, Sendable {
         case .issuerMismatch: "The OAuth callback came from an unexpected authorization server."
         case .authorizationFailed(let reason): "Authorization failed: \(reason)"
         case .tokenResponse(let reason): "Invalid token response: \(reason)"
+        case .cancelled: "Sign-in was cancelled."
         }
     }
 }

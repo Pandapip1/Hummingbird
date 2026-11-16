@@ -237,13 +237,3 @@ private struct OAuthFailure: Decodable {
     let errorDescription: String?
     enum CodingKeys: String, CodingKey { case error; case errorDescription = "error_description" }
 }
-
-private extension OAuthCallbackMatcher {
-    func matches(_ url: URL) -> Bool {
-        switch self {
-        case .customScheme(let scheme): url.scheme?.lowercased() == scheme.lowercased()
-        case .https(let host, let path):
-            url.scheme?.lowercased() == "https" && url.host?.lowercased() == host.lowercased() && url.path == path
-        }
-    }
-}

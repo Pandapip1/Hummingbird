@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 @testable import HummingbirdKit
 #if canImport(AVFoundation)
@@ -188,6 +189,52 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             XCTAssertFalse(next.results.compactMap(\.value).isEmpty)
         }
     }
+
+    #if canImport(WebKit) && (os(macOS) || os(iOS) || os(visionOS))
+    /// The plugin mints the PO tokens that keep SABR media flowing past the
+    /// first minute by loading youtube.com into the hidden plugin browser and
+    /// waiting for BotGuard's `trayride` minter. WebKit suspends windowless
+    /// pages by default, so that page used to stay in `loading` and never
+    /// define the minter; generated audio then failed first at the one-minute
+    /// boundary with "No streams for requesting segment". The page must also
+    /// stay minimal: it only hosts scripts.
+    func testHiddenPluginBrowserLoadsYouTubeBotGuard() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DIR"] != nil
+                || environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE"] != nil else {
+            throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_PLUGIN_DIR or HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE")
+        }
+        final class Results: Sendable {
+            private let values = Mutex<[String: String]>([:])
+            func set(_ id: String, _ value: String) { values.withLock { $0[id] = value } }
+            func get(_ id: String) -> String? { values.withLock { $0[id] } }
+        }
+        let results = Results()
+        let browser = PluginBrowserPackage { id, value in results.set(id, value) }
+        defer { browser.close() }
+        // Same calls, URL and timeout as the plugin's BotGuardBrowserGenerator.
+        let loaded = await Task.detached {
+            _ = browser.call("initialize", payload: "")
+            _ = browser.call("load", payload: "https://www.youtube.com")
+            return browser.call("waitTillLoaded", payload: "20000")
+        }.value
+        XCTAssertEqual(loaded, "1", "youtube.com never finished loading in the hidden plugin browser")
+
+        let probe = #"{"script":"typeof window.trayride","id":"minter"}"#
+        let deadline = Date().addingTimeInterval(10)
+        while results.get("minter") != "object", Date() < deadline {
+            _ = await Task.detached { browser.call("runWithReturn", payload: probe) }.value
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        XCTAssertEqual(results.get("minter"), "object", "BotGuard never loaded in the hidden plugin browser")
+
+        // The page only hosts scripts: its stylesheets and images are blocked.
+        let blocked = #"{"script":"String(document.querySelectorAll('link[rel=stylesheet]').length > 0 && [...document.styleSheets].every(s => { try { return !s.href || s.cssRules.length === 0 } catch (e) { return true } }) && [...document.images].every(i => !(i.complete && i.naturalWidth > 0)))","id":"blocked"}"#
+        _ = await Task.detached { browser.call("runWithReturn", payload: blocked) }.value
+        for _ in 0..<40 where results.get("blocked") == nil { try await Task.sleep(for: .milliseconds(250)) }
+        XCTAssertEqual(results.get("blocked"), "true", "the hidden plugin browser loaded stylesheets or images")
+    }
+    #endif
 
     func testCurrentOfficialPluginGeneratedPlaybackTransport() async throws {
         let runtime = try makeRuntime(settingsOverride: ["useUMP": "true", "use_native_ump": "false"])

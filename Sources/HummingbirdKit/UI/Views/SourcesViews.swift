@@ -27,7 +27,8 @@ struct SourcesView: View {
             .toolbar {
                 FocusBrowserToolbar(browserToolbar: isBrowserTabToolbarActive ? browserToolbar : nil)
                 FocusPrimaryAction(isActive: isBrowserTabToolbarActive, action: { showAdd = true }) {
-                    Image(systemName: "square.and.arrow.down")
+                    Image(systemName: "plus")
+                        .accessibilityLabel("Add source")
                 }
             }
             .sheet(isPresented: $showAdd) { AddSourceSheet() }
@@ -48,7 +49,7 @@ struct SourcesView: View {
             .refreshable { await app.plugins.checkForUpdates(origin: .userAction) }
         }
         .browserTabToolbarItem(id: "sources.add", placement: .trailing) {
-            Button { showAdd = true } label: { Image(systemName: "square.and.arrow.down") }
+            Button { showAdd = true } label: { Image(systemName: "plus") }
                 .accessibilityLabel("Add source")
         }
     }

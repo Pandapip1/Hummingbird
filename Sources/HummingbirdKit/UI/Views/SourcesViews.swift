@@ -491,6 +491,9 @@ private struct AppSettingsForm: View {
                     step: 10
                 )
             }
+            #if !os(tvOS)
+            PerformanceReportsSection(store: PerformanceReports.store(for: stores), exportDirectory: stores.cachesDirectory)
+            #endif
             Section("About") {
                 Text("Hummingbird plays content from Grayjay-compatible plugins. It is an independent project and is not affiliated with FUTO.")
                     .font(.footnote)
@@ -502,3 +505,40 @@ private struct AppSettingsForm: View {
         }
     }
 }
+
+#if !os(tvOS)
+/// Shares the MetricKit reports kept on this device (crashes, hangs, CPU and
+/// disk-write exceptions, daily metrics) as one JSON file.
+@MainActor
+private struct PerformanceReportsSection: View {
+    let store: PerformanceReportStore
+    let exportDirectory: URL
+    @State private var exportURL: URL?
+    @State private var reportCount = 0
+
+    var body: some View {
+        Section("Diagnostics") {
+            if let exportURL {
+                ShareContentAction(item: exportURL) {
+                    Label("Export performance reports (\(reportCount))", systemImage: "square.and.arrow.up")
+                }
+            } else {
+                Text("No crash or hang reports yet.")
+                    .foregroundStyle(.secondary)
+            }
+            Text("Reports come from the system's MetricKit and stay on this device unless you share them.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .task {
+            let store = store
+            let destination = exportDirectory.appendingPathComponent("Export", isDirectory: true)
+            let result = await Task.detached(priority: .utility) {
+                (store.reports().count, try? store.exportBundle(to: destination))
+            }.value
+            reportCount = result.0
+            exportURL = result.1 ?? nil
+        }
+    }
+}
+#endif

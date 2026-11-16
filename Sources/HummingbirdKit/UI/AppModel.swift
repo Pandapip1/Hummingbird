@@ -1,6 +1,7 @@
 import Foundation
 import SwiftOpenUI
 import Observation
+import os
 import ATProtoKit
 import ATAppSync
 #if DEBUG && os(iOS)
@@ -281,7 +282,7 @@ final class AppModel {
         let localNetworkSync = self.localNetworkSync
         Task { await localNetworkSync.applyStoredSetting() }
         #if DEBUG && os(iOS)
-        RenderStallMonitor.shared.start(diagnosticsDirectory: stores.diagnosticsDirectory) { [weak self] in
+        RenderStallMonitor.shared.start { [weak self] in
             guard let self else { return [:] }
             let player = self.activePlayerForDebug
             return [
@@ -417,38 +418,20 @@ struct AppPersistenceSnapshot: Sendable {
 }
 
 #if DEBUG && os(iOS)
-private actor RenderStallLogWriter {
-    static let shared = RenderStallLogWriter()
-
-    func append(_ data: Data, diagnosticsDirectory: URL) {
-        do {
-            let root = try RenderDiagnosticsStorage.root(diagnosticsDirectory)
-            let url = root.appendingPathComponent("render-stalls.jsonl")
-            if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-            }
-            let handle = try FileHandle(forWritingTo: url)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.close()
-        } catch {
-            // Diagnostics must never affect the application being measured.
-        }
-    }
-}
-
+/// Marks frames that arrive 250 ms or more late, in debug builds, as
+/// `RenderStall` signpost events (Instruments: os_signpost, category
+/// `performance`) and log entries carrying what the app was doing. Instruments'
+/// Hangs and Hitches instruments and MetricKit hang diagnostics give the
+/// stacks; this adds app context they cannot know.
 @MainActor
 private final class RenderStallMonitor: NSObject {
     static let shared = RenderStallMonitor()
-    private let launchID = UUID().uuidString
     private var displayLink: CADisplayLink?
     private var previousTimestamp: CFTimeInterval?
     private var context: (() -> [String: String])?
-    private var diagnosticsDirectory: URL?
 
-    func start(diagnosticsDirectory: URL, context: @escaping () -> [String: String]) {
+    func start(context: @escaping () -> [String: String]) {
         self.context = context
-        self.diagnosticsDirectory = diagnosticsDirectory
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         link.add(to: .main, forMode: .common)
@@ -468,14 +451,11 @@ private final class RenderStallMonitor: NSObject {
         guard let previousTimestamp else { return }
         let gap = link.timestamp - previousTimestamp
         guard gap >= 0.25 else { return }
-        var event: [String: Any] = context?() ?? [:]
-        event["time"] = ISO8601DateFormatter().string(from: Date())
-        event["launchID"] = launchID
-        event["gapMilliseconds"] = Int((gap * 1_000).rounded())
-        guard let diagnosticsDirectory,
-              var data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
-        data.append(0x0a)
-        Task { await RenderStallLogWriter.shared.append(data, diagnosticsDirectory: diagnosticsDirectory) }
+        let milliseconds = Int((gap * 1_000).rounded())
+        let state = (context?() ?? [:]).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        OSSignposter.performance.emitEvent("RenderStall", "ms=\(milliseconds)")
+        // The route can name a URL, so the state is private.
+        Logger.performance.notice("render_stall ms=\(milliseconds) \(state)")
     }
 }
 #endif

@@ -9,14 +9,9 @@ import AVKit
 @main
 struct HummingbirdApp: App {
     init() {
-        #if DEBUG && os(iOS)
-        let diagnostics = AppDataStores.live().diagnosticsDirectory
-        RenderHangDiagnostics.start(diagnosticsDirectory: diagnostics)
-        if let root = try? RenderDiagnosticsStorage.root(diagnostics) {
-            DebugServer.shared.registerDiagnosticDirectory("render-stalls", url: root)
-            DebugServer.shared.registerDiagnosticDirectory("metric-hangs", url: root.appendingPathComponent("metric-hangs"))
-        }
-        #endif
+        // MetricKit crash, hang, CPU and disk-write diagnostics and daily
+        // metrics, in every build: logged and kept for export from Settings.
+        PerformanceReports.start(stores: AppDataStores.live())
     }
 
     var body: some Scene {

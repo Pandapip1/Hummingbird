@@ -15,10 +15,11 @@ public final class AppDataStores: Sendable {
     /// Durable data: `storage.sqlite3` (library, plugins, queue, browser
     /// sessions, caches of plugin responses), the local-profile registry and
     /// instance inboxes (`profiles/`), profile change logs (`profile-sync/`),
-    /// pairing inboxes (`peer-messages/`), the permission record
-    /// (`permissions/`) and debug diagnostics (`Diagnostics/`).
+    /// pairing inboxes (`peer-messages/`) and the permission record
+    /// (`permissions/`).
     public let dataDirectory: URL
-    /// Disposable data: the generated-media cache.
+    /// Disposable data: the generated-media cache and MetricKit reports
+    /// (`MetricKit/`).
     public let cachesDirectory: URL
     /// Device-local settings that are not synced.
     public let preferences: PreferencesDomain
@@ -54,9 +55,6 @@ public final class AppDataStores: Sendable {
     var profileSyncDirectory: URL { dataDirectory.appendingPathComponent("profile-sync", isDirectory: true) }
     var peerMessagesDirectory: URL { dataDirectory.appendingPathComponent("peer-messages", isDirectory: true) }
     var permissionsDirectory: URL { dataDirectory.appendingPathComponent("permissions", isDirectory: true) }
-    public var diagnosticsDirectory: URL {
-        dataDirectory.appendingPathComponent("Diagnostics", isDirectory: true)
-    }
 
     /// Waits for every pending write to `storage.sqlite3`.
     public func flush() async { await storage.flush() }

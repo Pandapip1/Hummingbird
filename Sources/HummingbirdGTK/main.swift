@@ -43,6 +43,9 @@ private func liveStores() -> AppDataStores {
 
 MainActor.assumeIsolated {
     liveStores().registerCredentialVault()
+    // Crashes recorded by systemd-coredump since the last run arrive as
+    // MetricKit diagnostics (SwiftOpenUI's MetricKit on Linux).
+    PerformanceReports.start(stores: liveStores())
     // Register backend fonts before the WebKit bootstrap initializes GTK/Pango's
     // default font map, otherwise symbol labels are permanently resolved through
     // a fallback font for this process.

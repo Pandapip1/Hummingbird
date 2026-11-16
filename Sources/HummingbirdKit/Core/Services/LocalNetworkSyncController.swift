@@ -29,6 +29,9 @@ final class LocalNetworkSyncController {
         case offOnThisDevice
         case starting
         case available
+        /// Local network privacy blocks Hummingbird; only the user can
+        /// change that, in the system's privacy settings.
+        case blockedBySystem
         case failed(String)
     }
 
@@ -36,6 +39,9 @@ final class LocalNetworkSyncController {
     struct Transport {
         var expose: @MainActor () async throws -> Void
         var conceal: @MainActor () -> Void
+        /// Fires when local network privacy blocks the exposed transport
+        /// after `expose` returned (how iOS reports "Don't Allow").
+        var denials: @MainActor () -> AsyncStream<Void> = { AsyncStream { $0.finish() } }
     }
 
     static let feature = "local-network-sync"
@@ -44,8 +50,9 @@ final class LocalNetworkSyncController {
     private(set) var isEnabled: Bool
     private(set) var state: State
 
-    /// What the toggle shows: the shared setting, unless declined here.
-    var isOnHere: Bool { isEnabled && state != .offOnThisDevice }
+    /// What the toggle shows: the shared setting, unless declined or blocked
+    /// here. A toggle that reads "on" must mean sync can run.
+    var isOnHere: Bool { isEnabled && state != .offOnThisDevice && state != .blockedBySystem }
     /// Whether this instance may use the local network for sync right now.
     var isActive: Bool { state == .starting || state == .available }
 
@@ -113,9 +120,7 @@ final class LocalNetworkSyncController {
         case .declinedOnThisDevice:
             stop(); state = .offOnThisDevice; return
         case .deniedBySystem:
-            stop()
-            state = .failed("Local network access is turned off for Hummingbird. Allow it under System Settings › Privacy & Security › Local Network.")
-            return
+            stop(); state = .blockedBySystem; return
         }
         guard state != .available else { return }
         state = .starting
@@ -129,14 +134,36 @@ final class LocalNetworkSyncController {
             }
             state = .available
             activeChanged(true)
+            watchForDenial(attempt)
         } catch {
             if case InstanceMessagingError.localNetworkDiscoveryFailed = error {
                 gate.recordUse(of: .localNetwork)
             }
             transport.conceal()
             guard attempt == generation, isEnabled else { return }
-            state = .failed(error.localizedDescription)
+            if case let InstanceMessagingError.localNetworkDiscoveryFailed(_, code) = error,
+               code == InstanceMessagingError.dnsServicePolicyDenied {
+                state = .blockedBySystem
+            } else {
+                state = .failed(error.localizedDescription)
+            }
             activeChanged(false)
+        }
+    }
+
+    /// A denial can arrive after starting succeeded; stop then rather than
+    /// showing sync as running.
+    private func watchForDenial(_ attempt: Int) {
+        let denials = transport.denials()
+        Task { [weak self] in
+            for await _ in denials {
+                guard let self, attempt == self.generation else { return }
+                let wasActive = self.isActive
+                self.transport.conceal()
+                self.state = .blockedBySystem
+                if wasActive { self.activeChanged(false) }
+                return
+            }
         }
     }
 

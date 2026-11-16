@@ -107,6 +107,7 @@ struct AddSourceSheet: View {
     @State private var working = false
     @State private var errorText: String?
     @State private var preview: InstallPreview?
+    @State private var hasCamera = false
 
     var body: some View {
         NavigationStack {
@@ -125,12 +126,22 @@ struct AddSourceSheet: View {
                                 .autocorrectionDisabled()
                                 .urlEntryStyle()
                         }
-                        if QRCodeScanning.isAvailable {
+                        if hasCamera {
                             Section { Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") } }
                         }
-                        if let errorText { Section { Text(errorText).foregroundStyle(.red).font(.footnote) } }
-                        Section(footer: Text("Plugins are third-party code that runs on your device. Only add sources you trust.")) { EmptyView() }
+                        if working {
+                            Section { ProgressView("Checking the plugin…") }
+                        }
+                        if let errorText {
+                            Section {
+                                Text(errorText).foregroundStyle(.red).font(.footnote)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Section(footer: Text("Plugins are third-party code that runs on your device. Only add sources you trust.")
+                            .fixedSize(horizontal: false, vertical: true)) { EmptyView() }
                     }
+                    .task { hasCamera = await QRCodeScanning.isAvailable() }
                 }
             }
             .navigationTitle("Add source")
@@ -153,15 +164,14 @@ struct AddSourceSheet: View {
                 }
                 if preview == nil && !scanning {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button { Task { await prepare() } } label: {
-                            if working { ProgressView() } else { Text("Continue") }
-                        }
-                        .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
+                        // The label stays put; progress shows in the form.
+                        Button("Continue") { Task { await prepare() } }
+                            .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
                     }
                 }
             }
         }
-        .frame(minHeight: 320)
+        .sheetSize()
     }
 
     private func prepare() async {
@@ -194,7 +204,11 @@ struct PreviewView: View {
                     }
                 }
                 .modifier(TVPreviewFocus())
-                if !c.description.isEmpty { Text(c.description).font(.subheadline).modifier(TVPreviewFocus()) }
+                if !c.description.isEmpty {
+                    Text(c.description).font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .modifier(TVPreviewFocus())
+                }
                 if preview.existing != nil { Label("Replaces your installed version", systemImage: "arrow.triangle.2.circlepath").font(.footnote).modifier(TVPreviewFocus()) }
             }
             if !preview.warnings.isEmpty {
@@ -203,6 +217,7 @@ struct PreviewView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Label(w.title, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.subheadline.bold())
                             Text(w.detail).font(.footnote).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .modifier(TVPreviewFocus())
                     }

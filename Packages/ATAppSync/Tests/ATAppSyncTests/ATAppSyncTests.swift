@@ -415,6 +415,70 @@ final class ATAppSyncTests: XCTestCase {
         )
     }
 
+    func testEmojiVerificationMakesBothInstancesTrustEachOther() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ATAppSyncSAS-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appID = AppSyncAppID(rawValue: "com.example.sas-test")!
+        let a = try makePeer("a", root: root)
+        let b = try makePeer("b", root: root)
+        _ = try await a.startLANServer(appIDs: [appID])
+        let bAdvertisement = try await b.startLANServer(appIDs: [appID])
+        defer { a.stopLANServer(); b.stopLANServer() }
+        let bRegistration = try b.registration(appIDs: [appID], advertisement: bAdvertisement)
+
+        let id = try await a.startVerification(with: bRegistration)
+        let aSide = try XCTUnwrap(a.verifications().first { $0.id == id })
+        let bSide = try XCTUnwrap(b.verifications().first { $0.id == id })
+        XCTAssertEqual(aSide.phase, .comparing)
+        XCTAssertEqual(bSide.phase, .comparing)
+        XCTAssertEqual(aSide.role, .initiator)
+        XCTAssertEqual(bSide.role, .responder)
+        XCTAssertEqual(aSide.emoji?.count, 7)
+        XCTAssertEqual(aSide.emoji, bSide.emoji, "both instances must show the same emoji")
+        XCTAssertFalse(a.trustStore.trusts(b.peer.publicIdentity.stableID))
+
+        // One confirmation is not enough for either side.
+        try await a.confirmVerification(id)
+        XCTAssertEqual(a.verifications().first { $0.id == id }?.phase, .waitingForPeer)
+        XCTAssertFalse(a.trustStore.trusts(b.peer.publicIdentity.stableID))
+        XCTAssertFalse(b.trustStore.trusts(a.peer.publicIdentity.stableID))
+
+        try await b.confirmVerification(id)
+        XCTAssertEqual(b.verifications().first { $0.id == id }?.phase, .verified)
+        XCTAssertEqual(a.verifications().first { $0.id == id }?.phase, .verified)
+        XCTAssertTrue(a.trustStore.trusts(b.peer.publicIdentity.stableID))
+        XCTAssertTrue(b.trustStore.trusts(a.peer.publicIdentity.stableID))
+    }
+
+    func testEmojiMismatchCancelsOnBothInstancesWithoutTrust() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "ATAppSyncSASCancel-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let appID = AppSyncAppID(rawValue: "com.example.sas-test")!
+        let a = try makePeer("a", root: root)
+        let b = try makePeer("b", root: root)
+        _ = try await a.startLANServer(appIDs: [appID])
+        let bAdvertisement = try await b.startLANServer(appIDs: [appID])
+        defer { a.stopLANServer(); b.stopLANServer() }
+        let bRegistration = try b.registration(appIDs: [appID], advertisement: bAdvertisement)
+
+        let id = try await a.startVerification(with: bRegistration)
+        try await a.confirmVerification(id)
+        await b.cancelVerification(id)
+
+        guard case .cancelled = a.verifications().first(where: { $0.id == id })?.phase else {
+            return XCTFail("the initiator should see the cancellation")
+        }
+        guard case .cancelled = b.verifications().first(where: { $0.id == id })?.phase else {
+            return XCTFail("the responder should see its own cancellation")
+        }
+        XCTAssertFalse(a.trustStore.trusts(b.peer.publicIdentity.stableID))
+        XCTAssertFalse(b.trustStore.trusts(a.peer.publicIdentity.stableID))
+    }
+
     func testTrustedProfilesPullSignedJournalOverLANWithoutAccount() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "ATAppSyncLAN-\(UUID().uuidString)", isDirectory: true

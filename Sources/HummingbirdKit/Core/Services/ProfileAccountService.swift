@@ -18,6 +18,9 @@ final class ProfileAccountService {
     /// cannot grant everything Hummingbird asks for.
     private(set) var signInConfirmation: String?
     private(set) var syncService: ProfileSyncService?
+    /// Emoji verifications in progress or just finished, from either side.
+    private(set) var verifications: [AppSyncPeerVerification] = []
+    @ObservationIgnored private var verificationWatch: Task<Void, Never>?
 
     @ObservationIgnored private let oauth: ATProtoOAuthClient
     @ObservationIgnored private let authenticator: ATProtoOAuthAuthenticator
@@ -171,6 +174,44 @@ final class ProfileAccountService {
     func setLocalNetworkEnabled(_ enabled: Bool) {
         localNetworkEnabled = enabled
         syncService?.setLocalNetworkEnabled(enabled)
+    }
+
+    /// Keeps `verifications` current, so a verification started by another
+    /// instance can be shown wherever the user is. Safe to call repeatedly.
+    func watchVerifications() {
+        guard verificationWatch == nil, let peerService else { return }
+        verifications = peerService.verifications()
+        verificationWatch = Task { [weak self] in
+            for await _ in peerService.changes() {
+                self?.verifications = peerService.verifications()
+            }
+        }
+    }
+
+    /// Starts emoji verification with a reachable instance.
+    func startVerification(with peer: AppSyncPeerTrustSummary) async throws {
+        guard let peerService, let registration = peer.registration else {
+            throw AppSyncPeerVerificationFailure.unreachable
+        }
+        _ = try await peerService.startVerification(with: registration)
+    }
+
+    func confirmVerification(_ id: UUID) async throws {
+        try await peerService?.confirmVerification(id)
+    }
+
+    func cancelVerification(_ id: UUID) async {
+        await peerService?.cancelVerification(id)
+    }
+
+    func dismissVerification(_ id: UUID) {
+        peerService?.dismissVerification(id)
+    }
+
+    /// Fires whenever `peers()` may return something different: an instance
+    /// appeared, changed or left the local network, or trust changed.
+    func peerChanges() -> AsyncStream<Void> {
+        peerService?.changes() ?? AsyncStream { $0.finish() }
     }
 
     func peers() async throws -> [AppSyncPeerTrustSummary] {

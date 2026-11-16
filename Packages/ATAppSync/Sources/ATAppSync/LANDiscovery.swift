@@ -61,6 +61,11 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
     private var adverts: [AdvertKey: Advert] = [:]
     private var refreshTimer: DispatchSourceTimer?
     private var seen: [AppSyncPeerID: Seen] = [:]
+    /// Fires when an instance appears, changes its registration, or goes.
+    let changes = AppSyncChangeSignal()
+    /// Fires when local network privacy blocks advertising or browsing. On
+    /// iOS the user's "Don't Allow" arrives this way, after starting succeeded.
+    let policyDenials = AppSyncChangeSignal()
 
     init() {
         queue.setSpecific(key: Self.queueKey, value: ())
@@ -116,20 +121,32 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
     }
 
     func registrations() -> [AppSyncInstanceRegistration] {
-        let cutoff = Date().addingTimeInterval(-Self.lifetime)
-        return lock.withLock {
-            seen = seen.filter { $0.value.receivedAt >= cutoff }
-            return seen.values.map(\.registration)
+        let (current, expired) = lock.withLock { () -> ([AppSyncInstanceRegistration], Bool) in
+            let expired = pruneExpired()
+            return (seen.values.map(\.registration), expired)
         }
+        if expired { changes.send() }
+        return current
     }
 
     func observe(_ registration: AppSyncInstanceRegistration) throws {
         try registration.verify()
-        lock.withLock {
+        let changed = lock.withLock {
+            let previous = seen[registration.stablePeerID]?.registration
             seen[registration.stablePeerID] = Seen(
                 registration: registration, receivedAt: Date()
             )
+            return previous != registration
         }
+        if changed { changes.send() }
+    }
+
+    /// Drops registrations not refreshed within `lifetime`. Call with `lock` held.
+    private func pruneExpired() -> Bool {
+        let cutoff = Date().addingTimeInterval(-Self.lifetime)
+        let before = seen.count
+        seen = seen.filter { $0.value.receivedAt >= cutoff }
+        return seen.count != before
     }
 
     /// Ends advertising and browsing. Callbacks reach this object through an
@@ -201,21 +218,25 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
     // MARK: Presence
 
     private func removeAdvert(_ key: AdvertKey) {
-        let removed: Advert? = lock.withLock {
-            guard let advert = adverts.removeValue(forKey: key) else { return nil }
+        let (removed, gone) = lock.withLock { () -> (Advert?, Bool) in
+            guard let advert = adverts.removeValue(forKey: key) else { return (nil, false) }
             // The same instance can be advertised on several interfaces; it
             // is gone only when none remain.
             if let peerID = advert.endpoint?.peerID,
                !adverts.values.contains(where: { $0.endpoint?.peerID == peerID }) {
-                seen[peerID] = nil
+                return (advert, seen.removeValue(forKey: peerID) != nil)
             }
-            return advert
+            return (advert, false)
         }
         if let removed { Self.release(removed.resolver) }
+        if gone { changes.send() }
     }
 
     private func refresh() {
-        let endpoints = lock.withLock { adverts.values.compactMap(\.endpoint) }
+        let (endpoints, expired) = lock.withLock {
+            (adverts.values.compactMap(\.endpoint), pruneExpired())
+        }
+        if expired { changes.send() }
         var byPeer: [AppSyncPeerID: Endpoint] = [:]
         for endpoint in endpoints { byPeer[endpoint.peerID] = endpoint }
         byPeer.values.forEach(fetch)
@@ -282,7 +303,10 @@ private func appSyncRegisterReply(
     _ sdRef: DNSServiceRef?, _ flags: DNSServiceFlags, _ errorCode: DNSServiceErrorType,
     _ name: UnsafePointer<CChar>?, _ regtype: UnsafePointer<CChar>?,
     _ domain: UnsafePointer<CChar>?, _ context: UnsafeMutableRawPointer?
-) {}
+) {
+    guard errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied), let context else { return }
+    Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().policyDenials.send()
+}
 
 private func appSyncBrowseReply(
     _ sdRef: DNSServiceRef?, _ flags: DNSServiceFlags, _ interfaceIndex: UInt32,
@@ -290,6 +314,10 @@ private func appSyncBrowseReply(
     _ regtype: UnsafePointer<CChar>?, _ replyDomain: UnsafePointer<CChar>?,
     _ context: UnsafeMutableRawPointer?
 ) {
+    if errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied), let context {
+        Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().policyDenials.send()
+        return
+    }
     guard errorCode == kDNSServiceErr_NoError,
           let serviceName, let regtype, let replyDomain, let context else { return }
     Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().browsed(

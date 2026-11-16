@@ -44,8 +44,9 @@ struct RootView: View {
                 ToastBanner()
             }
         }
-        .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request) }
+        .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request).sheetSize() }
         .permissionPrompts(model.permissions)
+        .peerVerificationPrompts(model.profileAccount)
         .onChange(of: plugins.pendingDirectLogin) { _, id in
             if let id { beginLogin(id); plugins.pendingDirectLogin = nil }
         }

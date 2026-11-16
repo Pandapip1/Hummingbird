@@ -224,6 +224,7 @@ struct CredentialStorageSettingsSection: View {
                     },
                     onDecline: { showingConsent = false }
                 )
+                .sheetSize()
             }
         }
         .alert("Stop using the login keychain?", isPresented: $confirmingRevoke) {

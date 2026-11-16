@@ -174,6 +174,8 @@ public final class AppSyncTrustStore: @unchecked Sendable {
     private let observer: AppSyncPeer
     private let fileURL: URL?
     private var factsByID: [UUID: AppSyncTrustFact]
+    /// Fires after merged facts change who is trusted.
+    let changes = AppSyncChangeSignal()
 
     public init(observer: AppSyncPeer, fileURL: URL? = nil) throws {
         self.observer = observer; self.fileURL = fileURL
@@ -184,7 +186,7 @@ public final class AppSyncTrustStore: @unchecked Sendable {
     }
 
     public func merge(_ incoming: [AppSyncTrustFact]) throws -> Bool {
-        try lock.withLock {
+        let changed = try lock.withLock {
             var next = factsByID; var changed = false
             for fact in incoming {
                 try fact.verify()
@@ -196,6 +198,8 @@ public final class AppSyncTrustStore: @unchecked Sendable {
             if changed { try persist(next); factsByID = next }
             return changed
         }
+        if changed { changes.send() }
+        return changed
     }
 
     public func facts() -> [AppSyncTrustFact] {

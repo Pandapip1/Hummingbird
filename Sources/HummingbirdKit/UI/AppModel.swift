@@ -228,7 +228,8 @@ final class AppModel {
                     guard let profileRegistry else { throw LocalNetworkSyncUnavailable.noLocalProfiles }
                     try await profileRegistry.exposeAll(appIDs: [HummingbirdProfileSchema.appID])
                 },
-                conceal: { profileRegistry?.concealAll() }
+                conceal: { profileRegistry?.concealAll() },
+                denials: { profileRegistry?.localNetworkDenials() ?? AsyncStream { $0.finish() } }
             ),
             persist: { [preferences = stores.preferences] in
                 preferences.defaults.set($0, forKey: Self.localNetworkSyncEnabledKey)

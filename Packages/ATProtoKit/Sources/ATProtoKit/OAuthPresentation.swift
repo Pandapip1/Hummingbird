@@ -23,22 +23,49 @@ public protocol ATProtoOAuthPresenter {
 /// its authorization server, and exchanges the callback for a credential.
 @MainActor
 public final class ATProtoOAuthAuthenticator {
-    private let client: ATProtoOAuthClient
+    private let client: any OAuthAuthorizationFlow
     private let presenter: any ATProtoOAuthPresenter
 
     /// `presenter` defaults to the system web authentication session.
-    public init(client: ATProtoOAuthClient,
-                presenter: any ATProtoOAuthPresenter = WebAuthenticationSessionPresenter()) {
-        self.client = client
+    public convenience init(client: ATProtoOAuthClient,
+                            presenter: any ATProtoOAuthPresenter = WebAuthenticationSessionPresenter()) {
+        self.init(flow: client, presenter: presenter)
+    }
+
+    init(flow: any OAuthAuthorizationFlow, presenter: any ATProtoOAuthPresenter) {
+        self.client = flow
         self.presenter = presenter
     }
 
     public func signIn(identifier: String) async throws -> ATProtoOAuthCredential {
+        do {
+            return try await attempt(identifier: identifier)
+        } catch let error as OAuthError where error.isRequestDeviceMismatch {
+            // The page was loaded once, but the network delivered that load
+            // twice (CFNetwork re-sends a GET on a new connection when the
+            // first stalls), so the server bound the single-use request to
+            // a device cookie this page never received. That request is
+            // spent; a fresh one, with new PKCE, state and DPoP key, is not
+            // affected. Retry once, so a persistent problem still surfaces.
+            return try await attempt(identifier: identifier)
+        }
+    }
+
+    private func attempt(identifier: String) async throws -> ATProtoOAuthCredential {
         let pending = try await client.begin(identifier: identifier)
         let callbackURL = try await presenter.authorize(pending.authorizationURL, callback: pending.callback)
         return try await client.complete(pending, callbackURL: callbackURL)
     }
 }
+
+/// The two server round trips around presenting the authorization page.
+/// ``ATProtoOAuthClient`` is the implementation; tests substitute fakes.
+protocol OAuthAuthorizationFlow: Sendable {
+    func begin(identifier: String) async throws -> OAuthAuthorizationRequest
+    func complete(_ request: OAuthAuthorizationRequest, callbackURL: URL) async throws -> ATProtoOAuthCredential
+}
+
+extension ATProtoOAuthClient: OAuthAuthorizationFlow {}
 
 /// The default presenter: the platform's `ASWebAuthenticationSession`. On
 /// Apple platforms this is the system authentication sheet; SwiftOpenUI

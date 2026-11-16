@@ -64,10 +64,12 @@ public actor ATProtoOAuthClient {
 
     public func complete(_ request: OAuthAuthorizationRequest, callbackURL: URL) async throws -> ATProtoOAuthCredential {
         guard request.callback.matches(callbackURL) else { throw OAuthError.invalidCallback }
-        let query = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        func value(_ name: String) -> String? { query.first { $0.name == name }?.value }
+        let parameters = OAuthCallbackParameters(callbackURL)
+        func value(_ name: String) -> String? { parameters[name] }
         guard value("state") == request.state else { throw OAuthError.stateMismatch }
-        if let error = value("error") { throw OAuthError.authorizationFailed(value("error_description") ?? error) }
+        if let error = value("error") {
+            throw OAuthError.authorizationDenied(error: error, description: value("error_description"))
+        }
         guard value("iss") == request.issuer.absoluteString else { throw OAuthError.issuerMismatch }
         guard let code = value("code") else { throw OAuthError.invalidCallback }
         let metadata = try await authorizationMetadata(issuer: request.issuer)

@@ -212,9 +212,14 @@ public enum OAuthError: LocalizedError, Sendable {
     case tokenResponse(String)
     /// The user dismissed the authorization page before it redirected back.
     case cancelled
-    /// Neither handle resolution method found a DID, or the DID document
-    /// does not claim the handle back.
+    /// The DID document does not claim the handle back, or its DNS records
+    /// name more than one DID.
     case handleNotVerified(String)
+    /// Neither DNS nor HTTPS gave the handle a DID.
+    case handleNotResolved(HandleResolutionFailure)
+    /// The authorization server redirected back with an error, such as the
+    /// user declining (`access_denied`).
+    case authorizationDenied(error: String, description: String?)
 
     public var errorDescription: String? {
         switch self {
@@ -227,7 +232,91 @@ public enum OAuthError: LocalizedError, Sendable {
         case .tokenResponse(let reason): "Invalid token response: \(reason)"
         case .cancelled: "Sign-in was cancelled."
         case .handleNotVerified(let reason): "The handle could not be verified: \(reason)"
+        case .handleNotResolved(let failure): failure.summary
+        case .authorizationDenied(let error, let description):
+            if let description, !description.isEmpty {
+                "The account provider refused the sign-in: \(description) (\(error))"
+            } else {
+                "The account provider refused the sign-in (\(error))."
+            }
         }
+    }
+
+    /// The server refused an authorization request because it was presented
+    /// from a different device than the one that first loaded it. With a
+    /// single page load this means the network delivered that load twice
+    /// (a transport-level retry), so a fresh request can succeed.
+    var isRequestDeviceMismatch: Bool {
+        guard case .authorizationDenied(let error, let description) = self else { return false }
+        return error == "access_denied"
+            && description?.range(of: "initiated from another device", options: .caseInsensitive) != nil
+    }
+}
+
+/// Why a handle did not resolve, with the underlying errors kept for logs.
+public struct HandleResolutionFailure: Error, Sendable, CustomDebugStringConvertible {
+    public let handle: String
+    public let dnsFailure: (any Error)?
+    public let httpsFailure: (any Error)?
+
+    /// One line for people: "alice.example.com didn't resolve to an atproto
+    /// account (DNS: timed out; HTTPS: host not found)".
+    public var summary: String {
+        let dns = dnsFailure.map(Self.describe) ?? "no _atproto record"
+        let https = httpsFailure.map(Self.describe) ?? "no DID"
+        return "\(handle) didn't resolve to an atproto account (DNS: \(dns); HTTPS: \(https))"
+    }
+
+    public var debugDescription: String {
+        "HandleResolutionFailure(handle: \(handle), dns: \(dnsFailure.map { String(reflecting: $0) } ?? "no record"), "
+            + "https: \(httpsFailure.map { String(reflecting: $0) } ?? "no DID"))"
+    }
+
+    /// A few words for an error, without NSError user-info dumps.
+    static func describe(_ error: any Error) -> String {
+        switch error {
+        case DNSTXTError.timedOut: return "timed out"
+        case DNSTXTError.lookupFailed: return "lookup failed"
+        case let error as URLError:
+            switch error.code {
+            case .timedOut: return "timed out"
+            case .cannotFindHost, .dnsLookupFailed: return "host not found"
+            case .cannotConnectToHost: return "could not connect"
+            case .notConnectedToInternet: return "offline"
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                 .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot:
+                return "TLS failed"
+            case .badServerResponse:
+                return (error.userInfo[NSLocalizedDescriptionKey] as? String) ?? "bad response"
+            default: return "network error \(error.code.rawValue)"
+            }
+        case let error as OAuthError: return error.errorDescription ?? "invalid response"
+        default: return "failed"
+        }
+    }
+}
+
+/// The parameters of an authorization callback. RFC 6749 encodes them as
+/// application/x-www-form-urlencoded, so "+" is a space and is decoded
+/// before percent escapes; `URLComponents.queryItems` would keep the "+".
+struct OAuthCallbackParameters {
+    private var values: [String: String] = [:]
+
+    init(_ url: URL) {
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery ?? ""
+        for pair in query.split(separator: "&", omittingEmptySubsequences: true) {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let name = Self.decode(parts[0]) else { continue }
+            let value = parts.count > 1 ? Self.decode(parts[1]) : ""
+            // Parameters must not repeat; the first occurrence wins.
+            if values[name] == nil, let value { values[name] = value }
+        }
+    }
+
+    subscript(name: String) -> String? { values[name] }
+
+    private static func decode(_ component: Substring) -> String? {
+        component.replacingOccurrences(of: "+", with: " ").removingPercentEncoding
     }
 }
 

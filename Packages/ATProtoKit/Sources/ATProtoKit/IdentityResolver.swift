@@ -47,7 +47,7 @@ public actor ATProtoIdentityResolver {
             // A handle is only an account's if the account claims it back:
             // anyone can point their own domain's record at someone's DID.
             guard document.claims(handle: normalized) else {
-                throw OAuthError.handleNotVerified("\(did.rawValue) does not list at://\(normalized).")
+                throw OAuthError.handleNotVerified("\(normalized) is not claimed by the account \(did.rawValue).")
             }
             handle = normalized
         }
@@ -62,12 +62,11 @@ public actor ATProtoIdentityResolver {
     /// then HTTPS (`/.well-known/atproto-did`). Either method may hold the
     /// record, so a failure of one falls through to the other.
     func resolveHandle(_ handle: String) async throws -> DID {
-        var failures: [String] = []
+        var dnsFailure: (any Error)?
         do {
             if let did = try Self.did(fromTXT: await dns.txtRecords(for: "_atproto.\(handle)")) { return did }
-            failures.append("DNS: no _atproto record")
         } catch {
-            failures.append("DNS: \(Self.describe(error))")
+            dnsFailure = error
         }
         do {
             guard let url = URL(string: "https://\(handle)/.well-known/atproto-did") else {
@@ -76,13 +75,14 @@ public actor ATProtoIdentityResolver {
             let (data, response) = try await fetch(url)
             try Self.requireSuccess(response)
             guard let did = Self.did(fromWellKnown: data) else {
-                throw OAuthError.handleNotVerified("no DID in /.well-known/atproto-did")
+                throw OAuthError.invalidMetadata("no DID in /.well-known/atproto-did")
             }
             return did
         } catch {
-            failures.append("HTTPS: \(Self.describe(error))")
+            throw OAuthError.handleNotResolved(
+                HandleResolutionFailure(handle: handle, dnsFailure: dnsFailure, httpsFailure: error)
+            )
         }
-        throw OAuthError.handleNotVerified("\(handle) did not resolve to a DID (\(failures.joined(separator: "; "))).")
     }
 
     /// The DID named by `_atproto` TXT records. Records not starting with
@@ -94,7 +94,7 @@ public actor ATProtoIdentityResolver {
             return DID(rawValue: String(record.dropFirst("did=".count)))
         })
         guard dids.count <= 1 else {
-            throw OAuthError.handleNotVerified("conflicting _atproto DNS records")
+            throw OAuthError.handleNotVerified("its _atproto DNS records name different accounts")
         }
         return dids.first
     }
@@ -130,10 +130,6 @@ public actor ATProtoIdentityResolver {
                   }) else { return false }
         }
         return labels.last?.first?.isLetter == true
-    }
-
-    private static func describe(_ error: any Error) -> String {
-        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     }
 
     private func didDocument(_ did: DID) async throws -> DIDDocument {

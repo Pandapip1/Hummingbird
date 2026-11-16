@@ -110,9 +110,32 @@ final class HandleResolutionTests: XCTestCase {
         XCTAssertEqual(identity.did.rawValue, did)
     }
 
-    func testUnresolvableHandleFails() async {
+    func testUnresolvableHandleFailsWithAConciseMessage() async {
+        let dns = FakeDNS(answers: ["_atproto.alice.example.com": .failure(DNSTXTError.timedOut)])
+        let resolver = ATProtoIdentityResolver(dns: dns, fetch: FakeWeb().fetch)
+        do {
+            _ = try await resolver.resolve("alice.example.com")
+            XCTFail("resolved")
+        } catch let error as OAuthError {
+            guard case .handleNotResolved(let failure) = error else { return XCTFail("Unexpected error \(error)") }
+            XCTAssertEqual(error.localizedDescription,
+                           "alice.example.com didn't resolve to an atproto account (DNS: timed out; HTTPS: host not found)")
+            XCTAssertTrue(failure.debugDescription.contains("cannotFindHost") || failure.debugDescription.contains("-1003"),
+                          "the full errors stay available for logs: \(failure.debugDescription)")
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
+    }
+
+    func testMissingRecordsAreDescribedPlainly() async {
         let web = FakeWeb(documents: ["https://alice.example.com/.well-known/atproto-did": (404, "")])
-        await assertNotVerified(ATProtoIdentityResolver(dns: FakeDNS(), fetch: web.fetch), "alice.example.com")
+        do {
+            _ = try await ATProtoIdentityResolver(dns: FakeDNS(), fetch: web.fetch).resolve("alice.example.com")
+            XCTFail("resolved")
+        } catch {
+            XCTAssertEqual(error.localizedDescription,
+                           "alice.example.com didn't resolve to an atproto account (DNS: no _atproto record; HTTPS: HTTP 404 from alice.example.com)")
+        }
     }
 
     // MARK: Bidirectional verification

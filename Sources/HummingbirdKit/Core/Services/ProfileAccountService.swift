@@ -84,7 +84,10 @@ final class ProfileAccountService {
             // The user closed the sign-in page; that is not an error to show.
         } catch is CancellationError {
         } catch {
+            // People get one readable line; the full error, with any
+            // underlying network errors, goes to the log.
             errorMessage = error.localizedDescription
+            print("[atproto sign-in] \(String(reflecting: error))")
         }
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftOpenUI
 #if canImport(WebKit) && !BACKEND_GTK && (os(macOS) || os(iOS) || os(visionOS))
+import WebKit
 private typealias OAuthWebPage = SwiftOpenUI.WebPage
 private typealias OAuthWebView = SwiftOpenUI.WebView
 #elseif BACKEND_GTK_WEBKIT
@@ -56,22 +57,30 @@ struct OAuthAuthorizationView: View {
 #if (canImport(WebKit) && !BACKEND_GTK && (os(macOS) || os(iOS) || os(visionOS))) || BACKEND_GTK_WEBKIT
 /// Keeps each authorization's page until the authorization finishes, so
 /// switching tabs or rebuilding the view does not reload a single-use
-/// authorization request.
+/// authorization request. The page is created and loaded exactly once.
+///
+/// Each sign-in gets its own isolated, non-persistent website data store
+/// (on GTK, its own ephemeral WebKit network session): nothing from other
+/// web views or earlier sign-ins is visible to the provider, and nothing
+/// the provider sets outlives the sign-in. Only the callback URL leaves
+/// the page; the store is discarded with the page when the sign-in ends.
 @MainActor
 final class OAuthWebPageStore {
     static let shared = OAuthWebPageStore()
     private var pages: [OAuthTabAuthorization.ID: OAuthWebPage] = [:]
+    private var dataStores: [OAuthTabAuthorization.ID: WKWebsiteDataStore] = [:]
 
     fileprivate func page(for authorization: OAuthTabAuthorization) -> OAuthWebPage {
         if let page = pages[authorization.id] { return page }
-        // The default, persistent data store keeps the provider's own login
-        // between sign-ins, as the system authentication session would.
+        var configuration = OAuthWebPage.Configuration()
+        configuration.websiteDataStore = .nonPersistent()
         let page = OAuthWebPage(
-            configuration: OAuthWebPage.Configuration(),
+            configuration: configuration,
             navigationDecider: OAuthNavigationDecider(authorization: authorization)
         )
         page.load(authorization.authorizationURL)
         pages[authorization.id] = page
+        dataStores[authorization.id] = configuration.websiteDataStore
         return page
     }
 
@@ -81,8 +90,12 @@ final class OAuthWebPageStore {
     /// The page's current URL, if it has one; for tests.
     func currentURL(for authorization: OAuthTabAuthorization) -> URL? { pages[authorization.id]?.url }
 
+    /// The sign-in's own data store while it is in progress; for tests.
+    func dataStore(for authorization: OAuthTabAuthorization) -> WKWebsiteDataStore? { dataStores[authorization.id] }
+
     func remove(_ authorization: OAuthTabAuthorization) {
         pages.removeValue(forKey: authorization.id)?.stopLoading()
+        dataStores.removeValue(forKey: authorization.id)
     }
 }
 

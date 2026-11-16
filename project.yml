@@ -35,7 +35,7 @@ targets:
       path: Apps/iOS/Info.plist
       properties:
         CFBundleDisplayName: Hummingbird
-        ATProtoKeychainAccessGroup: $(AppIdentifierPrefix)com.eightybps.Hummingbird.shared
+        ATProtoKeychainAccessGroup: $(AppIdentifierPrefix)com.eightybps.hummingbird.shared
         CFBundleURLTypes:
           - CFBundleURLName: app.hummingbird.credential-login
             CFBundleURLSchemes:
@@ -64,7 +64,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.Hummingbird
+        PRODUCT_BUNDLE_IDENTIFIER: com.eightybps.hummingbird
         CODE_SIGN_ENTITLEMENTS: Apps/iOS/Hummingbird.entitlements
         DEVELOPMENT_TEAM: NMM6M6QVAT
         TARGETED_DEVICE_FAMILY: "1,2,3,7"
@@ -92,7 +92,7 @@ targets:
       - target: Hummingbird
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.HummingbirdTVUITests
+        PRODUCT_BUNDLE_IDENTIFIER: com.eightybps.hummingbird.TVUITests
         DEVELOPMENT_TEAM: NMM6M6QVAT
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Hummingbird
@@ -105,7 +105,7 @@ targets:
       - target: Hummingbird
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.pandapip1.HummingbirdIOSUITests
+        PRODUCT_BUNDLE_IDENTIFIER: com.eightybps.hummingbird.IOSUITests
         DEVELOPMENT_TEAM: NMM6M6QVAT
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Hummingbird

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>ATProtoKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)com.eightybps.Hummingbird.shared</string>
+	<string>$(AppIdentifierPrefix)com.eightybps.hummingbird.shared</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

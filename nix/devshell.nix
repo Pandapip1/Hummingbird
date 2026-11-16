@@ -45,7 +45,7 @@
               # Ad-hoc signing uses the changing cdhash as its identity, which
               # makes every rebuild lose access to its own Keychain records.
               codesign --force --sign "$signing_identity" \
-                --identifier com.pandapip1.Hummingbird \
+                --identifier com.eightybps.hummingbird \
                 "$gtk_bin_path/Hummingbird-gtk"
             else
               echo "warning: no Apple Development identity; GTK Keychain access will require reauthorization after rebuilds" >&2

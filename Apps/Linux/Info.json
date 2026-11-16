@@ -1,5 +1,5 @@
 {
-  "bundleIdentifier": "com.eightybps.Hummingbird",
+  "bundleIdentifier": "com.eightybps.hummingbird",
   "bundleName": "Hummingbird",
   "bundleVersion": "0.1.0",
   "executableName": "Hummingbird-gtk"

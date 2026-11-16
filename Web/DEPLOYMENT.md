@@ -12,6 +12,21 @@ Each site is a `CNAME` DNS record for its subdomain pointing at
 `80bps.github.io`. Copy changes to `Web/hummingbird/` into its Pages
 repository; the copy here is the one the tests check.
 
+## Hummingbird: App Store
+
+| | |
+| --- | --- |
+| App Store Connect app | [Apple ID 6829103662](https://appstoreconnect.apple.com/apps/6829103662/distribution/macos/version/inflight) |
+| SKU | `APPL_HUMMINGBIRD` |
+| Bundle ID | `com.eightybps.hummingbird` (all platforms; `project.yml`, `xtool.yml`) |
+| Team | `NMM6M6QVAT` |
+| Keychain access group | `$(AppIdentifierPrefix)com.eightybps.hummingbird.shared` |
+
+The Linux app uses the same reverse-DNS ID (`Apps/Linux/Info.json`, the
+desktop entry). Not to be confused with AppSync's app ID and the lexicon
+namespaces under `com.eightybps.hummingbird`, which are protocol names, not
+bundle IDs, and must not change with it.
+
 ## Hummingbird: OAuth client
 
 Serve `Web/hummingbird/` as the site root of `hummingbird.eightybps.com`, so

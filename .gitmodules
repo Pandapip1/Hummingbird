@@ -1,3 +1,4 @@
 [submodule "Vendor/SwiftOpenUI"]
 	path = Vendor/SwiftOpenUI
 	url = https://github.com/Pandapip1/SwiftOpenUI.git
+	branch = hummingbird

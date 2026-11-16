@@ -378,17 +378,11 @@ private struct ProfileSwitcher: View {
     }
 }
 
-private struct ProfileSwitcherToolbarModifier: ViewModifier {
-    @ViewBuilder func body(content: Content) -> some View {
-        content.browserTabToolbarItem(id: "profile.switcher", placement: .leading) {
-            ProfileSwitcher()
-        }
-    }
-}
-
 extension View {
+    /// The profile switcher, in a section page's own toolbar. Apply it inside
+    /// the page's `NavigationStack`.
     func profileSwitcherToolbarItem() -> some View {
-        modifier(ProfileSwitcherToolbarModifier())
+        browserPageToolbarItem(id: "profile.switcher", placement: .leading) { ProfileSwitcher() }
     }
 }
 
@@ -497,8 +491,11 @@ private struct BrowserTopToolbarModifier: ViewModifier {
 }
 
 extension View {
+    /// A section page's toolbar: on tvOS the browser controls, elsewhere the
+    /// profile switcher. Apply it inside the page's `NavigationStack`.
     func browserTopToolbar(_ context: BrowserToolbarContext?) -> some View {
         modifier(BrowserTopToolbarModifier(context: context))
+            .profileSwitcherToolbarItem()
     }
 }
 
@@ -687,7 +684,7 @@ extension View {
     @ViewBuilder
     func editableCollectionToolbar(id: String) -> some View {
         #if os(iOS)
-        browserTabToolbarItem(id: id, placement: .trailing) { EditButton() }
+        browserPageToolbarItem(id: id, placement: .trailing) { EditButton() }
         #else
         self
         #endif
@@ -702,13 +699,8 @@ extension View {
         #endif
     }
 
-    @ViewBuilder
     func searchSubmission(_ action: @escaping () -> Void) -> some View {
-        #if os(tvOS)
-        onSubmit(action)
-        #else
         onSubmit(of: .search, action)
-        #endif
     }
 
     @ViewBuilder
@@ -757,6 +749,9 @@ struct FocusableReadOnlyModifier: ViewModifier {
     }
 }
 
+/// The page's search field: SwiftOpenUI's `searchable`, which each platform
+/// presents natively in the page's own chrome (never the tab bars). Return
+/// submits through `searchSubmission`.
 private struct SearchEntryModifier: ViewModifier {
     @Binding var query: String
     let hidden: Bool
@@ -766,27 +761,7 @@ private struct SearchEntryModifier: ViewModifier {
         if hidden {
             content
         } else {
-            #if os(tvOS)
-            content.safeAreaInset(edge: .top, spacing: 0) {
-                TextField("Search or paste a link", text: $query)
-                    .padding(.horizontal, 80)
-                    .padding(.bottom, 12)
-            }
-            #elseif os(iOS)
-            content.searchable(
-                text: $query,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search or paste a link"
-            )
-            #elseif os(macOS) && !BACKEND_GTK
-            content.browserTabToolbarItem(id: "search.field", placement: .principal) {
-                TextField("Search or paste a link", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 260, idealWidth: 420, maxWidth: 560)
-            }
-            #else
             content.searchable(text: $query, prompt: "Search or paste a link")
-            #endif
         }
     }
 }
@@ -909,7 +884,7 @@ struct SettingsDetailContainer<Content: View>: View {
 
     var body: some View {
         #if os(macOS) && !BACKEND_GTK
-        ScrollView { content() }.defaultScrollAnchor(.top)
+        ScrollView { content().frame(maxWidth: .infinity) }.defaultScrollAnchor(.top)
         #else
         content()
         #endif

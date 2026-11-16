@@ -83,6 +83,15 @@ final class AppModel {
         }
     }
 
+    /// Moves a tab to `index` among the content tabs (after its removal, as
+    /// in the overview's drop position) and keeps the order across launches.
+    func moveTab(_ id: BrowserTab.ID, to index: Int) {
+        guard let from = contentTabs.firstIndex(where: { $0.id == id }) else { return }
+        let tab = contentTabs.remove(at: from)
+        contentTabs.insert(tab, at: min(max(0, index), contentTabs.count))
+        persistBrowserSession()
+    }
+
     /// Playback belongs to the browser tab, not to its currently mounted view.
     /// SwiftUI replaces that view when another tab is selected, but the media
     /// session should continue until this tab navigates elsewhere or is closed.

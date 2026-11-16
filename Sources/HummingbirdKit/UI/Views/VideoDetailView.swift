@@ -40,7 +40,8 @@ struct VideoDetailView: View {
                         ProgressView().frame(maxWidth: .infinity)
                     }
                 case .failed(let message):
-                    LoadingErrorView(message: message) { Task { await load() } }.padding(.top, 60)
+                    LoadingErrorView(message: message) { Task { await load() } }
+                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                 case .video(let rt, let d):
                     VideoBody(runtime: rt, details: d, player: player, tab: $tab,
                               showPlaylistPicker: $showPlaylistPicker,
@@ -51,6 +52,7 @@ struct VideoDetailView: View {
                 case .unsupported(let item):
                     ContentUnavailableView("Can't open this", systemImage: "questionmark.square.dashed",
                                            description: Text("\"\(item.name)\" is a kind of content Hummingbird does not display yet."))
+                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                 }
             }
         }
@@ -534,6 +536,7 @@ private struct PostBody: View {
             // HTML is flattened to text; rich layout is not rendered.
             Text(flatten(post.content)).font(.body)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
     }
 

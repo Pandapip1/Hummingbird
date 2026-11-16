@@ -31,6 +31,11 @@ struct SourcesView: View {
                         .accessibilityLabel("Add source")
                 }
             }
+            .browserPageToolbarItem(id: "sources.add", placement: .trailing) {
+                Button { showAdd = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add source")
+            }
+            .profileSwitcherToolbarItem()
             .sheet(isPresented: $showAdd) { AddSourceSheet() }
             .confirmationDialog("Remove source?", isPresented: Binding(
                 get: { removeTarget != nil },
@@ -47,10 +52,6 @@ struct SourcesView: View {
                 Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.")
             }
             .refreshable { await app.plugins.checkForUpdates(origin: .userAction) }
-        }
-        .browserTabToolbarItem(id: "sources.add", placement: .trailing) {
-            Button { showAdd = true } label: { Image(systemName: "plus") }
-                .accessibilityLabel("Add source")
         }
     }
 
@@ -504,6 +505,7 @@ private struct AppSettingsForm: View {
         .toolbar {
             FocusBrowserToolbar(browserToolbar: browserToolbar)
         }
+        .profileSwitcherToolbarItem()
     }
 }
 

@@ -67,6 +67,7 @@ struct ChannelView: View {
                     LoadMoreButton(feed: feed)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
         .navigationTitle(info.name)

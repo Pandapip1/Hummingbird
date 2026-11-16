@@ -12,7 +12,9 @@ struct RootView: View {
         @Bindable var app = model
         @Bindable var plugins = model.plugins
         BrowserTabContainer(items: browserTabItems, selection: activeTabBinding,
-                            onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview,
+                            onClose: { app.closeTab($0) },
+                            onMove: { app.moveTab($0, to: $1) },
+                            overviewPresented: $showingTabOverview,
                             newTabControl: {
                                 NewTabDestinationMenu { route, title in
                                     app.openSection(route, title: title)
@@ -139,14 +141,13 @@ struct BrowserTabContentView: View {
                     }
                 )
                     .id(tab.historyIndexIdentity)
-                    .profileSwitcherToolbarItem()
                     .browserTabControls(overviewPresented: $showingTabOverview)
             } else {
                 NavigationStack {
                     ContentUnavailableView("New Tab", systemImage: "plus.square", description: Text("Choose a section from the menu."))
                         .navigationTitle("New Tab")
+                        .profileSwitcherToolbarItem()
                 }
-                .profileSwitcherToolbarItem()
                 .browserTabControls(overviewPresented: $showingTabOverview)
             }
         }
@@ -184,8 +185,10 @@ struct BrowserTabOverviewButton: View {
 
     var body: some View {
         Button(action: action) {
+            // Icon only: `labelsHidden()` hides control labels, not a Label's
+            // title, which the bottom bar then squeezes in beside the icon.
             Label("Tabs", systemImage: "square.on.square")
-                .labelsHidden()
+                .labelStyle(.iconOnly)
         }
         .accessibilityLabel("Tabs")
         .accessibilityValue(tabCountLabel)

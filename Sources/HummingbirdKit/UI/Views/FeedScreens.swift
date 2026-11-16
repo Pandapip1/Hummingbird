@@ -105,6 +105,7 @@ struct SearchView: View {
             .toolbar {
                 FocusBrowserToolbar(browserToolbar: browserToolbar)
             }
+            .profileSwitcherToolbarItem()
             .searchSubmission { Task { await submit() } }
             .task(id: query) { await updateSuggestions() }
             .overlay(alignment: .bottom) {
@@ -223,16 +224,17 @@ struct SubscriptionsView: View {
                     Image(systemName: "person.2")
                 }
             }
+            .browserPageToolbarItem(id: "subscriptions.manage", placement: .trailing) {
+                Button {
+                    browserToolbar?.tab.push(.manageSubscriptions, title: "Manage Subscriptions")
+                } label: {
+                    Image(systemName: "person.2")
+                }
+                .accessibilityLabel("Manage subscriptions")
+            }
+            .profileSwitcherToolbarItem()
         }
         .task { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
-        .browserTabToolbarItem(id: "subscriptions.manage", placement: .trailing) {
-            Button {
-                browserToolbar?.tab.push(.manageSubscriptions, title: "Manage Subscriptions")
-            } label: {
-                Image(systemName: "person.2")
-            }
-            .accessibilityLabel("Manage subscriptions")
-        }
     }
 }
 
@@ -386,11 +388,11 @@ struct PlaybackQueueView: View {
         }
         .listStyle(.plain)
         .navigationTitle("Queue")
-        .browserTabToolbarItem(id: "queue.shuffle", placement: .trailing) {
+        .browserPageToolbarItem(id: "queue.shuffle", placement: .trailing) {
             Button { app.playbackQueue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
                 .disabled(app.playbackQueue.items.count < 2)
         }
-        .browserTabToolbarItem(id: "queue.repeat", placement: .trailing) {
+        .browserPageToolbarItem(id: "queue.repeat", placement: .trailing) {
             Button { app.playbackQueue.cycleRepeatMode() } label: {
                 Image(systemName: app.playbackQueue.repeatMode.systemImage)
             }
@@ -438,7 +440,7 @@ struct HistoryView: View {
         }
         .listStyle(.plain)
         .navigationTitle("History")
-        .browserTabToolbarItem(id: "history.clear", placement: .trailing) {
+        .browserPageToolbarItem(id: "history.clear", placement: .trailing) {
             Button("Clear", role: .destructive) { app.library.clearHistory() }
                 .disabled(app.library.history.isEmpty)
         }

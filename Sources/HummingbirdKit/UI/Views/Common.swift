@@ -8,7 +8,7 @@ struct RemoteImage: View {
     var contentMode: ContentMode = .fill
 
     var body: some View {
-        AsyncImage(url: url) { phase in
+        DecodedAsyncImage(url: url) { phase in
             switch phase {
             case .success(let image): image.resizable().aspectRatio(contentMode: contentMode)
             case .failure: Color.secondary.opacity(0.15).overlay(Image(systemName: "photo").foregroundStyle(.secondary))

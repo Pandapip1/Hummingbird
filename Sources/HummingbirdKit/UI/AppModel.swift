@@ -4,9 +4,6 @@ import Observation
 import os
 import ATProtoKit
 import ATAppSync
-#if DEBUG && os(iOS)
-import UIKit
-#endif
 
 /// Owns the long-lived services and wires them together.
 @MainActor
@@ -124,58 +121,26 @@ final class AppModel {
          stores: AppDataStores,
          localProfileID suppliedLocalProfileID: UUID? = nil,
          localNetworkSyncEnabled suppliedLocalNetworkSyncEnabled: Bool? = nil,
-         permissions suppliedPermissions: PermissionGate? = nil) {
+         permissions suppliedPermissions: PermissionGate? = nil,
+         openedProfile: OpenedLocalProfile? = nil,
+         pluginCredentials: PreloadedPluginCredentials? = nil) {
         let defaults = stores.defaults
-        let localProfileID: UUID
-        if let suppliedLocalProfileID {
-            localProfileID = suppliedLocalProfileID
-        } else if let restored = stores.selectedLocalProfileID {
-            localProfileID = restored
-        } else {
-            localProfileID = UUID()
-            defaults.set(localProfileID.uuidString, forKey: AppDataStores.localProfileIDKey)
-        }
+        let profile = openedProfile ?? OpenedLocalProfile.open(stores: stores, localProfileID: suppliedLocalProfileID)
+        let localProfileID = profile.localProfileID
         let credentialStore = stores.credentialStore
         let storage = stores.storage
-        // Opening the profile reads (or creates) this instance's identity keys
-        // in the credential store. A store that refuses them leaves the
-        // profile without peer messaging; the reason is kept and shown rather
-        // than reported later as a generic "unavailable".
-        let profileRegistry: AppSyncProfileRegistry?
-        var peerService: AppSyncPeerService?
-        var peerServiceFailure: (any Error)?
-        do {
-            let registry = try AppSyncProfileRegistry(
-                credentialStore: credentialStore, storageDirectory: stores.appSyncDirectory
-            )
-            profileRegistry = registry
-            do {
-                peerService = try registry.ensureProfile(
-                    id: localProfileID, migrateLegacyIdentity: true
-                ).peerService
-            } catch {
-                peerServiceFailure = error
-            }
-        } catch {
-            profileRegistry = nil
-            peerServiceFailure = error
-        }
+        let profileRegistry = profile.registry
+        let peerService = profile.peerService
+        let peerServiceFailure = profile.peerServiceFailure
         let localNetworkSyncEnabled = suppliedLocalNetworkSyncEnabled
             ?? defaults.bool(forKey: Self.localNetworkSyncEnabledKey)
-        let storagePrefix = "profile.\(localProfileID.uuidString.lowercased())."
-        let profileChanges = ProfileChangeStore(
-            storageDirectory: stores.profileSyncDirectory,
-            signer: try? peerService?.peer.mutationSigner()
-        )
-        do {
-            _ = try profileChanges.activate(localProfileID: localProfileID)
-        } catch {
-            assertionFailure("Could not create the local profile: \(error)")
-        }
+        let storagePrefix = profile.storagePrefix
+        let profileChanges = profile.changes
         let plugins = PluginManager(
             installed: persistence.plugins, profileChanges: profileChanges,
             storage: storage, credentialStore: credentialStore,
-            storageName: storagePrefix + "plugins", credentialNamespace: storagePrefix
+            storageName: storagePrefix + "plugins", credentialNamespace: storagePrefix,
+            preloadedCredentials: pluginCredentials
         )
         let library = LibraryStore(
             snapshot: persistence.library, profileChanges: profileChanges,
@@ -283,8 +248,8 @@ final class AppModel {
         let localNetworkSync = self.localNetworkSync
         Task { await localNetworkSync.applyStoredSetting() }
         HummingbirdDebug.register(self)
-        #if DEBUG && os(iOS)
-        RenderStallMonitor.shared.start { [weak self] in
+        #if DEBUG
+        MainThreadWatchdog.shared.start(log: PerformanceReports.store(for: stores).stallLog) { [weak self] in
             guard let self else { return [:] }
             let player = self.activePlayerForDebug
             return [
@@ -419,49 +384,6 @@ struct AppPersistenceSnapshot: Sendable {
     }
 }
 
-#if DEBUG && os(iOS)
-/// Marks frames that arrive 250 ms or more late, in debug builds, as
-/// `RenderStall` signpost events (Instruments: os_signpost, category
-/// `performance`) and log entries carrying what the app was doing. Instruments'
-/// Hangs and Hitches instruments and MetricKit hang diagnostics give the
-/// stacks; this adds app context they cannot know.
-@MainActor
-private final class RenderStallMonitor: NSObject {
-    static let shared = RenderStallMonitor()
-    private var displayLink: CADisplayLink?
-    private var previousTimestamp: CFTimeInterval?
-    private var context: (() -> [String: String])?
-
-    func start(context: @escaping () -> [String: String]) {
-        self.context = context
-        guard displayLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
-        link.add(to: .main, forMode: .common)
-        displayLink = link
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(reset), name: UIApplication.didBecomeActiveNotification, object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(reset), name: UIApplication.didEnterBackgroundNotification, object: nil
-        )
-    }
-
-    @objc private func reset() { previousTimestamp = nil }
-
-    @objc private func tick(_ link: CADisplayLink) {
-        defer { previousTimestamp = link.timestamp }
-        guard let previousTimestamp else { return }
-        let gap = link.timestamp - previousTimestamp
-        guard gap >= 0.25 else { return }
-        let milliseconds = Int((gap * 1_000).rounded())
-        let state = (context?() ?? [:]).sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
-        OSSignposter.performance.emitEvent("RenderStall", "ms=\(milliseconds)")
-        // The route can name a URL, so the state is private.
-        Logger.performance.notice("render_stall ms=\(milliseconds) \(state)")
-    }
-}
-#endif
-
 private extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
@@ -491,5 +413,76 @@ extension AppModel: OAuthTabHost {
         if wasActive, let returnTabID, contentTabs.contains(where: { $0.id == returnTabID }) {
             activeTabID = returnTabID
         }
+    }
+}
+
+/// The local profile's identity, peer service and change journal. Opening it
+/// reads (or creates) the instance's identity keys in the credential store
+/// and decodes the journal, so app launch does it away from the main actor
+/// (`HummingbirdRoot.prepared`).
+struct OpenedLocalProfile: Sendable {
+    let localProfileID: UUID
+    /// Where this profile's keys live in `AppDataStores`.
+    var storagePrefix: String { "profile.\(localProfileID.uuidString.lowercased())." }
+    let registry: AppSyncProfileRegistry?
+    let peerService: AppSyncPeerService?
+    let peerServiceFailure: (any Error)?
+    let changes: ProfileChangeStore
+
+    @concurrent
+    static func openInBackground(stores: AppDataStores, localProfileID: UUID?) async -> Self {
+        open(stores: stores, localProfileID: localProfileID)
+    }
+
+    /// Without a `localProfileID`, opens the profile `stores` last selected,
+    /// or creates one.
+    static func open(stores: AppDataStores, localProfileID suppliedLocalProfileID: UUID?) -> Self {
+        // The permission ledger, made next on the main actor, is keyed by the
+        // app's code-signing identity; those Security calls belong here.
+        AppSigningIdentity.prepare()
+        let localProfileID: UUID
+        if let suppliedLocalProfileID {
+            localProfileID = suppliedLocalProfileID
+        } else if let restored = stores.selectedLocalProfileID {
+            localProfileID = restored
+        } else {
+            localProfileID = UUID()
+            stores.defaults.set(localProfileID.uuidString, forKey: AppDataStores.localProfileIDKey)
+        }
+        // A store that refuses the identity keys leaves the profile without
+        // peer messaging; the reason is kept and shown rather than reported
+        // later as a generic "unavailable".
+        let registry: AppSyncProfileRegistry?
+        var peerService: AppSyncPeerService?
+        var peerServiceFailure: (any Error)?
+        do {
+            let opened = try AppSyncProfileRegistry(
+                credentialStore: stores.credentialStore, storageDirectory: stores.appSyncDirectory
+            )
+            registry = opened
+            do {
+                peerService = try opened.ensureProfile(
+                    id: localProfileID, migrateLegacyIdentity: true
+                ).peerService
+            } catch {
+                peerServiceFailure = error
+            }
+        } catch {
+            registry = nil
+            peerServiceFailure = error
+        }
+        let changes = ProfileChangeStore(
+            storageDirectory: stores.profileSyncDirectory,
+            signer: try? peerService?.peer.mutationSigner()
+        )
+        do {
+            _ = try changes.activate(localProfileID: localProfileID)
+        } catch {
+            assertionFailure("Could not create the local profile: \(error)")
+        }
+        return Self(
+            localProfileID: localProfileID, registry: registry, peerService: peerService,
+            peerServiceFailure: peerServiceFailure, changes: changes
+        )
     }
 }

@@ -402,6 +402,9 @@ private struct ApplicationLifecycleModifier: ViewModifier {
     func body(content: Content) -> some View {
         #if canImport(SwiftUI) && !BACKEND_GTK
         content.onChange(of: scenePhase) { _, phase in
+            #if DEBUG
+            MainThreadWatchdog.shared.setActive(phase == .active)
+            #endif
             if phase == .background {
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()

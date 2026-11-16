@@ -59,7 +59,7 @@ final class PluginBrowserPackage: Sendable {
     }
 
     func close() {
-        onMain { $0.reset() }
+        onMain { $0.shutdown() }
     }
 
     /// Whether a page currently exists (it does not while torn down for idling).
@@ -89,6 +89,11 @@ private final class BrowserController {
     private var url: URL?
     private var session: BrowserSession?
     private var idleTask: Task<Void, Never>?
+    /// The one web view this plugin's pages load in, kept until the plugin
+    /// stops. Starting a web view launches a WebContent process, and WebKit
+    /// then registers every user-installed font on the main thread (over half
+    /// a second with many fonts), so it happens once per plugin, not per page.
+    private var view: BrowserView?
 
     nonisolated init(idleTimeout: Duration, callback: @escaping @Sendable (String, String) -> Void) {
         self.idleTimeout = idleTimeout
@@ -99,6 +104,13 @@ private final class BrowserController {
         closeSession()
         scripts.removeAll()
         url = nil
+    }
+
+    /// The plugin stopped: its web view goes too.
+    func shutdown() {
+        reset()
+        view?.destroy()
+        view = nil
     }
 
     var hasSession: Bool { session != nil }
@@ -128,7 +140,9 @@ private final class BrowserController {
     }
 
     private func makeSession(_ url: URL) -> BrowserSession {
-        let session = BrowserSession(scripts: scripts, callback: callback) { [weak self] in
+        let view = self.view ?? BrowserView()
+        self.view = view
+        let session = BrowserSession(view: view, scripts: scripts, callback: callback) { [weak self] in
             self?.scheduleIdleTeardown()
         }
         session.load(url)
@@ -167,7 +181,7 @@ private final class BrowserController {
 }
 
 @MainActor
-private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+private final class BrowserSession: NSObject, WKNavigationDelegate {
     private let callback: @Sendable (String, String) -> Void
     private let activity: @MainActor () -> Void
     private let loaded = DispatchSemaphore(value: 0)
@@ -190,45 +204,30 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     }
     static let maximumLoadWait: TimeInterval = 60
 
-    init(scripts: [String], callback: @escaping @Sendable (String, String) -> Void,
+    private let view: BrowserView
+
+    /// Takes over `view` for one page: its scripts replace the previous
+    /// page's, and the page's data is cleared before it loads.
+    init(view: BrowserView, scripts: [String], callback: @escaping @Sendable (String, String) -> Void,
          activity: @escaping @MainActor () -> Void) {
+        self.view = view
         self.callback = callback
         self.activity = activity
-        let configuration = WKWebViewConfiguration()
-        // Each page starts empty and nothing it stores outlives it.
-        configuration.websiteDataStore = .nonPersistent()
-        // The page is never placed in a window, so WebKit treats it as
-        // inactive and by default suspends it: timers stall and script-heavy
-        // documents never finish loading. Its scripts must keep running while
-        // it exists; the controller bounds how long that is.
-        configuration.preferences.inactiveSchedulingPolicy = .none
-        // Nothing here is ever watched or heard.
-        configuration.mediaTypesRequiringUserActionForPlayback = .all
-        configuration.allowsAirPlayForMediaPlayback = false
-        #if os(iOS) || os(visionOS)
-        configuration.allowsPictureInPictureMediaPlayback = false
-        #endif
-        configuration.suppressesIncrementalRendering = true
-        let controller = configuration.userContentController
-        controller.addUserScript(WKUserScript(
-            source: "window.__GJ = { callback: (id, value) => window.webkit.messageHandlers.hummingbirdBrowser.postMessage({ id: String(id), value: String(value) }) };",
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        ))
-        for script in scripts {
-            controller.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-        }
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = view.webView
         super.init()
-        controller.add(self, name: "hummingbirdBrowser")
+        view.prepare(scripts: scripts)
+        view.router.session = self
         webView.navigationDelegate = self
     }
 
     func load(_ url: URL) {
         Task { [weak self] in
             let rules = await SubresourceRules.shared.list()
-            guard let self, self.webView.navigationDelegate != nil else { return }
-            if let rules { self.webView.configuration.userContentController.add(rules) }
+            guard let self, self.isCurrent else { return }
+            // Each page starts empty, as if in a fresh data store.
+            await self.view.clearData()
+            guard self.isCurrent else { return }
+            if let rules { self.view.addRules(rules) }
             self.loadSignpost = OSSignposter.plugin.beginInterval(
                 "BrowserPageLoad", id: OSSignposter.plugin.makeSignpostID(), "host=\(url.host ?? "unknown", privacy: .public)"
             )
@@ -286,10 +285,11 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
         }
     }
 
+    /// Whether this page still owns the web view.
+    private var isCurrent: Bool { view.router.session === self }
+
     func close() {
-        webView.stopLoading()
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "hummingbirdBrowser")
-        webView.navigationDelegate = nil
+        if isCurrent { view.park() }
         pendingCallbacks.removeAll()
         for (id, _) in scriptSignposts { endScriptSignpost(id, outcome: "closed") }
     }
@@ -298,8 +298,7 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { signalLoaded() }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { signalLoaded() }
 
-    func userContentController(_ userContentController: WKUserContentController,
-                               didReceive message: WKScriptMessage) {
+    func receive(_ message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let id = body["id"] as? String else { return }
         pendingCallbacks.remove(id)
         endScriptSignpost(id, outcome: "callback")
@@ -320,6 +319,91 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
             self.loadSignpost = nil
         }
         loaded.signal()
+    }
+}
+
+/// A plugin's web view, reused page after page: it is never placed in a
+/// window, keeps nothing on disk (a non-persistent data store, cleared before
+/// every page), and only the current page's scripts are installed.
+@MainActor
+private final class BrowserView {
+    let webView: WKWebView
+    let router = BrowserMessageRouter()
+    private var rulesAdded = false
+
+    init() {
+        let configuration = WKWebViewConfiguration()
+        // Nothing a page stores outlives the plugin, and `clearData` empties
+        // it before each page.
+        configuration.websiteDataStore = .nonPersistent()
+        // The page is never placed in a window, so WebKit treats it as
+        // inactive and by default suspends it: timers stall and script-heavy
+        // documents never finish loading. Its scripts must keep running while
+        // it exists; the controller bounds how long that is.
+        configuration.preferences.inactiveSchedulingPolicy = .none
+        // Nothing here is ever watched or heard.
+        configuration.mediaTypesRequiringUserActionForPlayback = .all
+        configuration.allowsAirPlayForMediaPlayback = false
+        #if os(iOS) || os(visionOS)
+        configuration.allowsPictureInPictureMediaPlayback = false
+        #endif
+        configuration.suppressesIncrementalRendering = true
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        configuration.userContentController.add(router, name: "hummingbirdBrowser")
+    }
+
+    private var contentController: WKUserContentController { webView.configuration.userContentController }
+
+    /// Installs `scripts` (and the callback bridge) for the next page only.
+    func prepare(scripts: [String]) {
+        contentController.removeAllUserScripts()
+        contentController.addUserScript(WKUserScript(
+            source: "window.__GJ = { callback: (id, value) => window.webkit.messageHandlers.hummingbirdBrowser.postMessage({ id: String(id), value: String(value) }) };",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        ))
+        for script in scripts {
+            contentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        }
+    }
+
+    func addRules(_ rules: WKContentRuleList) {
+        guard !rulesAdded else { return }
+        contentController.add(rules)
+        rulesAdded = true
+    }
+
+    /// Removes everything pages have stored: cookies, storage, caches.
+    func clearData() async {
+        await webView.configuration.websiteDataStore.removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast
+        )
+    }
+
+    /// Between pages: nothing runs, and the page's memory is released, but
+    /// the WebContent process stays for the next page.
+    func park() {
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        router.session = nil
+        contentController.removeAllUserScripts()
+        webView.loadHTMLString("", baseURL: nil)
+    }
+
+    func destroy() {
+        park()
+        contentController.removeScriptMessageHandler(forName: "hummingbirdBrowser")
+    }
+}
+
+/// Delivers the page's callbacks to whichever page currently owns the view.
+@MainActor
+private final class BrowserMessageRouter: NSObject, WKScriptMessageHandler {
+    weak var session: BrowserSession?
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        session?.receive(message)
     }
 }
 

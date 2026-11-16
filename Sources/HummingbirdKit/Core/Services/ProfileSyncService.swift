@@ -70,16 +70,14 @@ final class ProfileSyncService {
     var isAccountConnected: Bool { appSync != nil }
 
     func bootstrapCurrentProfile() {
-        guard let library, let plugins, changes.mutationLog?.isEmpty == true else { return }
-        for value in library.subscriptions { changes.put(.subscription(value)) }
-        for value in library.playlists { changes.put(.playlist(value)) }
-        for (position, value) in library.watchLater.enumerated() {
-            changes.put(.watchLater(.init(video: value, position: position)))
-        }
-        for value in library.history { changes.put(.history(value)) }
-        for value in plugins.installed {
-            if let synced = SyncedPlugin(value) { changes.put(.plugin(synced)) }
-        }
+        guard let library, let plugins else { return }
+        var entities: [ProfileEntity] = []
+        entities += library.subscriptions.map { .subscription($0) }
+        entities += library.playlists.map { .playlist($0) }
+        entities += library.watchLater.enumerated().map { .watchLater(.init(video: $1, position: $0)) }
+        entities += library.history.map { .history($0) }
+        entities += plugins.installed.compactMap { SyncedPlugin($0).map { .plugin($0) } }
+        changes.bootstrap(entities)
     }
 
     func sync() async {
@@ -141,20 +139,21 @@ final class ProfileSyncService {
 
     func peers() async throws -> [AppSyncPeerTrustSummary] {
         if let appSync { return try await appSync.peers() }
-        return peerService?.peers(appIDs: [HummingbirdProfileSchema.appID]) ?? []
+        guard let peerService else { return [] }
+        return await PeerTrust.peers(peerService)
     }
 
     func verifyPeer(_ code: AppSyncPeerVerificationCode) async throws {
         if let appSync {
             _ = try await appSync.completePeerVerification(code)
         } else if let peerService {
-            _ = try peerService.verifyPeer(code, appIDs: [HummingbirdProfileSchema.appID])
+            try await PeerTrust.verify(code, with: peerService)
         } else { throw PairingError.unavailable }
     }
 
     func distrustPeer(_ peer: AppSyncPeer) async throws {
         if let appSync { try await appSync.distrust(peer) }
-        else if let peerService { _ = try peerService.revokeTrust(with: peer) }
+        else if let peerService { try await PeerTrust.revoke(peer, with: peerService) }
         else { throw PairingError.unavailable }
         // The local revocation is authoritative even while the account server
         // is unreachable. A later sync will publish it through ATProto.
@@ -173,24 +172,43 @@ final class ProfileSyncService {
     }
 
     private func apply(_ records: [AppSyncMutation], needsUpload: Bool) async throws {
+        guard let mutationLog = changes.mutationLog, !records.isEmpty else { return }
+        // Merging rewrites the journal file, so it happens once per pull and
+        // away from the main actor; only the winning changes come back here.
+        let merged = try await Self.merge(records, into: mutationLog, needsUpload: needsUpload)
         guard let library, let plugins else { return }
-        for event in records {
-            guard let mutationLog = changes.mutationLog else { return }
-            guard try mutationLog.merge(event, needsUpload: needsUpload) else { continue }
+        var decodeFailure: (any Error)?
+        for event in merged {
             if event.operation == .delete {
                 if event.collection == HummingbirdProfileSchema.plugin {
                     plugins.applyRemoteDelete(key: event.recordKey)
                 } else {
                     library.applyRemoteDelete(collection: event.collection, key: event.recordKey)
                 }
-            } else if let payload = event.value,
-                      let entity = try ProfileEntity.decode(collection: event.collection, payload: payload) {
-                switch entity {
-                case .plugin(let plugin): try await plugins.applyRemote(plugin)
-                default: library.applyRemote(entity, deleted: false)
-                }
+                continue
+            }
+            guard let payload = event.value else { continue }
+            let entity: ProfileEntity?
+            do { entity = try ProfileEntity.decode(collection: event.collection, payload: payload) }
+            catch {
+                // One unreadable record does not hold back the rest; the
+                // pass still reports it.
+                decodeFailure = decodeFailure ?? error
+                continue
+            }
+            switch entity {
+            case .plugin(let plugin): try await plugins.applyRemote(plugin)
+            case let entity?: library.applyRemote(entity, deleted: false)
+            case nil: break
             }
         }
+        if let decodeFailure { throw decodeFailure }
+    }
+
+    @concurrent
+    private static func merge(_ records: [AppSyncMutation], into mutationLog: AppSyncMutationLog,
+                              needsUpload: Bool) async throws -> [AppSyncMutation] {
+        try mutationLog.merge(records, needsUpload: needsUpload)
     }
 
     private func applyMessages(_ messages: [AppSyncMessage]) async throws {
@@ -203,5 +221,24 @@ final class ProfileSyncService {
             plugins.saveAuth(transfer.auth, pluginID: transfer.pluginID)
             try await appSync.acknowledgeMessage(id: message.id)
         }
+    }
+}
+
+/// Peer-trust reads and writes verify signatures and rewrite the trust file,
+/// so they run away from the main actor.
+enum PeerTrust {
+    @concurrent
+    static func peers(_ service: AppSyncPeerService) async -> [AppSyncPeerTrustSummary] {
+        service.peers(appIDs: [HummingbirdProfileSchema.appID])
+    }
+
+    @concurrent
+    static func verify(_ code: AppSyncPeerVerificationCode, with service: AppSyncPeerService) async throws {
+        _ = try service.verifyPeer(code, appIDs: [HummingbirdProfileSchema.appID])
+    }
+
+    @concurrent
+    static func revoke(_ peer: AppSyncPeer, with service: AppSyncPeerService) async throws {
+        _ = try service.revokeTrust(with: peer)
     }
 }

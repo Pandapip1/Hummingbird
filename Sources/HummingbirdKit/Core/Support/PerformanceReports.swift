@@ -94,18 +94,32 @@ public struct PerformanceReportStore: Sendable {
         }
     }
 
-    /// One JSON file holding every stored payload, for sharing:
-    /// `{"reports": [{"file": name, "payload": {...}}, ...]}`.
+    /// Main-thread stalls the debug-build watchdog recorded on this device.
+    public var stallLog: StallLog { StallLog(cachesDirectory: directory.deletingLastPathComponent()) }
+
+    /// One JSON file holding every stored payload and recorded stall, for
+    /// sharing: `{"reports": [{"file": name, "payload": {...}}, ...],
+    /// "stalls": [{"date": ..., "milliseconds": ..., "context": {...}}, ...]}`.
     public func exportBundle(to destination: URL) throws -> URL? {
         let reports = reports()
-        guard !reports.isEmpty else { return nil }
+        let stalls = stallLog.records()
+        guard !reports.isEmpty || !stalls.isEmpty else { return nil }
         var entries: [[String: Any]] = []
         for url in reports {
             guard let data = try? Data(contentsOf: url),
                   let payload = try? JSONSerialization.jsonObject(with: data) else { continue }
             entries.append(["file": url.lastPathComponent, "payload": payload])
         }
-        let data = try JSONSerialization.data(withJSONObject: ["reports": entries], options: [.prettyPrinted, .sortedKeys])
+        let stallEntries: [[String: Any]] = stalls.map { record in
+            [
+                "date": ISO8601DateFormatter().string(from: record.date),
+                "milliseconds": record.milliseconds,
+                "context": record.context,
+            ]
+        }
+        let data = try JSONSerialization.data(
+            withJSONObject: ["reports": entries, "stalls": stallEntries], options: [.prettyPrinted, .sortedKeys]
+        )
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         let url = destination.appendingPathComponent("Hummingbird performance reports.json")
         try data.write(to: url, options: .atomic)
@@ -120,6 +134,75 @@ public struct PerformanceReportStore: Sendable {
                 try FileManager.default.removeItem(at: url)
             }
         }
+    }
+}
+
+/// Main-thread stalls recorded by the debug-build watchdog
+/// (`MainThreadWatchdog`), in `<caches>/Stalls/stalls.json`: the newest
+/// `maximumRecords`, none older than `maximumAge`. Exported with the MetricKit
+/// reports, so a device's stalls can be shared without log tooling. Writes
+/// happen in order on a background queue.
+public struct StallLog: Sendable {
+    public struct Record: Codable, Equatable, Sendable {
+        public var date: Date
+        public var milliseconds: Int
+        /// What the app was doing (active tab, route, player state).
+        public var context: [String: String]
+    }
+
+    public let fileURL: URL
+    public let maximumRecords: Int
+    public let maximumAge: TimeInterval
+    private static let writer = DispatchQueue(label: "com.eightybps.hummingbird.stall-log", qos: .utility)
+
+    public init(cachesDirectory: URL, maximumRecords: Int = 500, maximumAge: TimeInterval = 7 * 24 * 60 * 60) {
+        fileURL = cachesDirectory.appendingPathComponent("Stalls", isDirectory: true)
+            .appendingPathComponent("stalls.json")
+        self.maximumRecords = maximumRecords
+        self.maximumAge = maximumAge
+    }
+
+    /// Queues `record`; returns at once.
+    public func append(_ record: Record) {
+        Self.writer.async { [self] in
+            var records = load()
+            records.append(record)
+            store(records)
+        }
+    }
+
+    /// Waits until every record appended so far is written.
+    public func flush() async {
+        await withCheckedContinuation { continuation in
+            Self.writer.async { continuation.resume() }
+        }
+    }
+
+    /// Recorded stalls within the limits, oldest first.
+    public func records() -> [Record] {
+        Self.writer.sync { bounded(load()) }
+    }
+
+    private func load() -> [Record] {
+        guard let data = try? Data(contentsOf: fileURL) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([Record].self, from: data)) ?? []
+    }
+
+    private func store(_ records: [Record]) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(bounded(records)) else { return }
+        try? FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try? data.write(to: fileURL, options: .atomic)
+    }
+
+    private func bounded(_ records: [Record]) -> [Record] {
+        let cutoff = Date().addingTimeInterval(-maximumAge)
+        return Array(records.filter { $0.date >= cutoff }.suffix(maximumRecords))
     }
 }
 

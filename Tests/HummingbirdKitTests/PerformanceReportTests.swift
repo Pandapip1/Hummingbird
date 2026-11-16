@@ -39,6 +39,32 @@ final class PerformanceReportTests: XCTestCase {
         XCTAssertNotNil(reports.first?["payload"] as? [String: Any])
     }
 
+    func testStallLogKeepsNewestRecordsWithinLimits() async throws {
+        let stores = makeTestStores()
+        let log = StallLog(cachesDirectory: stores.cachesDirectory, maximumRecords: 2, maximumAge: 60 * 60)
+        let now = Date()
+        log.append(.init(date: now.addingTimeInterval(-2 * 60 * 60), milliseconds: 900, context: [:]))
+        log.append(.init(date: now.addingTimeInterval(-3), milliseconds: 300, context: ["route": "home"]))
+        log.append(.init(date: now.addingTimeInterval(-2), milliseconds: 400, context: [:]))
+        log.append(.init(date: now.addingTimeInterval(-1), milliseconds: 500, context: [:]))
+        await log.flush()
+        XCTAssertEqual(log.records().map(\.milliseconds), [400, 500])
+        XCTAssertTrue(log.fileURL.path.hasPrefix(stores.cachesDirectory.path))
+    }
+
+    func testExportIncludesRecordedStalls() async throws {
+        let stores = makeTestStores()
+        let store = PerformanceReportStore(cachesDirectory: stores.cachesDirectory)
+        store.stallLog.append(.init(date: Date(), milliseconds: 1_234, context: ["route": "library"]))
+        await store.stallLog.flush()
+        let url = try XCTUnwrap(try store.exportBundle(to: makeTestDirectory()))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let stalls = try XCTUnwrap(object["stalls"] as? [[String: Any]])
+        XCTAssertEqual(stalls.first?["milliseconds"] as? Int, 1_234)
+        XCTAssertEqual((stalls.first?["context"] as? [String: String])?["route"], "library")
+        XCTAssertEqual((object["reports"] as? [Any])?.count, 0)
+    }
+
     #if canImport(MetricKit) && !os(tvOS)
     func testReporterStoresStandInDiagnosticsUnderTheirKinds() async throws {
         let store = PerformanceReportStore(cachesDirectory: makeTestStores().cachesDirectory)

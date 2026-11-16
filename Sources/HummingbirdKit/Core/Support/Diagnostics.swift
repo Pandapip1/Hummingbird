@@ -40,7 +40,7 @@ extension Logger {
     static let keychain = Logger(subsystem: Diagnostics.subsystem, category: "keychain")
     /// Permission prompts and records.
     static let permissions = Logger(subsystem: Diagnostics.subsystem, category: "permissions")
-    /// MetricKit payloads and render stalls.
+    /// MetricKit payloads and main-thread stalls.
     static let performance = Logger(subsystem: Diagnostics.subsystem, category: "performance")
 }
 
@@ -55,6 +55,6 @@ extension OSSignposter {
     static let account = OSSignposter(subsystem: Diagnostics.subsystem, category: "account")
     /// AppSync passes (`SyncPass`, `LANPull`, `PDSPull`).
     static let sync = OSSignposter(subsystem: Diagnostics.subsystem, category: "sync")
-    /// Render stalls (`RenderStall` events).
+    /// Main-thread stalls (`RenderStall` intervals, from `MainThreadWatchdog`).
     static let performance = OSSignposter(subsystem: Diagnostics.subsystem, category: "performance")
 }

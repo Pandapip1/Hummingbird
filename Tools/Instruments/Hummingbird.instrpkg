@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Hummingbird's Instruments package: one instrument that shows the app's
+  signposts (subsystem com.eightybps.hummingbird) as a timeline lane per
+  category, an interval table, a per-name summary and an event table.
+
+  Build:   Tools/Instruments/build.sh   (writes .build/instruments/Hummingbird.instrdst)
+  Install: double-click the .instrdst, or pass it to xctrace with
+           Tools/Instruments/record.sh (which also adds Time Profiler, Hangs,
+           Points of Interest, os_signpost, Allocations and Network).
+
+  Interval and event names are emitted by the OSSignposter calls in
+  HummingbirdKit, ATAppSync and AppModel's render-stall monitor; see
+  Documentation/Debugging.md for the list.
+-->
+<package>
+    <id>com.eightybps.hummingbird.instruments</id>
+    <title>Hummingbird</title>
+    <owner>
+        <name>Hummingbird</name>
+    </owner>
+
+    <os-signpost-interval-schema>
+        <id>hummingbird-interval</id>
+        <title>Hummingbird Interval</title>
+
+        <subsystem>"com.eightybps.hummingbird"</subsystem>
+        <category>?signpost-category</category>
+        <name>?signpost-name</name>
+
+        <start-pattern>
+            <raw-message>?begin-text</raw-message>
+        </start-pattern>
+        <end-pattern>
+            <raw-message>?end-text</raw-message>
+        </end-pattern>
+
+        <column>
+            <mnemonic>category</mnemonic>
+            <title>Category</title>
+            <type>category</type>
+            <expression>?signpost-category</expression>
+        </column>
+        <column>
+            <mnemonic>name</mnemonic>
+            <title>Name</title>
+            <type>signpost-name</type>
+            <expression>?signpost-name</expression>
+        </column>
+        <column>
+            <mnemonic>detail</mnemonic>
+            <title>Detail</title>
+            <type>os-log-metadata</type>
+            <expression>?begin-text</expression>
+        </column>
+        <column>
+            <mnemonic>outcome</mnemonic>
+            <title>Outcome</title>
+            <type>os-log-metadata</type>
+            <expression>?end-text</expression>
+        </column>
+    </os-signpost-interval-schema>
+
+    <os-signpost-point-schema>
+        <id>hummingbird-event</id>
+        <title>Hummingbird Event</title>
+
+        <subsystem>"com.eightybps.hummingbird"</subsystem>
+        <category>?signpost-category</category>
+        <name>?signpost-name</name>
+
+        <pattern>
+            <raw-message>?event-text</raw-message>
+        </pattern>
+
+        <column>
+            <mnemonic>category</mnemonic>
+            <title>Category</title>
+            <type>category</type>
+            <expression>?signpost-category</expression>
+        </column>
+        <column>
+            <mnemonic>name</mnemonic>
+            <title>Name</title>
+            <type>signpost-name</type>
+            <expression>?signpost-name</expression>
+        </column>
+        <column>
+            <mnemonic>detail</mnemonic>
+            <title>Detail</title>
+            <type>os-log-metadata</type>
+            <expression>?event-text</expression>
+        </column>
+    </os-signpost-point-schema>
+
+    <instrument>
+        <id>com.eightybps.hummingbird.signposts</id>
+        <title>Hummingbird</title>
+        <category>Behavior</category>
+        <purpose>Shows Hummingbird's signposts: plugin calls and timeouts, the plugin browser (BotGuard), content loading and UMP refreshes, media proxy requests and segments, sync passes and LAN requests, sign-in steps, keychain reads and render stalls.</purpose>
+        <icon>Points of Interest</icon>
+
+        <create-table>
+            <id>hummingbird-intervals</id>
+            <schema-ref>hummingbird-interval</schema-ref>
+        </create-table>
+        <create-table>
+            <id>hummingbird-events</id>
+            <schema-ref>hummingbird-event</schema-ref>
+        </create-table>
+
+        <graph>
+            <title>Hummingbird</title>
+            <lane>
+                <title>Intervals</title>
+                <table-ref>hummingbird-intervals</table-ref>
+                <plot-template>
+                    <instance-by>category</instance-by>
+                    <label-format>%s</label-format>
+                    <value-from>name</value-from>
+                    <label-from>name</label-from>
+                    <disable-implicit-qualifier>true</disable-implicit-qualifier>
+                </plot-template>
+            </lane>
+            <lane>
+                <title>Events</title>
+                <table-ref>hummingbird-events</table-ref>
+                <plot>
+                    <value-from>name</value-from>
+                    <label-from>detail</label-from>
+                </plot>
+            </lane>
+        </graph>
+
+        <list>
+            <title>Intervals</title>
+            <table-ref>hummingbird-intervals</table-ref>
+            <column>start</column>
+            <column>duration</column>
+            <column>category</column>
+            <column>name</column>
+            <column>detail</column>
+            <column>outcome</column>
+        </list>
+
+        <aggregation>
+            <title>Summary by Name</title>
+            <table-ref>hummingbird-intervals</table-ref>
+            <hierarchy>
+                <level>
+                    <column>category</column>
+                </level>
+                <level>
+                    <column>name</column>
+                </level>
+            </hierarchy>
+            <column><count/></column>
+            <column><sum>duration</sum></column>
+            <column><average>duration</average></column>
+            <column><max>duration</max></column>
+        </aggregation>
+
+        <list>
+            <title>Events</title>
+            <table-ref>hummingbird-events</table-ref>
+            <column>timestamp</column>
+            <column>category</column>
+            <column>name</column>
+            <column>detail</column>
+        </list>
+    </instrument>
+</package>

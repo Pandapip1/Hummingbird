@@ -174,6 +174,9 @@ struct CredentialStorageSettingsSection: View {
     @State private var revision = 0
     @State private var showingConsent = false
     @State private var confirmingRevoke = false
+    /// Composed when the toggle is switched off, not while rendering: it
+    /// lists keychain items.
+    @State private var revokeMessage = ""
     @State private var message: String?
 
     var body: some View {
@@ -189,7 +192,12 @@ struct CredentialStorageSettingsSection: View {
                 Toggle("Allow login keychain fallback", isOn: Binding(
                     get: { consent == .accepted },
                     set: { allowed in
-                        if allowed { showingConsent = true } else { confirmingRevoke = true }
+                        if allowed {
+                            showingConsent = true
+                        } else {
+                            revokeMessage = Self.composeRevokeMessage(store: store, status: status)
+                            confirmingRevoke = true
+                        }
                     }
                 ))
             }
@@ -222,7 +230,7 @@ struct CredentialStorageSettingsSection: View {
             Button("Cancel", role: .cancel) {}
             Button("Delete and Stop Using", role: .destructive) { revoke() }
         } message: {
-            Text(Self.revokeMessage(store: store, status: status))
+            Text(revokeMessage)
         }
     }
 
@@ -253,7 +261,7 @@ struct CredentialStorageSettingsSection: View {
         revision &+= 1
     }
 
-    private static func revokeMessage(store: KeychainCredentialStore, status: CredentialStoreStatus) -> String {
+    private static func composeRevokeMessage(store: KeychainCredentialStore, status: CredentialStoreStatus) -> String {
         let items: String
         do {
             let count = try store.loginKeychainItemAccounts().count

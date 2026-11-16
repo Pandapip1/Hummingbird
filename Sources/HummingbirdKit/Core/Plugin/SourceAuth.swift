@@ -39,7 +39,7 @@ public extension CredentialStore {
 /// SwiftOpenUI (Data Protection Keychain or Secret Service) through
 /// `KeychainCredentialStore`, which owns the login-keychain fallback policy.
 public enum AuthKeychain {
-    nonisolated(unsafe) public static var store: CredentialStore = KeychainCredentialStore()
+    nonisolated(unsafe) public static var store: CredentialStore = KeychainCredentialStore.shared()
 
     /// The platform store, when `store` is one, for storage-mode decisions.
     public static var keychain: KeychainCredentialStore? { store as? KeychainCredentialStore }

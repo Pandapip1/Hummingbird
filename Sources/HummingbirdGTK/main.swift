@@ -34,7 +34,7 @@ MainActor.assumeIsolated {
     // native app bundle. Give it its own Keychain service so macOS never tries
     // to authorize every native-app legacy item against a different executable
     // identity. It remains a real Keychain store, not a plaintext debug store.
-    AuthKeychain.store = KeychainCredentialStore(serviceNamespace: "gtk")
+    AuthKeychain.store = KeychainCredentialStore.shared(serviceNamespace: "gtk")
     AuthKeychain.registerVault()
     #endif
     // Register backend fonts before the WebKit bootstrap initializes GTK/Pango's

@@ -20,6 +20,7 @@ final class FakeKeychainBackend: KeychainItemBackend {
     private struct State {
         var items: [Key: Data] = [:]
         var dataProtectionStatus: OSStatus?
+        var accesses = KeychainAccessCounts()
     }
 
     private let state: Mutex<State>
@@ -45,9 +46,14 @@ final class FakeKeychainBackend: KeychainItemBackend {
         }
     }
 
+    var accesses: KeychainAccessCounts { state.withLock { $0.accesses } }
+
+    func resetAccesses() { state.withLock { $0.accesses = KeychainAccessCounts() } }
+
     func copyMatching(_ query: [CFString: Any]) -> (status: OSStatus, item: CFTypeRef?) {
         let dataProtection = Self.isDataProtection(query)
         return state.withLock { state in
+            state.accesses.record(dataProtection ? "copy.dp" : "copy.login", query)
             if dataProtection, state.dataProtectionStatus != nil { return (errSecItemNotFound, nil) }
             let service = query[kSecAttrService] as? String
             if query[kSecMatchLimit] as? String == kSecMatchLimitAll as String {
@@ -63,6 +69,7 @@ final class FakeKeychainBackend: KeychainItemBackend {
 
     func add(_ attributes: [CFString: Any]) -> OSStatus {
         state.withLock { state in
+            state.accesses.record(Self.isDataProtection(attributes) ? "add.dp" : "add.login", attributes)
             if Self.isDataProtection(attributes), let status = state.dataProtectionStatus { return status }
             guard let key = Self.key(attributes), let value = Self.copy(attributes[kSecValueData]) else {
                 return errSecParam
@@ -75,6 +82,7 @@ final class FakeKeychainBackend: KeychainItemBackend {
 
     func update(_ query: [CFString: Any], attributes: [CFString: Any]) -> OSStatus {
         state.withLock { state in
+            state.accesses.record(Self.isDataProtection(query) ? "update.dp" : "update.login", query)
             if Self.isDataProtection(query), let status = state.dataProtectionStatus { return status }
             guard let key = Self.key(query), let value = Self.copy(attributes[kSecValueData]) else {
                 return errSecParam
@@ -87,6 +95,7 @@ final class FakeKeychainBackend: KeychainItemBackend {
 
     func delete(_ query: [CFString: Any]) -> OSStatus {
         state.withLock { state in
+            state.accesses.record(Self.isDataProtection(query) ? "delete.dp" : "delete.login", query)
             if Self.isDataProtection(query), let status = state.dataProtectionStatus { return status }
             guard let key = Self.key(query) else { return errSecParam }
             return state.items.removeValue(forKey: key) == nil ? errSecItemNotFound : errSecSuccess
@@ -118,5 +127,25 @@ final class MemoryFallbackConsentStore: LoginKeychainFallbackConsentStore {
 
     func consent() -> LoginKeychainFallbackConsent { value.withLock { $0 } }
     func setConsent(_ consent: LoginKeychainFallbackConsent) { value.withLock { $0 = consent } }
+}
+#endif
+
+#if os(macOS)
+/// Every Security item call a test made, by operation and by account.
+struct KeychainAccessCounts: Equatable, Sendable {
+    private(set) var byOperation: [String: Int] = [:]
+    /// Lookups that return secret data, per account: each one is a potential
+    /// keychain access prompt for login-keychain items.
+    private(set) var secretReads: [String: Int] = [:]
+
+    var total: Int { byOperation.values.reduce(0, +) }
+    var totalSecretReads: Int { secretReads.values.reduce(0, +) }
+
+    mutating func record(_ operation: String, _ query: [CFString: Any]) {
+        byOperation[operation, default: 0] += 1
+        if query[kSecReturnData] as? Bool == true, let account = query[kSecAttrAccount] as? String {
+            secretReads[account, default: 0] += 1
+        }
+    }
 }
 #endif

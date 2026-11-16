@@ -100,11 +100,38 @@ public struct UserDefaultsLoginKeychainFallbackConsentStore: LoginKeychainFallba
 /// again, it is used immediately and any login-keychain items are offered for
 /// migration.
 public final class KeychainCredentialStore: CredentialStore {
+    /// What this process last read from or wrote to the active store for an
+    /// account. `nil` records that the item is absent.
+    private struct CachedSecret: Sendable {
+        let value: SecureBytes?
+    }
+
+    private static let sharedStores = Mutex<[String: KeychainCredentialStore]>([:])
+
+    /// The process-wide store for a service. Every caller shares its
+    /// availability probe and its secret cache, so each item is read from the
+    /// keychain at most once per process. (A login-keychain read is a
+    /// potential access prompt.)
+    public static func shared(serviceNamespace: String? = nil) -> KeychainCredentialStore {
+        sharedStores.withLock { stores in
+            let key = service(namespace: serviceNamespace)
+            if let store = stores[key] { return store }
+            let store = KeychainCredentialStore(serviceNamespace: serviceNamespace)
+            stores[key] = store
+            return store
+        }
+    }
+
+    /// Secrets held in protected memory after their first keychain access.
+    /// Held under the lock across the keychain call, so concurrent first
+    /// reads of an item produce one access (and at most one prompt).
+    private let secrets = Mutex<[String: CachedSecret]>([:])
     private let preferred: PlatformCredentialVault
     #if os(macOS)
     private let fallback: PlatformCredentialVault
     private let consentStore: any LoginKeychainFallbackConsentStore
-    /// The probe writes a marker item, so it runs once per store.
+    /// The probe writes a marker item, so it runs once per store; `shared`
+    /// gives each service one store per process.
     private let preferredAvailability = Mutex<CredentialVaultAvailability?>(nil)
     #endif
 
@@ -151,7 +178,8 @@ public final class KeychainCredentialStore: CredentialStore {
     }
 
     public func requiresExplicitUnlock() -> Bool {
-        guard status == .dataProtection, let account = activeInstanceAccount else { return false }
+        guard status == .dataProtection, let account = activeInstanceAccount,
+              secrets.withLock({ $0[account] }) == nil else { return false }
         return preferred.access(to: account) == .locked
     }
 
@@ -160,9 +188,35 @@ public final class KeychainCredentialStore: CredentialStore {
         try preferred.requestAccess(to: account)
     }
 
-    public func load(account: String) throws -> SecureBytes? { try activeVault().load(account: account) }
-    public func save(_ secret: SecureBytes, account: String) throws { try activeVault().save(secret, account: account) }
-    public func delete(account: String) throws { try activeVault().delete(account: account) }
+    public func load(account: String) throws -> SecureBytes? {
+        let vault = try activeVault()
+        return try secrets.withLock { secrets in
+            if let known = secrets[account] { return known.value }
+            let loaded = try vault.load(account: account)
+            secrets[account] = CachedSecret(value: loaded)
+            return loaded
+        }
+    }
+
+    /// Writes only when the value differs from what this process last read or
+    /// wrote, so re-saving unchanged state never touches the keychain.
+    public func save(_ secret: SecureBytes, account: String) throws {
+        let vault = try activeVault()
+        try secrets.withLock { secrets in
+            if let known = secrets[account], known.value == secret { return }
+            try vault.save(secret, account: account)
+            secrets[account] = CachedSecret(value: secret)
+        }
+    }
+
+    public func delete(account: String) throws {
+        let vault = try activeVault()
+        try secrets.withLock { secrets in
+            if let known = secrets[account], known.value == nil { return }
+            try vault.delete(account: account)
+            secrets[account] = CachedSecret(value: nil)
+        }
+    }
 
     private func activeVault() throws -> PlatformCredentialVault {
         switch status {
@@ -174,6 +228,10 @@ public final class KeychainCredentialStore: CredentialStore {
         case .fallbackDeclined(let error): throw CredentialStoreAccessError.fallbackDeclined(error)
         #endif
         }
+    }
+
+    private func forgetSecrets() {
+        secrets.withLock { $0.removeAll() }
     }
 
     private var activeInstanceAccount: String? {
@@ -188,6 +246,7 @@ public final class KeychainCredentialStore: CredentialStore {
     /// Records the user's answer to the opt-in prompt.
     public func setLoginKeychainFallbackAllowed(_ allowed: Bool) {
         consentStore.setConsent(allowed ? .accepted : .declined)
+        forgetSecrets()
     }
 
     /// Withdraws consent and deletes every item Hummingbird keeps in the login
@@ -195,6 +254,7 @@ public final class KeychainCredentialStore: CredentialStore {
     /// even if a deletion fails.
     public func revokeLoginKeychainFallback() throws {
         consentStore.setConsent(.declined)
+        forgetSecrets()
         for account in try fallback.accounts() {
             try fallback.delete(account: account)
         }
@@ -240,6 +300,7 @@ public final class KeychainCredentialStore: CredentialStore {
             try fallback.delete(account: account)
         }
         consentStore.setConsent(.undecided)
+        forgetSecrets()
         return accounts.count
     }
 

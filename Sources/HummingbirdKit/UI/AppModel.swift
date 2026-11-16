@@ -126,6 +126,10 @@ final class AppModel {
          profileStorageDirectory: URL = Storage.directory.appendingPathComponent(
             "profile-sync", isDirectory: true
          ),
+         // Holds the local-profile registry, instance inboxes and trust facts.
+         // Every profile listed there is opened, and its identity keys read,
+         // when local sync starts, so tests must never use the real one.
+         appSyncStorageDirectory: URL = Storage.directory,
          localProfileID suppliedLocalProfileID: UUID? = nil,
          localNetworkSyncEnabled suppliedLocalNetworkSyncEnabled: Bool? = nil) {
         let localProfileID: UUID
@@ -147,7 +151,7 @@ final class AppModel {
         var peerServiceFailure: (any Error)?
         do {
             let registry = try AppSyncProfileRegistry(
-                credentialStore: credentialStore, storageDirectory: Storage.directory
+                credentialStore: credentialStore, storageDirectory: appSyncStorageDirectory
             )
             profileRegistry = registry
             do {

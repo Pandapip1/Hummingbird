@@ -22,12 +22,15 @@ final class TestCredentialStore: CredentialStore, @unchecked Sendable {
 
 @MainActor
 func makeTestAppModel(persistence: AppPersistenceSnapshot = .empty) -> AppModel {
-    AppModel(
+    // Never the real Storage.directory: AppModel registers its profile there.
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+        "HummingbirdProfileTests-\(UUID())", isDirectory: true
+    )
+    return AppModel(
         persistence: persistence,
         credentialStore: TestCredentialStore(),
-        profileStorageDirectory: FileManager.default.temporaryDirectory.appendingPathComponent(
-            "HummingbirdProfileTests-\(UUID())", isDirectory: true
-        ),
+        profileStorageDirectory: root.appendingPathComponent("profile-sync", isDirectory: true),
+        appSyncStorageDirectory: root,
         localProfileID: UUID(),
         localNetworkSyncEnabled: false
     )

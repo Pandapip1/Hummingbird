@@ -85,6 +85,11 @@ final class PluginManager {
     /// plugin screen instead of the credential silently going missing.
     private(set) var credentialStorageError: String?
 
+    /// Each plugin's stored sign-in and captcha cookies, read from the
+    /// credential store once per process when the plugin is installed or this
+    /// manager is created, never during view evaluation. Views, runtimes and
+    /// pairing read only this; writes update it after the store accepts them.
+    @ObservationIgnored private var storedCredentials: [String: PluginCredentials] = [:]
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
@@ -96,6 +101,11 @@ final class PluginManager {
         c.timeoutIntervalForRequest = 30
         return URLSession(configuration: c)
     }()
+
+    struct PluginCredentials: Sendable {
+        var auth: SourceAuth?
+        var captcha: SourceAuth?
+    }
 
     struct CaptchaRequest: Identifiable {
         let id = UUID()
@@ -110,6 +120,7 @@ final class PluginManager {
         self.profileChanges = profileChanges
         self.storageName = storageName
         self.credentialNamespace = credentialNamespace
+        for plugin in installed { loadCredentials(for: plugin.id) }
     }
 
     private func persist() { Storage.save(installed, name: storageName) }
@@ -127,23 +138,12 @@ final class PluginManager {
         if let existing = runtimePreparation[id] {
             preparation = existing
         } else {
-            let namespace = credentialNamespace
-            let created = Task.detached(priority: .userInitiated) { [weak self] in
-                var failure: (any Error)?
-                func stored(_ kind: String) -> SourceAuth? {
-                    do {
-                        return try AuthKeychain.load(pluginID: id, kind: kind, namespace: namespace)
-                    } catch {
-                        failure = error
-                        return nil
-                    }
-                }
-                let runtime = PluginRuntime(
+            let stored = credentials(for: id)
+            let created = Task.detached(priority: .userInitiated) {
+                PluginRuntime(
                     config: p.config, script: p.script, settings: p.settings,
-                    auth: stored("auth"), captcha: stored("captcha")
+                    auth: stored.auth, captcha: stored.captcha
                 )
-                if let failure { await self?.recordCredentialFailure(failure) }
-                return runtime
             }
             runtimePreparation[id] = created
             preparation = created
@@ -272,6 +272,7 @@ final class PluginManager {
         }
         installed.append(entry)
         installed.sort { $0.config.name.localizedCaseInsensitiveCompare($1.config.name) == .orderedAscending }
+        loadCredentials(for: entry.id)
         invalidate(entry.id)
         persist()
         if !applyingRemoteChange { recordPlugin(entry) }
@@ -283,6 +284,7 @@ final class PluginManager {
         do {
             try AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
             try AuthKeychain.save(nil, pluginID: id, kind: "captcha", namespace: credentialNamespace)
+            storedCredentials[id] = nil
         } catch {
             recordCredentialFailure(error)
         }
@@ -321,21 +323,34 @@ final class PluginManager {
         return auth(for: id) != nil
     }
 
-    /// The stored sign-in, or `nil` when there is none or it cannot be read.
-    /// Read failures are reported through `credentialStorageError`; views
-    /// call this while rendering, so the report is deferred to the next turn.
+    /// The stored sign-in. Served from memory, so views may call this freely.
     func auth(for id: String) -> SourceAuth? {
+        storedCredentials[id]?.auth
+    }
+
+    private func credentials(for id: String) -> PluginCredentials {
+        storedCredentials[id] ?? PluginCredentials()
+    }
+
+    /// Reads a plugin's credentials from the store the first time it is seen.
+    /// A failed read is reported and remembered as empty, so it is not retried
+    /// (and cannot prompt again) until the user signs in anew.
+    private func loadCredentials(for id: String) {
+        guard storedCredentials[id] == nil else { return }
+        var loaded = PluginCredentials()
         do {
-            return try AuthKeychain.load(pluginID: id, kind: "auth", namespace: credentialNamespace)
+            loaded.auth = try AuthKeychain.load(pluginID: id, kind: "auth", namespace: credentialNamespace)
+            loaded.captcha = try AuthKeychain.load(pluginID: id, kind: "captcha", namespace: credentialNamespace)
         } catch {
-            Task { self.recordCredentialFailure(error) }
-            return nil
+            recordCredentialFailure(error)
         }
+        storedCredentials[id] = loaded
     }
 
     func saveAuth(_ auth: SourceAuth, pluginID: String) {
         do {
             try AuthKeychain.save(auth, pluginID: pluginID, kind: "auth", namespace: credentialNamespace)
+            storedCredentials[pluginID, default: PluginCredentials()].auth = auth
             clearCredentialFailure()
         } catch {
             recordCredentialFailure(error)
@@ -348,6 +363,7 @@ final class PluginManager {
     func saveCaptcha(_ data: SourceAuth, pluginID: String) {
         do {
             try AuthKeychain.save(data, pluginID: pluginID, kind: "captcha", namespace: credentialNamespace)
+            storedCredentials[pluginID, default: PluginCredentials()].captcha = data
         } catch {
             recordCredentialFailure(error)
         }
@@ -358,6 +374,7 @@ final class PluginManager {
     func logout(_ id: String) {
         do {
             try AuthKeychain.save(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
+            storedCredentials[id, default: PluginCredentials()].auth = nil
         } catch {
             recordCredentialFailure(error)
         }

@@ -50,14 +50,16 @@ public struct BearerAuthorization: ATProtoAuthorizationProvider {
 
 public actor XRPCClient {
     private let service: URL
-    private let session: URLSession
+    /// Ephemeral and private to this client unless one was injected.
+    nonisolated let session: URLSession
     private let authorization: (any ATProtoAuthorizationProvider)?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    public init(service: URL, session: URLSession = .shared,
+    public init(service: URL, session: URLSession? = nil,
                 authorization: (any ATProtoAuthorizationProvider)? = nil) {
         self.service = service
+        let session = session ?? ATProtoHTTPSession.make()
         self.session = session
         self.authorization = authorization
         encoder = JSONEncoder()

@@ -7,12 +7,14 @@ import FoundationNetworking
 
 public actor ATProtoOAuthClient {
     private let configuration: OAuthClientConfiguration
-    private let session: URLSession
+    /// Ephemeral and private to this client unless one was injected.
+    nonisolated let session: URLSession
     private let resolver: ATProtoIdentityResolver
 
-    public init(configuration: OAuthClientConfiguration, session: URLSession = .shared,
+    public init(configuration: OAuthClientConfiguration, session: URLSession? = nil,
                 resolver: ATProtoIdentityResolver? = nil) {
         self.configuration = configuration
+        let session = session ?? ATProtoHTTPSession.make()
         self.session = session
         self.resolver = resolver ?? ATProtoIdentityResolver(session: session)
     }

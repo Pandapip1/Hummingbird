@@ -16,15 +16,24 @@ public actor ATProtoIdentityResolver {
     private let fetch: Fetch
     private let dns: any DNSTXTResolving
     private let plcDirectory: URL
+    /// The session the built-in fetch uses: ephemeral and private to this
+    /// resolver unless one was injected. Nil with a custom fetch.
+    nonisolated let session: URLSession?
 
-    public init(session: URLSession = .shared,
+    public init(session: URLSession? = nil,
                 plcDirectory: URL = URL(string: "https://plc.directory")!,
                 dns: any DNSTXTResolving = SystemDNSTXTResolver()) {
-        self.init(plcDirectory: plcDirectory, dns: dns, fetch: { try await session.data(from: $0) })
+        let session = session ?? ATProtoHTTPSession.make()
+        self.init(plcDirectory: plcDirectory, dns: dns, session: session) { try await session.data(from: $0) }
     }
 
     public init(plcDirectory: URL = URL(string: "https://plc.directory")!,
                 dns: any DNSTXTResolving, fetch: @escaping Fetch) {
+        self.init(plcDirectory: plcDirectory, dns: dns, session: nil, fetch: fetch)
+    }
+
+    private init(plcDirectory: URL, dns: any DNSTXTResolving, session: URLSession?, fetch: @escaping Fetch) {
+        self.session = session
         self.fetch = fetch
         self.dns = dns
         self.plcDirectory = plcDirectory

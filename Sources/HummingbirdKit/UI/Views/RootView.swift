@@ -1,5 +1,4 @@
 import Foundation
-import DebugKit
 import DynamicTabbingKit
 import SwiftOpenUI
 import ATAppSync
@@ -52,7 +51,7 @@ struct RootView: View {
         }
         .task {
             let overview = $showingTabOverview
-            DebugServer.shared.registerAction("toggleTabOverview") { overview.wrappedValue.toggle() }
+            HummingbirdDebug.toggleTabOverviewAction = { overview.wrappedValue.toggle() }
         }
     }
 

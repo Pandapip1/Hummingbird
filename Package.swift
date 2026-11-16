@@ -38,15 +38,10 @@ let sqliteTarget: Target = .systemLibrary(
 
 var products: [Product] = [
     .library(name: "HummingbirdKit", targets: ["HummingbirdKit"]),
-    .library(name: "DebugKit", targets: ["DebugKit"]),
     .library(name: "DynamicTabbingKit", targets: ["DynamicTabbingKit"]),
     .library(name: "AdvancedVideoPlayerKit", targets: ["AdvancedVideoPlayerKit"]),
 ]
 var targets: [Target] = [
-    .target(
-        name: "DebugKit",
-        path: "Sources/DebugKit"
-    ),
     .target(
         name: "DynamicTabbingKit",
         dependencies: [.product(name: "BrowserTabs", package: "SwiftOpenUI")],
@@ -62,7 +57,6 @@ var targets: [Target] = [
     .target(
         name: "HummingbirdKit",
         dependencies: [
-            "DebugKit",
             "DynamicTabbingKit",
             "AdvancedVideoPlayerKit",
             "CSQLite",
@@ -188,7 +182,6 @@ package.targets.append(
         name: "HummingbirdApp",
         dependencies: [
             "HummingbirdKit",
-            "DebugKit",
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
         ],
         path: "Apps/iOS",

@@ -1,5 +1,4 @@
 import Foundation
-import DebugKit
 import SwiftOpenUI
 import ATAppSync
 
@@ -16,10 +15,6 @@ public struct HummingbirdRoot: View {
         _model = State(wrappedValue: AppModel(
             persistence: persistence, stores: stores, localProfileID: profileID
         ))
-        // Start the opt-in debug transport as soon as the root is created.
-        // Relying only on a view task made the server unavailable before (and
-        // occasionally throughout) early navigation failures on macOS.
-        DebugServer.shared.startFromEnvironment()
     }
 
     /// Loads and decodes persisted state away from the main actor before any
@@ -35,7 +30,6 @@ public struct HummingbirdRoot: View {
                 .environment(model)
                 .configuresVisualAuditRoute(configureVisualAuditRoute)
                 .task { await model.plugins.checkForUpdates(origin: .settings) }
-                .task { configureDebugServer() }
                 .onOpenURL { model.handleIncomingURL($0) }
                 .observesApplicationLifecycle(model)
         }
@@ -54,24 +48,6 @@ public struct HummingbirdRoot: View {
         }
         guard model.activeTab.current != route else { return }
         model.activeTab.push(route, title: name.capitalized)
-    }
-
-    private func configureDebugServer() {
-        DebugServer.shared.registerProbe("activeTab") { model.activeTabID.uuidString }
-        DebugServer.shared.registerProbe("playing") { String(model.activePlayerForDebug?.isPlaying ?? false) }
-        DebugServer.shared.registerProbe("preparing") { String(model.activePlayerForDebug?.isPreparing ?? false) }
-        DebugServer.shared.registerProbe("playerError") { model.activePlayerForDebug?.errorMessage ?? "" }
-        DebugServer.shared.registerProbe("playerTime") { String(model.activePlayerForDebug?.playbackTime ?? 0) }
-        DebugServer.shared.registerProbe("playerDuration") { String(model.activePlayerForDebug?.duration ?? 0) }
-        DebugServer.shared.registerAction("togglePlayback") { model.activePlayerForDebug?.togglePlayback() }
-        DebugServer.shared.registerAction("seekForward60") { model.activePlayerForDebug?.skip(by: 60) }
-        DebugServer.shared.registerAction("seekBackward30") { model.activePlayerForDebug?.skip(by: -30) }
-        if let url = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_CONTENT_URL"], !url.isEmpty {
-            DebugServer.shared.registerAction("openDebugContent") {
-                model.openInNewTab(.content(url), title: "Debug Video")
-            }
-        }
-        DebugServer.shared.startFromEnvironment()
     }
 }
 
@@ -97,24 +73,7 @@ struct TVPlayerDebugScene: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .shadow(radius: 24)
         }
-        .task {
-            DebugServer.shared.registerProbe("fullscreen") { String(player.isFullscreen) }
-            DebugServer.shared.registerProbe("playing") { String(player.isPlaying) }
-            DebugServer.shared.registerProbe("focusedItem") { currentFocusedItemDescription() }
-            DebugServer.shared.registerAction("toggleFullscreen") { player.toggleFullscreen() }
-            DebugServer.shared.registerAction("togglePlayback") { player.togglePlayback() }
-            DebugServer.shared.startFromEnvironment()
-        }
-    }
-
-    private func currentFocusedItemDescription() -> String {
-        guard let window = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) else { return "none (no key window)" }
-        guard let item = window.windowScene?.focusSystem?.focusedItem else { return "none" }
-        let label = (item as? UIView)?.accessibilityLabel ?? ""
-        return "\(type(of: item)) \(label)".trimmingCharacters(in: .whitespaces)
+        .task { HummingbirdDebug.standalonePlayer = player }
     }
 }
 

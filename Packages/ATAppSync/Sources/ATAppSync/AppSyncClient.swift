@@ -173,7 +173,7 @@ public actor AppSyncClient {
     ) async throws -> [AppSyncPeerTrustSummary] {
         guard let messaging else { return [] }
         let registrations = try await mergedRegistrations(including: discovered)
-        return messaging.trustStore.peers(
+        return messaging.trustStore.knownPeers(
             among: registrations, localAppIDs: recognizedAppIDs
         )
     }
@@ -191,7 +191,8 @@ public actor AppSyncClient {
         let compatible = messaging.trustStore.peers(
             among: registrations, localAppIDs: recognizedAppIDs
         )
-        guard let match = compatible.first(where: { $0.id == code.peerID }) else {
+        guard let match = compatible.first(where: { $0.id == code.peerID }),
+              let registration = match.registration else {
             throw AppSyncPeerVerificationError.peerNotFound
         }
         _ = try messaging.trust(match.peer)
@@ -199,7 +200,7 @@ public actor AppSyncClient {
         // independent transport and may be unavailable while LAN sync works.
         try? await syncTrustFacts(using: messaging)
         return .init(
-            registration: match.registration,
+            registration: registration,
             state: messaging.trustStore.state(of: match.id)
         )
     }

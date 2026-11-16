@@ -535,21 +535,28 @@ public final class InstanceMessagingService: @unchecked Sendable {
 
     public func attach(journal: OfflineMutationJournal) { server.attach(journal: journal) }
 
+    /// Peers with a trust relationship or a compatible registration nearby.
+    /// Trusted peers that aren't reachable now are included without a
+    /// registration.
     public func peers(appIDs: Set<AppSyncAppID>) -> [AppSyncPeerTrustSummary] {
-        trustStore.peers(among: discovery.registrations(), localAppIDs: appIDs)
+        trustStore.knownPeers(among: discovery.registrations(), localAppIDs: appIDs)
     }
 
     @discardableResult
     public func verifyPeer(
         _ code: AppSyncPeerVerificationCode, appIDs: Set<AppSyncAppID>
     ) throws -> AppSyncPeerTrustSummary {
-        let compatible = peers(appIDs: appIDs)
-        guard let match = compatible.first(where: { $0.id == code.peerID }) else {
+        // Verification needs the peer's current signed registration.
+        let compatible = trustStore.peers(
+            among: discovery.registrations(), localAppIDs: appIDs
+        )
+        guard let match = compatible.first(where: { $0.id == code.peerID }),
+              let registration = match.registration else {
             throw AppSyncPeerVerificationError.peerNotFound
         }
         _ = try trust(match.peer)
         return .init(
-            registration: match.registration,
+            registration: registration,
             state: trustStore.state(of: match.id)
         )
     }

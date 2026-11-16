@@ -262,6 +262,50 @@ final class ATAppSyncTests: XCTestCase {
         XCTAssertFalse(reopened.trusts(b.peer.publicIdentity.stableID))
     }
 
+    func testKnownPeersIncludeTrustedPeersThatAreNotReachable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ATAppSyncKnownPeerTests-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let a = try makePeer("a", root: root)
+        let b = try makePeer("b", root: root)
+        let c = try makePeer("c", root: root)
+        let stranger = try makePeer("stranger", root: root)
+        let app = AppSyncAppID(rawValue: "com.example.shared")!
+
+        _ = try a.trustStore.merge([try a.trust(b.peer.publicIdentity), try b.trust(c.peer.publicIdentity)])
+        let bID = b.peer.publicIdentity.stableID
+        let cID = c.peer.publicIdentity.stableID
+        let strangerID = stranger.peer.publicIdentity.stableID
+
+        // Nobody is reachable: trusted peers are still listed, without a
+        // registration; peers with no trust state are not.
+        let offline = a.trustStore.knownPeers(among: [], localAppIDs: [app])
+        XCTAssertEqual(Set(offline.map(\.id)), [bID, cID])
+        XCTAssertTrue(offline.allSatisfy { !$0.isReachable })
+        XCTAssertEqual(offline.first { $0.id == bID }?.peer, b.peer.publicIdentity)
+        if case .directlyTrusted = offline.first(where: { $0.id == bID })?.state {} else {
+            XCTFail("b should be directly trusted")
+        }
+        if case .indirectlyTrusted = offline.first(where: { $0.id == cID })?.state {} else {
+            XCTFail("c should be indirectly trusted")
+        }
+
+        // A reachable peer appears once, with its registration; an untrusted
+        // reachable peer is listed only because it is reachable.
+        let online = a.trustStore.knownPeers(
+            among: [
+                try b.registration(appIDs: [app], advertisement: nil),
+                try stranger.registration(appIDs: [app], advertisement: nil),
+            ],
+            localAppIDs: [app]
+        )
+        XCTAssertEqual(online.map(\.id).sorted(), [bID, cID, strangerID].sorted())
+        XCTAssertTrue(online.first { $0.id == bID }?.isReachable ?? false)
+        XCTAssertTrue(online.first { $0.id == strangerID }?.isReachable ?? false)
+        XCTAssertFalse(online.first { $0.id == cID }?.isReachable ?? true)
+        XCTAssertFalse(online.contains { $0.id == a.peer.publicIdentity.stableID })
+    }
+
     func testTrustSuggestionsAreActionableAndAppScoped() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ATAppSyncTrustSuggestionTests-\(UUID())", isDirectory: true)

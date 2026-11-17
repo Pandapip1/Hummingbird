@@ -45,6 +45,8 @@ public struct HummingbirdRoot: View {
                 .task { await model.plugins.checkForUpdates(origin: .settings) }
                 .onOpenURL { model.handleIncomingURL($0) }
                 .observesApplicationLifecycle(model)
+                // Closing the window stops its players; nothing plays from a closed window.
+                .onSceneEnd { model.closeWindow() }
         }
     }
 

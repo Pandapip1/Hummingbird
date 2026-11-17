@@ -37,6 +37,8 @@ final class AppModel {
     var activeTabID: BrowserTab.ID { didSet { persistBrowserSession() } }
 
     @ObservationIgnored private var tabPlayers: [BrowserTab.ID: PlayerModel] = [:]
+    /// Makes each tab's player (tests supply players with fake backends).
+    @ObservationIgnored var makePlayer: @MainActor (AppDataStores) -> PlayerModel = { PlayerModel(stores: $0) }
 
     /// atproto sign-ins in progress, each shown in its own browser tab.
     private(set) var oauthAuthorizations: [OAuthTabAuthorization.ID: OAuthTabAuthorization] = [:]
@@ -87,12 +89,25 @@ final class AppModel {
     /// elsewhere (`shouldKeepPlaybackWhenHidden`) or is closed.
     func player(forTab id: BrowserTab.ID) -> PlayerModel {
         if let player = tabPlayers[id] { return player }
-        let player = PlayerModel(stores: stores)
+        let player = makePlayer(stores)
         tabPlayers[id] = player
         return player
     }
 
     var activePlayerForDebug: PlayerModel? { tabPlayers[activeTabID] }
+
+    /// The window showing this model closed: every tab's player stops now
+    /// (no sound keeps playing from a closed window) and is released. Their
+    /// downloads continue in the background (`MediaDownloads`). Other
+    /// windows have their own models and are unaffected.
+    func closeWindow() {
+        let players = tabPlayers.values
+        tabPlayers.removeAll()
+        for player in players { player.teardown() }
+    }
+
+    /// Players this window still owns (tests, debugging).
+    var openPlayerCount: Int { tabPlayers.count }
 
     private func makeBrowserTab() -> BrowserTab {
         BrowserTab.hummingbirdTab(didChange: { [weak self] in self?.persistBrowserSession() })

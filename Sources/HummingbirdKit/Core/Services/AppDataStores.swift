@@ -59,6 +59,9 @@ public final class AppDataStores: Sendable {
     /// Waits for every pending write to `storage.sqlite3`.
     public func flush() async { await storage.flush() }
 
+    /// Blocks until pending writes are done; only for quitting.
+    func flushBeforeTermination() { storage.flushBeforeTermination() }
+
     /// The key under which the window that opens next finds its profile.
     static let localProfileIDKey = "appsync.localProfileID"
 

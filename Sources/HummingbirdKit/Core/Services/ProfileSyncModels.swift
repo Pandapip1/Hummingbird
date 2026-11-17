@@ -12,6 +12,31 @@ enum HummingbirdProfileSchema {
     static let watchLater = NSID(rawValue: "com.eightybps.hummingbird.watchLater")!
     static let history = NSID(rawValue: "com.eightybps.hummingbird.history")!
     static let plugin = NSID(rawValue: "com.eightybps.hummingbird.plugin")!
+    /// Playback history only grows. Every device keeps the same most recently
+    /// watched records of it in the journal, as many as the library shows,
+    /// ranked by when they were watched; `LibraryStore` keeps its copy the
+    /// same way (see `historyRank`).
+    static let retention: [NSID: JournalRetention] = [
+        history: JournalRetention(limit: LibraryStore.historyLimit) { historyRank($0.value) },
+    ]
+
+    /// A history record's rank: its `date`, as `HistoryEntry` encodes it
+    /// (seconds since the reference date). Read without decoding the entry,
+    /// since retention ranks every record of the collection.
+    static func historyRank(_ value: JSONValue?) -> Double? {
+        guard case .object(let fields)? = value else { return nil }
+        switch fields["date"] {
+        case .double(let seconds)?: return seconds
+        case .integer(let seconds)?: return Double(seconds)
+        default: return nil
+        }
+    }
+
+    /// The same rank for an entry this device holds.
+    static func historyRank(_ entry: HistoryEntry) -> RetentionFloor {
+        RetentionFloor(rank: entry.date.timeIntervalSinceReferenceDate,
+                       path: history.rawValue + "/" + key(for: entry.id).rawValue)
+    }
 
     static func key(for stableIdentity: String) -> RecordKey {
         let digest = SHA256.hash(data: Data(stableIdentity.utf8))
@@ -151,7 +176,7 @@ final class ProfileChangeStore: @unchecked Sendable {
         let created = try AppSyncMutationLog(
             fileURL: storageDirectory.appendingPathComponent(
                 "\(localProfileID.uuidString.lowercased()).json"
-            ), signer: signer
+            ), signer: signer, retention: HummingbirdProfileSchema.retention
         )
         lock.withLock {
             active = created
@@ -207,6 +232,10 @@ final class ProfileChangeStore: @unchecked Sendable {
             }
         }
     }
+
+    /// Blocks until every edit submitted so far is in the journal. Only for
+    /// the moment the application quits, when nothing may run afterwards.
+    func flushBeforeTermination() { writer.sync {} }
 
     /// Waits until every edit submitted so far is in the journal.
     func flush() async {

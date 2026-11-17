@@ -65,8 +65,33 @@ private struct SyncInstallRow: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
+        if let confirmation = install.confirmation {
+            confirm(confirmation)
+        } else {
+            progress
+        }
+    }
+
+    /// Another device uses a different copy of a plugin this device has:
+    /// nothing is replaced until the user picks one.
+    private func confirm(_ confirmation: SyncInstall.Confirmation) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(install.displayName).font(.headline)
+            Text("Your other device uses this source from \(install.sourceURL); this device’s copy is from \(confirmation.replacing).")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(confirmation.warnings, id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Use Other Device’s") { app.plugins.confirmSyncedReplacement(install.pluginID) }
+                Button("Keep This Device’s") { app.plugins.keepLocalPlugin(install.pluginID) }
+            }
+        }
+    }
+
+    private var progress: some View {
         let syncing = app.profileAccount.syncService?.state == .syncing
-        HStack(spacing: 12) {
+        return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(install.displayName).font(.headline)
                 if let failure = install.failure {
@@ -81,7 +106,7 @@ private struct SyncInstallRow: View {
                 ProgressView()
             }
             if install.failure != nil {
-                Button("Retry") { Task { await app.profileAccount.sync() } }
+                Button("Retry") { app.profileAccount.syncService?.startSync() }
                     .disabled(syncing)
             }
         }

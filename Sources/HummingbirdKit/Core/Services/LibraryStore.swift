@@ -7,11 +7,14 @@ import ATProtoKit
 @Observable
 final class LibraryStore {
     // Every change to a synced collection counts as an edit, so a sync
-    // result computed from older state is not committed over it.
-    private(set) var subscriptions: [Subscription] = [] { didSet { revisions.subscriptions &+= 1 } }
+    // result computed from older state is not committed over it, except
+    // bookkeeping (feed refresh times, playback progress), which `commit`
+    // carries over instead: those change constantly and would otherwise
+    // keep a sync from ever committing.
+    private(set) var subscriptions: [Subscription] = [] { didSet { if !bookkeeping { revisions.subscriptions &+= 1 } } }
     private(set) var playlists: [Playlist] = [] { didSet { revisions.playlists &+= 1 } }
     private(set) var watchLater: [SavedVideo] = [] { didSet { revisions.watchLater &+= 1 } }
-    private(set) var history: [HistoryEntry] = [] { didSet { revisions.history &+= 1 } }
+    private(set) var history: [HistoryEntry] = [] { didSet { if !bookkeeping { revisions.history &+= 1 } } }
     /// Most recent first-page results per channel URL, used when a channel is rate-limited or fails.
     private(set) var feedCache: [String: [SavedVideo]] = [:]
     private(set) var homeCache: [SavedVideo] = []
@@ -20,6 +23,10 @@ final class LibraryStore {
     @ObservationIgnored private let storagePrefix: String
     @ObservationIgnored private var watchLaterPositions: [String: Int] = [:]
     @ObservationIgnored private var revisions = LibraryRevisions()
+    @ObservationIgnored private var bookkeeping = false
+    /// Channels refreshed, and progress recorded, since the last `syncBase()`.
+    @ObservationIgnored private var refreshedSinceBase: Set<String> = []
+    @ObservationIgnored private var progressSinceBase: [String: HistoryEntry] = [:]
     /// Progress recorded since the history was last written to the journal.
     @ObservationIgnored private var unsyncedHistory: [String: HistoryEntry] = [:]
     @ObservationIgnored private var lastHistorySync = Date.distantPast
@@ -79,6 +86,9 @@ final class LibraryStore {
 
     func updateSubscription(_ channelURL: String, fetched: Date, newest: Int?, cache: [SavedVideo]?) {
         guard let i = subscriptions.firstIndex(where: { $0.channelURL == channelURL }) else { return }
+        bookkeeping = true
+        defer { bookkeeping = false }
+        refreshedSinceBase.insert(channelURL)
         subscriptions[i].lastFetched = fetched
         if let newest { subscriptions[i].lastItemDate = max(newest, subscriptions[i].lastItemDate ?? 0) }
         if let cache { feedCache[channelURL] = cache }
@@ -187,6 +197,9 @@ final class LibraryStore {
     /// every peer snapshot stay small.
     func recordProgress(_ v: SavedVideo, seconds: Double, now: Date = Date()) {
         let entry = HistoryEntry(video: v, position: seconds, date: now)
+        bookkeeping = true
+        defer { bookkeeping = false }
+        progressSinceBase[entry.id] = entry
         if let i = history.firstIndex(where: { $0.id == v.id }) { history.remove(at: i) }
         history.insert(entry, at: 0)
         // The limit only bounds what this device keeps. Trimming is not a
@@ -239,7 +252,9 @@ final class LibraryStore {
     /// taking this on the main actor costs nothing; the work happens on it
     /// elsewhere.
     func syncBase() -> LibrarySyncBase {
-        LibrarySyncBase(
+        refreshedSinceBase = []
+        progressSinceBase = [:]
+        return         LibrarySyncBase(
             subscriptions: subscriptions, playlists: playlists, watchLater: watchLater,
             watchLaterPositions: watchLaterPositions, history: history, revisions: revisions
         )
@@ -257,8 +272,19 @@ final class LibraryStore {
     @discardableResult
     func commit(_ batch: LibrarySyncBatch) -> Set<NSID> {
         var committed = Set<NSID>()
-        if let value = batch.subscriptions {
+        if var value = batch.subscriptions {
             if revisions.subscriptions == batch.base.subscriptions {
+                // Carry over feed refreshes made while this was computed.
+                if !refreshedSinceBase.isEmpty {
+                    let refreshed = Dictionary(
+                        subscriptions.filter { refreshedSinceBase.contains($0.channelURL) }.map { ($0.channelURL, $0) }
+                    ) { first, _ in first }
+                    for i in value.indices {
+                        guard let local = refreshed[value[i].channelURL] else { continue }
+                        value[i].lastFetched = [local.lastFetched, value[i].lastFetched].compactMap { $0 }.max()
+                        value[i].lastItemDate = [local.lastItemDate, value[i].lastItemDate].compactMap { $0 }.max()
+                    }
+                }
                 if value != subscriptions {
                     subscriptions = value
                     let channels = Set(value.map(\.channelURL))
@@ -278,7 +304,24 @@ final class LibraryStore {
             if value.videos != watchLater { watchLater = value.videos; save(watchLater, name: "watch_later") }
             committed.insert(HummingbirdProfileSchema.watchLater)
         }
-        if let value = batch.history, revisions.history == batch.base.history {
+        if var value = batch.history, revisions.history == batch.base.history {
+            // Carry over progress recorded while this was computed; the
+            // later watch wins, as in the merge itself.
+            if !progressSinceBase.isEmpty {
+                let progress = progressSinceBase
+                value.removeAll { entry in progress[entry.id].map { $0.date >= entry.date } ?? false }
+                let kept = Set(value.map(\.id))
+                let newest: (HistoryEntry, HistoryEntry) -> Bool = { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+                let newer = progress.values.filter { !kept.contains($0.id) }.sorted(by: newest)
+                // Progress is the newest watch, so it goes in front; only a
+                // clock change needs a full sort.
+                if let oldest = newer.last, let first = value.first, newest(first, oldest) {
+                    value = (newer + value).sorted(by: newest)
+                } else {
+                    value = newer + value
+                }
+                if value.count > Self.historyLimit { value.removeLast(value.count - Self.historyLimit) }
+            }
             if value != history { history = value; save(history, name: "history") }
             committed.insert(HummingbirdProfileSchema.history)
         }
@@ -365,7 +408,11 @@ struct LibrarySyncBatch: Sendable {
 
     /// Computes every changed collection concurrently.
     @concurrent
-    static func compute(from base: LibrarySyncBase, changes: [LibrarySyncChange]) async -> LibrarySyncBatch {
+    /// `historyFloor` is the journal's history retention floor: entries
+    /// ranked at or below it are dropped here too, so this device keeps the
+    /// same history every device's journal keeps.
+    static func compute(from base: LibrarySyncBase, changes: [LibrarySyncChange],
+                        historyFloor: RetentionFloor? = nil) async -> LibrarySyncBatch {
         let grouped = Dictionary(grouping: changes) { $0.mutation.collection }
         async let subscriptions = grouped[HummingbirdProfileSchema.subscription].map {
             mergeSubscriptions(base.subscriptions, $0)
@@ -374,7 +421,9 @@ struct LibrarySyncBatch: Sendable {
         async let watchLater = grouped[HummingbirdProfileSchema.watchLater].map {
             mergeWatchLater(base.watchLater, positions: base.watchLaterPositions, $0)
         }
-        async let history = grouped[HummingbirdProfileSchema.history].map { mergeHistory(base.history, $0) }
+        let historyChanges = grouped[HummingbirdProfileSchema.history]
+            ?? (needsTrim(base.history, to: historyFloor) ? [] : nil)
+        async let history = historyChanges.map { mergeHistory(base.history, $0, floor: historyFloor) }
         var batch = LibrarySyncBatch(base: base.revisions)
         batch.subscriptions = await subscriptions
         batch.playlists = await playlists
@@ -445,7 +494,14 @@ struct LibrarySyncBatch: Sendable {
         return WatchLater(videos: videos, positions: positions)
     }
 
-    private static func mergeHistory(_ base: [HistoryEntry], _ changes: [LibrarySyncChange]) -> [HistoryEntry] {
+    /// Whether `history` (newest first) holds an entry retention dropped.
+    static func needsTrim(_ history: [HistoryEntry], to floor: RetentionFloor?) -> Bool {
+        guard let floor, let oldest = history.last else { return false }
+        return HummingbirdProfileSchema.historyRank(oldest) <= floor
+    }
+
+    private static func mergeHistory(_ base: [HistoryEntry], _ changes: [LibrarySyncChange],
+                                     floor: RetentionFloor?) -> [HistoryEntry] {
         var byID = Dictionary(base.map { ($0.id, $0) }) { first, _ in first }
         var deletedAt: [RecordKey: Date] = [:]
         for change in changes where change.mutation.operation == .delete {
@@ -466,7 +522,13 @@ struct LibrarySyncBatch: Sendable {
             if let local = byID[value.id], local.date > value.date { continue }
             byID[value.id] = value
         }
-        let sorted = byID.values.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+        if let floor { byID = byID.filter { HummingbirdProfileSchema.historyRank($0.value) > floor } }
+        // Newest first, in the order retention ranks records (ties by record
+        // key), so the limit keeps what every journal keeps.
+        let sorted = byID.values.sorted {
+            $0.date != $1.date ? $0.date > $1.date
+                : HummingbirdProfileSchema.historyRank($0) > HummingbirdProfileSchema.historyRank($1)
+        }
         return Array(sorted.prefix(LibraryStore.historyLimit))
     }
 }

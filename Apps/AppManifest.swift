@@ -5,7 +5,10 @@
 //   Apps/iOS/Info.plist                      the app's Info.plist (literal values)
 //   Apps/iOS/Hummingbird.entitlements        Xcode's entitlements (team-signed)
 //   Apps/iOS/Hummingbird.xtool.entitlements  xtool's entitlements (ad-hoc signed)
-//   project.yml                              the Xcode app target (marked region)
+//   project.yml                              the Xcode app target (marked region),
+//                                            named "<name>-App" so it can't clash
+//                                            with the package product xtool needs;
+//                                            it still builds <name>.app
 //   xtool.yml                                xtool's app definition
 //   Package.swift                            the package product xtool builds (marked region)
 //

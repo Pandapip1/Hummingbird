@@ -2,11 +2,13 @@ import Foundation
 import os
 import Crypto
 
-/// Hosts one plugin in its own JavaScript context (JavaScriptCore, see `JSEngines`).
+/// One JavaScript context of a plugin (JavaScriptCore, see `JSEngines`). `PluginRuntime`
+/// pools several, so calls run in parallel; each hands out handles from its own range
+/// (`handleBase`) so a handle call reaches the context that made the handle.
 ///
 /// A JS context is not thread-safe, so every touch of it happens on `queue`. Plugin code is synchronous (it blocks on
 /// HTTP calls), which is why calls from the UI are exposed as async wrappers around that queue.
-final class PluginRuntime: @unchecked Sendable {
+final class PluginContextWorker: @unchecked Sendable {
     let config: PluginConfig
     private let originalScript: String
     private let script: String
@@ -39,6 +41,8 @@ final class PluginRuntime: @unchecked Sendable {
     let appliedCompatibilityPatches: [String]
     let failedCompatibilityPatches: [String]
     let detailsCacheFingerprint: String
+    /// Handles this context hands out start above this number.
+    let handleBase: Int
 
     var onToast: (@Sendable (String) -> Void)?
     var onLog: (@Sendable (String) -> Void)?
@@ -76,7 +80,9 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?, savedState: String? = nil,
-         localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil, httpSession: URLSession? = nil) {
+         localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil, httpSession: URLSession? = nil,
+         handleBase: Int = 0) {
+        self.handleBase = handleBase
         self.localNetworkAccess = localNetworkAccess
         self.httpSession = httpSession
         let compatibility = PluginCompatibilityPatches.apply(
@@ -136,6 +142,7 @@ final class PluginRuntime: @unchecked Sendable {
         context = ctx
 
         do {
+            try eval("globalThis.__hbHandleBase = \(handleBase);", name: "handle-base")
             try eval(Self.loadPrelude(), name: "prelude.js")
             try eval("bridge.buildPlatform = \(jsString(Self.buildPlatform));", name: "host-platform")
 
@@ -423,17 +430,6 @@ final class PluginRuntime: @unchecked Sendable {
 
     func stop() async { await withCheckedContinuation { c in queue.async { self.stopLocked(); c.resume() } } }
 
-    /// Creates a fresh JavaScript context with the same immutable plugin inputs.
-    /// Handles and mutable executor state are intentionally not shared.
-    func isolatedClone() -> PluginRuntime {
-        let clone = PluginRuntime(config: config, script: originalScript, settings: storedSettings,
-                                  auth: auth, captcha: captcha, savedState: savedState,
-                                  localNetworkAccess: localNetworkAccess, httpSession: httpSession)
-        clone.onLog = onLog
-        clone.onToast = onToast
-        return clone
-    }
-
     /// Restarts the runtime; `reloadData` becomes the global `__reloadData` seen by the script (ReloadRequiredException).
     func reload(reloadData: String?) async {
         await withCheckedContinuation { c in queue.async { self.stopLocked(); self.reloadData = reloadData; c.resume() } }
@@ -472,13 +468,8 @@ final class PluginRuntime: @unchecked Sendable {
         return data
     }
 
-    func call<T: Decodable>(_ name: String, _ args: [Any] = [], as type: T.Type = T.self) async throws -> T {
-        try Self.decode(T.self, from: try await callRaw(name, args))
-    }
-
-    func pager<Item: Decodable & Sendable>(_ name: String, _ args: [Any] = [], as item: Item.Type) async throws -> PluginPager<Item> {
-        let data = try await callRaw(name, args, kind: "pager")
-        return PluginPager(runtime: self, payload: try Self.decode(PagerPayload<Item>.self, from: data))
+    func pagerRaw(_ name: String, _ args: [Any] = []) async throws -> Data {
+        try await callRaw(name, args, kind: "pager")
     }
 
     func nextPageRaw(handle: Int) async throws -> Data {
@@ -500,43 +491,39 @@ final class PluginRuntime: @unchecked Sendable {
             (try self.evalResult("__jb.callHandleBytes(\(handle), \(jsString(method)), \(jsString(encodedArgs)))"),
              self.contextGeneration)
         }
-        let encoded = try Self.decode(String.self, from: try await unwrapAwaiting(result, generation: generation))
+        let encoded = try PluginRuntime.decode(String.self, from: try await unwrapAwaiting(result, generation: generation))
         guard let bytes = Data(base64Encoded: encoded) else {
             throw PluginError.execution("The plugin returned invalid base64 media data")
         }
         return bytes
     }
 
-    func handlePager<Item: Decodable & Sendable>(_ handle: Int, _ method: String, _ args: [Any] = [], as item: Item.Type) async throws -> PluginPager<Item> {
+    func handlePagerRaw(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> Data {
         let encodedArgs = try argsJSON(args)
-        let data = try await perform {
+        return try await perform {
             try self.unwrap(try self.evalResult("__jb.callHandleForPager(\(handle), \(jsString(method)), \(jsString(encodedArgs)))"))
         }
-        return PluginPager(runtime: self, payload: try Self.decode(PagerPayload<Item>.self, from: data))
     }
 
-    func subCommentsPager(handle: Int) async throws -> PluginPager<PluginComment> {
-        let data = try await perform { try self.unwrap(try self.evalResult("__jb.subComments(\(handle))")) }
-        return PluginPager(runtime: self, payload: try Self.decode(PagerPayload<PluginComment>.self, from: data))
+    func subCommentsRaw(handle: Int) async throws -> Data {
+        try await perform { try self.unwrap(try self.evalResult("__jb.subComments(\(handle))")) }
     }
 
-    struct HandleRef: Decodable { var handle: Int; var nextRequest: Int? }
-
-    func handleFromCall(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> HandleRef? {
+    func handleFromCall(_ handle: Int, _ method: String, _ args: [Any] = []) async throws -> PluginRuntime.HandleRef? {
         let encodedArgs = try argsJSON(args)
         let data = try await perform {
             try self.unwrap(try self.evalResult("__jb.callHandleForHandle(\(handle), \(jsString(method)), \(jsString(encodedArgs)))"))
         }
-        return try Self.decode(HandleRef?.self, from: data)
+        return try PluginRuntime.decode(PluginRuntime.HandleRef?.self, from: data)
     }
 
-    func handleFromSource(_ name: String, _ args: [Any] = []) async throws -> HandleRef? {
+    func handleFromSource(_ name: String, _ args: [Any] = []) async throws -> PluginRuntime.HandleRef? {
         let encodedArgs = try argsJSON(args)
         let data = try await perform {
             try self.enableLocked()
             return try self.unwrap(try self.evalResult("__jb.invokeForHandle(\(jsString(name)), \(jsString(encodedArgs)))"))
         }
-        return try Self.decode(HandleRef?.self, from: data)
+        return try PluginRuntime.decode(PluginRuntime.HandleRef?.self, from: data)
     }
 
     /// Reads a numeric property from a retained plugin object (e.g. a tracker's `nextRequest`).
@@ -552,14 +539,6 @@ final class PluginRuntime: @unchecked Sendable {
         (try? await perform { (try self.evalResult("__jb.hasMember(\(handle), \(jsString(name)))")) == "true" }) ?? false
     }
 
-    static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        do { return try JSONDecoder().decode(T.self, from: data) }
-        catch { throw PluginError.execution("Unexpected data from the plugin: \(error.localizedDescription)") }
-    }
-
-    static func decodeOffMain<T: Decodable & Sendable>(_ type: T.Type, from data: Data) async throws -> T {
-        try await Task.detached(priority: .userInitiated) { try decode(type, from: data) }.value
-    }
 }
 
 // MARK: - JS literal helpers

@@ -61,6 +61,11 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
     private var adverts: [AdvertKey: Advert] = [:]
     private var refreshTimer: DispatchSourceTimer?
     private var seen: [AppSyncPeerID: Seen] = [:]
+    /// What DNS-SD's C callbacks receive as their context. It refers to this
+    /// object weakly and stays alive until every DNS-SD source has finished
+    /// cancelling, so a callback that arrives after this object is freed
+    /// finds nil instead of freed memory.
+    private var callbackContext: CallbackContext?
     /// Fires when an instance appears, changes its registration, or goes.
     let changes = AppSyncChangeSignal()
     /// Fires when local network privacy blocks advertising or browsing. On
@@ -69,6 +74,11 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
 
     init() {
         queue.setSpecific(key: Self.queueKey, value: ())
+        callbackContext = CallbackContext(owner: self)
+    }
+
+    private var contextPointer: UnsafeMutableRawPointer? {
+        callbackContext.map { Unmanaged.passUnretained($0).toOpaque() }
     }
 
     func start(advertising registration: AppSyncInstanceRegistration) async throws {
@@ -79,7 +89,7 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
         }
         if lock.withLock({ self.registration != nil }) { return }
 
-        let context = Unmanaged.passUnretained(self).toOpaque()
+        let context = contextPointer
         var registerRef: DNSServiceRef?
         let txt = Self.txtRecord(peerID: registration.stablePeerID)
         let registerError = txt.withUnsafeBytes { bytes in
@@ -190,7 +200,7 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
         var reference: DNSServiceRef?
         let error = DNSServiceResolve(
             &reference, 0, interfaceIndex, name, type, domain,
-            appSyncResolveReply, Unmanaged.passUnretained(self).toOpaque()
+            appSyncResolveReply, contextPointer
         )
         guard error == kDNSServiceErr_NoError, let reference else { return }
         let resolver = Operation(reference: reference, source: monitor(reference))
@@ -263,8 +273,13 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
         let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         source.setEventHandler { _ = DNSServiceProcessResult(reference) }
         // The socket belongs to the reference; release it only once the
-        // source can no longer read from it.
-        source.setCancelHandler { DNSServiceRefDeallocate(reference) }
+        // source can no longer read from it. Holding the callback context
+        // until then keeps every callback's context pointer valid.
+        let context = callbackContext
+        source.setCancelHandler {
+            DNSServiceRefDeallocate(reference)
+            withExtendedLifetime(context) {}
+        }
         source.resume()
         return source
     }
@@ -304,8 +319,9 @@ private func appSyncRegisterReply(
     _ name: UnsafePointer<CChar>?, _ regtype: UnsafePointer<CChar>?,
     _ domain: UnsafePointer<CChar>?, _ context: UnsafeMutableRawPointer?
 ) {
-    guard errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied), let context else { return }
-    Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().policyDenials.send()
+    guard errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied),
+          let owner = CallbackContext.owner(of: context) else { return }
+    owner.policyDenials.send()
 }
 
 private func appSyncBrowseReply(
@@ -314,13 +330,14 @@ private func appSyncBrowseReply(
     _ regtype: UnsafePointer<CChar>?, _ replyDomain: UnsafePointer<CChar>?,
     _ context: UnsafeMutableRawPointer?
 ) {
-    if errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied), let context {
-        Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().policyDenials.send()
+    guard let owner = CallbackContext.owner(of: context) else { return }
+    if errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied) {
+        owner.policyDenials.send()
         return
     }
     guard errorCode == kDNSServiceErr_NoError,
-          let serviceName, let regtype, let replyDomain, let context else { return }
-    Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().browsed(
+          let serviceName, let regtype, let replyDomain else { return }
+    owner.browsed(
         name: String(cString: serviceName), type: String(cString: regtype),
         domain: String(cString: replyDomain), interfaceIndex: interfaceIndex,
         added: flags & DNSServiceFlags(kDNSServiceFlagsAdd) != 0
@@ -333,9 +350,23 @@ private func appSyncResolveReply(
     _ hosttarget: UnsafePointer<CChar>?, _ port: UInt16, _ txtLen: UInt16,
     _ txtRecord: UnsafePointer<UInt8>?, _ context: UnsafeMutableRawPointer?
 ) {
-    guard errorCode == kDNSServiceErr_NoError, let sdRef, let hosttarget, let context else { return }
+    guard errorCode == kDNSServiceErr_NoError, let sdRef, let hosttarget,
+          let owner = CallbackContext.owner(of: context) else { return }
     let txt = txtRecord.map { Data(bytes: $0, count: Int(txtLen)) } ?? Data()
-    Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().resolved(
+    owner.resolved(
         sdRef, host: String(cString: hosttarget), port: UInt16(bigEndian: port), txt: txt
     )
+}
+
+/// The context DNS-SD passes back to the C callbacks: a weak reference to the
+/// discovery object, so late callbacks can't reach a freed object.
+private final class CallbackContext: Sendable {
+    weak let owner: AppSyncLANDiscovery?
+
+    init(owner: AppSyncLANDiscovery) { self.owner = owner }
+
+    static func owner(of context: UnsafeMutableRawPointer?) -> AppSyncLANDiscovery? {
+        guard let context else { return nil }
+        return Unmanaged<CallbackContext>.fromOpaque(context).takeUnretainedValue().owner
+    }
 }

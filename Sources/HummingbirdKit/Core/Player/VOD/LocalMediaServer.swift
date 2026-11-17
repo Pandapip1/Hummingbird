@@ -163,6 +163,13 @@ actor LocalMediaServer {
         case .file(let file):
             try await sendFile(file, request: request, outbound: outbound)
         case .livePlaylist(let recorder, let prefix):
+            // Low-latency blocking reload: hold the response until the asked-for
+            // segment or part is recorded.
+            let query = URLComponents(string: request.uri)?.queryItems ?? []
+            if let msn = query.first(where: { $0.name == "_HLS_msn" })?.value.flatMap({ Int($0) }) {
+                let part = query.first(where: { $0.name == "_HLS_part" })?.value.flatMap { Int($0) }
+                await recorder.waitForPlaylist(msn: msn, part: part)
+            }
             let text = await recorder.localPlaylist(prefix: prefix)
             try await send(status: .ok, contentType: "application/vnd.apple.mpegurl", body: Data(text.utf8),
                            request: request, outbound: outbound)

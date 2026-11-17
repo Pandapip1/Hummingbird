@@ -618,3 +618,60 @@ final class LiveRecordingTests: XCTestCase {
         await recorder.stop()
     }
 }
+
+/// A low-latency stream: one part of the segment being published per
+/// playlist request, blocking reload supported (later requests are held as a
+/// server holding a blocking reload would), ending on the third request.
+private actor FakeLowLatencyUpstream: MediaTransport {
+    private var polls = 0
+    private(set) var playlistQueries: [String] = []
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = try XCTUnwrap(request.url)
+        let ok = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:]))
+        guard url.path == "/ll.m3u8" else { return (Data(repeating: 9, count: 500), ok) }
+        playlistQueries.append(url.query ?? "")
+        let n = polls
+        polls += 1
+        if n > 0 { try await Task.sleep(for: .milliseconds(600)) }
+        var text = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-PART-INF:PART-TARGET=0.5\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        for sequence in 0..<n {
+            text += "#EXT-X-PART:DURATION=0.5,URI=\"s\(sequence)p0.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.5,URI=\"s\(sequence)p1.mp4\"\n"
+            text += "#EXTINF:1.0,\nseg\(sequence).mp4\n"
+        }
+        if n >= 2 {
+            text += "#EXT-X-ENDLIST\n"
+        } else {
+            text += "#EXT-X-PART:DURATION=0.5,URI=\"s\(n)p0.mp4\",INDEPENDENT=YES\n"
+        }
+        return (Data(text.utf8), ok)
+    }
+}
+
+final class LowLatencyRecordingTests: XCTestCase {
+    func testLowLatencyStreamsAreRecordedPartByPartAndServedAsLowLatency() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-ll-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let upstream = FakeLowLatencyUpstream()
+        let recorder = LiveHLSRecorder(role: .muxed, cache: MediaCache(directory: directory), identity: "ll-test",
+                                       playlistURL: try XCTUnwrap(URL(string: "https://live.test/ll.m3u8")),
+                                       signer: .plain(), refresh: nil, transport: upstream)
+        await recorder.start()
+        try await recorder.waitForFirstPoll()
+        let early = await recorder.localPlaylist(prefix: "v")
+        XCTAssertTrue(early.contains("#EXT-X-PART-INF:PART-TARGET=0.500"))
+        XCTAssertTrue(early.contains("CAN-BLOCK-RELOAD=YES"))
+        XCTAssertTrue(early.contains("URI=\"v/p0.0\",INDEPENDENT=YES"), "the published part is served before its segment exists")
+        XCTAssertTrue(early.contains("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"v/p0.1\""))
+        try await recorder.waitForResource("p0.0")
+
+        // A blocking reload for segment 0 returns once the stream has it.
+        await recorder.waitForPlaylist(msn: 0, part: nil)
+        let later = await recorder.localPlaylist(prefix: "v")
+        XCTAssertTrue(later.contains("v/s0\n") || later.contains("#EXT-X-ENDLIST"))
+        let queries = await upstream.playlistQueries
+        XCTAssertTrue(queries.dropFirst().contains { $0.contains("_HLS_msn=") && $0.contains("_HLS_part=") },
+                      "later reloads ask upstream to block until the next part")
+        await recorder.stop()
+    }
+}

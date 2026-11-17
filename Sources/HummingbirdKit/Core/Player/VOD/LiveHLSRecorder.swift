@@ -80,6 +80,32 @@ actor LiveHLSRecorder {
     private(set) var isFinished = false
     var isStopped: Bool { stopped }
     private var stoppedForSpace = false
+    /// Low-latency HLS: a recorded partial segment.
+    private struct Part: Sendable, Equatable {
+        var index: Int
+        var duration: Double
+        var resource: String
+        var independent: Bool
+    }
+    private var partTarget: Double?
+    private var canBlockReload = false
+    /// Parts by media sequence number, in order; kept once their segment is
+    /// complete (the local playlist lists them for the newest segments).
+    private var parts: [Int: [Part]] = [:]
+
+    /// The playlist URL, with `_HLS_msn`/`_HLS_part` asking upstream to hold
+    /// the response until the next part exists, when it supports that.
+    private func blockingReloadURL() -> URL {
+        guard canBlockReload, partTarget != nil,
+              var components = URLComponents(url: playlistURL, resolvingAgainstBaseURL: false) else { return playlistURL }
+        let publishing = (segments.last?.sequence ?? -1) + 1
+        let nextPart = parts[publishing]?.count ?? 0
+        var items = (components.queryItems ?? []).filter { $0.name != "_HLS_msn" && $0.name != "_HLS_part" }
+        items.append(URLQueryItem(name: "_HLS_msn", value: String(publishing)))
+        items.append(URLQueryItem(name: "_HLS_part", value: String(nextPart)))
+        components.queryItems = items
+        return components.url ?? playlistURL
+    }
     private(set) var isPaused = false
 
     func setPaused(_ paused: Bool) {
@@ -153,9 +179,18 @@ actor LiveHLSRecorder {
     // MARK: serving
 
     /// The local playlist: every recorded segment with local URIs under `prefix/`.
+    /// For a low-latency stream it is a low-latency playlist too: the recent
+    /// segments' parts, the parts of the segment being published, a preload
+    /// hint for the next part, and blocking reload (see `waitForPlaylist`).
     func localPlaylist(prefix: String) -> String {
-        var out = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(max(targetDuration, Int(ceil(segments.map(\.duration).max() ?? 1))))\n"
+        var out = "#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-TARGETDURATION:\(max(targetDuration, Int(ceil(segments.map(\.duration).max() ?? 1))))\n"
+        if let partTarget, !ended {
+            out += "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=\(String(format: "%.3f", partTarget * 3))\n"
+            out += "#EXT-X-PART-INF:PART-TARGET=\(String(format: "%.3f", partTarget))\n"
+        }
         out += "#EXT-X-MEDIA-SEQUENCE:\(segments.first?.sequence ?? 0)\n#EXT-X-PLAYLIST-TYPE:EVENT\n"
+        // Parts are listed for the last few segments only, as upstream does.
+        let partsFrom = (segments.last?.sequence ?? 0) - 2
         var currentMap: String?
         var currentKey: String??
         for segment in segments {
@@ -174,16 +209,54 @@ actor LiveHLSRecorder {
                 currentKey = .some(segment.key)
             }
             if let date = segment.programDateTime { out += "#EXT-X-PROGRAM-DATE-TIME:\(date)\n" }
+            if partTarget != nil, !ended, segment.sequence >= partsFrom {
+                out += partLines(for: segment.sequence, prefix: prefix)
+            }
             out += "#EXTINF:\(String(format: "%.6f", segment.duration)),\n\(prefix)/\(segment.resource)\n"
         }
-        if ended { out += "#EXT-X-ENDLIST\n" }
+        if ended {
+            out += "#EXT-X-ENDLIST\n"
+        } else if partTarget != nil {
+            // The segment being published: its parts so far, and the next one to come.
+            let publishing = (segments.last?.sequence ?? -1) + 1
+            out += partLines(for: publishing, prefix: prefix)
+            out += "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"\(prefix)/p\(publishing).\(parts[publishing]?.count ?? 0)\"\n"
+        }
         return out
     }
+
+    private func partLines(for sequence: Int, prefix: String) -> String {
+        (parts[sequence] ?? []).map { part in
+            "#EXT-X-PART:DURATION=\(String(format: "%.5f", part.duration)),URI=\"\(prefix)/\(part.resource)\"" + (part.independent ? ",INDEPENDENT=YES" : "") + "\n"
+        }.joined()
+    }
+
+    /// Blocking playlist reload (`_HLS_msn`, `_HLS_part`): waits until the
+    /// recording has segment `msn` (or its part `part`), at most three target
+    /// durations, as RFC 8216bis asks of a server.
+    func waitForPlaylist(msn: Int, part: Int?) async {
+        func available() -> Bool {
+            if ended { return true }
+            if let part { return (parts[msn]?.count ?? 0) > part || (segments.last?.sequence ?? Int.min) >= msn }
+            return (segments.last?.sequence ?? Int.min) >= msn
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(Double(max(targetDuration, 1) * 3)))
+        while !available(), !stopped, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// The parts recorded for `sequence` (tests, diagnostics).
+    func partCount(for sequence: Int) -> Int { parts[sequence]?.count ?? 0 }
 
     func waitForResource(_ id: String) async throws {
         if done.contains(id) { return }
         if stopped { throw CancellationError() }
-        guard resources[id] != nil else { throw TrackDownloadError.unexpectedResponse("unknown live resource") }
+        // A preload hint names a part (or segment) upstream has not announced
+        // yet: the request waits for it like for any other resource.
+        guard resources[id] != nil || id.hasPrefix("p") || id.hasPrefix("s") else {
+            throw TrackDownloadError.unexpectedResponse("unknown live resource")
+        }
         if let segment = segments.first(where: { $0.resource == id }) { prioritySequence = segment.sequence }
         let waiter = UUID()
         try await withTaskCancellationHandler {
@@ -253,8 +326,13 @@ actor LiveHLSRecorder {
                 let grew = try await poll()
                 attempt = 0
                 refusals = 0
-                let wait = Double(targetDuration) / (grew ? 1 : 2)
-                try await Task.sleep(for: .seconds(max(1, wait)))
+                if canBlockReload {
+                    // The next request blocks upstream until the next part exists.
+                    continue
+                }
+                let interval = partTarget ?? Double(targetDuration)
+                let wait = interval / (grew ? 1 : 2)
+                try await Task.sleep(for: .seconds(max(partTarget == nil ? 1 : 0.1, wait)))
             } catch is CancellationError {
                 return
             } catch {
@@ -280,14 +358,26 @@ actor LiveHLSRecorder {
 
     /// Reads the upstream playlist and appends what is new. Returns whether it grew.
     private func poll() async throws -> Bool {
-        let request = try await signer.sign(playlistURL, nil)
+        let request = try await signer.sign(blockingReloadURL(), nil)
         let (data, response) = try await transport.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw TrackDownloadError.unexpectedResponse("no http response") }
         guard (200..<300).contains(http.statusCode) else { throw PlaylistStatus(status: http.statusCode) }
         let media = try HLSPlaylist.parseMedia(String(decoding: data, as: UTF8.self), base: http.url ?? playlistURL)
         targetDuration = media.targetDuration
+        partTarget = media.partTarget
+        canBlockReload = media.canBlockReload && media.partTarget != nil
         let last = segments.last?.sequence ?? Int.min
         var grew = false
+        // Low-latency parts, for complete segments and the one being published.
+        for part in media.parts {
+            let sequence = media.mediaSequence + part.segment
+            guard sequence > last, (parts[sequence]?.count ?? 0) <= part.index else { continue }
+            let id = "p\(sequence).\(part.index)"
+            resources[id] = Upstream(url: part.uri, lower: part.byteRange?.lowerBound, upper: part.byteRange?.upperBound)
+            parts[sequence, default: []].append(Part(index: part.index, duration: part.duration, resource: id,
+                                                     independent: part.independent))
+            grew = true
+        }
         for (ordinal, segment) in media.segments.enumerated() {
             let sequence = media.mediaSequence + ordinal
             guard sequence > last else { continue }
@@ -361,7 +451,15 @@ actor LiveHLSRecorder {
     private func nextResource() -> String? {
         guard !isPaused else { return nil }
         let busy = done.union(inFlight)
-        if let pending = resources.keys.sorted().first(where: { !$0.hasPrefix("s") && !busy.contains($0) }) { return pending }
+        if let pending = resources.keys.sorted().first(where: { ($0.hasPrefix("m") || $0.hasPrefix("k")) && !busy.contains($0) }) {
+            return pending
+        }
+        // Low latency: the newest parts of segments not yet complete come next,
+        // so the player stays near the live edge.
+        // A part is no longer needed once its whole segment is cached.
+        for sequence in parts.keys.sorted(by: >) where !done.contains("s\(sequence)") {
+            if let part = parts[sequence]?.first(where: { !busy.contains($0.resource) }) { return part.resource }
+        }
         let pending = segments.filter { !busy.contains($0.resource) }
         guard !pending.isEmpty else { return nil }
         let from = prioritySequence ?? pending[0].sequence

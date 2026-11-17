@@ -214,7 +214,8 @@ enum HLSPlaylist {
             }
         }
         media.isEndless = !isVOD
-        guard !media.segments.isEmpty else { throw Failure.notAPlaylist }
+        // A low-latency stream may have parts before its first complete segment.
+        guard !media.segments.isEmpty || !media.parts.isEmpty else { throw Failure.notAPlaylist }
         return media
     }
 

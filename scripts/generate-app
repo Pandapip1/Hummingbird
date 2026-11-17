@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Generates the app's build definitions from Apps/AppManifest.swift (see that
+# file). With --check, only reports (exit 1) whether any is out of date.
+set -euo pipefail
+
+repository="$(cd "$(dirname "$0")/.." && pwd)"
+build="$(mktemp -d)"
+trap 'rm -rf "$build"' EXIT
+
+# On macOS, Xcode's compiler (a Nix shell's DEVELOPER_DIR or swiftc shim may
+# not provide one); elsewhere, the swiftc on PATH.
+if [[ "$(uname -s)" == Darwin && -x /usr/bin/xcrun ]]; then
+  swiftc=(env -u DEVELOPER_DIR -u SDKROOT /usr/bin/xcrun swiftc)
+else
+  swiftc=(swiftc)
+fi
+"${swiftc[@]}" -swift-version 6 -o "$build/generate-app" \
+  "$repository/Apps/AppManifest.swift" "$repository/Tools/generate-app/main.swift"
+"$build/generate-app" "$repository" "$@"

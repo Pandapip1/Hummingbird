@@ -25,6 +25,7 @@ final class AVMediaBackend: MediaBackend {
     private var itemObserver: NSObjectProtocol?
     private var itemFailureObserver: NSObjectProtocol?
     private var itemStatusObserver: NSKeyValueObservation?
+    private var timeControlObserver: NSKeyValueObservation?
     private var mediaSelectionGroups: [AVMediaCharacteristic: AVMediaSelectionGroup] = [:]
     private var loadGeneration = 0
     private var activeLoadGenerations: Set<Int> = []
@@ -116,8 +117,8 @@ final class AVMediaBackend: MediaBackend {
         removeObservers()
         let p = player ?? AVPlayer()
         p.replaceCurrentItem(with: item)
-        observeStatus(of: item)
         player = p
+        observeStatus(of: item)
         committedLoadGeneration = generation
         committedAsset = item.asset
         mediaSelectionGroups = [:]
@@ -184,9 +185,25 @@ final class AVMediaBackend: MediaBackend {
         if let o = itemFailureObserver { NotificationCenter.default.removeObserver(o); itemFailureObserver = nil }
         itemStatusObserver?.invalidate()
         itemStatusObserver = nil
+        timeControlObserver?.invalidate()
+        timeControlObserver = nil
     }
 
     private func observeStatus(of item: AVPlayerItem) {
+        // Where the player waits, and why (e.g. "evaluating buffering rate",
+        // "to minimize stalls"): the last step of a slow start or a stall.
+        timeControlObserver = player?.observe(\.timeControlStatus, options: [.new]) { player, _ in
+            let status = player.timeControlStatus
+            let name = switch status {
+            case .paused: "paused"
+            case .waitingToPlayAtSpecifiedRate: "waiting"
+            case .playing: "playing"
+            @unknown default: "other"
+            }
+            let reason = player.reasonForWaitingToPlay?.rawValue ?? ""
+            Logger.avPlayer.info("time_control status=\(name, privacy: .public) reason=\(reason, privacy: .public)")
+            OSSignposter.player.emitEvent("PlayerTimeControl", "status=\(name, privacy: .public) reason=\(reason, privacy: .public)")
+        }
         itemStatusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self, weak item] _, change in
             guard let status = change.newValue else { return }
             let name: String = switch status {

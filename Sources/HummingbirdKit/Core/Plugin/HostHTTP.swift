@@ -265,8 +265,15 @@ final class HostHTTP: NSObject, @unchecked Sendable {
             semaphore.signal()
         }
         task.delegate = redirectGuard
+        // Plugin HTTP blocks the plugin's queue, so slow upstream calls (and
+        // throttled media fetched through a plugin) show up here by host.
+        let signposter = OSSignposter.plugin
+        let signpost = signposter.beginInterval("PluginHTTP", id: signposter.makeSignpostID(),
+                                                "host=\(request.url?.host ?? "", privacy: .public) method=\(request.httpMethod ?? "", privacy: .public)")
         task.resume()
         semaphore.wait()
+        let status = (taskResult.response as? HTTPURLResponse)?.statusCode ?? -1
+        signposter.endInterval("PluginHTTP", signpost, "status=\(status) bytes=\(taskResult.data?.count ?? 0)")
         withExtendedLifetime(redirectGuard) {}
 
         if let violation = redirectGuard.violation {

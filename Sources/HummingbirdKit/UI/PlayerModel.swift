@@ -134,6 +134,21 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var localRecoveryAttempts = 0
     @ObservationIgnored private var startup: PlaybackStartupTrace?
 
+    /// The video's chapters from the plugin (`getContentChapters`), for the seek bar.
+    private(set) var chapters: [PlaybackChapter] = []
+
+    /// What the seek bar shows (see `PlaybackScrubber`).
+    var scrubberContent: ScrubberContent {
+        PlaybackScrubber.content(pipeline: pipeline, duration: duration, chapters: chapters,
+                                 isLive: selected?.kind == .live)
+    }
+
+    /// Seeks to just behind the live edge of the recording.
+    func jumpToLive() {
+        let edge = pipeline.mediaDuration ?? duration
+        seek(to: max(0, edge - 2))
+    }
+
     /// Per-track, per-stage progress of the current video's media pipeline
     /// (download today; transcoding later). The seek bar's buffered ranges
     /// come from here.
@@ -259,6 +274,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
            preferences.defaults.bool(forKey: PlaybackPreferenceKey.showSubtitlesByDefault) {
             await chooseSubtitle(first)
         }
+        await loadChapters(sourceURL: sourceURL)
         await startTracker()
     }
 
@@ -979,6 +995,20 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         backend?.setExternalSubtitle(sub.url.flatMap(URL.init(string:)))
     }
 
+    /// Chapters and skippable segments, when the plugin offers them. A failure
+    /// leaves the bar without chapters; playback does not depend on them.
+    private func loadChapters(sourceURL: String) async {
+        guard let runtime, runtime.has("getContentChapters") else { return }
+        do {
+            let data = try await runtime.callRaw("getContentChapters", [sourceURL, NSNull()])
+            let decoded = try await PluginRuntime.decodeOffMain([PlaybackChapter].self, from: data)
+            guard loadedURL == sourceURL else { return }
+            chapters = decoded.filter { $0.timeEnd > $0.timeStart }.sorted { $0.timeStart < $1.timeStart }
+        } catch {
+            Logger.player.notice("chapters_unavailable message=\(error.localizedDescription)")
+        }
+    }
+
     // MARK: playback tracker
 
     private func startTracker() async {
@@ -1050,6 +1080,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         audioSources = []
         selectedAudioSource = nil
         reportedDurationMismatch = false
+        chapters = []
         isRecovering = false
         playbackTime = 0; duration = 0; declaredDuration = 0; isPlaying = false; isFullscreen = false
         playbackRequested = false

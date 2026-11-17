@@ -116,6 +116,8 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
     var playbackRate: Float = 1
     let pictureInPictureState = PictureInPictureState.unsupported
     let isMediaReady = true
+    var scrubberContent: ScrubberContent { ScrubberContent(duration: duration) }
+    func jumpToLive() {}
 
     func togglePlayback() { isPlaying.toggle() }
     func skip(by seconds: Double) { seek(to: playbackTime + seconds) }

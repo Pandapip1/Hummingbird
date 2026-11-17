@@ -286,9 +286,11 @@ actor LiveHLSRecorder {
         var completed = MediaRangeSet()
         var busy = MediaRangeSet()
         var start = 0.0
+        var discontinuities: [Double] = []
         var timeline: [MediaSegmentTimeline.Segment] = []
         for (ordinal, segment) in segments.enumerated() {
             let unit = Int64(ordinal)..<Int64(ordinal + 1)
+            if segment.discontinuity, ordinal > 0 { discontinuities.append(start) }
             timeline.append(.init(bytes: unit, start: start, duration: segment.duration))
             start += segment.duration
             if done.contains(segment.resource) { completed.insert(unit) }
@@ -297,7 +299,8 @@ actor LiveHLSRecorder {
         let stage = MediaStageState(condition: condition, completed: completed, inFlight: busy)
         return MediaTrackPipelineState(role: role, totalBytes: Int64(segments.count),
                                        timeline: MediaSegmentTimeline(initialization: 0..<0, segments: timeline),
-                                       declaredDuration: start, stages: [.download: stage])
+                                       declaredDuration: start, stages: [.download: stage],
+                                       discontinuities: discontinuities)
     }
 
     private func cancelWaiter(_ id: UUID) {

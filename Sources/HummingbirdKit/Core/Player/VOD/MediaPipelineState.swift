@@ -79,6 +79,9 @@ struct MediaRangeSet: Sendable, Hashable, Codable {
 /// stages' output; each keeps its own progress.
 enum MediaPipelineStage: String, Sendable, Hashable, CaseIterable, Codable {
     case download
+    /// Optional transcoding to save space (Quality setting): consumes the
+    /// downloaded originals as its buffer.
+    case transcode
 }
 
 enum MediaTrackRole: String, Sendable, Hashable, Codable {
@@ -156,12 +159,16 @@ struct MediaTrackPipelineState: Sendable, Equatable {
     /// Declared duration, used to estimate time ranges for tracks without a timeline.
     var declaredDuration: Double?
     var stages: [MediaPipelineStage: MediaStageState] = [:]
+    /// Media times of discontinuities (ad breaks, encoder restarts).
+    var discontinuities: [Double] = []
 
     func stage(_ stage: MediaPipelineStage) -> MediaStageState { stages[stage] ?? MediaStageState() }
 
     var isComplete: Bool {
         guard let totalBytes else { return false }
-        return MediaPipelineStage.allCases.allSatisfy { stage($0).completed.contains(0..<totalBytes) }
+        // Every stage this track runs (download always) has produced everything.
+        let present = Set(stages.keys).union([.download])
+        return present.allSatisfy { stage($0).completed.contains(0..<totalBytes) }
     }
 
     /// Media time ranges a stage has completed. Without a segment timeline

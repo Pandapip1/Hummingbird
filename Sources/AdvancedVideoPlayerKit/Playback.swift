@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftOpenUI
 
 public struct MediaTrack: Hashable, Sendable {
     public enum Kind: String, Sendable { case video, audio, subtitles }
@@ -138,6 +139,11 @@ public protocol AdvancedVideoPlayerControlling: AnyObject, Observable {
     var duration: Double { get }
     var isPlaying: Bool { get }
     var playbackRate: Float { get }
+    /// What the seek bar shows: duration, chapters, pipeline lanes, flagged
+    /// regions and the live window.
+    var scrubberContent: ScrubberContent { get }
+    /// Seeks to the live edge of a live stream.
+    func jumpToLive()
     var pictureInPictureState: PictureInPictureState { get }
     func togglePlayback()
     func skip(by seconds: Double)

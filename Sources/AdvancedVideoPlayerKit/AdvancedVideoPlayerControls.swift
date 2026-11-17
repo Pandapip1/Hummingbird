@@ -101,17 +101,21 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         }
     }
 
-    private var timeline: some View {
-        HStack(spacing: 14) {
-            Text(timeLabel).font(.caption.monospacedDigit())
-            if model.duration > 0 {
-                AdvancedVideoPlayerSlider(
-                    value: min(model.playbackTime, model.duration),
-                    range: 0...model.duration,
-                    onChange: { interacted(); model.seek(to: $0) }
-                )
-                .frame(minWidth: 80, maxWidth: .infinity)
-            } else { Spacer() }
+    /// The seek bar (chapters, pipeline lanes, flagged regions, live window),
+    /// with its own time labels.
+    @ViewBuilder private var timeline: some View {
+        let content = model.scrubberContent
+        if content.end > 0 {
+            MediaScrubber(
+                content: content,
+                value: min(model.playbackTime, content.end),
+                onScrub: { _ in interacted() },
+                onScrubEnded: { interacted(); model.seek(to: $0) },
+                onJumpToLive: content.isLive ? { interacted(); model.jumpToLive() } : nil
+            )
+            .frame(minWidth: 80, maxWidth: .infinity)
+        } else {
+            HStack { Text(timeLabel).font(.caption.monospacedDigit()); Spacer() }
         }
     }
 

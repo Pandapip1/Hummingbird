@@ -450,56 +450,6 @@ struct DebugSceneSelection<Content: View>: View {
 }
 
 @MainActor
-struct BrowserTopToolbar: ToolbarContent {
-    let tab: BrowserTab
-    let showTabOverview: () -> Void
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            BrowserHistoryControls(
-                canGoBack: tab.canGoBack,
-                canGoForward: tab.canGoForward,
-                goBack: { tab.goBack() },
-                goForward: { tab.goForward() }
-            )
-        }
-        #if os(tvOS)
-        ToolbarItem(placement: .primaryAction) { AppSectionMenu() }
-        ToolbarItem(placement: .primaryAction) {
-            BrowserTabOverviewButton(action: showTabOverview)
-        }
-        #endif
-    }
-}
-
-private struct BrowserTopToolbarModifier: ViewModifier {
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
-    let context: BrowserToolbarContext?
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.toolbar {
-            if let context, !isOverviewPreview {
-                BrowserTopToolbar(tab: context.tab, showTabOverview: context.showTabOverview)
-            }
-        }
-        #else
-        content
-        #endif
-    }
-}
-
-extension View {
-    /// A section page's toolbar: on tvOS the browser controls, elsewhere the
-    /// profile switcher. Apply it inside the page's `NavigationStack`.
-    func browserTopToolbar(_ context: BrowserToolbarContext?) -> some View {
-        modifier(BrowserTopToolbarModifier(context: context))
-            .profileSwitcherToolbarItem()
-    }
-}
-
-@MainActor
 struct LoadMoreButton: View {
     let feed: FeedModel
 
@@ -583,6 +533,24 @@ private struct NativeActionMenuButton<Value>: UIViewRepresentable {
 }
 #endif
 
+/// The window toolbar's history controls for the selected tab, on desktop
+/// windows. Touch and TV layouts have them in the tab container's bar.
+@MainActor
+struct BrowserTopToolbar: ToolbarContent {
+    let tab: BrowserTab
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            BrowserHistoryControls(
+                canGoBack: tab.canGoBack,
+                canGoForward: tab.canGoForward,
+                goBack: { tab.goBack() },
+                goForward: { tab.goForward() }
+            )
+        }
+    }
+}
+
 private struct BrowserWindowChromeModifier: ViewModifier {
     let model: AppModel
     @Binding var overviewPresented: Bool
@@ -595,7 +563,7 @@ private struct BrowserWindowChromeModifier: ViewModifier {
         content
             .toolbar {
                 if !overviewPresented {
-                    BrowserTopToolbar(tab: model.activeTab) { overviewPresented = true }
+                    BrowserTopToolbar(tab: model.activeTab)
                 }
             }
             .background {
@@ -608,31 +576,9 @@ private struct BrowserWindowChromeModifier: ViewModifier {
     }
 }
 
-private struct BrowserTabControlsModifier: ViewModifier {
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
-    @Binding var overviewPresented: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        #if os(iOS)
-        content.safeAreaInset(edge: .bottom, spacing: 0) {
-            if !isOverviewPreview {
-                MobileBrowserToolbar(showingTabOverview: $overviewPresented)
-            }
-        }
-        #else
-        content
-        #endif
-    }
-}
-
 extension View {
     func browserWindowChrome(model: AppModel, overviewPresented: Binding<Bool>) -> some View {
         modifier(BrowserWindowChromeModifier(model: model, overviewPresented: overviewPresented))
-    }
-
-    func browserTabControls(overviewPresented: Binding<Bool>) -> some View {
-        modifier(BrowserTabControlsModifier(overviewPresented: overviewPresented))
     }
 }
 
@@ -769,22 +715,6 @@ private struct SearchEntryModifier: ViewModifier {
 extension View {
     func searchEntry(query: Binding<String>, hidden: Bool) -> some View {
         modifier(SearchEntryModifier(query: query, hidden: hidden))
-    }
-}
-
-@MainActor
-struct FocusBrowserToolbar: ToolbarContent {
-    let browserToolbar: BrowserToolbarContext?
-
-    @ToolbarContentBuilder
-    var body: some ToolbarContent {
-        #if os(tvOS)
-        if let browserToolbar {
-            BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
-        }
-        #else
-        ToolbarItem { EmptyView() }
-        #endif
     }
 }
 
@@ -1006,4 +936,37 @@ extension View {
         task(id: id, prepare)
         #endif
     }
+}
+
+extension View {
+    /// Runs `action` for `id` once this page is on screen, rather than in
+    /// every background tab: tabs stay mounted, so a plain `.task` would load
+    /// all of them at once, for instance when tabs are restored at launch.
+    /// Hiding the page doesn't cancel work already done; it runs again only
+    /// when `id` changes (or if it was cancelled before it finished).
+    func taskWhenVisible<ID: Equatable & Sendable>(
+        id: ID, _ action: @escaping @MainActor () async -> Void
+    ) -> some View {
+        modifier(VisibleTaskModifier(id: id, action: action))
+    }
+}
+
+private struct VisibleTaskModifier<ID: Equatable & Sendable>: ViewModifier {
+    @Environment(\.isBrowserTabVisible) private var isVisible
+    let id: ID
+    let action: @MainActor () async -> Void
+    @State private var completedID: ID?
+
+    func body(content: Content) -> some View {
+        content.task(id: VisibleTaskKey(id: id, isVisible: isVisible)) {
+            guard isVisible, completedID != id else { return }
+            await action()
+            if !Task.isCancelled { completedID = id }
+        }
+    }
+}
+
+private struct VisibleTaskKey<ID: Equatable & Sendable>: Equatable, Sendable {
+    let id: ID
+    let isVisible: Bool
 }

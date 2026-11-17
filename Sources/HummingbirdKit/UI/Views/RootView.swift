@@ -27,6 +27,7 @@ struct RootView: View {
                 }
             }
         }
+        .browserTabControls { MobileBrowserToolbar(showingTabOverview: $showingTabOverview) }
         .navigationTitle(windowTitle)
         .browserWindowChrome(model: model, overviewPresented: $showingTabOverview)
         .overlay {
@@ -141,14 +142,12 @@ struct BrowserTabContentView: View {
                     }
                 )
                     .id(tab.historyIndexIdentity)
-                    .browserTabControls(overviewPresented: $showingTabOverview)
             } else {
                 NavigationStack {
                     ContentUnavailableView("New Tab", systemImage: "plus.square", description: Text("Choose a section from the menu."))
                         .navigationTitle("New Tab")
                         .profileSwitcherToolbarItem()
                 }
-                .browserTabControls(overviewPresented: $showingTabOverview)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

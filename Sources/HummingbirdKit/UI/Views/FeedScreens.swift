@@ -19,9 +19,9 @@ struct HomeView: View {
                 } else { ProgressView() }
             }
             .navigationTitle("Home")
-            .browserTopToolbar(browserToolbar)
+            .profileSwitcherToolbarItem()
         }
-        .task(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
+        .taskWhenVisible(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
     }
 }
 
@@ -31,7 +31,6 @@ struct HomeView: View {
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.openRoute) private var openRoute
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
     @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     @State private var query = ""
     @State private var submittedQuery = ""
@@ -101,10 +100,7 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .searchEntry(query: $query, hidden: isOverviewPreview || !isBrowserTabToolbarActive)
-            .toolbar {
-                FocusBrowserToolbar(browserToolbar: browserToolbar)
-            }
+            .searchEntry(query: $query, hidden: !isBrowserTabToolbarActive)
             .profileSwitcherToolbarItem()
             .searchSubmission { Task { await submit() } }
             .task(id: query) { await updateSuggestions() }
@@ -217,7 +213,6 @@ struct SubscriptionsView: View {
             }
             .navigationTitle("Subscriptions")
             .toolbar {
-                FocusBrowserToolbar(browserToolbar: isBrowserTabToolbarActive ? browserToolbar : nil)
                 FocusNavigationLink(isActive: isBrowserTabToolbarActive) {
                     ManageSubscriptionsView()
                 } label: {
@@ -234,7 +229,7 @@ struct SubscriptionsView: View {
             }
             .profileSwitcherToolbarItem()
         }
-        .task { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
+        .taskWhenVisible(id: 0) { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
     }
 }
 
@@ -319,7 +314,7 @@ struct LibraryView: View {
             .jsonDocumentImporter(isPresented: $showImporter) { url in
                 Task { await importBackup(from: url) }
             }
-            .browserTopToolbar(browserToolbar)
+            .profileSwitcherToolbarItem()
         }
         .preparesDocumentExport(id: backupRevision) { await prepareBackup() }
     }

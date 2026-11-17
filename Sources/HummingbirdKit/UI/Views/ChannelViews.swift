@@ -25,7 +25,7 @@ struct ChannelView: View {
             }
         }
         .detailNavigationStyle()
-        .task(id: url) { await load() }
+        .taskWhenVisible(id: url) { await load() }
     }
 
     @ViewBuilder
@@ -194,7 +194,7 @@ struct PlaylistView: View {
         }
         .navigationTitle(title)
         .detailNavigationStyle()
-        .task(id: url) { await load() }
+        .taskWhenVisible(id: url) { await load() }
     }
 
     private func load() async {

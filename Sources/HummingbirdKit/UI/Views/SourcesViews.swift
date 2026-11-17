@@ -25,7 +25,6 @@ struct SourcesView: View {
             }
             .navigationTitle("Sources")
             .toolbar {
-                FocusBrowserToolbar(browserToolbar: isBrowserTabToolbarActive ? browserToolbar : nil)
                 FocusPrimaryAction(isActive: isBrowserTabToolbarActive, action: { showAdd = true }) {
                     Image(systemName: "plus")
                         .accessibilityLabel("Add source")
@@ -502,9 +501,6 @@ private struct AppSettingsForm: View {
             }
         }
         .navigationTitle("Settings")
-        .toolbar {
-            FocusBrowserToolbar(browserToolbar: browserToolbar)
-        }
         .profileSwitcherToolbarItem()
     }
 }

@@ -8,7 +8,10 @@ crashes and hangs come from MetricKit, and app state is read in lldb.
 
 Every component logs to the subsystem `com.eightybps.hummingbird` with
 `os.Logger`. On Linux, `import os` resolves to SwiftOpenUI's stand-in, which has
-the same API.
+the same API. Test processes log under `com.eightybps.hummingbird.tests`
+instead (see `TestProcess` in ATAppSync), so fake diagnostics and failures from
+tests never appear among the app's own entries; query that subsystem to see
+them.
 
 | Category | What |
 |---|---|
@@ -40,6 +43,9 @@ Stream or read the logs:
 # Live; add --level debug for plugin console output and traces
 log stream --predicate 'subsystem == "com.eightybps.hummingbird"'
 log stream --level debug --predicate 'subsystem == "com.eightybps.hummingbird" AND category == "player"'
+
+# What a test run logged
+log show --last 1h --predicate 'subsystem == "com.eightybps.hummingbird.tests"'
 
 # The last hour, from the store
 log show --last 1h --predicate 'subsystem == "com.eightybps.hummingbird"'

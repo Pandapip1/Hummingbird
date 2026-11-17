@@ -1,3 +1,4 @@
+import ATAppSync
 import Foundation
 
 /// The user's real, per-user locations: Application Support (on Linux,
@@ -11,22 +12,9 @@ import Foundation
 /// inject a store therefore fails loudly instead of writing into the
 /// developer's own profile, library or keychain.
 enum LiveData {
-    /// Whether this process is a test runner rather than the application.
-    ///
-    /// XCTest is never loaded into the app (UI tests drive it from a separate
-    /// runner process), so its presence identifies a unit-test process on
-    /// Apple platforms. Elsewhere the runner is identified by its executable:
-    /// SwiftPM's `*.xctest` test binary, or the `xctest`/Swift Testing helper
-    /// that loads it.
-    static let isTestProcess: Bool = {
-        #if canImport(ObjectiveC)
-        if NSClassFromString("XCTestCase") != nil { return true }
-        #endif
-        let executable = ProcessInfo.processInfo.arguments.first
-            .map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
-        return executable == "xctest" || executable.hasSuffix(".xctest")
-            || executable == "swiftpm-testing-helper"
-    }()
+    /// Whether this process is a test runner rather than the application
+    /// (shared with ATAppSync; see `TestProcess`).
+    static var isTestProcess: Bool { TestProcess.isRunning }
 
     /// Stops a test process that reached for real user data.
     static func require(_ location: @autoclosure () -> String) {

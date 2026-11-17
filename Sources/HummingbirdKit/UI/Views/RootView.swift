@@ -21,7 +21,7 @@ struct RootView: View {
                                 }
                             }) { item in
             ZStack {
-                BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
+                BrowserTabContentView(tab: browserTab(for: item.id))
                 if let loginTarget, loginTarget.tabID == item.id {
                     LoginSheet(pluginID: loginTarget.pluginID) { self.loginTarget = nil }
                 }
@@ -128,7 +128,6 @@ struct NewTabDestinationMenu: View {
 struct BrowserTabContentView: View {
     @Environment(AppModel.self) private var app
     let tab: BrowserTab
-    @Binding var showingTabOverview: Bool
 
     var body: some View {
         Group {
@@ -136,10 +135,7 @@ struct BrowserTabContentView: View {
                 RouteContent(
                     route: route,
                     player: app.player(forTab: tab.id),
-                    browserToolbar: BrowserToolbarContext(
-                        tab: tab,
-                        showTabOverview: { showingTabOverview = true }
-                    ),
+                    browserToolbar: BrowserToolbarContext(tab: tab),
                     shouldKeepPlaybackWhenHidden: {
                         tab.current == route && app.contentTabs.contains { $0.id == tab.id }
                     }
@@ -203,7 +199,6 @@ struct BrowserTabOverviewButton: View {
 
 struct BrowserToolbarContext {
     let tab: BrowserTab
-    let showTabOverview: () -> Void
 }
 
 @MainActor

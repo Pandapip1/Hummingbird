@@ -128,9 +128,13 @@ private final class BrowserController {
     }
 
     private func makeSession(_ url: URL) -> BrowserSession {
-        let session = BrowserSession(scripts: scripts, callback: callback) { [weak self] in
+        let session = BrowserSession(scripts: scripts, callback: callback, activity: { [weak self] in
             self?.scheduleIdleTeardown()
-        }
+        }, crashed: { [weak self] crashed in
+            // Drop the dead page; the next script loads a fresh, isolated one.
+            guard let self, self.session === crashed else { return }
+            self.session = nil
+        })
         session.load(url)
         scheduleIdleTeardown()
         return session
@@ -170,6 +174,7 @@ private final class BrowserController {
 private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private let callback: @Sendable (String, String) -> Void
     private let activity: @MainActor () -> Void
+    private let crashed: @MainActor (BrowserSession) -> Void
     private let loaded = DispatchSemaphore(value: 0)
     private var didFinish = false
     private var pendingEvaluations = 0
@@ -191,9 +196,11 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     static let maximumLoadWait: TimeInterval = 60
 
     init(scripts: [String], callback: @escaping @Sendable (String, String) -> Void,
-         activity: @escaping @MainActor () -> Void) {
+         activity: @escaping @MainActor () -> Void,
+         crashed: @escaping @MainActor (BrowserSession) -> Void) {
         self.callback = callback
         self.activity = activity
+        self.crashed = crashed
         let configuration = WKWebViewConfiguration()
         // Each page starts empty and nothing it stores outlives it.
         configuration.websiteDataStore = .nonPersistent()
@@ -292,6 +299,25 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
         webView.navigationDelegate = nil
         pendingCallbacks.removeAll()
         for (id, _) in scriptSignposts { endScriptSignpost(id, outcome: "closed") }
+    }
+
+    /// The page's WebContent process died (memory pressure, a WebKit crash).
+    /// Nothing on this page will answer any more: every script the plugin is
+    /// waiting on fails now (instead of after its timeout), anyone waiting for
+    /// the load is released, and the controller drops the page so the next
+    /// call starts a fresh one.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        Logger.pluginBrowser.error("webcontent_terminated pending_callbacks=\(self.pendingCallbacks.count) loaded=\(self.didFinish)")
+        OSSignposter.plugin.emitEvent("BrowserWebContentTerminated")
+        let waiting = pendingCallbacks
+        pendingCallbacks.removeAll()
+        pendingEvaluations = 0
+        for id in waiting {
+            endScriptSignpost(id, outcome: "crashed")
+            callback(id, "")
+        }
+        signalLoaded()
+        crashed(self)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { signalLoaded() }

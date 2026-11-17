@@ -122,21 +122,8 @@ struct SyncSettingsView: View {
         // only here, not over every page.
         .peerVerificationPrompts(app.profileAccount)
         .toolbar {
-            if !isScanning {
-                ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button { isScanning = true } label: {
-                            Label("Scan Its Code", systemImage: "qrcode.viewfinder")
-                        }
-                        Button { enteringCode = true } label: {
-                            Label("Enter Its Code", systemImage: "keyboard")
-                        }
-                    } label: {
-                        Label("Verify instance", systemImage: "checkmark.shield")
-                    }
-                    .disabled(app.peerService == nil)
-                }
-            } else {
+            // Verifying starts from the instance's own row ("Verify Directly").
+            if isScanning {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { isScanning = false }
                 }
@@ -317,9 +304,11 @@ private struct PeerVerificationCodeSheet: View {
                 if let qr = try? QRCode.encode(text: code.rawValue, ecl: .medium) {
                     PeerQRCode(code: qr).frame(maxWidth: 420)
                 }
-                Text("Scan this code on another instance to verify this instance directly.")
+                Text("Scan this code on another instance, or click the code to copy it and enter it there.")
                     .multilineTextAlignment(.center).foregroundStyle(.secondary)
-                Text(code.rawValue).font(.caption.monospaced()).copyableText()
+                CopyButton(code.rawValue) {
+                    Text(code.rawValue).font(.caption.monospaced())
+                }
             }
             .padding()
             .navigationTitle("Verify This Instance")

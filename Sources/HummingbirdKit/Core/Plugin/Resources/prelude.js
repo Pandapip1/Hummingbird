@@ -894,8 +894,7 @@
   // ------------------------------------------------------------------ handles + invoke wrapper used by the Swift host
 
   var handles = {};
-  // Each pooled context of a plugin hands out handles from its own range (PluginRuntime).
-  var nextHandle = (globalThis.__hbHandleBase || 0) + 1;
+  var nextHandle = 1;
   var pendingPromises = {};
   var nextPromise = 1;
   function putHandle(obj) { var id = nextHandle++; handles[id] = obj; return id; }

@@ -211,6 +211,10 @@ final class ProfileChangeStore: @unchecked Sendable {
         }
     }
 
+    /// Blocks until every edit submitted so far is in the journal. Only for
+    /// the moment the application quits, when nothing may run afterwards.
+    func flushBeforeTermination() { writer.sync {} }
+
     /// Waits until every edit submitted so far is in the journal.
     func flush() async {
         await withCheckedContinuation { continuation in

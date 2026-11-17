@@ -84,7 +84,8 @@ final class TabOverviewUITests: XCTestCase {
     }
 
     @MainActor private func titles(in app: XCUIApplication) -> [String] {
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Open '")).allElementsBoundByIndex
+        // The cards only, not other "Open …" buttons such as the new-tab menu.
+        app.buttons.matching(identifier: "browser-tab-overview-card").allElementsBoundByIndex
             .map { ($0.frame, $0.label) }
             .sorted { ($0.0.minY, $0.0.minX) < ($1.0.minY, $1.0.minX) }
             .map(\.1)

@@ -26,6 +26,23 @@ final class MediaPipelineTests: XCTestCase {
         retry: DownloadRetryPolicy(initialDelay: 0.01, maximumDelay: 0.05, refusalsBeforeRefresh: 1)
     )
 
+    private struct TimedOut: Error {}
+
+    /// Every asynchronous step is bounded, so a hang fails the test instead of the run.
+    private func bounded<T: Sendable>(_ seconds: Double = 20,
+                                      _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw TimedOut()
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else { throw TimedOut() }
+            return result
+        }
+    }
+
     // MARK: ranges
 
     func testRangeSetMergesAndFindsGaps() {
@@ -89,6 +106,37 @@ final class MediaPipelineTests: XCTestCase {
                        "a partial CODECS list would make AVFoundation reject the variant")
     }
 
+    /// Regression: the seek bar showed ~1.5x a YouTube video's length on the
+    /// old progressive composition. With the cache, the length is the sum of
+    /// the segment index's durations, the playlist says exactly that, and the
+    /// presentation's length is the shorter of the video and audio tracks.
+    func testDurationIsTheSegmentIndexLength() throws {
+        let video = FakeMedia.fragmentedMP4(segmentSizes: [1_000, 1_000, 1_000], segmentMilliseconds: 5_005)
+        let audio = FakeMedia.fragmentedMP4(segmentSizes: [100, 100, 100], segmentMilliseconds: 5_000)
+        guard case .layout(let videoLayout) = FragmentedMP4.probe(video.data),
+              case .layout(let audioLayout) = FragmentedMP4.probe(audio.data) else { return XCTFail("expected indexes") }
+        XCTAssertEqual(videoLayout.timeline.duration, 15.015, accuracy: 0.0001)
+
+        let track = CachedHLS.Track(role: .video, layout: videoLayout, fileName: "video.mp4", playlistName: "video.m3u8",
+                                    codec: "", bandwidth: 1, width: 0, height: 0)
+        let playlistSeconds = CachedHLS.mediaPlaylist(track)
+            .components(separatedBy: "\n")
+            .filter { $0.hasPrefix("#EXTINF:") }
+            .compactMap { Double($0.dropFirst("#EXTINF:".count).split(separator: ",").first ?? "") }
+            .reduce(0, +)
+        XCTAssertEqual(playlistSeconds, videoLayout.timeline.duration, accuracy: 0.0001)
+
+        let snapshot = MediaPipelineSnapshot(tracks: [
+            MediaTrackPipelineState(role: .video, totalBytes: nil, timeline: videoLayout.timeline, declaredDuration: 99),
+            MediaTrackPipelineState(role: .audio, totalBytes: nil, timeline: audioLayout.timeline, declaredDuration: 99),
+        ])
+        XCTAssertEqual(snapshot.mediaDuration ?? 0, 15, accuracy: 0.0001, "the shorter track, never the declared or estimated length")
+        let unindexed = MediaPipelineSnapshot(tracks: [
+            MediaTrackPipelineState(role: .muxed, totalBytes: 10, timeline: nil, declaredDuration: 99),
+        ])
+        XCTAssertNil(unindexed.mediaDuration)
+    }
+
     // MARK: protocol details
 
     func testRangeAndContentRangeParsing() {
@@ -150,10 +198,11 @@ final class MediaPipelineTests: XCTestCase {
                                          signer: .plain(try XCTUnwrap(URL(string: "https://media.test/v.mp4"))),
                                          transport: upstream, configuration: fastRetry)
         await downloader.start()
-        guard case .indexed(let layout) = try await downloader.trackLayout() else { return XCTFail("expected an indexed layout") }
+        let firstLayout = try await bounded { try await downloader.trackLayout() }
+        guard case .indexed(let layout) = firstLayout else { return XCTFail("expected an indexed layout") }
         XCTAssertEqual(layout.timeline.segments.count, 3)
         let all = 0..<Int64(file.data.count)
-        try await downloader.waitUntilAvailable(all)
+        try await bounded { try await downloader.waitUntilAvailable(all) }
         let cached = try await downloader.read(all)
         XCTAssertEqual(cached, file.data)
         let state = await downloader.state
@@ -169,7 +218,7 @@ final class MediaPipelineTests: XCTestCase {
                                       signer: .plain(try XCTUnwrap(URL(string: "https://media.test/v.mp4"))),
                                       transport: offline, configuration: fastRetry)
         await resumed.start()
-        try await resumed.waitUntilAvailable(all)
+        try await bounded { try await resumed.waitUntilAvailable(all) }
         let offlineRequests = await offline.requestCount
         XCTAssertEqual(offlineRequests, 0)
         await resumed.stop()
@@ -192,7 +241,7 @@ final class MediaPipelineTests: XCTestCase {
             transport: upstream, configuration: fastRetry
         )
         await downloader.start()
-        try await downloader.waitUntilAvailable(0..<Int64(file.data.count))
+        try await bounded { try await downloader.waitUntilAvailable(0..<Int64(file.data.count)) }
         let count = await refreshes.value
         XCTAssertEqual(count, 1)
         await downloader.stop()
@@ -207,11 +256,11 @@ final class MediaPipelineTests: XCTestCase {
                                          signer: .plain(try XCTUnwrap(URL(string: "https://media.test/plain.mp4"))),
                                          transport: upstream, configuration: fastRetry)
         await downloader.start()
-        let layout = try await downloader.trackLayout()
+        let layout = try await bounded { try await downloader.trackLayout() }
         XCTAssertEqual(layout, .progressive)
         let total = await downloader.knownTotalBytes
         XCTAssertEqual(total, Int64(data.count), "learned from Content-Range")
-        try await downloader.waitUntilAvailable(250_000..<300_000)
+        try await bounded { try await downloader.waitUntilAvailable(250_000..<300_000) }
         let tail = try await downloader.read(250_000..<300_000)
         XCTAssertEqual(tail, data.subdata(in: 250_000..<300_000))
         await downloader.stop()
@@ -231,26 +280,27 @@ final class MediaPipelineTests: XCTestCase {
                          refresh: nil, indexHint: nil, container: role == .audio ? "audio/mp4" : "video/mp4",
                          codec: codec, bandwidth: 1_000_000, width: 1280, height: 720, declaredDuration: 10)
         }
-        let (session, playback) = try await VODSession.start(
-            video: try spec(.video, "/v", codec: "avc1.64001f"), audio: try spec(.audio, "/a", codec: "mp4a.40.2"),
-            cache: cache, server: server, transport: transport
-        )
+        let videoSpec = try spec(.video, "/v", codec: "avc1.64001f")
+        let audioSpec = try spec(.audio, "/a", codec: "mp4a.40.2")
+        let (session, playback) = try await bounded {
+            try await VODSession.start(video: videoSpec, audio: audioSpec, cache: cache, server: server, transport: transport)
+        }
         XCTAssertEqual(playback.origin, .mediaCache)
         XCTAssertNil(playback.request.audio, "separate tracks are one HLS asset, not a composition")
         let master = playback.request.video.url
         XCTAssertEqual(master.host, "127.0.0.1")
 
-        let (masterData, _) = try await URLSession.shared.data(from: master)
+        let (masterData, _) = try await bounded { try await URLSession.shared.data(from: master) }
         let masterText = String(decoding: masterData, as: UTF8.self)
         XCTAssertTrue(masterText.contains("URI=\"audio.m3u8\""))
         let videoPlaylist = master.deletingLastPathComponent().appendingPathComponent("video.m3u8")
-        let (playlistData, _) = try await URLSession.shared.data(from: videoPlaylist)
+        let (playlistData, _) = try await bounded { try await URLSession.shared.data(from: videoPlaylist) }
         XCTAssertTrue(String(decoding: playlistData, as: UTF8.self).contains("#EXT-X-BYTERANGE:200000@\(video.firstSegmentOffset)"))
 
         var ranged = URLRequest(url: master.deletingLastPathComponent().appendingPathComponent("video.mp4"))
         let start = Int(video.firstSegmentOffset) + 1_000
         ranged.setValue("bytes=\(start)-\(start + 99_999)", forHTTPHeaderField: "Range")
-        let (bytes, response) = try await URLSession.shared.data(for: ranged)
+        let (bytes, response) = try await bounded { [ranged] in try await URLSession.shared.data(for: ranged) }
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 206)
         XCTAssertEqual(bytes, video.data.subdata(in: start..<(start + 100_000)))
 

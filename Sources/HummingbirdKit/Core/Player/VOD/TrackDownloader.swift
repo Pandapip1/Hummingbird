@@ -175,6 +175,7 @@ actor TrackDownloader {
         for (_, waiter) in layoutWaiters { waiter.resume(throwing: CancellationError()) }
         layoutWaiters.removeAll()
         observers.removeAll()
+        if let totalBytes { try? await cache.setTotalBytes(track, totalBytes) }
         await cache.close(track)
     }
 
@@ -247,6 +248,10 @@ actor TrackDownloader {
     private func run() async {
         completed = await cache.completed(track)
         totalBytes = await cache.totalBytes(track)
+        // Bytes already cached satisfy waiters that arrived before this point;
+        // nothing else would resume them when no new bytes are stored.
+        resumeSatisfiedWaiters()
+        publish()
         do {
             try await readLayout()
             condition = .running

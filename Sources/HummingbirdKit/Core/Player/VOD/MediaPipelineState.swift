@@ -182,6 +182,15 @@ struct MediaPipelineSnapshot: Sendable, Equatable {
 
     var isComplete: Bool { !tracks.isEmpty && tracks.allSatisfy(\.isComplete) }
 
+    /// The presentation's length from the tracks' segment indexes: the sum of
+    /// their segments, and the shorter track when video and audio differ (as
+    /// the player ends there too). Nil unless every track is indexed.
+    var mediaDuration: Double? {
+        let durations = tracks.compactMap { $0.timeline?.duration }
+        guard !tracks.isEmpty, durations.count == tracks.count else { return nil }
+        return durations.min()
+    }
+
     /// The most urgent condition across tracks, for a status line.
     var waitingForNetwork: Bool {
         tracks.contains { track in

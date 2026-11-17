@@ -149,7 +149,9 @@ final class PlayerTrackSelectionTests: XCTestCase {
             MediaSource.self,
             from: Data("{\"url\":\"\(url)\",\"container\":\"video/mp4\"}".utf8)
         )
-        return PlaybackOption(id: id, label: id, kind: .progressive, video: source, audio: nil, height: 720)
+        // Upstream adaptive HLS goes straight to the backend; these tests are about
+        // load generations and cancellation, not where on-demand bytes come from.
+        return PlaybackOption(id: id, label: id, kind: .hls, video: source, audio: nil, height: 720)
     }
 }
 

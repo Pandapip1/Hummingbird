@@ -94,6 +94,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var umpRefreshAttempts = 0
     @ObservationIgnored private var requestedPluginReload: (message: String, data: String?)?
     @ObservationIgnored private var declaredDuration: Double = 0
+    @ObservationIgnored private var reportedDurationMismatch = false
     @ObservationIgnored private var pendingSeekTask: Task<Void, Never>?
     @ObservationIgnored private var playbackRequested = false
     @ObservationIgnored private let preferences: PreferencesDomain
@@ -429,7 +430,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             selected = option
             if generation == playGeneration { errorMessage = nil }
             playbackTime = backend.currentTime
-            self.duration = backend.duration
+            self.duration = authoritativeDuration
             isPlaying = backend.isPlaying
             playbackRequested = autoplay
             Logger.player.info("load_completed playing=\(self.isPlaying)")
@@ -735,12 +736,30 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
     }
 
+    /// The one duration the seek bar shows. A cached VOD's segment index is
+    /// exact (the sum of its segments, shortest track); otherwise the player's
+    /// item duration; otherwise what the plugin declared. A player duration
+    /// far from the plugin's is logged: that is how a mis-estimated length
+    /// (the 1.5x seek bar of the old progressive composition) shows up.
+    private var authoritativeDuration: Double {
+        if let indexed = pipeline.mediaDuration, indexed > 0 { return indexed }
+        let backendDuration = backend?.duration ?? 0
+        if backendDuration > 0 {
+            if declaredDuration > 0, abs(backendDuration - declaredDuration) > max(2, declaredDuration * 0.05),
+               !reportedDurationMismatch {
+                reportedDurationMismatch = true
+                Logger.player.error("duration_mismatch player=\(backendDuration) declared=\(self.declaredDuration)")
+            }
+            return backendDuration
+        }
+        return declaredDuration
+    }
+
     // MARK: ticking
 
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        let backendDuration = backend?.duration ?? 0
-        duration = backendDuration > 0 ? backendDuration : declaredDuration
+        duration = authoritativeDuration
         isPlaying = backend?.isPlaying ?? false
         if isPlaying, seconds > playbackTime {
             startup?.firstFrame(at: seconds)
@@ -865,6 +884,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         selected = nil
         audioSources = []
         selectedAudioSource = nil
+        reportedDurationMismatch = false
         playbackTime = 0; duration = 0; declaredDuration = 0; isPlaying = false; isFullscreen = false
         playbackRequested = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil

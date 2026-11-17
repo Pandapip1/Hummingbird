@@ -3,6 +3,7 @@ import Dispatch
 import Foundation
 import os
 import Synchronization
+import SwiftOpenUI
 
 /// Detects main-thread hangs from its own thread, the way the system's hang
 /// detection does, in debug builds. It posts a ping to the main queue and
@@ -16,11 +17,11 @@ import Synchronization
 /// Settings › Diagnostics exports. Instruments' Hangs instrument and MetricKit
 /// hang diagnostics give the stacks. It does not run under XCTest.
 ///
-/// Not counted: time the app is not active (`setActive`, from the scene
-/// phase), system sleep (the suspending clock stops), and any time the whole
-/// process was stopped, such as at a debugger breakpoint. The watchdog
-/// notices the last when its own waits overrun. It behaves the same on every
-/// platform.
+/// Not counted: time the app is not active (SwiftOpenUI's
+/// `ApplicationActivity`, reported by every backend), system sleep (the
+/// suspending clock stops), and any time the whole process was stopped, such
+/// as at a debugger breakpoint. The watchdog notices the last when its own
+/// waits overrun. It behaves the same on every platform.
 final class MainThreadWatchdog: Sendable {
     static let shared = MainThreadWatchdog()
 
@@ -58,6 +59,7 @@ final class MainThreadWatchdog: Sendable {
             return state.started
         }
         guard !alreadyStarted else { return }
+        ApplicationActivity.observe { [self] active in setActive(active) }
         let thread = Thread { [self] in run() }
         thread.name = "com.eightybps.hummingbird.main-thread-watchdog"
         thread.qualityOfService = .userInitiated
@@ -67,7 +69,7 @@ final class MainThreadWatchdog: Sendable {
     private var isPaused: Bool { state.withLock(\.paused) }
 
     /// Whether the app is active. Stalls are only counted while it is.
-    func setActive(_ active: Bool) {
+    private func setActive(_ active: Bool) {
         state.withLock { $0.paused = !active }
     }
 

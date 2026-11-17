@@ -104,6 +104,7 @@ struct SearchView: View {
             .profileSwitcherToolbarItem()
             .searchSubmission { Task { await submit() } }
             .task(id: query) { await updateSuggestions() }
+            .onChange(of: query) { notice = nil }
             .overlay(alignment: .bottom) {
                 if let notice { Text(notice).font(.footnote).padding(10).background(.thinMaterial, in: Capsule()).padding() }
             }
@@ -133,18 +134,20 @@ struct SearchView: View {
         notice = nil
         app.searchHistory.record(text)
         suggestions = []
-        if text.contains("://") {
-            let routes = await app.platform.recognizedRoutes(for: text)
+        // An address (with or without https://) opens in the source that
+        // recognises it. Hummingbird never opens arbitrary web pages.
+        if let address = AddressInput.url(from: text) {
+            let link = address.absoluteString
+            let routes = await app.platform.recognizedRoutes(for: link)
             guard generation == searchGeneration else { return }
-            Logger.routing.info("manual_url_matches content=\(routes.contains(.content(text))) channel=\(routes.contains(.channel(text))) playlist=\(routes.contains(.playlist(text)))")
+            Logger.routing.info("manual_url_matches content=\(routes.contains(.content(link))) channel=\(routes.contains(.channel(link))) playlist=\(routes.contains(.playlist(link)))")
             if routes.count == 1, let route = routes.first {
                 openRoute(route)
-            } else if routes.isEmpty {
-                notice = "None of your sources recognise that link."
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                if generation == searchGeneration { notice = nil }
+            } else if routes.count > 1 {
+                pendingURL = link
             } else {
-                pendingURL = text
+                // Stays until the field changes, so it can't be missed.
+                notice = "None of your sources recognise that link."
             }
             return
         }

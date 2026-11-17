@@ -49,6 +49,7 @@ actor VODSession {
     private let downloads: MediaDownloads
     private var heldTracks: [String] = []
     private var heldRenditions: [String] = []
+    private var heldRecordings: [String] = []
     private var presentationID: String?
     private var trackStates: [MediaTrackRole: MediaTrackPipelineState] = [:]
     private var order: [MediaTrackRole] = []
@@ -235,6 +236,93 @@ actor VODSession {
         return try LocalPlayback(video: base.appendingPathComponent(entry), servedBy: .mediaCache)
     }
 
+    // MARK: live
+
+    /// Starts (or joins) recording a live HLS stream: the best variant at or
+    /// under `maxHeight` and its audio rendition, each recorded into the
+    /// cache and served as a growing local playlist (see `LiveHLSRecorder`).
+    static func start(live spec: HLSPresentationSpec, downloads: MediaDownloads, server: LocalMediaServer,
+                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession))
+        async throws -> (VODSession, LocalPlayback) {
+        let session = VODSession(server: server, downloads: downloads)
+        do {
+            return (session, try await session.beginLive(spec, transport: transport))
+        } catch {
+            await session.stop()
+            throw error
+        }
+    }
+
+    /// The live playlists to record: the chosen variant and audio rendition.
+    private struct LiveSelection: Sendable {
+        var variant: HLSPlaylist.Variant?
+        var videoURL: URL
+        var audio: HLSPlaylist.Rendition?
+    }
+
+    private static func selectLive(_ spec: HLSPresentationSpec, signer: UpstreamURLSigner,
+                                   transport: any MediaTransport) async throws -> LiveSelection {
+        let top = try await fetchText(spec.url, signer: signer, transport: transport)
+        guard HLSPlaylist.isMaster(top.text) else { return LiveSelection(variant: nil, videoURL: top.url, audio: nil) }
+        let master = try HLSPlaylist.parseMaster(top.text, base: top.url)
+        guard let variant = HLSPlaylist.bestVariant(master.variants, maxHeight: spec.maxHeight) else {
+            throw HLSPlaylist.Failure.notAPlaylist
+        }
+        return LiveSelection(variant: variant, videoURL: variant.uri,
+                             audio: HLSPlaylist.bestAudio(master.audio, group: variant.audioGroup, language: spec.language))
+    }
+
+    private func beginLive(_ spec: HLSPresentationSpec, transport: any MediaTransport) async throws -> LocalPlayback {
+        let selection = try await Self.selectLive(spec, signer: spec.signer, transport: transport)
+        let variantKey = selection.variant.map { "\($0.height)p-\($0.bandwidth)" } ?? "single"
+        var renditions: [(MediaTrackRole, String, URL, String)] = [
+            (selection.audio?.uri == nil ? .muxed : .video, "v", selection.videoURL, "\(spec.identity)|live|video|\(variantKey)"),
+        ]
+        if let audio = selection.audio, let uri = audio.uri {
+            renditions.append((.audio, "a", uri, "\(spec.identity)|live|audio|\(audio.groupID)-\(audio.language ?? "")"))
+        }
+        var presentation = LocalMediaServer.Presentation()
+        for (role, prefix, url, identity) in renditions {
+            let cache = downloads.cache
+            let scheduler = downloads.scheduler
+            let refresh: (@Sendable () async throws -> (UpstreamURLSigner, URL))? = spec.refresh.map { refresh in
+                { @Sendable in
+                    let (signer, masterURL) = try await refresh()
+                    var current = spec
+                    current.url = masterURL
+                    let fresh = try await Self.selectLive(current, signer: signer, transport: transport)
+                    let next: URL? = role == .audio ? fresh.audio?.uri : fresh.videoURL
+                    guard let url = next else { throw HLSPlaylist.Failure.notAPlaylist }
+                    return (signer, url)
+                }
+            }
+            let recorder = await downloads.hold(recording: identity) {
+                LiveHLSRecorder(role: role, cache: cache, identity: identity, playlistURL: url, signer: spec.signer,
+                                refresh: refresh, transport: transport, scheduler: scheduler)
+            }
+            heldRecordings.append(identity)
+            order.append(role)
+            await recorder.observe { [weak self] state in
+                Task { await self?.update(role, state) }
+            }
+            try await recorder.waitForFirstPoll()
+            presentation.live[prefix] = recorder
+        }
+        let entry: String
+        if let variant = selection.variant {
+            let audio = renditions.count > 1 ? selection.audio : nil
+            presentation.playlists["master.m3u8"] = HLSPlaylist.localMaster(
+                variant: variant, videoPlaylist: "v.m3u8", audio: audio, audioPlaylist: audio == nil ? nil : "a.m3u8"
+            )
+            entry = "master.m3u8"
+        } else {
+            entry = "v.m3u8"
+        }
+        let base = try await register(presentation)
+        Logger.mediaCache.info("vod_presentation kind=live renditions=\(renditions.count)")
+        return try LocalPlayback(video: base.appendingPathComponent(entry), servedBy: .mediaCache, isLive: true)
+    }
+
     /// Fetches a playlist, retrying transient failures a few times.
     private static func fetchText(_ url: URL, signer: UpstreamURLSigner,
                                   transport: any MediaTransport) async throws -> (text: String, url: URL) {
@@ -272,6 +360,8 @@ actor VODSession {
         presentationID = nil
         for identity in heldTracks { await downloads.release(track: identity) }
         for identity in heldRenditions { await downloads.release(rendition: identity) }
+        for identity in heldRecordings { await downloads.release(recording: identity) }
+        heldRecordings.removeAll()
         heldTracks.removeAll()
         heldRenditions.removeAll()
         continuation.finish()

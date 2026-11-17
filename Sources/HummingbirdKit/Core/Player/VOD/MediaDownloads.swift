@@ -74,6 +74,7 @@ actor MediaDownloads {
     private let transport: any MediaTransport
     private var tracks: [String: Entry<TrackDownloader>] = [:]
     private var renditions: [String: Entry<HLSRenditionDownloader>] = [:]
+    private var recordings: [String: Entry<LiveHLSRecorder>] = [:]
 
     private struct Entry<Downloader> {
         let downloader: Downloader
@@ -150,10 +151,46 @@ actor MediaDownloads {
         }
     }
 
+    /// The running recording of a live rendition, or a new one.
+    func hold(recording identity: String, make: @Sendable () -> LiveHLSRecorder) async -> LiveHLSRecorder {
+        if var entry = recordings[identity], !(await entry.downloader.isStopped) {
+            entry.holders += 1
+            recordings[identity] = entry
+            await entry.downloader.setPriority(.foreground)
+            return entry.downloader
+        }
+        let recorder = make()
+        recordings[identity] = Entry(downloader: recorder, holders: 1)
+        await recorder.onFinish { [weak self] in await self?.finished(recording: identity) }
+        await recorder.start()
+        return recorder
+    }
+
+    func release(recording identity: String) async {
+        guard var entry = recordings[identity] else { return }
+        entry.holders -= 1
+        recordings[identity] = entry
+        guard entry.holders <= 0 else { return }
+        if await entry.downloader.isFinished {
+            await entry.downloader.stop()
+            recordings[identity] = nil
+        } else {
+            await entry.downloader.setPriority(.background)
+        }
+    }
+
+    private func finished(recording identity: String) async {
+        guard let entry = recordings[identity], entry.holders <= 0 else { return }
+        await entry.downloader.stop()
+        recordings[identity] = nil
+    }
+
     /// Stops every download (tests, sign-out).
     func stopAll() async {
         for entry in tracks.values { await entry.downloader.stop() }
         for entry in renditions.values { await entry.downloader.stop() }
+        for entry in recordings.values { await entry.downloader.stop() }
+        recordings.removeAll()
         tracks.removeAll()
         renditions.removeAll()
     }

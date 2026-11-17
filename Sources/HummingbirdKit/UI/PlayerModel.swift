@@ -430,7 +430,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             let playback: LocalPlayback
             switch option.kind {
             case .live:
-                playback = try LocalPlayback.live(try await resolveUpstream(option.video), for: option)
+                let (session, local) = try await startHLSDownload(option, live: true)
+                newSession = session
+                playback = local
             case .hls:
                 let (session, local) = try await startHLSDownload(option)
                 newSession = session
@@ -529,14 +531,16 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     /// Starts downloading an on-demand HLS presentation into the media cache
     /// (playlists rewritten to local URIs, every segment cached).
-    private func startHLSDownload(_ option: PlaybackOption) async throws -> (VODSession, LocalPlayback) {
+    /// `live`: record a live stream into the cache as it is published (see
+    /// `LiveHLSRecorder`) and play the recording.
+    private func startHLSDownload(_ option: PlaybackOption, live: Bool = false) async throws -> (VODSession, LocalPlayback) {
         guard let runtime, let sourceURL = loadedURL, let url = URL(string: option.video.url) else {
             throw PluginError.execution("The video's plugin is no longer available")
         }
         let maxHeight = preferences.defaults.object(forKey: PlaybackPreferenceKey.maxVideoHeight) as? Int ?? 1080
         let source = option.video
         let spec = HLSPresentationSpec(
-            identity: ["hls-v1", runtime.id, sourceURL, source.name].joined(separator: "|"),
+            identity: [live ? "live-v1" : "hls-v1", runtime.id, sourceURL, source.name].joined(separator: "|"),
             url: url, signer: Self.urlSigner(for: source, runtime: runtime),
             refresh: { [weak self] in
                 guard let self else { throw CancellationError() }
@@ -544,7 +548,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             },
             maxHeight: maxHeight, language: Locale.current.language.languageCode?.identifier
         )
-        return try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer)
+        return live
+            ? try await VODSession.start(live: spec, downloads: mediaDownloads, server: mediaServer)
+            : try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer)
     }
 
     /// Signs any URL of an HLS presentation through the source's request
@@ -569,7 +575,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard case .video(let refreshed) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
             throw PluginError.execution("The plugin stopped returning video details")
         }
-        let candidates = ([refreshed.hls].compactMap { $0 } + refreshed.videoSources).filter(\.isHLS)
+        let candidates = ([refreshed.live, refreshed.hls].compactMap { $0 } + refreshed.videoSources).filter(\.isHLS)
         guard let match = candidates.first(where: { $0.name == source.name }) ?? candidates.first else {
             throw PluginError.execution("The plugin no longer offers this stream")
         }
@@ -773,28 +779,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             }
         )
         return url
-    }
-
-    /// An upstream URL for media the player streams directly: live streams,
-    /// and (as named debt, see `LocalPlayback.uncachedAdaptiveHLS`) upstream
-    /// adaptive HLS. On-demand files never come through here; they are
-    /// downloaded into the media cache (`startDownload`).
-    private func resolveUpstream(_ source: MediaSource) async throws -> ResolvedMedia {
-        let host = URL(string: source.url)?.host ?? "unknown"
-        Logger.player.info("resolve_source type=\(source.pluginType, privacy: .public) host=\(host, privacy: .public) hasModifier=\(source.requestModifier != nil)")
-        let signpost = OSSignposter.player.beginInterval("ResolveSource", id: OSSignposter.player.makeSignpostID(), "type=\(source.pluginType, privacy: .public)")
-        defer { OSSignposter.player.endInterval("ResolveSource", signpost) }
-        guard var url = URL(string: source.url) else { throw PluginError.execution("Invalid media URL") }
-        var headers: [String: String] = [:]
-        if let ref = source.requestModifier, let runtime {
-            // The modifier runs once, for the initial request. The player then reuses its headers for later requests.
-            let data = try await runtime.callHandle(ref.handle, "modifyRequest", [source.url, [String: String]()])
-            if let mod = try? await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data) {
-                if let u = mod.url, let nu = URL(string: u) { url = nu }
-                headers = mod.headers ?? [:]
-            }
-        }
-        return ResolvedMedia(url: url, headers: headers)
     }
 
     private func handlePluginMediaFailure(_ error: PluginError, generation: Int) async {

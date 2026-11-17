@@ -29,6 +29,9 @@ actor LocalMediaServer {
         var playlists: [String: String] = [:]
         var files: [String: ServedFile] = [:]
         var objects: [String: ServedObject] = [:]
+        /// Live renditions by path prefix: `<prefix>.m3u8` is their growing
+        /// playlist, `<prefix>/<id>` their recorded resources.
+        var live: [String: LiveHLSRecorder] = [:]
     }
 
     private typealias Connection = NIOAsyncChannel<HTTPServerRequestPart, HTTPServerResponsePart>
@@ -57,6 +60,8 @@ actor LocalMediaServer {
         case playlist(String)
         case file(ServedFile)
         case object(ServedObject)
+        case livePlaylist(LiveHLSRecorder, String)
+        case liveObject(LiveHLSRecorder, String)
         case notFound
     }
 
@@ -67,6 +72,10 @@ actor LocalMediaServer {
         if let playlist = presentation.playlists[name] { return .playlist(playlist) }
         if let file = presentation.files[name] { return .file(file) }
         if let object = presentation.objects[name] { return .object(object) }
+        for (prefix, recorder) in presentation.live {
+            if name == "\(prefix).m3u8" { return .livePlaylist(recorder, prefix) }
+            if name.hasPrefix("\(prefix)/") { return .liveObject(recorder, String(name.dropFirst(prefix.count + 1))) }
+        }
         return .notFound
     }
 
@@ -153,6 +162,15 @@ actor LocalMediaServer {
                            request: request, outbound: outbound)
         case .file(let file):
             try await sendFile(file, request: request, outbound: outbound)
+        case .livePlaylist(let recorder, let prefix):
+            let text = await recorder.localPlaylist(prefix: prefix)
+            try await send(status: .ok, contentType: "application/vnd.apple.mpegurl", body: Data(text.utf8),
+                           request: request, outbound: outbound)
+        case .liveObject(let recorder, let id):
+            try await recorder.waitForResource(id)
+            let data = try await recorder.readResource(id)
+            try await send(status: .ok, contentType: await recorder.contentType(of: id), body: data,
+                           request: request, outbound: outbound)
         case .object(let object):
             try await object.downloader.waitForResource(object.index)
             let data = try await object.downloader.readResource(object.index)

@@ -561,3 +561,60 @@ private enum FakeMedia {
         return File(data: data, initializationEnd: Int64(ftyp.count + moov.count), firstSegmentOffset: Int64(header.count))
     }
 }
+
+// MARK: - Live
+
+/// A live stream whose 3-segment window slides on every playlist request,
+/// with an ad-break discontinuity, ending after three polls.
+private actor FakeLiveUpstream: MediaTransport {
+    private var polls = 0
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = try XCTUnwrap(request.url)
+        let ok = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:]))
+        guard url.path == "/live.m3u8" else {
+            let sequence = Int(url.deletingPathExtension().lastPathComponent.dropFirst(3)) ?? 0
+            return (Data(repeating: UInt8(sequence), count: 1_000 + sequence), ok)
+        }
+        let first = polls
+        polls += 1
+        var text = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:\(first)\n"
+        for sequence in first..<(first + 3) {
+            if sequence == 3 { text += "#EXT-X-DISCONTINUITY\n" }
+            text += "#EXTINF:1.0,\nseg\(sequence).ts\n"
+        }
+        if polls >= 3 { text += "#EXT-X-ENDLIST\n" }
+        return (Data(text.utf8), ok)
+    }
+}
+
+final class LiveRecordingTests: XCTestCase {
+    func testLiveRecordingKeepsEverySegmentPastUpstreamsWindowAndEndsWithTheStream() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-live-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = MediaCache(directory: directory)
+        let recorder = LiveHLSRecorder(role: .muxed, cache: cache, identity: "live-test",
+                                       playlistURL: try XCTUnwrap(URL(string: "https://live.test/live.m3u8")),
+                                       signer: .plain(), refresh: nil, transport: FakeLiveUpstream())
+        await recorder.start()
+        try await recorder.waitForFirstPoll()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+        var playlist = ""
+        while ContinuousClock.now < deadline {
+            playlist = await recorder.localPlaylist(prefix: "v")
+            if playlist.contains("#EXT-X-ENDLIST") { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(playlist.contains("#EXT-X-ENDLIST"), "the recording ends with the stream")
+        XCTAssertTrue(playlist.contains("#EXT-X-MEDIA-SEQUENCE:0"), "it starts at the first segment seen, past upstream's window")
+        for sequence in 0...4 { XCTAssertTrue(playlist.contains("v/s\(sequence)\n"), "segment \(sequence) is in the recording") }
+        XCTAssertTrue(playlist.contains("#EXT-X-DISCONTINUITY\n"), "ad-break discontinuities are kept")
+        XCTAssertFalse(playlist.contains("https://"))
+        try await recorder.waitForResource("s4")
+        let first = try await recorder.readResource("s0")
+        XCTAssertEqual(first.count, 1_000)
+        let state = await recorder.state
+        XCTAssertEqual(state.timeline?.duration ?? 0, 5, accuracy: 0.001, "the seek bar spans the whole recording")
+        await recorder.stop()
+    }
+}

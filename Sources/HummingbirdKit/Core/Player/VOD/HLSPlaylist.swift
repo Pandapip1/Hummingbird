@@ -45,6 +45,10 @@ enum HLSPlaylist {
         var key: Int?
         /// The key line's other attributes (METHOD, IV, KEYFORMAT…), verbatim.
         var keyAttributes: String?
+        /// `EXT-X-DISCONTINUITY` before this segment (ad breaks, encoder changes).
+        var discontinuity = false
+        /// `EXT-X-PROGRAM-DATE-TIME`, verbatim, when given.
+        var programDateTime: String?
     }
 
     struct Media: Sendable, Equatable {
@@ -112,6 +116,8 @@ enum HLSPlaylist {
         var key: Int?
         var keyAttributes: String?
         var isVOD = false
+        var discontinuity = false
+        var programDateTime: String?
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("#EXT-X-TARGETDURATION:") {
@@ -120,6 +126,10 @@ enum HLSPlaylist {
                 media.mediaSequence = Int(line.dropFirst("#EXT-X-MEDIA-SEQUENCE:".count)) ?? 0
             } else if line == "#EXT-X-ENDLIST" || line == "#EXT-X-PLAYLIST-TYPE:VOD" {
                 isVOD = true
+            } else if line == "#EXT-X-DISCONTINUITY" {
+                discontinuity = true
+            } else if line.hasPrefix("#EXT-X-PROGRAM-DATE-TIME:") {
+                programDateTime = String(line.dropFirst("#EXT-X-PROGRAM-DATE-TIME:".count))
             } else if line.hasPrefix("#EXTINF:") {
                 duration = Double(line.dropFirst("#EXTINF:".count).split(separator: ",").first ?? "")
             } else if line.hasPrefix("#EXT-X-BYTERANGE:") {
@@ -162,9 +172,12 @@ enum HLSPlaylist {
                 }
                 media.resources.append(Resource(kind: .segment, uri: uri, byteRange: range))
                 media.segments.append(Segment(resource: media.resources.count - 1, duration: segmentDuration,
-                                              map: map, key: key, keyAttributes: keyAttributes))
+                                              map: map, key: key, keyAttributes: keyAttributes,
+                                              discontinuity: discontinuity, programDateTime: programDateTime))
                 duration = nil
                 byteRange = nil
+                discontinuity = false
+                programDateTime = nil
             }
         }
         media.isEndless = !isVOD
@@ -192,6 +205,7 @@ enum HLSPlaylist {
                 }
                 currentKey = .some(segment.key)
             }
+            if segment.discontinuity { out += "#EXT-X-DISCONTINUITY\n" }
             out += "#EXTINF:\(String(format: "%.6f", segment.duration)),\n\(resourcePath(segment.resource))\n"
         }
         return out + "#EXT-X-ENDLIST\n"

@@ -133,34 +133,6 @@ struct ContentPreviewGrid: View {
 }
 
 @MainActor
-struct FeedList: View {
-    let feed: FeedModel
-    var emptyTitle = "Nothing here yet"
-    var emptyMessage = "Pull down to refresh."
-
-    var body: some View {
-        List {
-            ForEach(feed.items) { item in
-                ContentRow(item: item)
-                    .hiddenListRowSeparator()
-                    .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
-            }
-            ForEach(feed.messages, id: \.self) { m in
-                Label(m, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)
-            }
-            if feed.isLoading { ProgressView().frame(maxWidth: .infinity).hiddenListRowSeparator() }
-            LoadMoreButton(feed: feed)
-        }
-        .listStyle(.plain)
-        .overlay {
-            if feed.loadedOnce && feed.items.isEmpty && !feed.isLoading && feed.messages.isEmpty {
-                ContentUnavailableView(emptyTitle, systemImage: "tray", description: Text(emptyMessage))
-            }
-        }
-    }
-}
-
-@MainActor
 struct NoSourcesView: View {
     @Environment(AppModel.self) private var app
     var body: some View {

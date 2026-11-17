@@ -1,3 +1,4 @@
+import Foundation
 import os
 
 /// Hummingbird's unified logging subsystem. Every logger and signposter in
@@ -57,4 +58,30 @@ extension OSSignposter {
     static let sync = OSSignposter(subsystem: Diagnostics.subsystem, category: "sync")
     /// Main-thread stalls (`RenderStall` intervals, from `MainThreadWatchdog`).
     static let performance = OSSignposter(subsystem: Diagnostics.subsystem, category: "performance")
+}
+
+/// Removes secrets and network addresses from free text, such as plugin and
+/// service error messages, so it can be logged as public data and still be
+/// readable in the persisted log. The rules are regex literals: a malformed
+/// rule fails to compile instead of silently redacting nothing.
+enum LogRedaction {
+    static func redact(_ text: String, limit: Int = 500) -> String {
+        var s = text
+        // Query strings and fragments carry tokens and signatures.
+        s.replace(#/(https?:\/\/[^\s?#"'<>]+)[?#][^\s"'<>]*/#) { "\($0.output.1)?<redacted>" }
+        s.replace(#/(?i)\b(bearer|basic|oauth)\s+[A-Za-z0-9._~+\/=-]+/#) { "\($0.output.1) <redacted>" }
+        // JSON web tokens.
+        s.replace(#/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/#, with: "<redacted>")
+        // name=value and "name": "value" pairs whose name says they are secret.
+        s.replace(#/(?i)("?[a-z0-9_-]*(?:token|key|secret|password|passwd|auth|session|cookie|signature|integrity|credential)[a-z0-9_-]*"?\s*[:=]\s*"?)[^"&\s,;}]+/#) { "\($0.output.1)<redacted>" }
+        s.replace(#/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/#, with: "<email>")
+        s.replace(#/\b(?:\d{1,3}\.){3}\d{1,3}\b/#, with: "<ip>")
+        // IPv6: full form (four or more groups, so clock times are left alone) and "::" shorthand.
+        s.replace(#/(?i)\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b/#, with: "<ip>")
+        s.replace(#/(?i)\b(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?/#, with: "<ip>")
+        // Long opaque values (hex IDs, base64 tokens).
+        s.replace(#/[A-Za-z0-9+_-]{32,}={0,2}/#, with: "<redacted>")
+        if s.count > limit { s = String(s.prefix(limit)) + "…" }
+        return s
+    }
 }

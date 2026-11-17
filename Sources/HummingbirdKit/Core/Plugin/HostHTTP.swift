@@ -338,7 +338,10 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         return remaining
     }
 
-    private func recordRateLimit(for host: String, headers: [String: [String]]) -> TimeInterval {
+    /// Starts or extends a host's cooldown. Internal so tests can record a
+    /// concurrent 429 while a request is in flight.
+    @discardableResult
+    func recordRateLimit(for host: String, headers: [String: [String]]) -> TimeInterval {
         lock.lock(); defer { lock.unlock() }
         let failures = (rateLimits[host]?.failures ?? 0) + 1
         let fallback = min(pow(2, Double(failures - 1)), 60)

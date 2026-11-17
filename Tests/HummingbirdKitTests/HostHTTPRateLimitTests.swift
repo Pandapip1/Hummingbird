@@ -2,99 +2,80 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+import Synchronization
 import XCTest
 @testable import HummingbirdKit
 
 final class HostHTTPRateLimitTests: XCTestCase {
-    private final class Locked<Value>: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value: Value
+    private final class Locked<Value: Sendable>: Sendable {
+        private let storage: Mutex<Value>
 
-        init(_ value: Value) { self.value = value }
-        func read() -> Value { lock.withLock { value } }
-        func withValue<Result>(_ body: (inout Value) -> Result) -> Result {
-            lock.withLock { body(&value) }
+        init(_ value: Value) { storage = Mutex(value) }
+        func read() -> Value { storage.withLock { $0 } }
+        func withValue<Result: Sendable>(_ body: (inout Value) -> Result) -> Result {
+            storage.withLock { body(&$0) }
         }
     }
 
-    private final class Clock: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value: Date
-        private(set) var sleeps: [TimeInterval] = []
+    private final class Clock: Sendable {
+        private struct State { var now: Date; var sleeps: [TimeInterval] = [] }
+        private let state: Mutex<State>
 
-        init(_ value: Date) { self.value = value }
+        init(_ value: Date) { state = Mutex(State(now: value)) }
 
-        func now() -> Date {
-            lock.lock(); defer { lock.unlock() }
-            return value
-        }
+        var sleeps: [TimeInterval] { state.withLock { $0.sleeps } }
+
+        func now() -> Date { state.withLock { $0.now } }
 
         func sleep(_ interval: TimeInterval) {
-            lock.lock(); defer { lock.unlock() }
-            sleeps.append(interval)
-            value.addTimeInterval(interval)
+            state.withLock {
+                $0.sleeps.append(interval)
+                $0.now.addTimeInterval(interval)
+            }
         }
     }
 
-    private final class StubProtocol: URLProtocol, @unchecked Sendable {
-        private final class State: @unchecked Sendable {
-            let lock = NSLock()
-            var responses: [(Int, [String: String], String)] = []
-            var handler: (@Sendable (URLRequest) -> (Int, [String: String], String))?
-            var beforeDelivery: (@Sendable (URLRequest) -> Void)?
+    /// Answers requests synchronously from queued responses or a handler. It has
+    /// no state of its own (URLProtocol is not Sendable); the shared state lives
+    /// in a Mutex.
+    private final class StubProtocol: URLProtocol {
+        typealias Response = (Int, [String: String], String)
+        typealias Handler = @Sendable (URLRequest) -> Response
+        private struct State {
+            var responses: [Response] = []
+            var handler: Handler?
             var requestCount = 0
         }
 
-        private static let state = State()
-        static var requestCount: Int { state.lock.withLock { state.requestCount } }
+        private static let state = Mutex(State())
+        static var requestCount: Int { state.withLock { $0.requestCount } }
 
-        static func reset(_ newResponses: [(Int, [String: String], String)]) {
-            state.lock.withLock {
-                state.responses = newResponses
-                state.handler = nil
-                state.beforeDelivery = nil
-                state.requestCount = 0
-            }
+        static func reset(_ newResponses: [Response]) {
+            state.withLock { $0 = State(responses: newResponses) }
         }
 
-        static func reset(
-            handler newHandler: @escaping @Sendable (URLRequest) -> (Int, [String: String], String),
-            beforeDelivery newBeforeDelivery: (@Sendable (URLRequest) -> Void)? = nil
-        ) {
-            state.lock.withLock {
-                state.responses = []
-                state.handler = newHandler
-                state.beforeDelivery = newBeforeDelivery
-                state.requestCount = 0
-            }
+        static func reset(handler newHandler: @escaping Handler) {
+            state.withLock { $0 = State(handler: newHandler) }
         }
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
         override func startLoading() {
-            let (handler, beforeDelivery, queued) = Self.state.lock.withLock {
-                Self.state.requestCount += 1
-                let handler = Self.state.handler
-                return (handler, Self.state.beforeDelivery, handler == nil ? Self.state.responses.removeFirst() : nil)
+            let (handler, queued): (Handler?, Response?) = Self.state.withLock {
+                $0.requestCount += 1
+                return ($0.handler, $0.handler == nil && !$0.responses.isEmpty ? $0.responses.removeFirst() : nil)
             }
-            let response = handler?(request) ?? queued!
-            let deliver: @Sendable () -> Void = { [self, response] in
-                let http = HTTPURLResponse(
-                    url: self.request.url!, statusCode: response.0, httpVersion: "HTTP/1.1", headerFields: response.1
-                )!
-                self.client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
-                self.client?.urlProtocol(self, didLoad: Data(response.2.utf8))
-                self.client?.urlProtocolDidFinishLoading(self)
+            guard let response = handler?(request) ?? queued,
+                  let url = request.url,
+                  let http = HTTPURLResponse(url: url, statusCode: response.0, httpVersion: "HTTP/1.1",
+                                             headerFields: response.1) else {
+                client?.urlProtocol(self, didFailWithError: URLError(.resourceUnavailable))
+                return
             }
-            if let beforeDelivery {
-                DispatchQueue.global().async {
-                    beforeDelivery(self.request)
-                    deliver()
-                }
-            } else {
-                deliver()
-            }
+            client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(response.2.utf8))
+            client?.urlProtocolDidFinishLoading(self)
         }
 
         override func stopLoading() {}
@@ -229,33 +210,24 @@ final class HostHTTPRateLimitTests: XCTestCase {
 
     func testOlderConcurrentSuccessDoesNotClearNewerCooldown() throws {
         let clock = Clock(Date(timeIntervalSince1970: 1_700_000_000))
-        let slowStarted = DispatchSemaphore(value: 0)
-        let releaseSlow = DispatchSemaphore(value: 0)
-        StubProtocol.reset(handler: { request in
-            if request.url?.path == "/slow" { return (200, [:], "ok") }
-            return (429, ["Retry-After": "120"], "slow down")
-        }, beforeDelivery: { request in
-            if request.url?.path == "/slow" {
-                slowStarted.signal()
-                releaseSlow.wait()
-            }
+        let hostRef = Locked<HostHTTP?>(nil)
+        // While the slow request is in flight, a concurrent request to the same host
+        // is rate limited (recorded directly: a second stubbed request could not be
+        // answered while this one holds the URL loading thread).
+        StubProtocol.reset(handler: { _ in
+            _ = hostRef.read()?.recordRateLimit(for: "example.test", headers: ["retry-after": ["120"]])
+            return (200, [:], "ok")
         })
         let host = try makeHost(clock: clock)
-        let slowFinished = expectation(description: "slow request finished")
-        DispatchQueue.global().async {
-            _ = host.execute(json: #"[{"method":"GET","url":"https://example.test/slow"}]"#, parallel: false)
-            slowFinished.fulfill()
-        }
-        XCTAssertEqual(slowStarted.wait(timeout: .now() + 2), .success)
-        _ = host.execute(json: #"[{"method":"POST","url":"https://example.test/limited"}]"#, parallel: false)
-        releaseSlow.signal()
-        wait(for: [slowFinished], timeout: 2)
+        hostRef.withValue { $0 = host }
+
+        _ = host.execute(json: #"[{"method":"GET","url":"https://example.test/slow"}]"#, parallel: false)
 
         let third = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(host.execute(json: request(), parallel: false).utf8))
                 as? [[String: Any]]
         )
-        XCTAssertEqual(StubProtocol.requestCount, 2, "active cooldown should suppress a third network request")
+        XCTAssertEqual(StubProtocol.requestCount, 1, "the older success must not clear the newer cooldown")
         XCTAssertEqual(third.first?["code"] as? Int, 429)
     }
 

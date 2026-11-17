@@ -96,7 +96,7 @@ final class FeedFailureTests: XCTestCase {
     /// Two content types that page independently, newest first. Item URLs do
     /// not include the type, so the item at 50 appears in both and must show once.
     private let channelScript = #"""
-    const PAGES = { VIDEOS: [[100, 80, 60], [50, 20]], STREAMS: [[90], [50, 10]] };
+    const PAGES = { VIDEOS: [[100, 80, 60], [50, 20]], STREAMS: [[90], [50, 10]], UNDATED: [[0]] };
     const calls = [];
     source.enable = function () {};
     class TypePager extends VideoPager {
@@ -178,9 +178,10 @@ final class FeedFailureTests: XCTestCase {
         let outcome = await feed.reload(sources: [searchSource(other, label: "Other"), searchSource(twitch, label: "Twitch")])
 
         XCTAssertEqual(outcome, .refreshed)
-        XCTAssertEqual(feed.content.items.map(\.url), ["https://other.test/1", "https://other.test/2", "https://other.test/3"])
-        let failure = try XCTUnwrap(feed.content.failures.first, "Twitch's failure must be part of the feed")
-        XCTAssertEqual(feed.content.failures.count, 1)
+        var content = await feed.loadAll(maxRounds: 0)
+        XCTAssertEqual(content.items.map(\.url), ["https://other.test/1", "https://other.test/2", "https://other.test/3"])
+        let failure = try XCTUnwrap(content.failures.first, "Twitch's failure must be part of the feed")
+        XCTAssertEqual(content.failures.count, 1)
         XCTAssertEqual(failure.pluginID, "twitch-fixture")
         XCTAssertEqual(failure.label, "Twitch")
         XCTAssertEqual(failure.stage, .firstPage)
@@ -190,10 +191,11 @@ final class FeedFailureTests: XCTestCase {
         // Twitch recovers: retrying just that source adds its results and clears the failure.
         body.value = cleanBody
         await feed.retry(failure)
-        XCTAssertTrue(feed.content.failures.isEmpty)
-        XCTAssertEqual(feed.content.items.last?.url, "https://www.twitch.tv/streamer")
-        XCTAssertEqual(feed.content.items.last?.isLive, true)
-        XCTAssertEqual(feed.content.items.count, 4)
+        content = await feed.loadAll(maxRounds: 0)
+        XCTAssertTrue(content.failures.isEmpty)
+        XCTAssertEqual(content.items.last?.url, "https://www.twitch.tv/streamer")
+        XCTAssertEqual(content.items.last?.isLive, true)
+        XCTAssertEqual(content.items.count, 4)
 
         await twitch.stop()
         await other.stop()
@@ -211,12 +213,15 @@ final class FeedFailureTests: XCTestCase {
             let n = attempts.value
             return n == 1 ? SourceFailure.record(pluginID: "twitch-fixture", label: "Twitch", message: "still failing", stage: .channels) : nil
         }
-        XCTAssertEqual(feed.content.failures, [failure])
+        var content = await feed.loadAll(maxRounds: 0)
+        XCTAssertEqual(content.failures, [failure])
 
         await feed.retry(failure)
-        XCTAssertEqual(feed.content.failures.map(\.message), ["still failing"])
-        await feed.retry(feed.content.failures[0])
-        XCTAssertTrue(feed.content.failures.isEmpty)
+        content = await feed.loadAll(maxRounds: 0)
+        XCTAssertEqual(content.failures.map(\.message), ["still failing"])
+        await feed.retry(content.failures[0])
+        content = await feed.loadAll(maxRounds: 0)
+        XCTAssertTrue(content.failures.isEmpty)
         await rt.stop()
     }
 
@@ -230,10 +235,12 @@ final class FeedFailureTests: XCTestCase {
                                         order: .newestFirst)
         XCTAssertEqual(outcome, .refreshed)
         // Streams' first page ends at 90; nothing older can be placed before its next page.
-        XCTAssertEqual(feed.content.items.compactMap(\.datetime), [100, 90])
+        var content = await feed.loadAll(maxRounds: 0)
+        XCTAssertEqual(content.items.compactMap(\.datetime), [100, 90])
         while feed.hasMore { await feed.loadMore() }
-        XCTAssertEqual(feed.content.items.compactMap(\.datetime), [100, 90, 80, 60, 50, 20, 10])
-        XCTAssertTrue(feed.content.failures.isEmpty)
+        content = await feed.loadAll(maxRounds: 0)
+        XCTAssertEqual(content.items.compactMap(\.datetime), [100, 90, 80, 60, 50, 20, 10])
+        XCTAssertTrue(content.failures.isEmpty)
         await rt.stop()
     }
 
@@ -246,7 +253,8 @@ final class FeedFailureTests: XCTestCase {
                           order: ChannelFeedPlan.feedOrder(sourceCount: 2, sort: "Popular"))
         let calls = try await rt.call("getCalls", [], as: [String].self)
         XCTAssertEqual(Set(calls), ["VIDEOS:Popular", "STREAMS:Popular"])
-        XCTAssertTrue(feed.content.items.allSatisfy { $0.name.contains("/Popular/") })
+        let content = await feed.loadAll(maxRounds: 0)
+        XCTAssertTrue(content.items.allSatisfy { $0.name.contains("/Popular/") })
         await rt.stop()
     }
 
@@ -255,18 +263,50 @@ final class FeedFailureTests: XCTestCase {
         let rt = try channelRuntime()
         let feed = makeFeed()
         await feed.reload(sources: [channelSource(rt, type: "VIDEOS")])
-        let shown = feed.content.items
+        var content = await feed.loadAll(maxRounds: 0)
+        let shown = content.items
 
         let outcome = await feed.reload(sources: [channelSource(rt, type: "FAIL", order: "Popular")])
 
         XCTAssertEqual(outcome, .failed, "a control must not show the new sort as applied")
-        XCTAssertEqual(feed.content.items, shown)
-        let failure = try XCTUnwrap(feed.content.failures.first)
+        content = await feed.loadAll(maxRounds: 0)
+        XCTAssertEqual(content.items, shown)
+        let failure = try XCTUnwrap(content.failures.first)
         XCTAssertEqual(failure.sourceKey, "fake|FAIL")
         XCTAssertTrue(failure.message.contains("channel tab failed"))
 
         await feed.retry(failure)
-        XCTAssertEqual(feed.content.failures.map(\.sourceKey), ["fake|FAIL"], "the retry failed again and says so")
+        content = await feed.loadAll(maxRounds: 0)
+        XCTAssertEqual(content.failures.map(\.sourceKey), ["fake|FAIL"], "the retry failed again and says so")
+        XCTAssertEqual(content.items, shown)
+        await rt.stop()
+    }
+
+    @MainActor
+    func testRetryOfAFailedRequestGoesThroughTheCaller() async throws {
+        let rt = try channelRuntime()
+        let feed = makeFeed()
+        await feed.reload(sources: [channelSource(rt, type: "VIDEOS")])
+        let retried = Locked(0)
+        await feed.reload(sources: [channelSource(rt, type: "FAIL")], retryAll: { retried.value += 1 })
+        let failures = await feed.loadAll(maxRounds: 0).failures
+        let failure = try XCTUnwrap(failures.first)
+
+        await feed.retry(failure)
+
+        XCTAssertEqual(retried.value, 1, "the control that made the request applies its retry, so it can track what is shown")
+        await rt.stop()
+    }
+
+    @MainActor
+    func testUndatedItemsAreShownWithoutWaitingForDatedSources() async throws {
+        let rt = try channelRuntime()
+        let feed = makeFeed()
+        await feed.reload(sources: [channelSource(rt, type: "VIDEOS"), channelSource(rt, type: "UNDATED")], order: .newestFirst)
+        let content = await feed.loadAll(maxRounds: 0)
+        XCTAssertTrue(feed.hasMore, "videos still have a page to come")
+        XCTAssertEqual(content.items.map(\.url), ["https://fake.test/100", "https://fake.test/80", "https://fake.test/60",
+                                                  "https://fake.test/0"])
         await rt.stop()
     }
 
@@ -282,7 +322,8 @@ final class FeedFailureTests: XCTestCase {
 
         XCTAssertEqual(newer, .refreshed)
         XCTAssertEqual(stale, .superseded)
-        XCTAssertTrue(feed.content.items.allSatisfy { $0.name.hasPrefix("STREAMS/") })
+        let content = await feed.loadAll(maxRounds: 0)
+        XCTAssertTrue(content.items.allSatisfy { $0.name.hasPrefix("STREAMS/") })
         await rt.stop()
     }
 
@@ -320,6 +361,36 @@ final class FeedFailureTests: XCTestCase {
         XCTAssertTrue(redacted.contains("https://gql.twitch.tv/gql?<redacted>"), redacted)
         XCTAssertTrue(redacted.contains("12:30:45"), "clock times are not addresses: \(redacted)")
         XCTAssertLessThanOrEqual(LogRedaction.redact(String(repeating: "word ", count: 500)).count, 501)
+    }
+
+    func testLogRedactionCoversHeadersShortSchemesLoopbackPathsAndQueries() {
+        let cases: [(String, [String])] = [
+            ("request sent Cookie: a=1; b=2", ["a=1", "b=2"]),
+            (#"headers {"Cookie":"sid=xyz; theme=dark"}"#, ["sid=xyz", "theme=dark"]),
+            ("Authorization: Token xyz123", ["xyz123"]),
+            ("connect to [::1]:8080 failed", ["::1"]),
+            ("connect to ::1 failed", ["::1"]),
+            ("fetch gql.twitch.tv/gql?client=abc&q=cats failed", ["client=abc", "cats"]),
+            ("cannot read /Users/gavin/Library/x and /home/alice/y", ["gavin", "alice"]),
+            (#"C:\Users\bob\AppData failed"#, ["bob"]),
+        ]
+        for (text, secrets) in cases {
+            let redacted = LogRedaction.redact(text)
+            for secret in secrets {
+                XCTAssertFalse(redacted.contains(secret), "\(secret) leaked from \(text): \(redacted)")
+            }
+        }
+        XCTAssertEqual(LogRedaction.redact("std::vector at 10:20:30"), "std::vector at 10:20:30")
+    }
+
+    func testWhatTheUserTypedIsKeptOutOfThePublicLog() {
+        let message = #"No results for "Cats in Hats" (query=cats+in+hats, cats%20in%20hats)"#
+        let redacted = LogRedaction.redact(message, removing: ["Cats in Hats"])
+        for typed in ["Cats", "cats", "Hats", "hats"] {
+            XCTAssertFalse(redacted.contains(typed), "\(typed) leaked: \(redacted)")
+        }
+        XCTAssertTrue(redacted.contains("No results for"), redacted)
+        XCTAssertEqual(LogRedaction.redact("a in b", removing: ["in"]), "a in b", "short terms would blank ordinary words")
     }
 }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import Synchronization
 import SwiftOpenUI
 
 // A feed's items and its failed sources are one piece of content. The model
@@ -22,7 +23,7 @@ private func capture<T: Sendable>(_ op: @Sendable () async throws -> T) async ->
 /// log, so every failure the user can see is also in the log.
 struct SourceFailure: Identifiable, Equatable, Sendable {
     enum Stage: String, Sendable {
-        case firstPage = "first_page", nextPage = "next_page", channels, suggestions
+        case firstPage = "first_page", nextPage = "next_page", channels, suggestions, capabilities, related
 
         /// What failed, for display after the source's name; nil for the main results.
         var detail: String? {
@@ -31,6 +32,8 @@ struct SourceFailure: Identifiable, Equatable, Sendable {
             case .nextPage: return "more results"
             case .channels: return "channels"
             case .suggestions: return "suggestions"
+            case .capabilities: return "sort and type options"
+            case .related: return "related videos"
             }
         }
     }
@@ -51,12 +54,33 @@ struct SourceFailure: Identifiable, Equatable, Sendable {
         self.stage = stage
     }
 
-    /// Makes the failure and logs it. Plugin and service messages can carry
-    /// tokens and addresses, so they are redacted before being logged as public.
-    static func record(pluginID: String, sourceKey: String? = nil, label: String, message: String, stage: Stage) -> SourceFailure {
+    /// Makes the failure and logs it.
+    ///
+    /// The persisted log gets the message with secrets, addresses, paths and
+    /// `sensitiveTerms` (what the user typed, which plugins often echo back)
+    /// removed, as public text; the original message and the source key (a
+    /// channel URL says what someone subscribes to) stay private. The same
+    /// failure is logged at most once a minute, so a source failing on every
+    /// keystroke of a search does not flood the log.
+    static func record(pluginID: String, sourceKey: String? = nil, label: String, message: String, stage: Stage,
+                       sensitiveTerms: [String] = []) -> SourceFailure {
         let failure = SourceFailure(pluginID: pluginID, sourceKey: sourceKey ?? pluginID, label: label, message: message, stage: stage)
-        Logger.plugin.error("feed_source_failed plugin=\(pluginID, privacy: .public) source=\(LogRedaction.redact(failure.sourceKey), privacy: .public) stage=\(stage.rawValue, privacy: .public) error=\(LogRedaction.redact(message), privacy: .public)")
+        let redacted = LogRedaction.redact(message, removing: sensitiveTerms)
+        if shouldLog(failure.id + "|" + redacted) {
+            Logger.plugin.error("feed_source_failed plugin=\(pluginID, privacy: .public) stage=\(stage.rawValue, privacy: .public) error=\(redacted, privacy: .public) source=\(failure.sourceKey, privacy: .private) detail=\(message, privacy: .private)")
+        }
         return failure
+    }
+
+    private static let recentlyLogged = Mutex<[String: Date]>([:])
+
+    private static func shouldLog(_ key: String, now: Date = Date()) -> Bool {
+        recentlyLogged.withLock { logged in
+            logged = logged.filter { now.timeIntervalSince($0.value) < 60 }
+            guard logged[key] == nil else { return false }
+            logged[key] = now
+            return true
+        }
     }
 }
 
@@ -111,13 +135,17 @@ struct FeedSource: Sendable {
     let label: String
     /// Distinguishes several sources from one plugin; defaults to the plugin ID.
     let key: String
+    /// What the user typed for this request (a search query). Plugins echo it in
+    /// errors, so it is removed from the public log line.
+    let sensitiveTerms: [String]
     let open: @Sendable () async throws -> PluginPager<ContentItem>
 
-    init(runtime: PluginRuntime, label: String, key: String? = nil,
+    init(runtime: PluginRuntime, label: String, key: String? = nil, sensitiveTerms: [String] = [],
          open: @escaping @Sendable () async throws -> PluginPager<ContentItem>) {
         self.runtime = runtime
         self.label = label
         self.key = key ?? runtime.id
+        self.sensitiveTerms = sensitiveTerms
         self.open = open
     }
 }
@@ -165,28 +193,34 @@ final class FeedModel {
 
     // MARK: data access outside views
 
-    /// Everything loaded so far, for code that consumes the feed as data (saving a
-    /// playlist, tests). Views render a feed with `FeedList` or `FeedGrid`.
+    /// A feed's items as data, always with the sources that failed: a caller
+    /// cannot take the items without being handed what is missing from them.
+    /// Views render a feed with `FeedList` or `FeedGrid` instead.
     struct Content: Equatable {
         let failures: [SourceFailure]
         let items: [ContentItem]
+        /// Nothing failed and nothing is left to load.
+        let isComplete: Bool
     }
-    var content: Content { Content(failures: failures, items: items) }
 
-    /// Pages through every source (bounded) and returns all items, e.g. to save a playlist.
-    func loadAll(maxRounds: Int) async -> [ContentItem] {
+    /// Pages through every source (at most `maxRounds` more pages) and returns what
+    /// was loaded. `maxRounds: 0` reads what is loaded now.
+    func loadAll(maxRounds: Int) async -> Content {
         var rounds = 0
         while hasMore, rounds < maxRounds { await loadMore(); rounds += 1 }
-        return items
+        return Content(failures: failures, items: items, isComplete: failures.isEmpty && !hasMore)
     }
 
     // MARK: loading
 
     /// Replaces the feed with `sources`. If every source fails, the feed keeps its
     /// previous content and sources (so a control can revert to what is shown),
-    /// and the failures appear above it with a retry of the whole request.
+    /// and the failures appear above it with a retry of the whole request:
+    /// `retryAll` when given (a control that must track what is applied routes the
+    /// retry through itself), otherwise this reload again.
     @discardableResult
-    func reload(sources: [FeedSource], order: FeedOrder = .interleaved) async -> FeedReloadOutcome {
+    func reload(sources: [FeedSource], order: FeedOrder = .interleaved,
+                retryAll: (@MainActor () async -> Void)? = nil) async -> FeedReloadOutcome {
         generation &+= 1
         let current = generation
         isLoading = true
@@ -206,7 +240,7 @@ final class FeedModel {
             case .failure(let e):
                 newFailures.append((sources[i], .record(pluginID: sources[i].runtime.id, sourceKey: sources[i].key,
                                                         label: sources[i].label, message: report(e, sources[i].runtime),
-                                                        stage: .firstPage)))
+                                                        stage: .firstPage, sensitiveTerms: sources[i].sensitiveTerms)))
             }
         }
 
@@ -216,9 +250,13 @@ final class FeedModel {
             // Keep showing the previous request; retrying repeats this whole one.
             failures = newFailures.map(\.1)
             for (_, failure) in newFailures {
-                retryActions[failure.id] = { [weak self] in
-                    guard let self else { return }
-                    await self.reload(sources: sources, order: order)
+                if let retryAll {
+                    retryActions[failure.id] = retryAll
+                } else {
+                    retryActions[failure.id] = { [weak self] in
+                        guard let self else { return }
+                        await self.reload(sources: sources, order: order)
+                    }
                 }
             }
             outcome = .failed
@@ -347,7 +385,8 @@ final class FeedModel {
         case .failure(let e):
             guard current == generation else { return }
             replaceFailure(.record(pluginID: source.runtime.id, sourceKey: source.key, label: source.label,
-                                   message: report(e, source.runtime), stage: .firstPage))
+                                   message: report(e, source.runtime), stage: .firstPage,
+                                   sensitiveTerms: source.sensitiveTerms))
         }
         updateHasMore()
     }
@@ -356,7 +395,7 @@ final class FeedModel {
         feeder.stalled = true
         replaceFailure(.record(pluginID: feeder.source.runtime.id, sourceKey: feeder.source.key,
                                label: feeder.source.label, message: report(error, feeder.source.runtime),
-                               stage: .nextPage))
+                               stage: .nextPage, sensitiveTerms: feeder.source.sensitiveTerms))
         // A stalled source no longer holds back the others.
         if order == .newestFirst { place([]) }
     }
@@ -398,6 +437,13 @@ final class FeedModel {
     /// Moves held-back items into the timeline while every source that can still
     /// produce something newer has items buffered to compare against.
     private func mergeNewestFirst() {
+        // Undated items have no place in the timeline to wait for: show them at
+        // once (they sort after every dated item) rather than holding them until
+        // every dated source has paged to its end.
+        for feeder in feeders where feeder.buffer.contains(where: { $0.date == nil }) {
+            for item in feeder.buffer where item.date == nil && isNew(item) { insertNewestFirst(item) }
+            feeder.buffer.removeAll { $0.date == nil }
+        }
         while true {
             let waiting = feeders.contains { $0.buffer.isEmpty && $0.hasMore && !$0.stalled }
             if waiting { return }

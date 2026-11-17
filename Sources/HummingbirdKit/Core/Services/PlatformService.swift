@@ -171,16 +171,22 @@ final class PlatformService {
 
     // MARK: capabilities
 
-    private func capabilities(_ rt: PluginRuntime, method: String) async -> ResultCapabilities {
+    /// A plugin's capabilities. A plugin without the method has none; one whose
+    /// method throws reports that (and nothing is cached, so the next call asks again).
+    private func capabilities(_ rt: PluginRuntime, method: String) async throws -> ResultCapabilities {
         let key = rt.id + "|" + method
         if let c = capabilityCache[key] { return c }
+        try await rt.enable()
         var caps = ResultCapabilities()
-        if rt.has(method), let c = try? await rt.call(method, [], as: ResultCapabilities.self) { caps = c }
+        if rt.has(method) {
+            do { caps = try await rt.call(method, [], as: ResultCapabilities.self) }
+            catch { _ = surface(error, pluginID: rt.id); throw error }
+        }
         capabilityCache[key] = caps
         return caps
     }
-    func channelCapabilities(_ rt: PluginRuntime) async -> ResultCapabilities { await capabilities(rt, method: "getChannelCapabilities") }
-    func searchCapabilities(_ rt: PluginRuntime) async -> ResultCapabilities { await capabilities(rt, method: "getSearchCapabilities") }
+    func channelCapabilities(_ rt: PluginRuntime) async throws -> ResultCapabilities { try await capabilities(rt, method: "getChannelCapabilities") }
+    func searchCapabilities(_ rt: PluginRuntime) async throws -> ResultCapabilities { try await capabilities(rt, method: "getSearchCapabilities") }
 
     // MARK: feeds
 
@@ -199,7 +205,7 @@ final class PlatformService {
         var result: [FeedSource] = []
         for p in plugins.enabledPlugins where p.config.enableInSearch {
             guard let rt = await plugins.runtime(for: p.id) else { continue }
-            result.append(FeedSource(runtime: rt, label: p.config.name) { [self] in
+            result.append(FeedSource(runtime: rt, label: p.config.name, sensitiveTerms: [query]) { [self] in
                 try await withReload(rt) {
                     try await rt.pager("search", [query, type ?? NSNull(), order ?? NSNull(), NSNull()], as: ContentItem.self)
                 }
@@ -219,12 +225,21 @@ final class PlatformService {
         }
     }
 
-    func recommendations(runtime rt: PluginRuntime, details: VideoDetails) async -> PluginPager<ContentItem>? {
-        if details.hasRecommendations, let p = try? await rt.handlePager(details.handle, "getContentRecommendations", [], as: ContentItem.self) { return p }
-        if rt.has("getContentRecommendations") {
-            return try? await rt.pager("getContentRecommendations", [details.item.url, NSNull()], as: ContentItem.self)
+    /// Related content: the details object's own recommendations, falling back to
+    /// the source-level call. Throws when the call that decides the result fails.
+    func recommendations(runtime rt: PluginRuntime, details: VideoDetails) async throws -> PluginPager<ContentItem>? {
+        let hasSourceCall = rt.has("getContentRecommendations")
+        if details.hasRecommendations {
+            do {
+                return try await rt.handlePager(details.handle, "getContentRecommendations", [], as: ContentItem.self)
+            } catch where hasSourceCall {
+                Logger.plugin.notice("recommendations_fallback plugin=\(rt.id, privacy: .public) error=\(LogRedaction.redact(error.localizedDescription), privacy: .public)")
+            }
         }
-        return nil
+        guard hasSourceCall else { return nil }
+        do {
+            return try await rt.pager("getContentRecommendations", [details.item.url, NSNull()], as: ContentItem.self)
+        } catch { _ = surface(error, pluginID: rt.id); throw error }
     }
 
     func comments(runtime rt: PluginRuntime, details: VideoDetails) async throws -> PluginPager<PluginComment>? {
@@ -258,7 +273,8 @@ final class PlatformService {
                 })
             } catch {
                 out.failures.append(.record(pluginID: p.id, label: p.config.name,
-                                            message: surface(error, pluginID: p.id), stage: .channels))
+                                            message: surface(error, pluginID: p.id), stage: .channels,
+                                            sensitiveTerms: [query]))
             }
         }
         return out
@@ -283,7 +299,8 @@ final class PlatformService {
             } catch {
                 guard !Task.isCancelled else { return SuggestionSearch() }
                 out.failures.append(.record(pluginID: plugin.id, label: plugin.config.name,
-                                            message: surface(error, pluginID: plugin.id), stage: .suggestions))
+                                            message: surface(error, pluginID: plugin.id), stage: .suggestions,
+                                            sensitiveTerms: [query]))
                 continue
             }
             guard !Task.isCancelled else { return SuggestionSearch() }

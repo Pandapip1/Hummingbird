@@ -14,7 +14,7 @@ the same API.
 |---|---|
 | `player` | loading content, source selection, plugin reloads, UMP refreshes and UMP progress lines |
 | `avplayer` | AVPlayer item status, error-log entries, failures to play to the end |
-| `plugin` | alerts (toasts), compatibility patches, unsupported capabilities, call timeouts |
+| `plugin` | alerts (toasts), compatibility patches, unsupported capabilities, call timeouts, failed feed sources (`feed_source_failed`) |
 | `plugin.console` | plugins' own `log()` output (debug level, private) |
 | `plugin.browser` | the hidden browser page (content rules) |
 | `http` | opt-in traces (see below) and non-2xx plugin responses when `HUMMINGBIRD_PLUGIN_VERBOSE=1` |
@@ -33,6 +33,20 @@ values show when the debugger is attached, or with a logging profile that
 enables private data. Secrets are never logged. The HTTP traces replace
 `authorization`, `cookie`, token and session header values with `<redacted>`
 before logging the rest as private.
+
+The one exception is a source failure (`feed_source_failed`: a plugin whose
+search, feed page, channel search, suggestions, capabilities or related videos
+failed). So that these can be read from a user's persisted log, the error is
+passed through `LogRedaction` and logged **public**. That removes query strings
+(with or without a scheme), credential headers (`Cookie`, `Authorization` and
+similar, to the end of the line), bearer/basic values, JWTs, the values of
+secret-looking keys, email addresses, IPv4 and IPv6 addresses (including
+`::1`), home-directory names (`/Users/<user>`, `/home/<user>`,
+`C:\Users\<user>`), opaque runs of 32 or more characters, and what the user
+typed for that request (the search query, as typed, URL-encoded, and word by
+word; words under three letters are kept). The unredacted message and the
+source key (for subscriptions, the channel URL) are logged alongside as
+private. The same failure is logged at most once a minute.
 
 Stream or read the logs:
 

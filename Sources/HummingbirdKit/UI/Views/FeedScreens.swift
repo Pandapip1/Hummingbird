@@ -218,25 +218,7 @@ struct SubscriptionsView: View {
                     ContentUnavailableView("No subscriptions", systemImage: "rectangle.stack.person.crop",
                                            description: Text("Open a channel and tap Subscribe, or import subscriptions from a source you are signed in to."))
                 } else {
-                    List {
-                        ForEach(feed.visibleItems) { item in
-                            ContentRow(item: item).hiddenListRowSeparator()
-                                .onAppear { if item.id == feed.visibleItems.last?.id, feed.hasMoreToShow { feed.showMore() } }
-                        }
-                        if !feed.failures.isEmpty {
-                            Section("Some channels failed") {
-                                ForEach(feed.failures.sorted(by: { $0.key < $1.key }), id: \.key) { url, msg in
-                                    VStack(alignment: .leading) {
-                                        Text(url).font(.caption.bold()).lineLimit(1)
-                                        Text(msg).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                        if feed.isRefreshing { ProgressView().frame(maxWidth: .infinity) }
-                    }
-                    .listStyle(.plain)
-                    .refreshable { await feed.refresh() }
+                    SubscriptionFeedList(feed: feed)
                 }
             }
             .navigationTitle("Subscriptions")

@@ -507,16 +507,33 @@ private struct RelatedSection: View {
     @Environment(AppModel.self) private var app
     @State private var items: [ContentItem] = []
     @State private var loading = true
+    @State private var failure: SourceFailure?
 
     var body: some View {
         LazyContentStack(alignment: .leading) {
+            if let failure {
+                SourceFailureRow(failure: failure, isRetrying: loading) { Task { await load() } }
+                    .padding(.horizontal)
+            }
             ForEach(items) { ContentRow(item: $0).padding(.horizontal) }
-            if loading { ProgressView().frame(maxWidth: .infinity) }
-            if !loading && items.isEmpty { Text("No related videos").foregroundStyle(.secondary).padding(.horizontal) }
+            if loading && failure == nil { ProgressView().frame(maxWidth: .infinity) }
+            if !loading && items.isEmpty && failure == nil {
+                Text("No related videos").foregroundStyle(.secondary).padding(.horizontal)
+            }
         }
-        .task {
-            if let p = await app.platform.recommendations(runtime: runtime, details: details) { items = p.initial }
-            loading = false
+        .task { await load() }
+    }
+
+    /// Loads related content; a failure stays on screen with a retry (pending while it runs).
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        do {
+            items = try await app.platform.recommendations(runtime: runtime, details: details)?.initial ?? []
+            failure = nil
+        } catch {
+            failure = .record(pluginID: runtime.id, label: runtime.config.name,
+                              message: error.localizedDescription, stage: .related)
         }
     }
 }

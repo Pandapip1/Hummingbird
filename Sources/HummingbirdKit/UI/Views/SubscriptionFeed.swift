@@ -1,20 +1,24 @@
 import Foundation
 import Observation
+import SwiftOpenUI
 
 /// Builds the subscriptions feed: fetches the first page of each subscribed channel (newest first), respects each
 /// plugin's rate limit by falling back to cached results, and merges everything chronologically.
 @MainActor
 @Observable
 final class SubscriptionFeed {
-    private(set) var items: [ContentItem] = []
+    // Items and failures are fileprivate: `SubscriptionFeedList` below is the
+    // only way to show them, and it lists failed channels first.
+    fileprivate private(set) var items: [ContentItem] = []
     private(set) var isRefreshing = false
     private(set) var lastRefresh: Date?
-    private(set) var failures: [String: String] = [:]
-    var visibleCount = 30
+    fileprivate private(set) var failures: [SourceFailure] = []
+    fileprivate private(set) var retrying: Set<String> = []
+    fileprivate var visibleCount = 30
 
-    var visibleItems: [ContentItem] { Array(items.prefix(visibleCount)) }
-    var hasMoreToShow: Bool { visibleCount < items.count }
-    func showMore() { visibleCount += 30 }
+    fileprivate var visibleItems: [ContentItem] { Array(items.prefix(visibleCount)) }
+    fileprivate var hasMoreToShow: Bool { visibleCount < items.count }
+    fileprivate func showMore() { visibleCount += 30 }
 
     @ObservationIgnored private let library: LibraryStore
     @ObservationIgnored private let plugins: PluginManager
@@ -32,7 +36,7 @@ final class SubscriptionFeed {
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        failures = [:]
+        failures = []
         defer { isRefreshing = false }
 
         let userLimit = preferences.defaults.integer(forKey: PlaybackPreferenceKey.subscriptionFetchLimit)   // 0 = unlimited
@@ -69,7 +73,7 @@ final class SubscriptionFeed {
                     let saved = list.prefix(30).map { SavedVideo($0) }
                     library.updateSubscription(sub.channelURL, fetched: Date(), newest: list.compactMap(\.datetime).max(), cache: Array(saved))
                 case .failure(let e):
-                    failures[sub.channelURL] = platform.surface(e, pluginID: sub.pluginId)
+                    failures.append(failure(sub, e))
                     // Fall back to whatever we last saw for this channel.
                     cached.append(contentsOf: (library.feedCache[sub.channelURL] ?? []).map { ContentItem(saved: $0) })
                 }
@@ -82,11 +86,36 @@ final class SubscriptionFeed {
         lastRefresh = Date()
     }
 
+    private func failure(_ sub: Subscription, _ error: Error) -> SourceFailure {
+        .record(pluginID: sub.pluginId, sourceKey: sub.channelURL, label: sub.name,
+                message: platform.surface(error, pluginID: sub.pluginId), stage: .firstPage)
+    }
+
+    /// Fetches one failed channel again. Its row stays pending until this finishes,
+    /// then disappears (the channel's new items merged in) or shows the new error.
+    fileprivate func retry(_ failed: SourceFailure) async {
+        guard !retrying.contains(failed.id),
+              let sub = library.subscriptions.first(where: { $0.channelURL == failed.sourceKey }) else { return }
+        retrying.insert(failed.id)
+        defer { retrying.remove(failed.id) }
+        do {
+            let list = try await fetchChannel(sub)
+            library.updateSubscription(sub.channelURL, fetched: Date(), newest: list.compactMap(\.datetime).max(),
+                                       cache: Array(list.prefix(30).map { SavedVideo($0) }))
+            library.persistSubscriptionState()
+            items = Self.merge(list + items)
+            failures.removeAll { $0.id == failed.id }
+        } catch {
+            let again = failure(sub, error)
+            if let i = failures.firstIndex(where: { $0.id == failed.id }) { failures[i] = again }
+        }
+    }
+
     /// First page(s) of one channel, newest first. Plugins that cannot mix content types get one call per type.
     private func fetchChannel(_ sub: Subscription) async throws -> [ContentItem] {
         guard let rt = await plugins.runtime(for: sub.pluginId) else { throw PluginError.notInstalled }
         try await rt.enable()
-        let caps = await platform.channelCapabilities(rt)
+        let caps = try await platform.channelCapabilities(rt)
         let wanted = ["VIDEOS", "STREAMS", "POSTS", "LIVE"]
         let types: [String?]
         if caps.types.isEmpty || caps.types.contains("MIXED") { types = [nil] }
@@ -125,5 +154,33 @@ final class SubscriptionFeed {
         }
         var seen = Set<String>()
         return order.filter { seen.insert($0.id).inserted }.sorted { ($0.datetime ?? Int.min) > ($1.datetime ?? Int.min) }
+    }
+}
+
+/// The subscriptions feed: channels that failed to refresh first, each with a
+/// retry, then the merged items.
+@MainActor
+struct SubscriptionFeedList: View {
+    let feed: SubscriptionFeed
+
+    var body: some View {
+        List {
+            if !feed.failures.isEmpty {
+                Section("Some channels failed") {
+                    ForEach(feed.failures) { failure in
+                        SourceFailureRow(failure: failure, isRetrying: feed.retrying.contains(failure.id)) {
+                            Task { await feed.retry(failure) }
+                        }
+                    }
+                }
+            }
+            ForEach(feed.visibleItems) { item in
+                ContentRow(item: item).hiddenListRowSeparator()
+                    .onAppear { if item.id == feed.visibleItems.last?.id, feed.hasMoreToShow { feed.showMore() } }
+            }
+            if feed.isRefreshing { ProgressView().frame(maxWidth: .infinity) }
+        }
+        .listStyle(.plain)
+        .refreshable { await feed.refresh() }
     }
 }

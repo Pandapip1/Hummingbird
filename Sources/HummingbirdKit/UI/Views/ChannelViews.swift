@@ -14,6 +14,8 @@ struct ChannelView: View {
     @State private var selection = ChannelFeedSelection()
     /// A type or sort the feed is loading; the controls are pending meanwhile.
     @State private var pending: ChannelFeedSelection?
+    /// Identifies the latest type/sort request; an older one finishing never settles the controls.
+    @State private var requestToken = 0
     @State private var expanded = false
 
     enum LoadState { case loading, failed(String), loaded(PluginRuntime, ChannelInfo) }
@@ -44,6 +46,7 @@ struct ChannelView: View {
                                 set: { type in
                                     var next = selection
                                     next.type = type
+                                    guard next != selection else { return }
                                     Task { await apply(next, rt, info) }
                                 }
                             )) {
@@ -60,6 +63,7 @@ struct ChannelView: View {
                                     Button {
                                         var next = selection
                                         next.order = s
+                                        guard next != selection else { return }
                                         Task { await apply(next, rt, info) }
                                     } label: {
                                         if s == selection.order {
@@ -131,23 +135,51 @@ struct ChannelView: View {
         loadState = .loading
         do {
             let (rt, info) = try await app.platform.channel(url: url)
-            caps = await app.platform.channelCapabilities(rt)
+            var capsFailure: SourceFailure?
+            do { caps = try await app.platform.channelCapabilities(rt) }
+            catch {
+                caps = ResultCapabilities()
+                capsFailure = capabilitiesFailure(rt, error)
+            }
             selection = ChannelFeedSelection()
-            pending = nil
             loadState = .loaded(rt, info)
-            await reloadFeed(rt, info, selection)
+            await apply(selection, rt, info)
+            // Without capabilities the feed is the plugin's default and the type and
+            // sort controls are missing; say so, and offer to ask again.
+            if let capsFailure, let feed {
+                feed.record(capsFailure) { await retryCapabilities(rt, info) }
+            }
         } catch { loadState = .failed(error.localizedDescription) }
     }
 
+    private func capabilitiesFailure(_ rt: PluginRuntime, _ error: Error) -> SourceFailure {
+        .record(pluginID: rt.id, sourceKey: "\(rt.id)|capabilities", label: rt.config.name,
+                message: error.localizedDescription, stage: .capabilities)
+    }
+
+    private func retryCapabilities(_ rt: PluginRuntime, _ info: ChannelInfo) async -> SourceFailure? {
+        do {
+            caps = try await app.platform.channelCapabilities(rt)
+        } catch {
+            return capabilitiesFailure(rt, error)
+        }
+        // The default feed may now be several types merged.
+        await apply(ChannelFeedSelection(), rt, info)
+        return nil
+    }
+
     /// Loads `next`; the controls show it only once it has loaded. On failure they
-    /// keep the previous choice, whose items stay on screen under the failure.
+    /// keep the previous choice, whose items stay on screen under the failure, and
+    /// that failure's Retry comes back here, so a retried change is applied (or
+    /// not) the same way. Only the latest request settles `pending`.
     private func apply(_ next: ChannelFeedSelection, _ rt: PluginRuntime, _ info: ChannelInfo) async {
-        guard pending == nil, next != selection else { return }
+        requestToken &+= 1
+        let token = requestToken
         pending = next
         let outcome = await reloadFeed(rt, info, next)
+        guard token == requestToken else { return }
         if outcome == .refreshed { selection = next }
-        // A superseded load belongs to a newer request (another channel), which owns `pending`.
-        if outcome != .superseded { pending = nil }
+        pending = nil
     }
 
     @discardableResult
@@ -162,7 +194,8 @@ struct ChannelView: View {
                 label: types.count > 1 ? "\(rt.config.name) (\(Self.label(for: type ?? ChannelFeedPlan.all)))" : nil
             )
         }
-        return await f.reload(sources: sources, order: ChannelFeedPlan.feedOrder(sourceCount: sources.count, sort: choice.order))
+        return await f.reload(sources: sources, order: ChannelFeedPlan.feedOrder(sourceCount: sources.count, sort: choice.order),
+                              retryAll: { await apply(choice, rt, info) })
     }
 
     static func label(for token: String) -> String {
@@ -230,6 +263,7 @@ struct PlaylistView: View {
     @State private var feed: FeedModel?
     @State private var error: String?
     @State private var saving = false
+    @State private var saveNote: String?
 
     var body: some View {
         Group {
@@ -245,6 +279,8 @@ struct PlaylistView: View {
                                 Button { Task { await save(feed, header) } } label: {
                                     Label(saving ? "Saving…" : "Save to library", systemImage: "square.and.arrow.down")
                                 }.buttonStyle(.bordered).disabled(saving)
+                                if saving { ProgressView() }
+                                if let saveNote { Text(saveNote).font(.caption).foregroundStyle(.secondary) }
                             }
                         }.hiddenListRowSeparator()
                     }
@@ -268,10 +304,18 @@ struct PlaylistView: View {
         } catch { self.error = error.localizedDescription }
     }
 
+    /// Saves the whole playlist. If part of it failed to load, nothing is saved:
+    /// the failure is listed above with a retry, and saving can be tried again.
     private func save(_ feed: FeedModel, _ header: ContentItem) async {
         saving = true
-        let videos = await feed.loadAll(maxRounds: 25).filter { $0.kind == .video || $0.kind == .nested }.map { SavedVideo($0) }
+        defer { saving = false }
+        let loaded = await feed.loadAll(maxRounds: 25)
+        guard loaded.failures.isEmpty else {
+            saveNote = "Not saved: part of this playlist failed to load. Retry it above, then save again."
+            return
+        }
+        let videos = loaded.items.filter { $0.kind == .video || $0.kind == .nested }.map { SavedVideo($0) }
         app.library.createPlaylist(name: header.name, videos: videos)
-        saving = false
+        saveNote = loaded.isComplete ? "Saved \(videos.count) videos." : "Saved the first \(videos.count) videos; the playlist is longer than can be saved at once."
     }
 }

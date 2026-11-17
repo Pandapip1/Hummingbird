@@ -627,6 +627,14 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                             thumbnail: details.item.thumbnailURL, isLive: live)
     }
 
+    /// The one place playback invokes a plugin's request modifier, so how
+    /// plugins are called (plugin containment) can change here alone.
+    nonisolated private static func modifyRequest(runtime: PluginRuntime, modifier handle: Int, url: String,
+                                                  headers: [String: String]) async throws -> ModifiedRequest {
+        let data = try await runtime.callHandle(handle, "modifyRequest", [url, headers])
+        return try await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data)
+    }
+
     /// Signs any URL of an HLS presentation through the source's request
     /// modifier (once per request), or plainly.
     nonisolated private static func urlSigner(for source: MediaSource, runtime: PluginRuntime) -> UpstreamURLSigner {
@@ -635,8 +643,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         return UpstreamURLSigner { url, range in
             var headers: [String: String] = [:]
             if let range { headers["Range"] = "bytes=\(range.lowerBound)-\(range.upperBound - 1)" }
-            let data = try await runtime.callHandle(handle, "modifyRequest", [url.absoluteString, headers])
-            let modified = try await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data)
+            let modified = try await modifyRequest(runtime: runtime, modifier: handle, url: url.absoluteString, headers: headers)
             var request = URLRequest(url: modified.url.flatMap(URL.init(string:)) ?? url)
             for (name, value) in modified.headers ?? headers { request.setValue(value, forHTTPHeaderField: name) }
             return request
@@ -689,8 +696,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let handle = modifier.handle
         return UpstreamRequestSigner { range in
             let rangeValue = "\(range.lowerBound)-\(range.upperBound - 1)"
-            let data = try await runtime.callHandle(handle, "modifyRequest", [original, ["Range": "bytes=" + rangeValue]])
-            let modified = try await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data)
+            let modified = try await modifyRequest(runtime: runtime, modifier: handle, url: original,
+                                                   headers: ["Range": "bytes=" + rangeValue])
             let target = modified.url.flatMap(URL.init(string:)) ?? url
             var request = URLRequest(url: target)
             let headers = modified.headers ?? [:]

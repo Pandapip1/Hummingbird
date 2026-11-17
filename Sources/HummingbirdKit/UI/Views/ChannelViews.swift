@@ -76,10 +76,10 @@ struct ChannelView: View {
         let channelURL = info.url.isEmpty ? url : info.url
         return VStack(alignment: .leading, spacing: 10) {
             if let b = info.banner, let u = URL(string: b) {
-                RemoteImage(url: u).frame(height: 100).frame(maxWidth: .infinity).clipped()
+                RemoteImage(url: u, contentMode: .fill).frame(height: 100).frame(maxWidth: .infinity).clipped()
             }
             HStack(spacing: 12) {
-                RemoteImage(url: info.thumbnail.flatMap(URL.init(string:))).frame(width: 64, height: 64).clipShape(Circle())
+                RemoteImage(url: info.thumbnail.flatMap(URL.init(string:)), contentMode: .fill).frame(width: 64, height: 64).clipShape(Circle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text(info.name).font(.title3.bold())
                     if let s = info.subscribers, s > 0 { Text("\(Fmt.count(s)) subscribers").font(.caption).foregroundStyle(.secondary) }

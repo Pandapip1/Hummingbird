@@ -158,7 +158,7 @@ private struct VideoBody: View {
                 if let author = item.author, !author.url.isEmpty {
                     Button { openRoute(.channel(author.url), title: author.name) } label: {
                         HStack(spacing: 10) {
-                            RemoteImage(url: author.thumbnail.flatMap(URL.init(string:))).frame(width: 36, height: 36).clipShape(Circle())
+                            RemoteImage(url: author.thumbnail.flatMap(URL.init(string:)), contentMode: .fill).frame(width: 36, height: 36).clipShape(Circle())
                             VStack(alignment: .leading) {
                                 Text(author.name).font(.subheadline.weight(.semibold))
                                 if let s = author.subscribers, s > 0 { Text("\(Fmt.count(s)) subscribers").font(.caption).foregroundStyle(.secondary) }
@@ -472,7 +472,7 @@ private struct CommentRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            RemoteImage(url: comment.author.thumbnail.flatMap(URL.init(string:))).frame(width: 32, height: 32).clipShape(Circle())
+            RemoteImage(url: comment.author.thumbnail.flatMap(URL.init(string:)), contentMode: .fill).frame(width: 32, height: 32).clipShape(Circle())
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(comment.author.name).font(.caption.bold())

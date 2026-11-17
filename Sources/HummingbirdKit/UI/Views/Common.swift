@@ -14,7 +14,14 @@ import SwiftOpenUI
 @MainActor
 struct RemoteImage: View {
     let url: URL?
-    var contentMode: ContentMode = .fill
+    /// Required: `.fill` takes exactly the offered size, so a caller choosing
+    /// it must give the image a size (a frame or an aspect ratio).
+    let contentMode: ContentMode
+
+    init(url: URL?, contentMode: ContentMode) {
+        self.url = url
+        self.contentMode = contentMode
+    }
 
     var body: some View {
         switch contentMode {
@@ -82,14 +89,14 @@ struct ContentRow: View {
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
-            RemoteImage(url: item.thumbnailURL)
+            RemoteImage(url: item.thumbnailURL, contentMode: .fill)
                 .aspectRatio(16 / 9, contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .bottomTrailing) { badge.padding(6) }
             HStack(alignment: .top, spacing: 10) {
                 if let a = item.author, let t = a.thumbnail, let u = URL(string: t) {
-                    RemoteImage(url: u).frame(width: 34, height: 34).clipShape(Circle())
+                    RemoteImage(url: u, contentMode: .fill).frame(width: 34, height: 34).clipShape(Circle())
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name).font(.subheadline.weight(.semibold)).lineLimit(2)
@@ -103,7 +110,7 @@ struct ContentRow: View {
 
     private var channelCard: some View {
         HStack(spacing: 12) {
-            RemoteImage(url: item.thumbnailURL).frame(width: 52, height: 52).clipShape(Circle())
+            RemoteImage(url: item.thumbnailURL, contentMode: .fill).frame(width: 52, height: 52).clipShape(Circle())
             VStack(alignment: .leading) {
                 Text(item.name).font(.headline)
                 if let s = item.subscribers, s > 0 { Text("\(Fmt.count(s)) subscribers").font(.caption).foregroundStyle(.secondary) }

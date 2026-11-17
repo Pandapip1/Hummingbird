@@ -215,6 +215,9 @@ final class AppModel {
         )
         let downloadsModel = DownloadsModel(downloads: stores.mediaDownloads)
         downloadsModel.start()
+        // Downloads keep going while the app is suspended (iOS and friends).
+        let mediaDownloads = stores.mediaDownloads
+        Task { await mediaDownloads.useTransport(BackgroundTransport()) }
         self.downloads = downloadsModel
         self.stores = stores
         self.plugins = plugins

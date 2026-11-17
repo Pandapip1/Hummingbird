@@ -71,7 +71,7 @@ actor DownloadScheduler {
 actor MediaDownloads {
     let cache: MediaCache
     let scheduler: DownloadScheduler
-    private let transport: any MediaTransport
+    private var transport: any MediaTransport
     private var tracks: [String: Entry<TrackDownloader>] = [:]
     private var renditions: [String: Entry<HLSRenditionDownloader>] = [:]
     private var recordings: [String: Entry<LiveHLSRecorder>] = [:]
@@ -87,6 +87,15 @@ actor MediaDownloads {
         self.scheduler = scheduler
         self.transport = transport
     }
+
+    /// How downloads reach the network; the app installs one that keeps
+    /// going while it is suspended (`BackgroundTransport`). Applies to
+    /// downloads started afterwards.
+    func useTransport(_ transport: any MediaTransport) {
+        self.transport = transport
+    }
+
+    var currentTransport: any MediaTransport { transport }
 
     /// The running download for `spec`'s track, or a new one; held in the
     /// foreground until `release`.

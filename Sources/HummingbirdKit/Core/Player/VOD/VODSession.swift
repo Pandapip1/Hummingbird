@@ -139,11 +139,12 @@ actor VODSession {
     /// Starts (or joins) the download of an on-demand HLS presentation: the
     /// best variant at or under `maxHeight` and its audio rendition.
     static func start(hls spec: HLSPresentationSpec, downloads: MediaDownloads, server: LocalMediaServer,
-                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession),
+                      transport: (any MediaTransport)? = nil,
                       info: DownloadInfo? = nil)
         async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
         await session.setInfo(info)
+        let transport = if let transport { transport } else { await downloads.currentTransport }
         do {
             return (session, try await session.beginHLS(spec, transport: transport))
         } catch {
@@ -246,11 +247,12 @@ actor VODSession {
     /// under `maxHeight` and its audio rendition, each recorded into the
     /// cache and served as a growing local playlist (see `LiveHLSRecorder`).
     static func start(live spec: HLSPresentationSpec, downloads: MediaDownloads, server: LocalMediaServer,
-                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession),
+                      transport: (any MediaTransport)? = nil,
                       info: DownloadInfo? = nil)
         async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
         await session.setInfo(info)
+        let transport = if let transport { transport } else { await downloads.currentTransport }
         do {
             return (session, try await session.beginLive(spec, transport: transport))
         } catch {

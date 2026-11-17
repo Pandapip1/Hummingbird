@@ -233,3 +233,12 @@ private struct DownloadRow: View {
         }
     }
 }
+
+/// Media downloads that continue while the app is suspended (iOS, iPadOS,
+/// tvOS, visionOS), through SwiftOpenUI's `BackgroundTransferSession`; an
+/// ordinary session where processes keep running (macOS, GTK).
+struct BackgroundTransport: MediaTransport {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await BackgroundTransferSession.shared.data(for: request)
+    }
+}

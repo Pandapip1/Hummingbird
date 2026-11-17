@@ -81,6 +81,18 @@ final class DownloadsTests: XCTestCase {
         XCTAssertTrue(rows.isEmpty, "Clear forgets finished rows")
     }
 
+    func testDownloadsUseTheInstalledTransport() async throws {
+        let data = Data((0..<100_000).map { UInt8($0 % 251) })
+        let (downloads, _) = makeDownloads(file: Data())
+        let installed = SlowUpstream(file: data)
+        await downloads.useTransport(installed)
+        let downloader = try await downloads.hold(try spec("track-4"))
+        try await downloader.waitUntilAvailable(0..<Int64(data.count))
+        let served = try await downloader.read(0..<Int64(data.count))
+        XCTAssertEqual(served, data, "bytes came through the installed (background) transport")
+        await downloads.stopAll()
+    }
+
     @MainActor
     func testWindowModelShowsAPendingActionUntilItIsDone() async throws {
         let data = Data((0..<3_000_000).map { UInt8($0 % 251) })

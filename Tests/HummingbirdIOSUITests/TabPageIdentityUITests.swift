@@ -28,7 +28,8 @@ final class TabPageIdentityUITests: XCTestCase {
     @MainActor
     private func openNewTab(named section: String, in app: XCUIApplication) {
         let menu = app.buttons["Open section in new tab"].firstMatch
-        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        // The first launch on a fresh simulator can take a while.
+        XCTAssertTrue(menu.waitForExistence(timeout: 90))
         menu.tap()
         let action = app.buttons[section].firstMatch
         XCTAssertTrue(action.waitForExistence(timeout: 5))

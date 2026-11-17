@@ -66,22 +66,15 @@ actor PluginMediaProxy {
                                            resources: playlists.resources,
                                            prefetchExecutorFactory: prefetchExecutorFactory,
                                            failure: failure)
-        order.append(id)
-        while order.count > 8, let expired = order.first {
-            order.removeFirst()
-            presentations[expired] = nil
-        }
+        retain(id)
         let playlistName = playlists.video == nil ? "audio.m3u8" : "master.m3u8"
         guard let url = URL(string: "\(base)/\(playlistName)") else {
             throw PluginError.execution("Could not construct the generated media URL")
         }
         if prefetch {
-            Task(priority: .utility) {
-                // Let AVPlayer establish its initial or resumed foreground
-                // working set before saturating the serial plugin executor.
-                try? await Task.sleep(for: .seconds(3))
-                await self.prefetch(id: id)
-            }
+            // Download-first: the whole presentation is fetched from the start.
+            // Foreground (player) requests still take the shared executor first.
+            Task(priority: .utility) { await self.prefetch(id: id) }
         }
         return url
     }
@@ -92,6 +85,7 @@ actor PluginMediaProxy {
     /// playlist/proxy layer instead.
     func register(videoManifest: String, videoRuntime: PluginRuntime, videoExecutor: Int,
                   audioManifest: String, audioRuntime: PluginRuntime, audioExecutor: Int,
+                  identity: String? = nil,
                   failure: @escaping @Sendable (PluginError) -> Void = { _ in }) async throws -> URL {
         let channel = try await serverChannel()
         guard let port = channel.localAddress?.port else {
@@ -100,21 +94,22 @@ actor PluginMediaProxy {
         let id = UUID().uuidString.lowercased()
         let base = "http://127.0.0.1:\(port)/\(id)"
         let playlists = try DashToHLS.convert(videoManifest + "\n" + audioManifest, baseURL: base)
+        // Generated manifests embed per-session URLs, so the stable identity
+        // (content and formats) keys the cache when the caller has one.
+        let cacheKey = "generated-dash-pair-v1:" + (identity ?? videoManifest + "\n" + audioManifest)
+        let cache = try await mediaCache.open(.init(key: cacheKey, allocationBytes: playlists.estimatedBytes, isExact: false))
         presentations[id] = Presentation(
             runtime: videoRuntime, executor: videoExecutor,
             audioRuntime: audioRuntime, audioExecutor: audioExecutor,
             master: playlists.master, video: playlists.video, audio: playlists.audio,
-            cache: nil, resources: playlists.resources,
+            cache: cache, resources: playlists.resources,
             prefetchExecutorFactory: nil, failure: failure
         )
-        order.append(id)
-        while order.count > 8, let expired = order.first {
-            order.removeFirst()
-            presentations[expired] = nil
-        }
+        retain(id)
         guard let url = URL(string: "\(base)/master.m3u8") else {
             throw PluginError.execution("Could not construct the generated media URL")
         }
+        Task(priority: .utility) { await self.prefetch(id: id) }
         return url
     }
 
@@ -135,7 +130,7 @@ actor PluginMediaProxy {
             prefetchRuntime = presentation.runtime
             prefetchExecutor = presentation.executor
         }
-        let sharesPlaybackExecutor = prefetchRuntime === presentation.runtime
+        let usesIsolatedRuntime = presentation.prefetchExecutorFactory != nil
         defer {
             if prefetchRuntime !== presentation.runtime {
                 Task { await prefetchRuntime.stop() }
@@ -143,7 +138,7 @@ actor PluginMediaProxy {
         }
         for resource in presentation.resources {
             guard presentations[id] != nil, !Task.isCancelled else { return }
-            while sharesPlaybackExecutor && (foregroundRequests > 0 || foregroundWasRecentlyActive) {
+            while !usesIsolatedRuntime && (foregroundRequests > 0 || foregroundWasRecentlyActive) {
                 await Task.yield()
                 try? await Task.sleep(for: .milliseconds(10))
             }
@@ -157,10 +152,11 @@ actor PluginMediaProxy {
                 )
                 let data: Data
                 do {
-                    data = try await prefetchRuntime.callHandleBytes(
-                        prefetchExecutor, "executeRequest",
-                        [resource.upstream, [String: String]()]
-                    )
+                    let (runtime, executor) = usesIsolatedRuntime
+                        ? (prefetchRuntime, prefetchExecutor)
+                        : Self.executor(for: resource.upstream, in: presentation)
+                    data = try await fetchSegment(presentation: id, runtime: runtime, executor: executor,
+                                                  upstream: resource.upstream, maximumAttempts: nil)
                     OSSignposter.mediaProxy.endInterval("UMPPrefetch", prefetchSignpost, "bytes=\(data.count)")
                 } catch {
                     OSSignposter.mediaProxy.endInterval("UMPPrefetch", prefetchSignpost, "failed")
@@ -181,6 +177,56 @@ actor PluginMediaProxy {
                 return
             }
         }
+    }
+
+    /// Fetches one generated segment through the plugin's executor. Failures
+    /// other than the plugin asking to be reloaded are retried with backoff:
+    /// without a limit for the background download, a few times for a request
+    /// the player is waiting on.
+    private func fetchSegment(presentation id: String, runtime: PluginRuntime, executor: Int,
+                              upstream: String, maximumAttempts: Int?) async throws -> Data {
+        let policy = DownloadRetryPolicy()
+        var attempt = 0
+        while true {
+            do {
+                return try await runtime.callHandleBytes(executor, "executeRequest", [upstream, [String: String]()])
+            } catch let error as PluginError {
+                if case .reloadRequired = error { throw error }
+                attempt += 1
+                guard presentations[id] != nil, maximumAttempts.map({ attempt < $0 }) ?? true else { throw error }
+                let delay = policy.delay(afterAttempt: attempt)
+                Logger.mediaProxy.notice("segment_retry attempt=\(attempt) delay=\(delay) message=\(error.localizedDescription)")
+                try await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    /// The executor that owns a generated resource: paired presentations keep
+    /// separate video and audio executors.
+    private static func executor(for upstream: String, in presentation: Presentation) -> (PluginRuntime, Int) {
+        let isAudio = URL(string: upstream)?.pathComponents.dropFirst().first == "audio"
+        if isAudio, let runtime = presentation.audioRuntime, let executor = presentation.audioExecutor {
+            return (runtime, executor)
+        }
+        return (presentation.runtime, presentation.executor)
+    }
+
+    /// Presentations live until their player releases them.
+    private func retain(_ id: String) {
+        order.append(id)
+        // A safety net for presentations whose player never released them.
+        while order.count > 64, let expired = order.first {
+            order.removeFirst()
+            presentations[expired] = nil
+        }
+    }
+
+    /// Stops serving and prefetching the presentation at `url`. Cached
+    /// segments stay.
+    func release(_ url: URL) {
+        guard let id = url.pathComponents.dropFirst().first else { return }
+        presentations[id] = nil
+        order.removeAll { $0 == id }
     }
 
     private func serverChannel() async throws -> Channel {
@@ -252,18 +298,14 @@ actor PluginMediaProxy {
                 }
                 foregroundRequests += 1
                 defer { foregroundRequests -= 1 }
-                let usesAudioExecutor = parts[1] == "audio"
-                let requestRuntime = usesAudioExecutor ? presentation.audioRuntime ?? presentation.runtime : presentation.runtime
-                let requestExecutor = usesAudioExecutor ? presentation.audioExecutor ?? presentation.executor : presentation.executor
+                let (requestRuntime, requestExecutor) = Self.executor(for: upstream, in: presentation)
                 let segment = OSSignposter.mediaProxy.beginInterval(
                     "UMPSegment", id: OSSignposter.mediaProxy.makeSignpostID(), "track=\(parts[1], privacy: .public)"
                 )
                 let data: Data
                 do {
-                    data = try await requestRuntime.callHandleBytes(
-                        requestExecutor, "executeRequest",
-                        [upstream, [String: String]()]
-                    )
+                    data = try await fetchSegment(presentation: parts[0], runtime: requestRuntime,
+                                                  executor: requestExecutor, upstream: upstream, maximumAttempts: 6)
                     OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "bytes=\(data.count)")
                 } catch {
                     OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "failed")

@@ -55,15 +55,48 @@ enum PlaybackSelector {
         return out
     }
 
-    /// Picks the default: live stream first; otherwise adaptive HLS when allowed; otherwise the tallest file at or under `maxHeight`.
+    /// Picks the default: live stream first; otherwise adaptive HLS when allowed; otherwise the best file at or
+    /// under `maxHeight`: the tallest, then the highest video bitrate (frame rate and codec efficiency show up
+    /// there), then the best audio. Only when every file is taller than `maxHeight` does the smallest one win.
     static func best(_ options: [PlaybackOption], maxHeight: Int, preferAdaptive: Bool) -> PlaybackOption? {
         if let live = options.first(where: { $0.kind == .live }) { return live }
         if preferAdaptive, let hls = options.first(where: { $0.kind == .hls }) { return hls }
         let files = options.filter { $0.kind == .progressive || $0.kind == .generated }
         let capped = files.filter { $0.height <= maxHeight || $0.height == 0 }
-        if let pick = capped.max(by: { $0.height < $1.height }) { return pick }
-        if let pick = files.min(by: { $0.height < $1.height }) { return pick }
+        if let pick = capped.max(by: isLowerQuality) { return pick }
+        if let smallest = files.map(\.height).min(),
+           let pick = files.filter({ $0.height == smallest }).max(by: isLowerQuality) { return pick }
         return options.first(where: { $0.kind == .hls })
+    }
+
+    /// Orders file options by height, then video bitrate, then audio bitrate.
+    /// Among equals the earlier option wins (generated sources are listed first).
+    static func isLowerQuality(_ a: PlaybackOption, _ b: PlaybackOption) -> Bool {
+        if a.height != b.height { return a.height < b.height }
+        if a.video.bitrate != b.video.bitrate { return a.video.bitrate < b.video.bitrate }
+        return (a.audio?.bitrate ?? 0) < (b.audio?.bitrate ?? 0)
+    }
+
+    /// A compact, privacy-safe list of what a plugin offered, for the log:
+    /// `type:container:codec:height:bitrate` per source.
+    static func inventory(_ sources: [MediaSource]) -> String {
+        sources.map { source in
+            let codec = source.codec.split(separator: ".").first.map(String.init) ?? ""
+            return "\(source.pluginType):\(source.container):\(codec):\(source.height):\(source.bitrate)"
+        }.joined(separator: ",")
+    }
+
+    /// Whether `candidate`, from a fresh `getContentDetails`, is the same file
+    /// format as `selected` (whose upstream URL expired). The plugin's format
+    /// ID decides when both have one.
+    static func isSameFileSource(_ candidate: MediaSource, as selected: MediaSource) -> Bool {
+        guard candidate.pluginType == selected.pluginType, candidate.language == selected.language else { return false }
+        if let id = selected.formatID, let other = candidate.formatID { return id == other }
+        return candidate.name == selected.name
+            && candidate.container == selected.container
+            && candidate.codec == selected.codec
+            && candidate.height == selected.height
+            && candidate.bitrate == selected.bitrate
     }
 
     private static func isPlayableVideo(_ s: MediaSource) -> Bool {

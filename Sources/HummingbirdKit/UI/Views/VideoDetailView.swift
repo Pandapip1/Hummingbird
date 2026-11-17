@@ -260,6 +260,16 @@ struct PlayerSection: View {
                     }
                 }
                 .padding()
+            } else if let message = model.bufferingMessage {
+                // The download retries on its own; nothing to do but wait.
+                VStack(spacing: 10) {
+                    ProgressView().tint(.white)
+                    Text(message)
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+                }
+                .padding()
             }
             if let err = model.errorMessage {
                 Text(err).font(.footnote).multilineTextAlignment(.center).foregroundStyle(.white).padding()

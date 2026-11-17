@@ -507,6 +507,7 @@ private struct AppSettingsForm: View {
     @AppStorage private var preferAdaptive: Bool
     @AppStorage private var subtitlesDefault: Bool
     @AppStorage private var fetchLimit: Int
+    @AppStorage private var mediaCacheLimitGigabytes: Int
     @Environment(\.openRoute) private var openRoute
     private let stores: AppDataStores
     let browserToolbar: BrowserToolbarContext?
@@ -521,6 +522,9 @@ private struct AppSettingsForm: View {
             wrappedValue: false, PlaybackPreferenceKey.showSubtitlesByDefault, store: defaults
         )
         _fetchLimit = AppStorage(wrappedValue: 0, PlaybackPreferenceKey.subscriptionFetchLimit, store: defaults)
+        _mediaCacheLimitGigabytes = AppStorage(
+            wrappedValue: MediaCache.defaultLimitGigabytes, PlaybackPreferenceKey.mediaCacheLimitGigabytes, store: defaults
+        )
     }
 
     var body: some View {
@@ -543,6 +547,15 @@ private struct AppSettingsForm: View {
                 }
                 Toggle("Prefer adaptive streaming (HLS)", isOn: $preferAdaptive)
                 Toggle("Show subtitles by default", isOn: $subtitlesDefault)
+            }
+            Section(footer: Text("Videos download completely as soon as they play and stay on this device until the cache is full; then the videos watched longest ago are removed.")) {
+                Picker("Video cache", selection: $mediaCacheLimitGigabytes) {
+                    ForEach([2, 5, 10, 20, 50, 100], id: \.self) { Text("\($0) GB").tag($0) }
+                }
+                .onChange(of: mediaCacheLimitGigabytes) { _, gigabytes in
+                    let cache = stores.mediaCache
+                    Task { await cache.setLimit(MediaCache.bytes(gigabytes: gigabytes)) }
+                }
             }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
                 RemoteFriendlyBoundedSelection(

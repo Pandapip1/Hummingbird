@@ -42,6 +42,8 @@ enum PlaybackPreferenceKey {
     static let subscriptionFetchLimit = "subscriptionFetchLimit"
     static let subtitleColor = "subtitleColor"
     static let subtitleSize = "subtitleSize"
+    /// Gigabytes the media cache may hold before it removes least recently used videos.
+    static let mediaCacheLimitGigabytes = "mediaCacheLimitGigabytes"
 }
 
 @MainActor
@@ -96,11 +98,36 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var playbackRequested = false
     @ObservationIgnored private let preferences: PreferencesDomain
     @ObservationIgnored private let mediaProxy: PluginMediaProxy
+    @ObservationIgnored private let mediaCache: MediaCache
+    @ObservationIgnored private let mediaServer: LocalMediaServer
+    /// The download of the current on-demand video into the media cache.
+    @ObservationIgnored private var vodSession: VODSession?
+    @ObservationIgnored private var pipelineTask: Task<Void, Never>?
+    /// The generated-media presentation the proxy serves for the current video.
+    @ObservationIgnored private var generatedPresentation: URL?
+    /// What the player was last given, to reload it from local data after a player failure.
+    @ObservationIgnored private var currentPlayback: LocalPlayback?
+    @ObservationIgnored private var localRecoveryAttempts = 0
+    @ObservationIgnored private var startup: PlaybackStartupTrace?
+
+    /// Per-track, per-stage progress of the current video's media pipeline
+    /// (download today; transcoding later). The seek bar's buffered ranges
+    /// come from here.
+    private(set) var pipeline: MediaPipelineSnapshot = .empty
+
+    /// Shown over the video while playback waits for bytes that the network
+    /// has not delivered yet. Downloads retry on their own.
+    var bufferingMessage: String? {
+        guard pipeline.waitingForNetwork, pipeline.playableAhead(of: playbackTime) < 3 else { return nil }
+        return "Waiting for the network. The download resumes on its own."
+    }
 
     init(stores: AppDataStores, backend: MediaBackend? = nil) {
         self.backend = backend
         preferences = stores.preferences
         mediaProxy = stores.mediaProxy
+        mediaCache = stores.mediaCache
+        mediaServer = stores.mediaServer
         let defaults = stores.defaults
         subtitleColorChoice = SubtitleColorChoice(
             rawValue: defaults.string(forKey: PlaybackPreferenceKey.subtitleColor) ?? "white"
@@ -143,7 +170,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         backend = engine
         engine.onTick = { [weak self] seconds in self?.tick(seconds) }
         engine.onEnded = { [weak self] in self?.finished() }
-        engine.onFailure = { [weak self] message in self?.errorMessage = message }
+        engine.onFailure = { [weak self] message in self?.playerFailed(message) }
+        startup = PlaybackStartupTrace()
         let preferredLanguage = Locale.current.language.languageCode?.identifier
         let splitAudioSources = PlaybackSelector.audioChoices(details.audioSources)
         selectedAudioSource = PlaybackSelector.bestAudio(details.audioSources, language: preferredLanguage)
@@ -151,9 +179,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             .map { "\($0.key):\($0.value.count)" }
             .sorted()
             .joined(separator: ",")
-        Logger.player.info("source_inventory types=\(sourceTypes, privacy: .public)")
+        Logger.player.info("source_inventory types=\(sourceTypes, privacy: .public) video=\(PlaybackSelector.inventory(details.videoSources), privacy: .public) audio=\(PlaybackSelector.inventory(details.audioSources), privacy: .public)")
         options = PlaybackSelector.options(for: details, preferredLanguage: preferredLanguage)
-            .filter { _ in true }
         guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
             Logger.player.error("no_playable_source options=\(self.options.count)")
             errorMessage = options.isEmpty
@@ -345,36 +372,38 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let generation = playGeneration
         isPreparing = true
         defer { isPreparing = false }
+        // The previous media keeps playing until the new media is loaded.
+        let previousSession = vodSession
+        let previousPresentation = generatedPresentation
+        var newSession: VODSession?
+        var newPresentation: URL?
         do {
             let videoHost = URL(string: option.video.url)?.host ?? "generated"
             let audioHost = option.audio.flatMap { URL(string: $0.url)?.host } ?? "none"
-            Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) videoHost=\(videoHost, privacy: .public) audioHost=\(audioHost, privacy: .public)")
-            let video: ResolvedMedia
-            let audio: ResolvedMedia?
-            if option.kind == .generated,
-               let audioSource = option.audio,
-               audioSource.pluginType == "DashManifestRawAudioSource" {
-                video = try await resolveGeneratedPair(
-                    video: option.video, audio: audioSource, generation: generation
-                )
-                audio = nil
-            } else {
-                video = try await resolve(
-                    option.video,
-                    generation: generation,
-                    reloadOnBlockedBootstrap: reloadOnBlockedBootstrap
-                )
-                if let audioSource = option.audio {
-                    audio = try await resolve(
-                        audioSource,
-                        generation: generation,
-                        reloadOnBlockedBootstrap: reloadOnBlockedBootstrap
-                    )
+            Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) height=\(option.video.height) videoBitrate=\(option.video.bitrate) audioBitrate=\(option.audio?.bitrate ?? 0) videoHost=\(videoHost, privacy: .public) audioHost=\(audioHost, privacy: .public)")
+            startup?.mark(.selected)
+            let playback: LocalPlayback
+            switch option.kind {
+            case .live:
+                playback = .live(try await resolveUpstream(option.video))
+            case .hls:
+                playback = .uncachedAdaptiveHLS(try await resolveUpstream(option.video))
+            case .generated:
+                let url: URL
+                if let audioSource = option.audio, audioSource.pluginType == "DashManifestRawAudioSource" {
+                    url = try await resolveGeneratedPair(video: option.video, audio: audioSource, generation: generation)
                 } else {
-                    audio = nil
+                    url = try await resolveGenerated(option.video, generation: generation)
                 }
+                newPresentation = url
+                playback = try LocalPlayback(video: url, servedBy: .generatedMedia)
+            case .progressive:
+                let (session, local) = try await startDownload(option)
+                newSession = session
+                playback = local
             }
-            let request = PlayRequest(video: video, audio: audio, isLive: option.kind == .live)
+            startup?.mark(.resolved)
+            let newPipelineTask = newSession.map(observePipeline)
             var start = resumeAt
             if let r = resumeAt {
                 // Restart from the beginning if the viewer was already near the end, or has barely started.
@@ -382,7 +411,16 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 else if normalizeSavedPosition, r <= 5 { start = nil }
                 else if normalizeSavedPosition, let duration, Double(duration) - r < 15 { start = nil }
             }
-            try await backend.load(request, resumeAt: start, autoplay: autoplay)
+            try await backend.load(playback.request, resumeAt: start, autoplay: autoplay)
+            startup?.mark(.playerLoaded)
+            currentPlayback = playback
+            localRecoveryAttempts = 0
+            vodSession = newSession
+            generatedPresentation = newPresentation
+            pipelineTask?.cancel()
+            pipelineTask = newPipelineTask
+            if newSession == nil { pipeline = .empty }
+            await stopMedia(session: previousSession, presentation: previousPresentation)
             backend.setPlaybackRate(playbackRate)
             didFinishCurrentItem = false
             // Media selections belong to the replaced AVPlayerItem. Do not show
@@ -396,17 +434,147 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             playbackRequested = autoplay
             Logger.player.info("load_completed playing=\(self.isPlaying)")
             return true
-        } catch let PluginError.reloadRequired(message, reloadData) {
-            requestedPluginReload = (message, reloadData)
-            return false
-        } catch MediaBackendLoadError.superseded {
-            return false
-        } catch is CancellationError {
-            return false
         } catch {
-            Logger.player.error("load_failed error=\(String(reflecting: type(of: error)), privacy: .public) message=\(error.localizedDescription)")
-            errorMessage = (error as? PluginError)?.localizedDescription ?? error.localizedDescription
+            if newSession != nil || newPresentation != nil {
+                await stopMedia(session: newSession, presentation: newPresentation)
+            }
+            if let pluginError = error as? PluginError, case .reloadRequired(let message, let reloadData) = pluginError {
+                requestedPluginReload = (message, reloadData)
+            } else if error is CancellationError || (error as? MediaBackendLoadError) == .superseded {
+                // A newer load replaced this one.
+            } else {
+                Logger.player.error("load_failed error=\(String(reflecting: type(of: error)), privacy: .public) message=\(error.localizedDescription)")
+                errorMessage = (error as? PluginError)?.localizedDescription ?? error.localizedDescription
+            }
             return false
+        }
+    }
+
+    // MARK: media pipeline
+
+    /// Starts downloading a file-based option into the media cache and
+    /// returns the local playback for it.
+    private func startDownload(_ option: PlaybackOption) async throws -> (VODSession, LocalPlayback) {
+        guard let runtime, let sourceURL = loadedURL else {
+            throw PluginError.execution("The video's plugin is no longer available")
+        }
+        let declared = declaredDuration > 0 ? declaredDuration : nil
+        let muxed = option.audio == nil
+        let video = try trackSpec(option.video, role: muxed ? .muxed : .video, runtime: runtime,
+                                  sourceURL: sourceURL, declaredDuration: declared)
+        let audio = try option.audio.map {
+            try trackSpec($0, role: .audio, runtime: runtime, sourceURL: sourceURL, declaredDuration: declared)
+        }
+        return try await VODSession.start(video: video, audio: audio, cache: mediaCache, server: mediaServer)
+    }
+
+    private func trackSpec(_ source: MediaSource, role: MediaTrackRole, runtime: PluginRuntime,
+                           sourceURL: String, declaredDuration: Double?) throws -> VODTrackSpec {
+        guard let signer = Self.signer(for: source, runtime: runtime) else {
+            throw PluginError.execution("Invalid media URL")
+        }
+        let identity = [
+            "vod-v1", runtime.id, sourceURL, role.rawValue, source.pluginType, source.formatID ?? "",
+            source.name, source.container, source.codec, String(source.bitrate),
+            "\(source.width)x\(source.height)", source.language,
+        ].joined(separator: "|")
+        return VODTrackSpec(
+            role: role, identity: identity, signer: signer,
+            refresh: { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.refreshedSigner(for: source)
+            },
+            indexHint: source.indexRange, container: source.container, codec: source.codec,
+            bandwidth: source.bitrate, width: source.width, height: source.height,
+            declaredDuration: source.duration > 0 ? Double(source.duration) : declaredDuration
+        )
+    }
+
+    /// Builds each upstream request through the plugin's request modifier,
+    /// once per request as Grayjay does (YouTube's modifier carries the range
+    /// in the URL and numbers the requests).
+    nonisolated private static func signer(for source: MediaSource, runtime: PluginRuntime) -> UpstreamRequestSigner? {
+        guard let url = URL(string: source.url), url.scheme == "https" || url.scheme == "http" else { return nil }
+        guard let modifier = source.requestModifier else { return .plain(url) }
+        let original = source.url
+        let handle = modifier.handle
+        return UpstreamRequestSigner { range in
+            let rangeValue = "\(range.lowerBound)-\(range.upperBound - 1)"
+            let data = try await runtime.callHandle(handle, "modifyRequest", [original, ["Range": "bytes=" + rangeValue]])
+            let modified = try await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data)
+            let target = modified.url.flatMap(URL.init(string:)) ?? url
+            var request = URLRequest(url: target)
+            let headers = modified.headers ?? [:]
+            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+            let rangeInHeaders = headers.keys.contains { $0.caseInsensitiveCompare("Range") == .orderedSame }
+            let rangeInURL = URLComponents(url: target, resolvingAgainstBaseURL: false)?
+                .queryItems?.contains { $0.name == "range" && $0.value == rangeValue } ?? false
+            if !rangeInHeaders, !rangeInURL {
+                request.setValue("bytes=" + rangeValue, forHTTPHeaderField: "Range")
+            }
+            return request
+        }
+    }
+
+    /// Fresh request signing for `source` after its upstream URL expired:
+    /// asks the plugin for the video's details again and finds the same format.
+    private func refreshedSigner(for source: MediaSource) async throws -> UpstreamRequestSigner {
+        guard let runtime, let sourceURL = loadedURL else { throw CancellationError() }
+        let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
+        guard case .video(let refreshed) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
+            throw PluginError.execution("The plugin stopped returning video details")
+        }
+        guard let match = (refreshed.videoSources + refreshed.audioSources)
+            .first(where: { PlaybackSelector.isSameFileSource($0, as: source) }),
+              let signer = Self.signer(for: match, runtime: runtime) else {
+            throw PluginError.execution("The plugin no longer offers the selected format")
+        }
+        return signer
+    }
+
+    /// Follows a session's pipeline state. A session being prepared (e.g. a
+    /// quality switch) feeds the startup trace; only the current session
+    /// drives `pipeline`.
+    private func observePipeline(of session: VODSession) -> Task<Void, Never> {
+        Task { [weak self] in
+            for await snapshot in session.states {
+                guard !Task.isCancelled, let self else { return }
+                self.startup?.observe(snapshot)
+                if self.vodSession === session { self.pipeline = snapshot }
+            }
+        }
+    }
+
+    private func stopMedia(session: VODSession?, presentation: URL?) async {
+        if let session { await session.stop() }
+        if let presentation { await mediaProxy.release(presentation) }
+    }
+
+    /// The player failed while playing local data (the loopback server only
+    /// ever waits for bytes, so this is the player giving up, e.g. on a
+    /// timeout during a long outage). Reload the same local media at the
+    /// same position instead of showing an error; the download carries on.
+    private func playerFailed(_ message: String) {
+        guard let playback = currentPlayback, playback.origin == .mediaCache || playback.origin == .generatedMedia,
+              localRecoveryAttempts < 8 else {
+            errorMessage = message
+            return
+        }
+        localRecoveryAttempts += 1
+        let attempt = localRecoveryAttempts
+        let position = backend?.currentTime ?? playbackTime
+        let autoplay = playbackRequested
+        let generation = playGeneration
+        Logger.player.notice("local_playback_recover attempt=\(attempt) position=\(position)")
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(min(30, Double(attempt * attempt))))
+            guard let self, generation == self.playGeneration, let backend = self.backend else { return }
+            do {
+                try await backend.load(playback.request, resumeAt: position > 0 ? position : nil, autoplay: autoplay)
+                backend.setPlaybackRate(self.playbackRate)
+            } catch {
+                Logger.player.error("local_playback_recover_failed attempt=\(attempt) message=\(error.localizedDescription)")
+            }
         }
     }
 
@@ -418,7 +586,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
 
     private func resolveGeneratedPair(video: MediaSource, audio: MediaSource,
-                                      generation: Int) async throws -> ResolvedMedia {
+                                      generation: Int) async throws -> URL {
         guard let runtime, let videoHandle = video.handle, let audioHandle = audio.handle else {
             throw PluginError.execution("Generated video or audio source is unavailable")
         }
@@ -441,63 +609,73 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 Task { @MainActor in await self?.handlePluginMediaFailure(error, generation: generation) }
             }
         )
-        return ResolvedMedia(url: url, headers: [:])
+        return url
     }
 
-    private func resolve(_ source: MediaSource, generation: Int,
-                         reloadOnBlockedBootstrap: Bool = false) async throws -> ResolvedMedia {
-        let host = URL(string: source.url)?.host ?? "generated"
+    /// Registers a plugin-generated (DASH manifest + request executor) source with the media proxy.
+    private func resolveGenerated(_ source: MediaSource, generation: Int) async throws -> URL {
+        Logger.player.info("resolve_source type=\(source.pluginType, privacy: .public) generated=true")
+        let signpost = OSSignposter.player.beginInterval("ResolveSource", id: OSSignposter.player.makeSignpostID(), "type=\(source.pluginType, privacy: .public)")
+        defer { OSSignposter.player.endInterval("ResolveSource", signpost) }
+        guard let handle = source.handle, let runtime else {
+            throw PluginError.execution("Generated video source is unavailable")
+        }
+        let manifestData = try await runtime.callHandle(handle, "generate")
+        let manifest = try await PluginRuntime.decodeOffMain(String.self, from: manifestData)
+        guard let executor = try await runtime.handleFromCall(handle, "getRequestExecutor") else {
+            throw PluginError.execution("The generated media source did not provide a request executor")
+        }
+        let url = try await mediaProxy.register(
+            manifest: manifest, runtime: runtime, executor: executor.handle,
+            prefetchExecutorFactory: { [source, sourceURL = loadedURL] in
+                guard let sourceURL else {
+                    throw PluginError.execution("The generated prefetch source URL is unavailable")
+                }
+                let clone = runtime.isolatedClone()
+                do {
+                    let data = try await clone.callRaw("getContentDetails", [sourceURL], kind: "details")
+                    guard case .video(let details) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
+                        throw PluginError.execution("The isolated prefetch runtime did not return video details")
+                    }
+                    let candidates = source.pluginType == "DashManifestRawAudioSource"
+                        ? details.audioSources : details.videoSources
+                    guard let cloneSource = candidates.first(where: {
+                              PlaybackSelector.isSameGeneratedSource($0, as: source) && $0.handle != nil
+                          }), let handle = cloneSource.handle else {
+                        throw PluginError.execution("The isolated prefetch runtime did not return the selected source")
+                    }
+                    _ = try await clone.callHandle(handle, "generate")
+                    guard let executor = try await clone.handleFromCall(handle, "getRequestExecutor") else {
+                        throw PluginError.execution("The isolated prefetch source did not provide an executor")
+                    }
+                    return (clone, executor.handle)
+                } catch {
+                    await clone.stop()
+                    throw error
+                }
+            },
+            failure: { [weak self] error in
+                Task { @MainActor in
+                    await self?.handlePluginMediaFailure(error, generation: generation)
+                }
+            }
+        )
+        return url
+    }
+
+    /// An upstream URL for media the player streams directly: live streams,
+    /// and (as named debt, see `LocalPlayback.uncachedAdaptiveHLS`) upstream
+    /// adaptive HLS. On-demand files never come through here; they are
+    /// downloaded into the media cache (`startDownload`).
+    private func resolveUpstream(_ source: MediaSource) async throws -> ResolvedMedia {
+        let host = URL(string: source.url)?.host ?? "unknown"
         Logger.player.info("resolve_source type=\(source.pluginType, privacy: .public) host=\(host, privacy: .public) hasModifier=\(source.requestModifier != nil)")
         let signpost = OSSignposter.player.beginInterval("ResolveSource", id: OSSignposter.player.makeSignpostID(), "type=\(source.pluginType, privacy: .public)")
         defer { OSSignposter.player.endInterval("ResolveSource", signpost) }
-        if ["DashManifestRawSource", "DashManifestRawAudioSource"].contains(source.pluginType),
-           let handle = source.handle, let runtime {
-            let manifestData = try await runtime.callHandle(handle, "generate")
-            let manifest = try await PluginRuntime.decodeOffMain(String.self, from: manifestData)
-            guard let executor = try await runtime.handleFromCall(handle, "getRequestExecutor") else {
-                throw PluginError.execution("The generated media source did not provide a request executor")
-            }
-            let url = try await mediaProxy.register(
-                manifest: manifest, runtime: runtime, executor: executor.handle,
-                prefetchExecutorFactory: { [source, sourceURL = loadedURL] in
-                    guard let sourceURL else {
-                        throw PluginError.execution("The generated prefetch source URL is unavailable")
-                    }
-                    let clone = runtime.isolatedClone()
-                    do {
-                        let data = try await clone.callRaw("getContentDetails", [sourceURL], kind: "details")
-                        guard case .video(let details) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
-                            throw PluginError.execution("The isolated prefetch runtime did not return video details")
-                        }
-                        let candidates = source.pluginType == "DashManifestRawAudioSource"
-                            ? details.audioSources : details.videoSources
-                        guard let cloneSource = candidates.first(where: {
-                                  PlaybackSelector.isSameGeneratedSource($0, as: source) && $0.handle != nil
-                              }), let handle = cloneSource.handle else {
-                            throw PluginError.execution("The isolated prefetch runtime did not return the selected source")
-                        }
-                        _ = try await clone.callHandle(handle, "generate")
-                        guard let executor = try await clone.handleFromCall(handle, "getRequestExecutor") else {
-                            throw PluginError.execution("The isolated prefetch source did not provide an executor")
-                        }
-                        return (clone, executor.handle)
-                    } catch {
-                        await clone.stop()
-                        throw error
-                    }
-                },
-                failure: { [weak self] error in
-                    Task { @MainActor in
-                        await self?.handlePluginMediaFailure(error, generation: generation)
-                    }
-                }
-            )
-            return ResolvedMedia(url: url, headers: [:])
-        }
         guard var url = URL(string: source.url) else { throw PluginError.execution("Invalid media URL") }
         var headers: [String: String] = [:]
         if let ref = source.requestModifier, let runtime {
-            // The modifier runs once, for the initial request. The player then reuses its headers for later range requests.
+            // The modifier runs once, for the initial request. The player then reuses its headers for later requests.
             let data = try await runtime.callHandle(ref.handle, "modifyRequest", [source.url, [String: String]()])
             if let mod = try? await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data) {
                 if let u = mod.url, let nu = URL(string: u) { url = nu }
@@ -564,6 +742,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let backendDuration = backend?.duration ?? 0
         duration = backendDuration > 0 ? backendDuration : declaredDuration
         isPlaying = backend?.isPlaying ?? false
+        if isPlaying, seconds > playbackTime {
+            startup?.firstFrame(at: seconds)
+            if seconds - playbackTime < 2 { localRecoveryAttempts = 0 }
+        }
         playbackTime = seconds
         subtitleText = cues.first(where: { seconds >= $0.start && seconds <= $0.end })?.text
         if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, seconds > 1 {
@@ -666,6 +848,19 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         dismissFullscreen()
         backend?.stop()
         backend = nil
+        // Downloads stop with the player; what was downloaded stays cached and
+        // resumes the next time this video plays.
+        let session = vodSession, presentation = generatedPresentation
+        vodSession = nil
+        generatedPresentation = nil
+        currentPlayback = nil
+        pipelineTask?.cancel()
+        pipelineTask = nil
+        pipeline = .empty
+        startup = nil
+        if session != nil || presentation != nil {
+            Task { await self.stopMedia(session: session, presentation: presentation) }
+        }
         loadedURL = nil
         selected = nil
         audioSources = []

@@ -479,6 +479,7 @@ private struct SubtitleMenu: View {
             external: external,
             selectedEmbeddedID: model.embeddedSubtitleChoice?.id,
             selectedExternalID: model.subtitleChoice?.id,
+            pendingExternalID: model.pendingSubtitle?.id,
             onSelectEmbedded: { track in Task { await model.chooseEmbeddedSubtitle(track) } },
             onSelectExternal: { option in
                 let source = option.flatMap { selected in model.subtitleSources.first { $0.id == selected.id } }
@@ -489,13 +490,13 @@ private struct SubtitleMenu: View {
             if model.embeddedSubtitleChoice == nil && !model.subtitleSources.isEmpty {
                 Divider()
                 ForEach(SubtitleColorChoice.allCases, id: \.rawValue) { choice in
-                    PlayerMenuItem("Caption Color: \(choice.label)", state: model.subtitleColorChoice == choice ? .selected : .unselected) {
+                    CheckableMenuItem("Caption Color: \(choice.label)", state: model.subtitleColorChoice == choice ? .checked : .unchecked) {
                         interacted(); model.setSubtitleColor(choice)
                     }
                 }
                 Divider()
                 ForEach(SubtitleSizeChoice.allCases, id: \.rawValue) { choice in
-                    PlayerMenuItem("Caption Size: \(choice.label)", state: model.subtitleSizeChoice == choice ? .selected : .unselected) {
+                    CheckableMenuItem("Caption Size: \(choice.label)", state: model.subtitleSizeChoice == choice ? .checked : .unchecked) {
                         interacted(); model.setSubtitleSize(choice)
                     }
                 }

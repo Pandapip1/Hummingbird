@@ -269,7 +269,7 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         // throttled media fetched through a plugin) show up here by host.
         let signposter = OSSignposter.plugin
         let signpost = signposter.beginInterval("PluginHTTP", id: signposter.makeSignpostID(),
-                                                "host=\(request.url?.host ?? "", privacy: .public) method=\(request.httpMethod ?? "", privacy: .public)")
+                                                "host=\(request.url?.host ?? "", privacy: .private) method=\(request.httpMethod ?? "", privacy: .public)")
         task.resume()
         semaphore.wait()
         let status = (taskResult.response as? HTTPURLResponse)?.statusCode ?? -1

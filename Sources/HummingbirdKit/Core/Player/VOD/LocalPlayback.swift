@@ -1,14 +1,14 @@
 import Foundation
 import AdvancedVideoPlayerKit
 
-/// The only way Hummingbird builds a `PlayRequest`.
+/// What Hummingbird hands the platform player, and where it comes from.
 ///
-/// VOD is never streamed from upstream: the player reads every on-demand
-/// video from this device (the loopback media server, which serves the media
-/// cache). A `LocalPlayback` for VOD can only be made from loopback URLs, so
-/// handing the player an upstream URL needs one of the explicitly named
-/// exceptions below, which review can find. `PlaybackSourcesAreLocalTests`
-/// fails the build's tests if any other file constructs a `PlayRequest`.
+/// On-demand video is never streamed from upstream: the player reads it from
+/// this device (the loopback media server, which serves the media cache, or
+/// the generated-media proxy). `PlayRequest` can only be built through
+/// AdvancedVideoPlayerKit's factories, whose on-demand form accepts only local
+/// URLs, so bypassing the cache does not compile. The one exception is a live
+/// stream, and it can only be made from a live playback option.
 struct LocalPlayback: Sendable {
     enum Origin: Sendable, Equatable {
         /// Served from the media cache (`MediaCache` via `LocalMediaServer`).
@@ -17,56 +17,34 @@ struct LocalPlayback: Sendable {
         case generatedMedia
         /// A live stream, which cannot be downloaded ahead.
         case live
-        /// Upstream adaptive HLS for on-demand video. Not yet downloaded into
-        /// the cache: known debt against the download-first design.
-        case uncachedAdaptiveHLS
     }
 
-    enum Failure: Error, LocalizedError {
-        case notLocal(String)
-        var errorDescription: String? {
-            switch self {
-            case .notLocal(let host): "Refusing to play on-demand media from \(host) directly; it must come from the media cache."
-            }
-        }
+    enum LocalServer: Sendable { case mediaCache, generatedMedia }
+
+    struct NotLive: Error, LocalizedError {
+        var errorDescription: String? { "Only live streams play directly from their source." }
     }
 
     let request: PlayRequest
     let origin: Origin
 
-    enum LocalServer: Sendable { case mediaCache, generatedMedia }
-
-    /// Media read from this device. Throws unless every URL is a loopback URL.
+    /// Media read from this device. Throws unless every URL is local.
     init(video: URL, audio: URL? = nil, servedBy server: LocalServer) throws {
-        for url in [video, audio].compactMap({ $0 }) where !Self.isLoopback(url) {
-            throw Failure.notLocal(url.host ?? url.scheme ?? "an unknown origin")
-        }
-        request = PlayRequest(video: ResolvedMedia(url: video), audio: audio.map { ResolvedMedia(url: $0) }, isLive: false)
+        request = try PlayRequest.local(video: video, audio: audio)
         origin = switch server {
         case .mediaCache: .mediaCache
         case .generatedMedia: .generatedMedia
         }
     }
 
-    private init(request: PlayRequest, origin: Origin) {
-        self.request = request
-        self.origin = origin
+    private init(live media: ResolvedMedia) {
+        request = PlayRequest.live(media)
+        origin = .live
     }
 
-    /// A live stream, played from upstream.
-    static func live(_ media: ResolvedMedia) -> LocalPlayback {
-        LocalPlayback(request: PlayRequest(video: media, audio: nil, isLive: true), origin: .live)
-    }
-
-    /// Upstream adaptive HLS for on-demand video. Hummingbird does not yet
-    /// download HLS VOD into the cache; this exception names that debt.
-    static func uncachedAdaptiveHLS(_ media: ResolvedMedia) -> LocalPlayback {
-        LocalPlayback(request: PlayRequest(video: media, audio: nil, isLive: false), origin: .uncachedAdaptiveHLS)
-    }
-
-    static func isLoopback(_ url: URL) -> Bool {
-        guard url.scheme == "http" || url.scheme == "file" else { return false }
-        if url.isFileURL { return true }
-        return ["127.0.0.1", "::1", "[::1]", "localhost"].contains(url.host ?? "")
+    /// A live stream, played from upstream. Only a live option qualifies.
+    static func live(_ media: ResolvedMedia, for option: PlaybackOption) throws -> LocalPlayback {
+        guard option.kind == .live else { throw NotLive() }
+        return LocalPlayback(live: media)
     }
 }

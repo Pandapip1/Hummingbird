@@ -159,6 +159,9 @@ actor MediaCache {
 
     // MARK: eviction
 
+    /// Whether the cache holds more than its limit.
+    func isOverLimit() async -> Bool { await usage() > limitBytes }
+
     /// Bytes used by every cached track and every other registered store.
     func usage() async -> Int64 {
         var total = (try? candidates().reduce(Int64(0)) { $0 + $1.bytes }) ?? 0
@@ -170,6 +173,14 @@ actor MediaCache {
     /// Removes least recently used entries that are not in use until the
     /// cache fits its limit.
     func evictIfNeeded() async {
+        await evict(freeing: 0)
+    }
+
+    /// Removes least recently used entries not in use until the cache fits its
+    /// limit and, beyond that, until `freeing` more bytes are released (a
+    /// write that found the disk full).
+    @discardableResult
+    private func evict(freeing needed: Int64) async -> Int64 {
         struct Candidate { var bytes: Int64; var lastAccess: Date; var remove: () async -> Void }
         var all: [Candidate] = []
         let inUse = openTracks.values.reduce(Int64(0)) { $0 + $1.metadata.completed.byteCount }
@@ -189,11 +200,28 @@ actor MediaCache {
             }
         }
         var total = inUse + all.reduce(0) { $0 + $1.bytes }
-        guard total > limitBytes else { return }
-        for candidate in all.sorted(by: { $0.lastAccess < $1.lastAccess }) where total > limitBytes {
+        let target = min(limitBytes, total - needed)
+        var freed: Int64 = 0
+        for candidate in all.sorted(by: { $0.lastAccess < $1.lastAccess }) where total > target {
             await candidate.remove()
             total -= candidate.bytes
+            freed += candidate.bytes
             Logger.mediaCache.info("evicted bytes=\(candidate.bytes)")
+        }
+        return freed
+    }
+
+    /// `write`, but a failed write (typically a full disk) first frees space by
+    /// evicting other entries and tries again, so a download is never lost to
+    /// space that the cache itself holds.
+    @discardableResult
+    func writeMakingRoom(_ data: Data, at offset: Int64, to id: TrackID) async throws -> MediaRangeSet {
+        do {
+            return try write(data, at: offset, to: id)
+        } catch {
+            let freed = await evict(freeing: Int64(data.count) * 4)
+            Logger.mediaCache.notice("write_retry_after_eviction freed=\(freed)")
+            return try write(data, at: offset, to: id)
         }
     }
 

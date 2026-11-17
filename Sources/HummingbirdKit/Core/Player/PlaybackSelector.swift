@@ -55,12 +55,13 @@ enum PlaybackSelector {
         return out
     }
 
-    /// Picks the default: live stream first; otherwise adaptive HLS when allowed; otherwise the best file at or
+    /// Picks the default: live stream first; otherwise the best file at or
     /// under `maxHeight`: the tallest, then the highest video bitrate (frame rate and codec efficiency show up
     /// there), then the best audio. Only when every file is taller than `maxHeight` does the smallest one win.
-    static func best(_ options: [PlaybackOption], maxHeight: Int, preferAdaptive: Bool) -> PlaybackOption? {
+    /// Every on-demand choice is downloaded into the media cache; upstream HLS
+    /// (also cached) is used when the plugin offers no files.
+    static func best(_ options: [PlaybackOption], maxHeight: Int) -> PlaybackOption? {
         if let live = options.first(where: { $0.kind == .live }) { return live }
-        if preferAdaptive, let hls = options.first(where: { $0.kind == .hls }) { return hls }
         let files = options.filter { $0.kind == .progressive || $0.kind == .generated }
         let capped = files.filter { $0.height <= maxHeight || $0.height == 0 }
         if let pick = capped.max(by: isLowerQuality) { return pick }

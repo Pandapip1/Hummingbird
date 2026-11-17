@@ -4,20 +4,10 @@ private struct PlayerMenuPresentationChangedKey: EnvironmentKey {
     static let defaultValue: @MainActor @Sendable (Bool) -> Void = { _ in }
 }
 
-private struct PlayerMenuUsesSystemItemsKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
 extension EnvironmentValues {
     var playerMenuPresentationChanged: @MainActor @Sendable (Bool) -> Void {
         get { self[PlayerMenuPresentationChangedKey.self] }
         set { self[PlayerMenuPresentationChangedKey.self] = newValue }
-    }
-    /// True inside a system-drawn menu (SwiftUI `Menu` on macOS/tvOS), which
-    /// reserves its own checkmark column for toggles.
-    var playerMenuUsesSystemItems: Bool {
-        get { self[PlayerMenuUsesSystemItemsKey.self] }
-        set { self[PlayerMenuUsesSystemItemsKey.self] = newValue }
     }
 }
 
@@ -42,62 +32,9 @@ struct PlayerMenu<Label: View, Content: View>: View {
             }
             .onChange(of: isPresented) { _, presented in presentationChanged(presented) }
             .onDisappear { if isPresented { presentationChanged(false) } }
-        #elseif canImport(SwiftUI) && !BACKEND_GTK
-        Menu(content: { content().environment(\.playerMenuUsesSystemItems, true) }, label: label)
         #else
         Menu(content: content, label: label)
         #endif
-    }
-}
-
-/// What a choice in a player menu currently is.
-public enum PlayerMenuItemState: Sendable, Equatable {
-    case unselected
-    /// The choice in effect.
-    case selected
-    /// Chosen, but not in effect until the player confirms it (no optimistic
-    /// checkmark): the checkmark stays on the current choice meanwhile.
-    case pending
-}
-
-/// One choice in a player menu. Every player menu uses it, so labels line up
-/// in one column: a fixed leading column holds the checkmark (or the pending
-/// spinner) and never shifts the text. In system-drawn menus the item is a
-/// toggle, which the system gives its own reserved checkmark column; the
-/// pending spinner then appears on the menu's label instead.
-@MainActor
-public struct PlayerMenuItem: View {
-    @Environment(\.playerMenuUsesSystemItems) private var usesSystemItems
-    public let title: String
-    public let state: PlayerMenuItemState
-    private let action: () -> Void
-
-    public init(_ title: String, state: PlayerMenuItemState, action: @escaping () -> Void) {
-        self.title = title
-        self.state = state
-        self.action = action
-    }
-
-    public var body: some View {
-        if usesSystemItems {
-            Toggle(title, isOn: Binding(get: { state == .selected }, set: { _ in if state == .unselected { action() } }))
-        } else {
-            Button(action: action) {
-                HStack(spacing: 8) {
-                    ZStack {
-                        switch state {
-                        case .selected: Image(systemName: "checkmark")
-                        case .pending: ProgressView()
-                        case .unselected: Color.clear
-                        }
-                    }
-                    .frame(width: 18, height: 18)
-                    Text(title)
-                    Spacer(minLength: 0)
-                }
-            }
-            .disabled(state == .pending)
-        }
     }
 }
 
@@ -135,13 +72,10 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
     public var body: some View {
         if !options.isEmpty {
             PlayerMenu {
-                HStack(spacing: 6) {
-                    Text(title)
-                    if pendingID != nil { ProgressView() }
-                }
+                Text(title)
             } content: {
                 ForEach(options) { option in
-                    PlayerMenuItem(label(option), state: option.id == pendingID ? .pending : option.id == selectedID ? .selected : .unselected) {
+                    CheckableMenuItem(label(option), state: option.id == pendingID ? .pending : option.id == selectedID ? .checked : .unchecked) {
                         interacted(); select(option)
                     }
                 }
@@ -182,8 +116,8 @@ public struct MediaTrackControl: View {
                 Text(title)
             } content: {
                 ForEach(tracks, id: \.id) { track in
-                    PlayerMenuItem(track.label ?? track.language ?? fallbackLabel,
-                                   state: track.id == selectedID ? .selected : .unselected) {
+                    CheckableMenuItem(track.label ?? track.language ?? fallbackLabel,
+                                   state: track.id == selectedID ? .checked : .unchecked) {
                         interacted(); select(track)
                     }
                 }
@@ -211,6 +145,8 @@ public struct SubtitleControl<AppearanceControls: View>: View {
     public let external: [SubtitleOption]
     public let selectedEmbeddedID: String?
     public let selectedExternalID: SubtitleOption.ID?
+    /// An external subtitle still loading; the checkmark stays on the current choice.
+    public let pendingExternalID: SubtitleOption.ID?
     private let selectEmbedded: (MediaTrack) -> Void
     private let selectExternal: (SubtitleOption?) -> Void
     private let interacted: () -> Void
@@ -221,6 +157,7 @@ public struct SubtitleControl<AppearanceControls: View>: View {
         external: [SubtitleOption],
         selectedEmbeddedID: String?,
         selectedExternalID: SubtitleOption.ID?,
+        pendingExternalID: SubtitleOption.ID? = nil,
         onSelectEmbedded: @escaping (MediaTrack) -> Void,
         onSelectExternal: @escaping (SubtitleOption?) -> Void,
         interacted: @escaping () -> Void = {},
@@ -230,6 +167,7 @@ public struct SubtitleControl<AppearanceControls: View>: View {
         self.external = external
         self.selectedEmbeddedID = selectedEmbeddedID
         self.selectedExternalID = selectedExternalID
+        self.pendingExternalID = pendingExternalID
         self.selectEmbedded = onSelectEmbedded
         self.selectExternal = onSelectExternal
         self.interacted = interacted
@@ -241,17 +179,17 @@ public struct SubtitleControl<AppearanceControls: View>: View {
             PlayerMenu {
                 Text("Subtitles")
             } content: {
-                PlayerMenuItem("Off", state: selectedEmbeddedID == nil && selectedExternalID == nil ? .selected : .unselected) {
+                CheckableMenuItem("Off", state: selectedEmbeddedID == nil && selectedExternalID == nil ? .checked : .unchecked) {
                     interacted(); selectExternal(nil)
                 }
                 ForEach(embedded, id: \.id) { track in
-                    PlayerMenuItem(track.label ?? track.language ?? "Embedded",
-                                   state: selectedEmbeddedID == track.id ? .selected : .unselected) {
+                    CheckableMenuItem(track.label ?? track.language ?? "Embedded",
+                                   state: selectedEmbeddedID == track.id ? .checked : .unchecked) {
                         interacted(); selectEmbedded(track)
                     }
                 }
                 ForEach(external) { subtitle in
-                    PlayerMenuItem(subtitle.name, state: selectedExternalID == subtitle.id ? .selected : .unselected) {
+                    CheckableMenuItem(subtitle.name, state: pendingExternalID == subtitle.id ? .pending : selectedExternalID == subtitle.id ? .checked : .unchecked) {
                         interacted(); selectExternal(subtitle)
                     }
                 }

@@ -150,8 +150,8 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×").foregroundStyle(.white)
         } content: {
             ForEach([Float(0.25), 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in
-                PlayerMenuItem(rate == 1 ? "Normal" : "\(rate.formatted())×",
-                               state: rate == model.playbackRate ? .selected : .unselected) {
+                CheckableMenuItem(rate == 1 ? "Normal" : "\(rate.formatted())×",
+                               state: rate == model.playbackRate ? .checked : .unchecked) {
                     interacted(); model.setPlaybackRate(rate)
                 }
             }

@@ -34,6 +34,8 @@ public final class AppDataStores: Sendable {
     let mediaCache: MediaCache
     /// Serves `mediaCache` to the player over loopback HTTP.
     let mediaServer = LocalMediaServer()
+    /// Every VOD download; they outlive the players that started them.
+    let mediaDownloads: MediaDownloads
 
     public convenience init(dataDirectory: URL, cachesDirectory: URL, preferences: PreferencesDomain,
                             credentialStore: any CredentialStore) {
@@ -56,6 +58,7 @@ public final class AppDataStores: Sendable {
         mediaCache = MediaCache(directory: cachesDirectory,
                                 limitBytes: MediaCache.bytes(gigabytes: limitGigabytes ?? MediaCache.defaultLimitGigabytes),
                                 sharing: [generatedCache])
+        mediaDownloads = MediaDownloads(cache: mediaCache)
     }
 
     var defaults: UserDefaults { preferences.defaults }

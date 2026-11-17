@@ -125,11 +125,18 @@ actor TrackDownloader {
     private var observers: [UUID: @Sendable (MediaTrackPipelineState) -> Void] = [:]
     private var driver: Task<Void, Never>?
     private var stopped = false
+    private var didResetForMismatch = false
+    private let scheduler: DownloadScheduler?
+    private(set) var priority: DownloadPriority = .foreground
+    private var finishHandler: (@Sendable () async -> Void)?
+    private(set) var isFinished = false
+    private var lastSpaceCheck = ContinuousClock.now
 
     init(role: MediaTrackRole, cache: MediaCache, track: MediaCache.TrackID, signer: UpstreamRequestSigner,
          indexHint: ClosedRange<Int64>? = nil, declaredDuration: Double? = nil,
          refreshSigner: (@Sendable () async throws -> UpstreamRequestSigner)? = nil,
          transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession),
+         scheduler: DownloadScheduler? = nil,
          configuration: Configuration = Configuration()) {
         self.role = role
         self.cache = cache
@@ -139,6 +146,7 @@ actor TrackDownloader {
         self.declaredDuration = declaredDuration
         self.refreshSigner = refreshSigner
         self.transport = transport
+        self.scheduler = scheduler
         self.configuration = configuration
     }
 
@@ -158,6 +166,16 @@ actor TrackDownloader {
     }()
 
     // MARK: control
+
+    /// Foreground while something plays the track; background otherwise (see `DownloadScheduler`).
+    func setPriority(_ priority: DownloadPriority) {
+        self.priority = priority
+    }
+
+    /// Called once when the download ends: complete, failed, or stopped for space.
+    func onFinish(_ handler: @escaping @Sendable () async -> Void) {
+        finishHandler = handler
+    }
 
     func start() {
         guard driver == nil, !stopped else { return }
@@ -196,6 +214,7 @@ actor TrackDownloader {
     }
 
     var knownTotalBytes: Int64? { totalBytes }
+    var isStopped: Bool { stopped }
 
     /// Waits until the track's first bytes have been read.
     func trackLayout() async throws -> TrackLayout {
@@ -263,6 +282,9 @@ actor TrackDownloader {
             OSSignposter.mediaCache.emitEvent("VODTrackComplete", "role=\(self.role.rawValue, privacy: .public)")
         } catch is CancellationError {
             return
+        } catch TrackDownloadError.stopped {
+            // A background download the cache had no room for.
+            Logger.mediaCache.notice("background_download_stopped role=\(self.role.rawValue, privacy: .public) reason=space")
         } catch {
             condition = .failed(error.localizedDescription)
             publish()
@@ -272,6 +294,8 @@ actor TrackDownloader {
             for (_, waiter) in waiters { waiter.continuation.resume(throwing: error) }
             waiters.removeAll()
         }
+        isFinished = true
+        if let finishHandler { await finishHandler() }
     }
 
     private func readLayout() async throws {
@@ -290,8 +314,24 @@ actor TrackDownloader {
                 let total = found.timeline.totalBytes
                 if totalBytes == nil || totalBytes == total {
                     setTotal(total)
+                } else if !didResetForMismatch {
+                    // The cached bytes describe a different file than the one
+                    // upstream now (or another rendition under the same key):
+                    // start this track over rather than mix them.
+                    Logger.mediaCache.notice("index_size_mismatch role=\(self.role.rawValue, privacy: .public) index=\(total) known=\(self.totalBytes ?? -1) reset=true")
+                    didResetForMismatch = true
+                    try await cache.reset(track)
+                    completed = MediaRangeSet()
+                    totalBytes = nil
+                    end = indexHint.map { $0.upperBound + 1 } ?? configuration.headerProbeBytes
+                    resolved = nil
+                    continue
                 } else {
-                    Logger.mediaCache.notice("index_size_mismatch role=\(self.role.rawValue, privacy: .public) index=\(total) server=\(self.totalBytes ?? -1)")
+                    // Fresh bytes still disagree with the server's length:
+                    // trust the index, which is what the player reads.
+                    Logger.mediaCache.notice("index_size_mismatch role=\(self.role.rawValue, privacy: .public) index=\(total) server=\(self.totalBytes ?? -1) reset=false")
+                    totalBytes = nil
+                    setTotal(total)
                 }
             case .needBytes(let upTo):
                 if let totalBytes, upTo > totalBytes || end >= totalBytes { resolved = .progressive }
@@ -322,11 +362,20 @@ actor TrackDownloader {
         }
     }
 
+    /// A background download stops when the cache is over its limit: the
+    /// bytes would only push out other videos. Checked every 30 s.
+    private func checkSpaceForBackground() async throws {
+        guard priority == .background, lastSpaceCheck.duration(to: .now) > .seconds(30) else { return }
+        lastSpaceCheck = .now
+        if await cache.isOverLimit() { throw TrackDownloadError.stopped }
+    }
+
     private func downloadRemaining() async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             var running = 0
             while true {
                 try Task.checkCancellation()
+                try await checkSpaceForBackground()
                 let limit = totalBytes == nil ? 1 : configuration.concurrentPieces
                 while running < limit, let piece = nextPiece() {
                     inFlight.insert(piece)
@@ -387,7 +436,7 @@ actor TrackDownloader {
                 let outcome: DownloadRetryPolicy.Outcome
                 switch failure {
                 case .status(let status): outcome = DownloadRetryPolicy.classify(status: status)
-                case .network, .invalid: outcome = .retry
+                case .network, .invalid, .storage: outcome = .retry
                 case .signing: outcome = .refresh
                 }
                 if outcome == .refresh {
@@ -436,6 +485,8 @@ actor TrackDownloader {
         case invalid(String)
         /// The plugin could not produce the request (its handles may be gone after a reload).
         case signing(String)
+        /// The cache could not store the bytes even after evicting.
+        case storage(String)
 
         var description: String {
             switch self {
@@ -443,6 +494,7 @@ actor TrackDownloader {
             case .status(let status): "http \(status)"
             case .invalid(let detail): "invalid \(detail)"
             case .signing(let detail): "signing \(detail)"
+            case .storage(let detail): "storage \(detail)"
             }
         }
     }
@@ -466,7 +518,15 @@ actor TrackDownloader {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await transport.data(for: request)
+            let admitted = priority
+            await scheduler?.admit(admitted)
+            do {
+                (data, response) = try await transport.data(for: request)
+                await scheduler?.finish(admitted)
+            } catch {
+                await scheduler?.finish(admitted)
+                throw error
+            }
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         } catch let error as URLError {
@@ -493,7 +553,7 @@ actor TrackDownloader {
         let rate = seconds > 0 ? Double(data.count) / seconds : 0
         outcome = "ok bytes=\(data.count) kbps=\(Int(rate * 8 / 1_000))"
         if data.count >= 256 * 1_024, rate < 128 * 1_024 {
-            Logger.mediaCache.notice("slow_piece role=\(self.role.rawValue, privacy: .public) host=\(request.url?.host ?? "", privacy: .public) bytes=\(data.count) seconds=\(seconds)")
+            Logger.mediaCache.notice("slow_piece role=\(self.role.rawValue, privacy: .public) host=\(request.url?.host ?? "", privacy: .private) bytes=\(data.count) seconds=\(seconds)")
         }
     }
 
@@ -527,7 +587,12 @@ actor TrackDownloader {
     }
 
     private func store(_ data: Data, at offset: Int64) async throws {
-        completed = try await cache.write(data, at: offset, to: track)
+        do {
+            completed = try await cache.writeMakingRoom(data, at: offset, to: track)
+        } catch {
+            // Still no room (or another I/O failure): retry later like a network failure.
+            throw PieceFailure.storage(String(describing: type(of: error)))
+        }
         resumeSatisfiedWaiters()
         publish()
     }

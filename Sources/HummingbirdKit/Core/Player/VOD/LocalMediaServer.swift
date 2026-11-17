@@ -18,9 +18,17 @@ actor LocalMediaServer {
         let contentType: String
     }
 
+    /// One cached HLS resource (segment, map or key), served whole.
+    struct ServedObject: Sendable {
+        let downloader: HLSRenditionDownloader
+        let index: Int
+        let contentType: String
+    }
+
     struct Presentation: Sendable {
         var playlists: [String: String] = [:]
         var files: [String: ServedFile] = [:]
+        var objects: [String: ServedObject] = [:]
     }
 
     private typealias Connection = NIOAsyncChannel<HTTPServerRequestPart, HTTPServerResponsePart>
@@ -48,14 +56,17 @@ actor LocalMediaServer {
     private enum Route: Sendable {
         case playlist(String)
         case file(ServedFile)
+        case object(ServedObject)
         case notFound
     }
 
     private func route(_ path: String) -> Route {
         let parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard parts.count == 2, let presentation = presentations[parts[0]] else { return .notFound }
-        if let playlist = presentation.playlists[parts[1]] { return .playlist(playlist) }
-        if let file = presentation.files[parts[1]] { return .file(file) }
+        guard parts.count >= 2, let presentation = presentations[parts[0]] else { return .notFound }
+        let name = parts.dropFirst().joined(separator: "/")
+        if let playlist = presentation.playlists[name] { return .playlist(playlist) }
+        if let file = presentation.files[name] { return .file(file) }
+        if let object = presentation.objects[name] { return .object(object) }
         return .notFound
     }
 
@@ -142,6 +153,23 @@ actor LocalMediaServer {
                            request: request, outbound: outbound)
         case .file(let file):
             try await sendFile(file, request: request, outbound: outbound)
+        case .object(let object):
+            try await object.downloader.waitForResource(object.index)
+            let data = try await object.downloader.readResource(object.index)
+            let total = Int64(data.count)
+            if let header = request.headers.first(name: "Range"), let range = Self.parseRange(header, total: total) {
+                var headers = HTTPHeaders()
+                headers.add(name: "Content-Type", value: object.contentType)
+                headers.add(name: "Content-Length", value: String(range.count))
+                headers.add(name: "Content-Range", value: "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)")
+                try await outbound.write(.head(HTTPResponseHead(version: request.version, status: .partialContent, headers: headers)))
+                if request.method != .HEAD {
+                    try await outbound.write(.body(.byteBuffer(ByteBuffer(bytes: data.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))))))
+                }
+                try await outbound.write(.end(nil))
+            } else {
+                try await send(status: .ok, contentType: object.contentType, body: data, request: request, outbound: outbound)
+            }
         }
     }
 
@@ -230,6 +258,7 @@ extension TrackDownloader {
     func totalBytesWhenKnown() async throws -> Int64 {
         while true {
             if let total = knownTotalBytes { return total }
+            if isStopped { throw CancellationError() }
             try await Task.sleep(for: .milliseconds(100))
         }
     }

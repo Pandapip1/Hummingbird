@@ -173,20 +173,6 @@ final class MediaPipelineTests: XCTestCase {
         XCTAssertFalse(local.request.isLive)
     }
 
-    /// Lint: on-demand media reaches the player only through `LocalPlayback`.
-    func testPlayRequestsAreOnlyBuiltByLocalPlayback() throws {
-        let sources = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources/HummingbirdKit")
-        let files = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
-        var offenders: [String] = []
-        for case let url as URL in files where url.pathExtension == "swift" && url.lastPathComponent != "LocalPlayback.swift" {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            if text.contains("PlayRequest(") { offenders.append(url.lastPathComponent) }
-        }
-        XCTAssertEqual(offenders, [], "Build play requests with LocalPlayback so on-demand media always comes from the media cache")
-    }
-
     // MARK: downloader
 
     func testDownloaderFetchesWholeTrackThroughNetworkFailures() async throws {
@@ -274,6 +260,7 @@ final class MediaPipelineTests: XCTestCase {
         let transport = FakeUpstream(files: ["/v": video.data, "/a": audio.data], failures: 2)
         let cache = temporaryCache()
         let server = LocalMediaServer()
+        let downloads = MediaDownloads(cache: cache, transport: transport)
         func spec(_ role: MediaTrackRole, _ path: String, codec: String) throws -> VODTrackSpec {
             VODTrackSpec(role: role, identity: "session-\(role.rawValue)",
                          signer: .plain(try XCTUnwrap(URL(string: "https://media.test" + path))),
@@ -283,7 +270,7 @@ final class MediaPipelineTests: XCTestCase {
         let videoSpec = try spec(.video, "/v", codec: "avc1.64001f")
         let audioSpec = try spec(.audio, "/a", codec: "mp4a.40.2")
         let (session, playback) = try await bounded {
-            try await VODSession.start(video: videoSpec, audio: audioSpec, cache: cache, server: server, transport: transport)
+            try await VODSession.start(video: videoSpec, audio: audioSpec, downloads: downloads, server: server)
         }
         XCTAssertEqual(playback.origin, .mediaCache)
         XCTAssertNil(playback.request.audio, "separate tracks are one HLS asset, not a composition")
@@ -307,6 +294,143 @@ final class MediaPipelineTests: XCTestCase {
         await session.stop()
     }
 
+    // MARK: HLS
+
+    private static let hlsFiles: [String: Data] = [
+        "/hls/master.m3u8": Data("""
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="audio.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aud"
+        v360.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2",AUDIO="aud"
+        v720.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS="vp09.00.40.08,mp4a.40.2",AUDIO="aud"
+        v1080.m3u8
+        """.utf8),
+        "/hls/v720.m3u8": Data("""
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:4
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-MAP:URI="init.mp4"
+        #EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=0x00000000000000000000000000000001
+        #EXTINF:4.000,
+        s0.m4s
+        #EXTINF:4.000,
+        s1.m4s
+        #EXTINF:4.000,
+        s2.m4s
+        #EXT-X-ENDLIST
+        """.utf8),
+        "/hls/audio.m3u8": Data("""
+        #EXTM3U
+        #EXT-X-TARGETDURATION:6
+        #EXTINF:6.000,
+        a0.m4s
+        #EXTINF:6.000,
+        a1.m4s
+        #EXT-X-ENDLIST
+        """.utf8),
+        "/hls/init.mp4": Data(repeating: 1, count: 500),
+        "/hls/key.bin": Data(repeating: 2, count: 16),
+        "/hls/s0.m4s": Data(repeating: 3, count: 40_000),
+        "/hls/s1.m4s": Data(repeating: 4, count: 40_000),
+        "/hls/s2.m4s": Data(repeating: 5, count: 40_000),
+        "/hls/a0.m4s": Data(repeating: 6, count: 8_000),
+        "/hls/a1.m4s": Data(repeating: 7, count: 8_000),
+    ]
+
+    func testHLSPlaylistsParseSelectAndRewriteLocally() throws {
+        let base = try XCTUnwrap(URL(string: "https://media.test/hls/master.m3u8"))
+        let master = try HLSPlaylist.parseMaster(String(decoding: try XCTUnwrap(Self.hlsFiles["/hls/master.m3u8"]), as: UTF8.self), base: base)
+        let variant = try XCTUnwrap(HLSPlaylist.bestVariant(master.variants, maxHeight: 1080))
+        XCTAssertEqual(variant.height, 720, "the tallest variant the player can decode (VP9 is skipped)")
+        XCTAssertEqual(HLSPlaylist.bestVariant(master.variants, maxHeight: 480)?.height, 360)
+        let audio = try XCTUnwrap(HLSPlaylist.bestAudio(master.audio, group: variant.audioGroup, language: "en"))
+        XCTAssertEqual(audio.uri?.absoluteString, "https://media.test/hls/audio.m3u8")
+
+        let media = try HLSPlaylist.parseMedia(String(decoding: try XCTUnwrap(Self.hlsFiles["/hls/v720.m3u8"]), as: UTF8.self), base: variant.uri)
+        XCTAssertFalse(media.isEndless)
+        XCTAssertEqual(media.segments.count, 3)
+        XCTAssertEqual(media.duration, 12, accuracy: 0.001)
+        XCTAssertEqual(media.resources.map(\.kind), [.map, .key, .segment, .segment, .segment])
+        let local = HLSPlaylist.localMedia(media) { "v/\($0)" }
+        XCTAssertTrue(local.contains("#EXT-X-MAP:URI=\"v/0\""))
+        XCTAssertTrue(local.contains("METHOD=AES-128,URI=\"v/1\",IV=0x00000000000000000000000000000001"))
+        XCTAssertTrue(local.contains("\nv/4\n"))
+        XCTAssertFalse(local.contains("https://"), "nothing in the local playlist points upstream")
+        XCTAssertTrue(local.hasSuffix("#EXT-X-ENDLIST\n"))
+
+        let live = try HLSPlaylist.parseMedia("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\ns.ts\n", base: base)
+        XCTAssertTrue(live.isEndless, "no ENDLIST: live")
+        XCTAssertThrowsError(try HLSPlaylist.parseMedia("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXTINF:4,\ns.ts\n#EXT-X-ENDLIST\n", base: base))
+    }
+
+    func testHLSSessionDownloadsEverySegmentAndServesThemLocally() async throws {
+        let transport = FakeUpstream(files: Self.hlsFiles, failures: 3)
+        let cache = temporaryCache()
+        let server = LocalMediaServer()
+        let downloads = MediaDownloads(cache: cache, transport: transport)
+        let spec = HLSPresentationSpec(identity: "hls-test", url: try XCTUnwrap(URL(string: "https://media.test/hls/master.m3u8")),
+                                       signer: .plain(), refresh: nil, maxHeight: 1080, language: "en")
+        let (session, playback) = try await bounded {
+            try await VODSession.start(hls: spec, downloads: downloads, server: server, transport: transport)
+        }
+        let master = playback.request.video.url
+        XCTAssertEqual(master.host, "127.0.0.1")
+        let base = master.deletingLastPathComponent()
+        let (masterData, _) = try await bounded { try await URLSession.shared.data(from: master) }
+        let masterText = String(decoding: masterData, as: UTF8.self)
+        XCTAssertTrue(masterText.contains("RESOLUTION=1280x720"))
+        XCTAssertTrue(masterText.contains("URI=\"a.m3u8\""))
+        XCTAssertFalse(masterText.contains("https://"))
+        // Segment 2 of the video rendition is resource 4 (map, key, s0, s1, s2).
+        let (segment, response) = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("v/4")) }
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(segment, Self.hlsFiles["/hls/s2.m4s"])
+        let (key, _) = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("v/1")) }
+        XCTAssertEqual(key, Self.hlsFiles["/hls/key.bin"])
+        await session.stop()
+        await downloads.stopAll()
+    }
+
+    // MARK: ownership and priority
+
+    func testDownloadsContinueInTheBackgroundAfterThePlayerCloses() async throws {
+        let file = FakeMedia.fragmentedMP4(segmentSizes: [400_000, 400_000, 400_000], segmentMilliseconds: 4_000)
+        let upstream = FakeUpstream(file: file.data, failures: 0)
+        let cache = temporaryCache()
+        let downloads = MediaDownloads(cache: cache, transport: upstream)
+        let spec = VODTrackSpec(role: .muxed, identity: "background", signer: .plain(try XCTUnwrap(URL(string: "https://media.test/v"))),
+                                refresh: nil, indexHint: nil, container: "video/mp4", codec: "", bandwidth: 1,
+                                width: 0, height: 0, declaredDuration: nil)
+        let (session, _) = try await bounded {
+            try await VODSession.start(video: spec, audio: nil, downloads: downloads, server: LocalMediaServer())
+        }
+        await session.stop() // the player closes at once
+        let released = try await downloads.hold(spec)
+        let priority = await released.priority
+        XCTAssertEqual(priority, .foreground, "holding it again brings it back to the foreground")
+        try await bounded { try await released.waitUntilAvailable(0..<Int64(file.data.count)) }
+        await downloads.release(track: "background")
+        await downloads.stopAll()
+    }
+
+    func testBackgroundDownloadsWaitWhileForegroundDownloadsRun() async throws {
+        let scheduler = DownloadScheduler(backgroundLimit: 1)
+        await scheduler.admit(.foreground)
+        let background = Task { await scheduler.admit(.background) }
+        try await Task.sleep(for: .milliseconds(50))
+        var state = await scheduler.snapshot
+        XCTAssertEqual(state.waiting, 1, "background waits while playback downloads")
+        await scheduler.finish(.foreground)
+        await background.value
+        state = await scheduler.snapshot
+        XCTAssertEqual(state.background, 1)
+        XCTAssertEqual(state.waiting, 0)
+        await scheduler.finish(.background)
+    }
+
     // MARK: selection (task 49)
 
     func testSelectionHonoursPreferredResolutionAndPicksBestAudio() throws {
@@ -325,12 +449,12 @@ final class MediaPipelineTests: XCTestCase {
               "initStart":0,"initEnd":631,"indexStart":632,"indexEnd":1123}]}}
         """.utf8))
         let options = PlaybackSelector.options(for: details, preferredLanguage: "en")
-        let at1080 = try XCTUnwrap(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true))
+        let at1080 = try XCTUnwrap(PlaybackSelector.best(options, maxHeight: 1080))
         XCTAssertEqual(at1080.video.url, "https://x/1080-60", "tallest allowed, then highest bitrate")
         XCTAssertEqual(at1080.audio?.url, "https://x/a128", "best audio, not the 48 kbps stream")
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720, preferAdaptive: true)?.height, 720)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 2160, preferAdaptive: true)?.height, 2160)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 240, preferAdaptive: true)?.height, 360)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720)?.height, 720)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 2160)?.height, 2160)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 240)?.height, 360)
 
         let audio = try XCTUnwrap(details.audioSources.last)
         XCTAssertEqual(audio.indexRange, 632...1123)

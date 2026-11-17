@@ -26,15 +26,49 @@ public struct ResolvedMedia: Sendable {
     }
 }
 
+/// What a backend plays. Built only through the factories below (the
+/// memberwise initializer is internal to this module), so on-demand media can
+/// reach a backend only as local (loopback or file) URLs: handing a backend an
+/// upstream URL for on-demand video does not compile outside the named
+/// exceptions.
 public struct PlayRequest: Sendable {
-    public var video: ResolvedMedia
-    public var audio: ResolvedMedia?
-    public var isLive: Bool
+    public let video: ResolvedMedia
+    public let audio: ResolvedMedia?
+    public let isLive: Bool
 
-    public init(video: ResolvedMedia, audio: ResolvedMedia? = nil, isLive: Bool = false) {
+    init(video: ResolvedMedia, audio: ResolvedMedia? = nil, isLive: Bool = false) {
         self.video = video
         self.audio = audio
         self.isLive = isLive
+    }
+
+    public enum NotLocal: Error, LocalizedError {
+        case upstream(String)
+        public var errorDescription: String? {
+            switch self {
+            case .upstream(let host): "On-demand media from \(host) must be played from the local media cache."
+            }
+        }
+    }
+
+    /// On-demand media read from this device. Throws unless every URL is a
+    /// loopback HTTP URL or a file URL.
+    public static func local(video: URL, audio: URL? = nil) throws -> PlayRequest {
+        for url in [video, audio].compactMap({ $0 }) where !isLocal(url) {
+            throw NotLocal.upstream(url.host ?? url.scheme ?? "an unknown origin")
+        }
+        return PlayRequest(video: ResolvedMedia(url: video), audio: audio.map { ResolvedMedia(url: $0) })
+    }
+
+    /// A live stream, which cannot be downloaded ahead and plays from upstream.
+    public static func live(_ media: ResolvedMedia) -> PlayRequest {
+        PlayRequest(video: media, isLive: true)
+    }
+
+    public static func isLocal(_ url: URL) -> Bool {
+        if url.isFileURL { return true }
+        guard url.scheme == "http" else { return false }
+        return ["127.0.0.1", "::1", "localhost"].contains(url.host ?? "")
     }
 }
 

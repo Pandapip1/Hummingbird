@@ -32,6 +32,17 @@ final class PlayerTrackSelectionTests: XCTestCase {
         XCTAssertEqual(model.selected, second, "a failed switch keeps the old stream")
         XCTAssertNil(model.pendingOption)
         XCTAssertEqual(model.errorMessage, "switch failed")
+
+        // A stream that loads but never plays is a failed switch too: the
+        // previous stream is loaded back and the checkmark never moves.
+        model.playbackConfirmationTimeout = .milliseconds(100)
+        let loadsBefore = backend.loads
+        let stalled = playbackOption(id: "stalled", url: "https://example.com/stalled.m3u8")
+        await model.select(stalled)
+        XCTAssertEqual(model.selected, second)
+        XCTAssertNil(model.pendingOption)
+        XCTAssertEqual(backend.loads, loadsBefore + 2, "the new stream, then the previous one again")
+        XCTAssertEqual(model.errorMessage, PlayerModel.PlaybackNotConfirmed().errorDescription)
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {

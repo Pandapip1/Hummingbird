@@ -82,7 +82,7 @@ final class YouTubeStartupTimingTests: XCTestCase {
         model.plugins.commit(try await model.plugins.prepareInstall(from: configURL))
         let (runtime, content) = try await model.platform.details(url: videoURL)
         guard case .video(let details) = content else { return XCTFail("expected video details") }
-        let option = try XCTUnwrap(PlaybackSelector.best(PlaybackSelector.options(for: details), maxHeight: 1080, preferAdaptive: true))
+        let option = try XCTUnwrap(PlaybackSelector.best(PlaybackSelector.options(for: details), maxHeight: 1080))
         print("[old] declared_duration=\(details.item.duration ?? -1)")
         let tracks: [(String, MediaSource)] = [("video", option.video)] + (option.audio.map { [("audio", $0)] } ?? [])
         for (role, source) in tracks {

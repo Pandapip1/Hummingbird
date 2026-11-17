@@ -37,7 +37,6 @@ enum SubtitleSizeChoice: Double, CaseIterable, Sendable {
 /// Device-local playback settings, kept in the stores' preferences domain.
 enum PlaybackPreferenceKey {
     static let maxVideoHeight = "maxVideoHeight"
-    static let preferAdaptive = "preferAdaptive"
     static let showSubtitlesByDefault = "showSubtitlesByDefault"
     static let subscriptionFetchLimit = "subscriptionFetchLimit"
     static let subtitleColor = "subtitleColor"
@@ -67,8 +66,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// A source or audio stream being switched to, not yet confirmed playing.
     private(set) var pendingOption: PlaybackOption?
     private(set) var pendingAudioSource: MediaSource?
-    /// How long a switch waits for the new item's first frames before accepting it.
-    @ObservationIgnored var playbackConfirmationTimeout: Duration = .seconds(15)
+    private(set) var pendingSubtitle: SubtitleSource?
+    /// The player gave up on local data and is being reloaded at the same position.
+    private(set) var isRecovering = false
+    /// How long a switch waits for the new item's first frames before it counts
+    /// as failed. Nil confirms on load alone (test backends that never play).
+    @ObservationIgnored var playbackConfirmationTimeout: Duration? = .seconds(15)
     private(set) var errorMessage: String?
     private(set) var isPreparing = false
     private(set) var preparationMessage: String?
@@ -109,6 +112,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private let mediaProxy: PluginMediaProxy
     @ObservationIgnored private let mediaCache: MediaCache
     @ObservationIgnored private let mediaServer: LocalMediaServer
+    @ObservationIgnored private let mediaDownloads: MediaDownloads
     /// The download of the current on-demand video into the media cache.
     @ObservationIgnored private var vodSession: VODSession?
     @ObservationIgnored private var pipelineTask: Task<Void, Never>?
@@ -127,6 +131,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Shown over the video while playback waits for bytes that the network
     /// has not delivered yet. Downloads retry on their own.
     var bufferingMessage: String? {
+        if isRecovering { return "Reloading the video from this device…" }
         guard pipeline.waitingForNetwork, pipeline.playableAhead(of: playbackTime) < 3 else { return nil }
         return "Waiting for the network. The download resumes on its own."
     }
@@ -137,6 +142,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         mediaProxy = stores.mediaProxy
         mediaCache = stores.mediaCache
         mediaServer = stores.mediaServer
+        mediaDownloads = stores.mediaDownloads
         let defaults = stores.defaults
         subtitleColorChoice = SubtitleColorChoice(
             rawValue: defaults.string(forKey: PlaybackPreferenceKey.subtitleColor) ?? "white"
@@ -174,7 +180,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         defer { isPreparing = false; preparationMessage = nil }
 
         let maxHeight = preferences.defaults.object(forKey: PlaybackPreferenceKey.maxVideoHeight) as? Int ?? 1080
-        let preferAdaptive = preferences.defaults.object(forKey: PlaybackPreferenceKey.preferAdaptive) as? Bool ?? true
         let engine = backend ?? makeMediaBackend()
         backend = engine
         engine.onTick = { [weak self] seconds in self?.tick(seconds) }
@@ -190,7 +195,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             .joined(separator: ",")
         Logger.player.info("source_inventory types=\(sourceTypes, privacy: .public) video=\(PlaybackSelector.inventory(details.videoSources), privacy: .public) audio=\(PlaybackSelector.inventory(details.audioSources), privacy: .public)")
         options = PlaybackSelector.options(for: details, preferredLanguage: preferredLanguage)
-        guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight, preferAdaptive: preferAdaptive) else {
+        guard let choice = PlaybackSelector.best(options, maxHeight: maxHeight) else {
             Logger.player.error("no_playable_source options=\(self.options.count)")
             errorMessage = options.isEmpty
                 ? "This video has no source this device can play (it offers only formats the player does not support, such as WebM, DASH or DRM-protected streams)."
@@ -267,19 +272,26 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         selectedAudioSource = source
     }
 
+    struct PlaybackNotConfirmed: Error, LocalizedError {
+        var errorDescription: String? { "The new stream did not start playing, so the previous one was kept. Try again." }
+    }
+
     /// After a load, waits until the new item is visibly playing: its time
     /// advances while the player plays. A paused load is confirmed by loading.
-    /// Gives up waiting (and accepts the loaded item) after `timeout`, e.g.
-    /// when the network stalls the first frames.
-    private func confirmPlayback(of backend: MediaBackend, autoplay: Bool, generation: Int) async {
-        guard autoplay else { return }
+    /// Not playing within `playbackConfirmationTimeout` is a failed switch,
+    /// never an accepted one (no optimistic UI).
+    private func confirmPlayback(of backend: MediaBackend, autoplay: Bool, generation: Int) async throws {
+        guard autoplay, let timeout = playbackConfirmationTimeout else { return }
         let start = backend.currentTime
-        let deadline = ContinuousClock.now.advanced(by: playbackConfirmationTimeout)
-        while ContinuousClock.now < deadline, generation == playGeneration, !Task.isCancelled {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            guard generation == playGeneration else { throw MediaBackendLoadError.superseded }
             if backend.isPlaying, backend.currentTime > start + 0.05 { return }
-            try? await Task.sleep(for: .milliseconds(50))
+            try await Task.sleep(for: .milliseconds(50))
         }
         Logger.player.notice("playback_unconfirmed generation=\(generation)")
+        throw PlaybackNotConfirmed()
     }
 
     private func refreshAudioSources(for choice: PlaybackOption) {
@@ -413,14 +425,16 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         do {
             let videoHost = URL(string: option.video.url)?.host ?? "generated"
             let audioHost = option.audio.flatMap { URL(string: $0.url)?.host } ?? "none"
-            Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) height=\(option.video.height) videoBitrate=\(option.video.bitrate) audioBitrate=\(option.audio?.bitrate ?? 0) videoHost=\(videoHost, privacy: .public) audioHost=\(audioHost, privacy: .public)")
+            Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) height=\(option.video.height) videoBitrate=\(option.video.bitrate) audioBitrate=\(option.audio?.bitrate ?? 0) videoHost=\(videoHost, privacy: .private) audioHost=\(audioHost, privacy: .private)")
             startup?.mark(.selected)
             let playback: LocalPlayback
             switch option.kind {
             case .live:
-                playback = .live(try await resolveUpstream(option.video))
+                playback = try LocalPlayback.live(try await resolveUpstream(option.video), for: option)
             case .hls:
-                playback = .uncachedAdaptiveHLS(try await resolveUpstream(option.video))
+                let (session, local) = try await startHLSDownload(option)
+                newSession = session
+                playback = local
             case .generated:
                 let url: URL
                 if let audioSource = option.audio, audioSource.pluginType == "DashManifestRawAudioSource" {
@@ -446,7 +460,18 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             }
             try await backend.load(playback.request, resumeAt: start, autoplay: autoplay)
             startup?.mark(.playerLoaded)
-            await confirmPlayback(of: backend, autoplay: autoplay, generation: generation)
+            do {
+                try await confirmPlayback(of: backend, autoplay: autoplay, generation: generation)
+            } catch let failure as PlaybackNotConfirmed {
+                // The new item replaced the old one in the player but never
+                // played: put the previous stream back where it was.
+                if let previous = currentPlayback {
+                    try? await backend.load(previous.request, resumeAt: resumeAt, autoplay: autoplay)
+                    backend.setPlaybackRate(playbackRate)
+                }
+                newPipelineTask?.cancel()
+                throw failure
+            }
             currentPlayback = playback
             localRecoveryAttempts = 0
             vodSession = newSession
@@ -499,7 +524,57 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let audio = try option.audio.map {
             try trackSpec($0, role: .audio, runtime: runtime, sourceURL: sourceURL, declaredDuration: declared)
         }
-        return try await VODSession.start(video: video, audio: audio, cache: mediaCache, server: mediaServer)
+        return try await VODSession.start(video: video, audio: audio, downloads: mediaDownloads, server: mediaServer)
+    }
+
+    /// Starts downloading an on-demand HLS presentation into the media cache
+    /// (playlists rewritten to local URIs, every segment cached).
+    private func startHLSDownload(_ option: PlaybackOption) async throws -> (VODSession, LocalPlayback) {
+        guard let runtime, let sourceURL = loadedURL, let url = URL(string: option.video.url) else {
+            throw PluginError.execution("The video's plugin is no longer available")
+        }
+        let maxHeight = preferences.defaults.object(forKey: PlaybackPreferenceKey.maxVideoHeight) as? Int ?? 1080
+        let source = option.video
+        let spec = HLSPresentationSpec(
+            identity: ["hls-v1", runtime.id, sourceURL, source.name].joined(separator: "|"),
+            url: url, signer: Self.urlSigner(for: source, runtime: runtime),
+            refresh: { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.refreshedURLSigner(for: source)
+            },
+            maxHeight: maxHeight, language: Locale.current.language.languageCode?.identifier
+        )
+        return try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer)
+    }
+
+    /// Signs any URL of an HLS presentation through the source's request
+    /// modifier (once per request), or plainly.
+    nonisolated private static func urlSigner(for source: MediaSource, runtime: PluginRuntime) -> UpstreamURLSigner {
+        guard let modifier = source.requestModifier else { return .plain() }
+        let handle = modifier.handle
+        return UpstreamURLSigner { url, range in
+            var headers: [String: String] = [:]
+            if let range { headers["Range"] = "bytes=\(range.lowerBound)-\(range.upperBound - 1)" }
+            let data = try await runtime.callHandle(handle, "modifyRequest", [url.absoluteString, headers])
+            let modified = try await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data)
+            var request = URLRequest(url: modified.url.flatMap(URL.init(string:)) ?? url)
+            for (name, value) in modified.headers ?? headers { request.setValue(value, forHTTPHeaderField: name) }
+            return request
+        }
+    }
+
+    private func refreshedURLSigner(for source: MediaSource) async throws -> (UpstreamURLSigner, URL) {
+        guard let runtime, let sourceURL = loadedURL else { throw CancellationError() }
+        let data = try await runtime.callRaw("getContentDetails", [sourceURL], kind: "details")
+        guard case .video(let refreshed) = try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data) else {
+            throw PluginError.execution("The plugin stopped returning video details")
+        }
+        let candidates = ([refreshed.hls].compactMap { $0 } + refreshed.videoSources).filter(\.isHLS)
+        guard let match = candidates.first(where: { $0.name == source.name }) ?? candidates.first else {
+            throw PluginError.execution("The plugin no longer offers this stream")
+        }
+        guard let url = URL(string: match.url) else { throw PluginError.execution("Invalid stream URL") }
+        return (Self.urlSigner(for: match, runtime: runtime), url)
     }
 
     private func trackSpec(_ source: MediaSource, role: MediaTrackRole, runtime: PluginRuntime,
@@ -507,11 +582,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard let signer = Self.signer(for: source, runtime: runtime) else {
             throw PluginError.execution("Invalid media URL")
         }
-        let identity = [
-            "vod-v1", runtime.id, sourceURL, role.rawValue, source.pluginType, source.formatID ?? "",
-            source.name, source.container, source.codec, String(source.bitrate),
-            "\(source.width)x\(source.height)", source.language,
-        ].joined(separator: "|")
+        // The plugin's format ID names the bytes exactly; names and bitrates can
+        // change between details calls for the same format.
+        let format = source.formatID.map { ["format", $0, source.container, source.language] }
+            ?? [source.name, source.container, source.codec, String(source.bitrate), "\(source.width)x\(source.height)", source.language]
+        let identity = (["vod-v2", runtime.id, sourceURL, role.rawValue, source.pluginType] + format).joined(separator: "|")
         return VODTrackSpec(
             role: role, identity: identity, signer: signer,
             refresh: { [weak self] in
@@ -589,13 +664,13 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// timeout during a long outage). Reload the same local media at the
     /// same position instead of showing an error; the download carries on.
     private func playerFailed(_ message: String) {
-        guard let playback = currentPlayback, playback.origin == .mediaCache || playback.origin == .generatedMedia,
-              localRecoveryAttempts < 8 else {
+        guard let playback = currentPlayback, playback.origin == .mediaCache || playback.origin == .generatedMedia else {
             errorMessage = message
             return
         }
         localRecoveryAttempts += 1
         let attempt = localRecoveryAttempts
+        isRecovering = true
         let position = backend?.currentTime ?? playbackTime
         let autoplay = playbackRequested
         let generation = playGeneration
@@ -606,6 +681,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             do {
                 try await backend.load(playback.request, resumeAt: position > 0 ? position : nil, autoplay: autoplay)
                 backend.setPlaybackRate(self.playbackRate)
+                self.isRecovering = false
             } catch {
                 Logger.player.error("local_playback_recover_failed attempt=\(attempt) message=\(error.localizedDescription)")
             }
@@ -639,6 +715,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let url = try await mediaProxy.register(
             videoManifest: videoManifest, videoRuntime: runtime, videoExecutor: videoExecutor.handle,
             audioManifest: audioManifest, audioRuntime: runtime, audioExecutor: audioExecutor.handle,
+            identity: [runtime.id, loadedURL ?? "", "pair", video.formatID ?? video.name, String(video.height), video.codec,
+                       audio.formatID ?? audio.name, audio.language, String(audio.bitrate)].joined(separator: "|"),
             failure: { [weak self] error in
                 Task { @MainActor in await self?.handlePluginMediaFailure(error, generation: generation) }
             }
@@ -817,18 +895,23 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     // MARK: subtitles
 
+    /// Turns external subtitles off (at once) or on. Loading a subtitle takes
+    /// time: `pendingSubtitle` names it meanwhile, and `subtitleChoice` (the
+    /// checkmark) changes only once its cues are loaded. A subtitle that fails
+    /// to load leaves the previous choice in place and shows the error.
     func chooseSubtitle(_ sub: SubtitleSource?) async {
-        backend?.selectTrack(nil)
-        embeddedSubtitleChoice = nil
-        subtitleChoice = sub
-        cues = []
-        subtitleText = nil
-        if let url = sub?.url.flatMap(URL.init(string:)) {
-            backend?.setExternalSubtitle(url)
-        } else {
+        guard let sub else {
+            pendingSubtitle = nil
+            backend?.selectTrack(nil)
+            embeddedSubtitleChoice = nil
+            subtitleChoice = nil
+            cues = []
+            subtitleText = nil
             backend?.setExternalSubtitle(nil)
+            return
         }
-        guard let sub else { return }
+        pendingSubtitle = sub
+        defer { if pendingSubtitle?.id == sub.id { pendingSubtitle = nil } }
         var text: String?
         if let h = sub.getSubtitlesHandle, let runtime {
             for attempt in 0..<3 where text?.isEmpty ?? true {
@@ -843,9 +926,22 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         if (text?.isEmpty ?? true), let u = sub.url, let url = URL(string: u) {
             text = (try? await URLSession.shared.data(from: url)).flatMap { String(data: $0.0, encoding: .utf8) }
         }
+        var parsed: [SubtitleCue] = []
         if let text {
-            cues = await Task.detached(priority: .userInitiated) { SubtitleParser.parse(text) }.value
+            parsed = await Task.detached(priority: .userInitiated) { SubtitleParser.parse(text) }.value
         }
+        // A newer choice replaced this one while it loaded.
+        guard pendingSubtitle?.id == sub.id else { return }
+        guard !parsed.isEmpty || sub.url != nil else {
+            errorMessage = "The subtitles \"\(sub.name)\" could not be loaded."
+            return
+        }
+        backend?.selectTrack(nil)
+        embeddedSubtitleChoice = nil
+        subtitleChoice = sub
+        cues = parsed
+        subtitleText = nil
+        backend?.setExternalSubtitle(sub.url.flatMap(URL.init(string:)))
     }
 
     // MARK: playback tracker
@@ -918,6 +1014,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         audioSources = []
         selectedAudioSource = nil
         reportedDurationMismatch = false
+        isRecovering = false
         playbackTime = 0; duration = 0; declaredDuration = 0; isPlaying = false; isFullscreen = false
         playbackRequested = false
         cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil

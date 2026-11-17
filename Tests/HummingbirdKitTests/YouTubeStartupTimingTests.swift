@@ -1,6 +1,7 @@
 #if canImport(AVFoundation)
 import Foundation
 import XCTest
+import AVFoundation
 @testable import HummingbirdKit
 
 /// Opt-in, networked: where a YouTube video's start-up time goes, on isolated
@@ -53,6 +54,8 @@ final class YouTubeStartupTimingTests: XCTestCase {
         let selected = player.selected
         print("[timing] selected kind=\(selected.map { String(describing: $0.kind) } ?? "-") height=\(selected?.height ?? 0) video_bitrate=\(selected?.video.bitrate ?? 0) audio_bitrate=\(selected?.audio?.bitrate ?? 0)")
         print("[timing] player_loaded_ms=\(loadedAt.map { ms(detailsDone.duration(to: $0)) } ?? -1) first_frame_ms_after_details=\(firstFrameAt.map { ms(detailsDone.duration(to: $0)) } ?? -1) total_ms=\(firstFrameAt.map { ms(start.duration(to: $0)) } ?? -1)")
+        print("[timing] duration seek_bar=\(player.duration) index=\(player.pipeline.mediaDuration ?? -1) declared=\(details.item.duration ?? -1)")
+        XCTAssertEqual(player.duration, Double(details.item.duration ?? 0), accuracy: 2, "the seek bar ends at the real length")
         for track in player.pipeline.tracks {
             let stage = track.stage(.download)
             print("[timing] track role=\(track.role.rawValue) total=\(track.totalBytes ?? -1) downloaded=\(stage.completed.byteCount) condition=\(stage.condition)")
@@ -62,6 +65,61 @@ final class YouTubeStartupTimingTests: XCTestCase {
         await runtime.stop()
         XCTAssertNotNil(firstFrameAt, "playback did not start within 10 minutes")
     }
+
+    /// What the removed progressive path did: AVURLAssets on the upstream
+    /// URLs with the request modifier's headers from one call, loading
+    /// duration and tracks as AVMediaBackend.makeItem did. Measures how long
+    /// that takes and what duration AVFoundation reports.
+    @MainActor
+    func testOldUpstreamCompositionStartup() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["HUMMINGBIRD_YOUTUBE_TIMING"] == "1" else {
+            throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_TIMING=1 to measure YouTube start-up over the network")
+        }
+        let configURL = environment["HUMMINGBIRD_YOUTUBE_CONFIG_URL"] ?? "https://plugins.grayjay.app/Youtube/YoutubeConfig.json"
+        let videoURL = environment["HUMMINGBIRD_YOUTUBE_VIDEO_URL"] ?? "https://www.youtube.com/watch?v=ukE4nf9WeQU"
+        let model = makeTestAppModel()
+        model.plugins.commit(try await model.plugins.prepareInstall(from: configURL))
+        let (runtime, content) = try await model.platform.details(url: videoURL)
+        guard case .video(let details) = content else { return XCTFail("expected video details") }
+        let option = try XCTUnwrap(PlaybackSelector.best(PlaybackSelector.options(for: details), maxHeight: 1080, preferAdaptive: true))
+        print("[old] declared_duration=\(details.item.duration ?? -1)")
+        let tracks: [(String, MediaSource)] = [("video", option.video)] + (option.audio.map { [("audio", $0)] } ?? [])
+        for (role, source) in tracks {
+            var url = try XCTUnwrap(URL(string: source.url))
+            var headers: [String: String] = [:]
+            if let modifier = source.requestModifier {
+                let data = try await runtime.callHandle(modifier.handle, "modifyRequest", [source.url, [String: String]()])
+                let modified = try JSONDecoder().decode(OldModifiedRequest.self, from: data)
+                if let next = modified.url.flatMap(URL.init(string:)) { url = next }
+                headers = modified.headers ?? [:]
+            }
+            let asset = AVURLAsset(url: url, options: headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            let start = ContinuousClock.now
+            let isVideo = role == "video"
+            let result = await withTaskGroup(of: String.self) { group in
+                group.addTask {
+                    do {
+                        let duration = try await asset.load(.duration)
+                        let found = try await asset.loadTracks(withMediaType: isVideo ? .video : .audio)
+                        return "duration=\(duration.seconds) tracks=\(found.count)"
+                    } catch { return "error=\(error.localizedDescription)" }
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(300))
+                    return "timeout=300s"
+                }
+                let first = await group.next() ?? "none"
+                group.cancelAll()
+                return first
+            }
+            print("[old] role=\(role) load_ms=\(ms(start.duration(to: .now))) \(result)")
+            asset.cancelLoading()
+        }
+        await runtime.stop()
+    }
+
+    private struct OldModifiedRequest: Decodable { var url: String?; var headers: [String: String]? }
 
     private func ms(_ duration: Duration) -> Int64 {
         duration.components.seconds * 1_000 + duration.components.attoseconds / 1_000_000_000_000_000

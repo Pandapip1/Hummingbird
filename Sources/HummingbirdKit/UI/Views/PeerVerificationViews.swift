@@ -4,7 +4,7 @@ import SwiftOpenUI
 
 extension View {
     /// Shows emoji verifications with other instances, including ones another
-    /// instance starts, wherever the user is in the app.
+    /// instance starts, while the Sync settings page is open.
     func peerVerificationPrompts(_ account: ProfileAccountService) -> some View {
         modifier(PeerVerificationPrompts(account: account))
     }

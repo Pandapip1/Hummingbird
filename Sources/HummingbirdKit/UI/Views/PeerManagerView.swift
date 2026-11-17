@@ -118,6 +118,9 @@ struct SyncSettingsView: View {
             }
         }
         .navigationTitle("Sync")
+        // Verifications, including ones another instance starts, are shown
+        // only here, not over every page.
+        .peerVerificationPrompts(app.profileAccount)
         .toolbar {
             if !isScanning {
                 ToolbarItem(placement: .primaryAction) {

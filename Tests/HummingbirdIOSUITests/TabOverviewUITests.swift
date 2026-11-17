@@ -99,12 +99,18 @@ final class TabOverviewUITests: XCTestCase {
         return card
     }
 
+    /// The cards' labels in reading order, from one snapshot of the app, so a
+    /// card going away (a closing tab) can't make the query fail half way.
     @MainActor private func titles(in app: XCUIApplication) -> [String] {
-        // The cards only, not other "Open …" buttons such as the new-tab menu.
-        app.buttons.matching(identifier: "browser-tab-overview-card").allElementsBoundByIndex
-            .map { ($0.frame, $0.label) }
-            .sorted { ($0.0.minY, $0.0.minX) < ($1.0.minY, $1.0.minX) }
-            .map(\.1)
+        guard let root = try? app.snapshot() else { return [] }
+        var cards: [(CGRect, String)] = []
+        var pending = [root]
+        while let element = pending.popLast() {
+            // The cards only, not other "Open …" buttons such as the new-tab menu.
+            if element.identifier == "browser-tab-overview-card" { cards.append((element.frame, element.label)) }
+            pending += element.children
+        }
+        return cards.sorted { ($0.0.minY, $0.0.minX) < ($1.0.minY, $1.0.minX) }.map(\.1)
     }
 
     @MainActor private func waitForChange(_ previous: [String], in app: XCUIApplication) -> [String] {

@@ -14,6 +14,10 @@ struct InstalledPlugin: Codable, Identifiable, Hashable, Sendable {
     var installedAt: Date = Date()
     /// Newer version found by the last update check.
     var availableVersion: Int?
+    /// A source another device installs this plugin from that the user chose
+    /// not to switch to. Synced records naming it are taken as resolved, so
+    /// the user isn't asked again. Never synced.
+    var declinedSyncSource: String?
     var id: String { config.id }
 }
 
@@ -606,6 +610,7 @@ final class PluginManager {
         for change in changes {
             guard let plugin = change.plugin else { continue }
             if let current = self.plugin(plugin.pluginID), current.config.sourceUrl == plugin.sourceURL { continue }
+            if self.plugin(plugin.pluginID)?.declinedSyncSource == plugin.sourceURL { continue }
             // Already downloaded and waiting for the user to choose.
             if let waiting = syncInstalls[plugin.pluginID], waiting.confirmation != nil,
                waiting.sourceURL == plugin.sourceURL { continue }
@@ -648,6 +653,12 @@ final class PluginManager {
                     installs[id] = nil
                     pendingReplacements[id] = nil
                 }
+                applied.insert(change.key)
+                continue
+            }
+            // The user kept this device's copy over this source: resolved.
+            if updated.first(where: { $0.id == plugin.pluginID })?.declinedSyncSource == plugin.sourceURL {
+                installs[plugin.pluginID] = nil
                 applied.insert(change.key)
                 continue
             }
@@ -726,12 +737,15 @@ final class PluginManager {
         invalidate(id)
     }
 
-    /// Keeps this device's copy. It is published as the newer record, so
-    /// the other devices take it and nobody is asked again.
+    /// Keeps this device's copy and remembers the other source as declined,
+    /// so the next sync records the choice as resolved and nobody is asked
+    /// again. Nothing is published: the other devices keep theirs.
     func keepLocalPlugin(_ id: String) {
-        pendingReplacements[id] = nil
+        let declined = pendingReplacements.removeValue(forKey: id)?.synced.sourceURL ?? syncInstalls[id]?.sourceURL
         syncInstalls[id] = nil
-        if let current = plugin(id) { recordLocalEdit(current) }
+        guard let declined, let index = installed.firstIndex(where: { $0.id == id }) else { return }
+        installed[index].declinedSyncSource = declined
+        persist()
     }
 
     /// Downloads and checks every plugin concurrently, at most

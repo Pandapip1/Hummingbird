@@ -404,7 +404,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         var kept: [Set<String>] = []
         for trial in 0..<5 {
             let replica = try AppSyncMutationLog(
-                fileURL: directory.appendingPathComponent("replica\(trial).json"), retention: [collection: 3]
+                fileURL: directory.appendingPathComponent("replica\(trial).json"), retention: [collection: JournalRetention(limit: 3) { _ in nil }]
             )
             for event in events.shuffled(using: &generator) { try replica.merge([event], needsUpload: false) }
             // The full set again, as an old peer would send it.
@@ -418,9 +418,92 @@ final class ProfileSyncApplyTests: XCTestCase {
         XCTAssertTrue(kept.allSatisfy { $0 == kept[0] })
         // A new watch of a dropped video is newer than the floor and stays.
         let rewatch = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("replica0.json"),
-                                             retention: [collection: 3])
+                                             retention: [collection: JournalRetention(limit: 3) { _ in nil }])
         try rewatch.appendPut(collection: collection, key: RecordKey(rawValue: "h0")!, value: .string("again"))
         XCTAssertTrue(rewatch.events().contains { $0.recordKey.rawValue == "h0" })
+    }
+
+    /// History retention ranks records by when they were watched, on every
+    /// device and in the library alike. Introducing a library's history to
+    /// the journal never brings back what retention dropped, and devices
+    /// with the same history end with the same records.
+    func testDroppedHistoryStaysDroppedThroughBootstrapAndMatchesTheLibrary() async throws {
+        let directory = makeTestDirectory()
+        let retention = [HummingbirdProfileSchema.history: JournalRetention(limit: 3) {
+            HummingbirdProfileSchema.historyRank($0.value)
+        }]
+        let start = Date(timeIntervalSince1970: 4_000_000)
+        let entries = try (0..<5).map {
+            HistoryEntry(video: try video($0), position: 1, date: start.addingTimeInterval(Double($0)))
+        }
+        var snapshot = LibraryPersistenceSnapshot.empty
+        snapshot.history = entries.reversed()
+
+        func device(_ name: String) throws -> (AppSyncMutationLog, ProfileChangeStore, LibraryStore) {
+            let log = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("\(name).json"),
+                                             retention: retention)
+            let changes = ProfileChangeStore(mutationLog: log)
+            return (log, changes, LibraryStore(snapshot: snapshot, profileChanges: changes,
+                                                storage: makeTestStores().storage))
+        }
+        let (macLog, macChanges, macLibrary) = try device("mac")
+        let (phoneLog, phoneChanges, phoneLibrary) = try device("phone")
+
+        for (changes, library) in [(macChanges, macLibrary), (phoneChanges, phoneLibrary)] {
+            changes.bootstrap(library.history.map { .history($0) })
+            await changes.flush()
+        }
+        let newest = Set(entries.suffix(3).map { HummingbirdProfileSchema.key(for: $0.id).rawValue })
+        XCTAssertEqual(Set(macLog.events().map(\.recordKey.rawValue)), newest)
+
+        // A second bootstrap (every launch does one) appends nothing.
+        let before = macLog.events()
+        macChanges.bootstrap(macLibrary.history.map { .history($0) })
+        await macChanges.flush()
+        XCTAssertEqual(macLog.events(), before)
+
+        // Exchanging journals in both directions changes nothing either.
+        try macLog.merge(phoneLog.events().shuffled(), needsUpload: true)
+        try phoneLog.merge(macLog.events().shuffled(), needsUpload: true)
+        XCTAssertEqual(Set(phoneLog.events().map(\.recordKey.rawValue)), newest)
+
+        // Each library drops what its journal dropped, and they match.
+        for (log, library) in [(macLog, macLibrary), (phoneLog, phoneLibrary)] {
+            let floor = log.retentionFloor(for: HummingbirdProfileSchema.history)
+            XCTAssertTrue(LibrarySyncBatch.needsTrim(library.history, to: floor))
+            let batch = await LibrarySyncBatch.compute(from: library.syncBase(), changes: [], historyFloor: floor)
+            library.commit(batch)
+        }
+        XCTAssertEqual(macLibrary.history.map(\.id), Array(entries.suffix(3).reversed().map(\.id)))
+        XCTAssertEqual(phoneLibrary.history, macLibrary.history)
+    }
+
+    /// Keeping this device's copy is remembered: the same synced source is
+    /// resolved without asking again or downloading, and nothing is published.
+    func testKeepingLocalCopyIsRememberedAndNotRepublished() async throws {
+        let host = FakePluginHost()
+        let mine = host.serve(id: "alpha", name: "Alpha")
+        let theirs = host.serve(id: "alpha", name: "Alpha Fork")
+        let stores = makeTestStores()
+        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"))
+        let changes = ProfileChangeStore(mutationLog: log)
+        let manager = PluginManager(installed: [try host.installed(mine)], profileChanges: changes,
+                                    storage: stores.storage, credentialStore: stores.credentialStore,
+                                    fetch: host.fetch)
+        let change = PluginSyncChange(key: HummingbirdProfileSchema.key(for: "alpha"),
+                                      plugin: try XCTUnwrap(SyncedPlugin(host.installed(theirs))))
+        _ = await manager.applySynced([change])
+        XCTAssertNotNil(manager.syncInstalls["alpha"]?.confirmation)
+
+        manager.keepLocalPlugin("alpha")
+        await changes.flush()
+        XCTAssertTrue(log.events().isEmpty, "keeping publishes nothing")
+        let fetches = host.fetchCount
+        let applied = await manager.applySynced([change])
+        XCTAssertEqual(applied, [change.key])
+        XCTAssertNil(manager.syncInstalls["alpha"])
+        XCTAssertEqual(host.fetchCount, fetches)
+        XCTAssertEqual(manager.plugin("alpha")?.config.sourceUrl, mine.configURL.absoluteString)
     }
 
     /// Journals old enough to record versions as bare timestamps also get

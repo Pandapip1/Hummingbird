@@ -404,14 +404,15 @@ private struct ApplicationLifecycleModifier: ViewModifier {
         let model = model
         return content.onLifecycle { event in
             switch event {
-            case .phase(.background), .sceneEnded:
+            case .phase(.background):
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
                 let stores = model.stores
                 Task.detached { await stores.flush() }
-            case .willTerminate:
-                // Nothing runs after this returns, so the queued writes
-                // finish here.
+            case .sceneEnded, .willTerminate:
+                // Closing the last window can quit the application with no
+                // termination event reaching this window (it has already
+                // ended), so both wait for the queued writes here.
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
                 model.profileChanges.flushBeforeTermination()

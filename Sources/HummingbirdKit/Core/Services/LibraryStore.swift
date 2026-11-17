@@ -408,7 +408,11 @@ struct LibrarySyncBatch: Sendable {
 
     /// Computes every changed collection concurrently.
     @concurrent
-    static func compute(from base: LibrarySyncBase, changes: [LibrarySyncChange]) async -> LibrarySyncBatch {
+    /// `historyFloor` is the journal's history retention floor: entries
+    /// ranked at or below it are dropped here too, so this device keeps the
+    /// same history every device's journal keeps.
+    static func compute(from base: LibrarySyncBase, changes: [LibrarySyncChange],
+                        historyFloor: RetentionFloor? = nil) async -> LibrarySyncBatch {
         let grouped = Dictionary(grouping: changes) { $0.mutation.collection }
         async let subscriptions = grouped[HummingbirdProfileSchema.subscription].map {
             mergeSubscriptions(base.subscriptions, $0)
@@ -417,7 +421,9 @@ struct LibrarySyncBatch: Sendable {
         async let watchLater = grouped[HummingbirdProfileSchema.watchLater].map {
             mergeWatchLater(base.watchLater, positions: base.watchLaterPositions, $0)
         }
-        async let history = grouped[HummingbirdProfileSchema.history].map { mergeHistory(base.history, $0) }
+        let historyChanges = grouped[HummingbirdProfileSchema.history]
+            ?? (needsTrim(base.history, to: historyFloor) ? [] : nil)
+        async let history = historyChanges.map { mergeHistory(base.history, $0, floor: historyFloor) }
         var batch = LibrarySyncBatch(base: base.revisions)
         batch.subscriptions = await subscriptions
         batch.playlists = await playlists
@@ -488,7 +494,14 @@ struct LibrarySyncBatch: Sendable {
         return WatchLater(videos: videos, positions: positions)
     }
 
-    private static func mergeHistory(_ base: [HistoryEntry], _ changes: [LibrarySyncChange]) -> [HistoryEntry] {
+    /// Whether `history` (newest first) holds an entry retention dropped.
+    static func needsTrim(_ history: [HistoryEntry], to floor: RetentionFloor?) -> Bool {
+        guard let floor, let oldest = history.last else { return false }
+        return HummingbirdProfileSchema.historyRank(oldest) <= floor
+    }
+
+    private static func mergeHistory(_ base: [HistoryEntry], _ changes: [LibrarySyncChange],
+                                     floor: RetentionFloor?) -> [HistoryEntry] {
         var byID = Dictionary(base.map { ($0.id, $0) }) { first, _ in first }
         var deletedAt: [RecordKey: Date] = [:]
         for change in changes where change.mutation.operation == .delete {
@@ -509,7 +522,13 @@ struct LibrarySyncBatch: Sendable {
             if let local = byID[value.id], local.date > value.date { continue }
             byID[value.id] = value
         }
-        let sorted = byID.values.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+        if let floor { byID = byID.filter { HummingbirdProfileSchema.historyRank($0.value) > floor } }
+        // Newest first, in the order retention ranks records (ties by record
+        // key), so the limit keeps what every journal keeps.
+        let sorted = byID.values.sorted {
+            $0.date != $1.date ? $0.date > $1.date
+                : HummingbirdProfileSchema.historyRank($0) > HummingbirdProfileSchema.historyRank($1)
+        }
         return Array(sorted.prefix(LibraryStore.historyLimit))
     }
 }

@@ -278,7 +278,9 @@ final class ProfileSyncService {
     private func applyUnapplied() async -> [String] {
         guard let mutationLog = changes.mutationLog, let library, let plugins else { return [] }
         let records = await Self.decodeUnapplied(in: mutationLog)
-        guard !records.isEmpty else { return [] }
+        let floor = records.historyFloor
+        var trim = LibrarySyncBatch.needsTrim(library.history, to: floor)
+        guard !records.isEmpty || trim else { return [] }
 
         async let pluginKeys = plugins.applySynced(records.plugins.map(\.change))
 
@@ -286,15 +288,17 @@ final class ProfileSyncService {
         var remaining = records.library
         // A collection edited here while its new value was computed is
         // computed again from the edited state.
-        for _ in 0..<3 where !remaining.isEmpty {
-            let batch = await LibrarySyncBatch.compute(from: library.syncBase(), changes: remaining)
+        // History the journal's retention dropped is dropped here too.
+        for _ in 0..<3 where !remaining.isEmpty || trim {
+            let batch = await LibrarySyncBatch.compute(from: library.syncBase(), changes: remaining, historyFloor: floor)
             let committed = library.commit(batch)
+            if committed.contains(HummingbirdProfileSchema.history) { trim = false }
             appliedLibrary += remaining.filter { committed.contains($0.mutation.collection) }.map(\.mutation)
             remaining.removeAll { committed.contains($0.mutation.collection) }
         }
         // Still edited here each time: go again right after this pass rather
         // than waiting for the timer.
-        if !remaining.isEmpty { passRequested = true }
+        if !remaining.isEmpty || trim { passRequested = true }
 
         let installedKeys = await pluginKeys
         let appliedPlugins = records.plugins.filter { installedKeys.contains($0.change.key) }.map(\.mutation)
@@ -325,12 +329,15 @@ final class ProfileSyncService {
         var library: [LibrarySyncChange] = []
         var plugins: [(mutation: JournalMutation, change: PluginSyncChange)] = []
         var undecodable: [JournalMutation] = []
+        /// Where the journal's history retention has dropped records.
+        var historyFloor: RetentionFloor?
         var isEmpty: Bool { library.isEmpty && plugins.isEmpty && undecodable.isEmpty }
     }
 
     @concurrent
     private static func decodeUnapplied(in mutationLog: AppSyncMutationLog) async -> UnappliedRecords {
         var records = UnappliedRecords()
+        records.historyFloor = mutationLog.retentionFloor(for: HummingbirdProfileSchema.history)
         for mutation in mutationLog.unappliedWinners() {
             let entity: ProfileEntity?
             if mutation.operation == .delete {

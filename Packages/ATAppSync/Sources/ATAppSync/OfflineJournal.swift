@@ -469,6 +469,11 @@ public struct RetentionFloor: Codable, Hashable, Comparable, Sendable {
     public let rank: Double
     public let path: String
 
+    public init(rank: Double, path: String) {
+        self.rank = rank
+        self.path = path
+    }
+
     public static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rank != rhs.rank ? lhs.rank < rhs.rank : lhs.path > rhs.path
     }

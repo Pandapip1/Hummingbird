@@ -139,8 +139,21 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     }
 
     @ViewBuilder private var secondaryButtons: some View {
-        if model.pictureInPictureSupported {
-            Button { interacted(); model.startPictureInPicture() } label: { Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture") }
+        switch model.pictureInPictureState {
+        case .unsupported:
+            EmptyView()
+        case .starting, .stopping:
+            // Changing: an indeterminate spinner in place of the button until it settles.
+            ProgressView().accessibilityLabel("Picture in Picture is changing")
+        case .active:
+            Button { interacted(); model.stopPictureInPicture() } label: {
+                Image(systemName: "pip.exit").accessibilityLabel("Exit Picture in Picture")
+            }
+        case .possible, .unavailable:
+            Button { interacted(); model.startPictureInPicture() } label: {
+                Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
+            }
+            .disabled(model.pictureInPictureState == .unavailable)
         }
         Button { interacted(); model.toggleFullscreen() } label: {
             Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")

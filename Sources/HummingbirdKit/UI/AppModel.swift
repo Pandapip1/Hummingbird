@@ -90,6 +90,8 @@ final class AppModel {
     func player(forTab id: BrowserTab.ID) -> PlayerModel {
         if let player = tabPlayers[id] { return player }
         let player = makePlayer(stores)
+        // Returning from Picture in Picture brings this tab back.
+        player.onRestoreRequested = { [weak self] in self?.activeTabID = id }
         tabPlayers[id] = player
         return player
     }

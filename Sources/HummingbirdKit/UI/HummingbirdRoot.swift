@@ -114,7 +114,7 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
     let duration: Double = 600
     var isPlaying = false
     var playbackRate: Float = 1
-    let pictureInPictureSupported = false
+    let pictureInPictureState = PictureInPictureState.unsupported
     let isMediaReady = true
 
     func togglePlayback() { isPlaying.toggle() }
@@ -122,6 +122,7 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
     func seek(to seconds: Double) { playbackTime = min(max(0, seconds), duration) }
     func setPlaybackRate(_ rate: Float) { playbackRate = rate }
     func startPictureInPicture() {}
+    func stopPictureInPicture() {}
     func toggleFullscreen() {}
 }
 

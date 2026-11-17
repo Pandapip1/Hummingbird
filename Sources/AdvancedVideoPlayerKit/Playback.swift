@@ -68,6 +68,21 @@ public struct PlayRequest: Sendable {
 
 public enum MediaBackendLoadError: Error { case superseded }
 
+/// Where Picture in Picture stands. Controls show a PiP button unless it is
+/// `unsupported`, enable it only when it can act (`possible`, `active`), and
+/// show a spinner while it changes (`starting`, `stopping`): never a button that
+/// pretends.
+public enum PictureInPictureState: Sendable, Equatable {
+    /// This backend or platform has no Picture in Picture.
+    case unsupported
+    /// Supported, but not right now (no media yet, or the surface is not on screen).
+    case unavailable
+    case possible
+    case starting
+    case active
+    case stopping
+}
+
 /// Platform playback engine contract. Applications can supply AVFoundation,
 /// GStreamer, VLC, or test implementations without changing player UI.
 @MainActor
@@ -82,7 +97,12 @@ public protocol MediaBackend: AnyObject {
     func selectTrack(_ track: MediaTrack?)
     func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack?
     func setExternalSubtitle(_ url: URL?)
-    var pictureInPictureSupported: Bool { get }
+    var pictureInPictureState: PictureInPictureState { get }
+    /// Called whenever `pictureInPictureState` changes.
+    var onPictureInPictureChange: (@MainActor (PictureInPictureState) -> Void)? { get set }
+    /// Called when the user returns from Picture in Picture to the app: the host
+    /// brings the player's page (tab, window) back before PiP closes.
+    var onRestoreFromPictureInPicture: (@MainActor () -> Void)? { get set }
     func startPictureInPicture()
     func stopPictureInPicture()
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws
@@ -99,7 +119,9 @@ public extension MediaBackend {
     func selectTrack(_: MediaTrack?) {}
     func selectedTrack(ofKind _: MediaTrack.Kind) -> MediaTrack? { nil }
     func setExternalSubtitle(_: URL?) {}
-    var pictureInPictureSupported: Bool { false }
+    var pictureInPictureState: PictureInPictureState { .unsupported }
+    var onPictureInPictureChange: (@MainActor (PictureInPictureState) -> Void)? { get { nil } set {} }
+    var onRestoreFromPictureInPicture: (@MainActor () -> Void)? { get { nil } set {} }
     func startPictureInPicture() {}
     func stopPictureInPicture() {}
     func setPlaybackRate(_: Float) {}
@@ -116,11 +138,12 @@ public protocol AdvancedVideoPlayerControlling: AnyObject, Observable {
     var duration: Double { get }
     var isPlaying: Bool { get }
     var playbackRate: Float { get }
-    var pictureInPictureSupported: Bool { get }
+    var pictureInPictureState: PictureInPictureState { get }
     func togglePlayback()
     func skip(by seconds: Double)
     func seek(to seconds: Double)
     func setPlaybackRate(_ rate: Float)
     func startPictureInPicture()
+    func stopPictureInPicture()
     func toggleFullscreen()
 }

@@ -72,6 +72,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// How long a switch waits for the new item's first frames before it counts
     /// as failed. Nil confirms on load alone (test backends that never play).
     @ObservationIgnored var playbackConfirmationTimeout: Duration? = .seconds(15)
+    /// Tests only: turns an option into local playback without a plugin, so
+    /// load generations, switching and confirmation can be driven by a fake
+    /// backend. Nil in the app.
+    @ObservationIgnored var localPlaybackForTesting: (@MainActor (PlaybackOption) async throws -> LocalPlayback)?
     private(set) var errorMessage: String?
     private(set) var isPreparing = false
     private(set) var preparationMessage: String?
@@ -80,7 +84,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var embeddedSubtitleChoice: MediaTrack?
     private(set) var subtitleSources: [SubtitleSource] = []
     var tracks: [MediaTrack] { backend?.tracks ?? [] }
-    var pictureInPictureSupported: Bool { backend?.pictureInPictureSupported ?? false }
+    /// Picture in Picture, as the backend reports it (see `PictureInPictureState`).
+    private(set) var pictureInPictureState: PictureInPictureState = .unsupported
+    /// Brings this player's page back (its tab becomes active) when the user
+    /// returns from Picture in Picture. Set by the tab that owns the player.
+    @ObservationIgnored var onRestoreRequested: (() -> Void)?
     private(set) var playbackTime: Double = 0
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
@@ -150,6 +158,17 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         subtitleSizeChoice = SubtitleSizeChoice(
             rawValue: defaults.double(forKey: PlaybackPreferenceKey.subtitleSize)
         ) ?? .medium
+        if let backend { attach(backend) }
+    }
+
+    /// Routes the backend's events to this model.
+    private func attach(_ engine: MediaBackend) {
+        engine.onTick = { [weak self] seconds in self?.tick(seconds) }
+        engine.onEnded = { [weak self] in self?.finished() }
+        engine.onFailure = { [weak self] message in self?.playerFailed(message) }
+        engine.onPictureInPictureChange = { [weak self] state in self?.pictureInPictureState = state }
+        engine.onRestoreFromPictureInPicture = { [weak self] in self?.onRestoreRequested?() }
+        pictureInPictureState = engine.pictureInPictureState
     }
 
     // MARK: loading
@@ -182,9 +201,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let maxHeight = preferences.defaults.object(forKey: PlaybackPreferenceKey.maxVideoHeight) as? Int ?? 1080
         let engine = backend ?? makeMediaBackend()
         backend = engine
-        engine.onTick = { [weak self] seconds in self?.tick(seconds) }
-        engine.onEnded = { [weak self] in self?.finished() }
-        engine.onFailure = { [weak self] message in self?.playerFailed(message) }
+        attach(engine)
         startup = PlaybackStartupTrace()
         let preferredLanguage = Locale.current.language.languageCode?.identifier
         let splitAudioSources = PlaybackSelector.audioChoices(details.audioSources)
@@ -428,28 +445,32 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) height=\(option.video.height) videoBitrate=\(option.video.bitrate) audioBitrate=\(option.audio?.bitrate ?? 0) videoHost=\(videoHost, privacy: .private) audioHost=\(audioHost, privacy: .private)")
             startup?.mark(.selected)
             let playback: LocalPlayback
-            switch option.kind {
-            case .live:
-                let (session, local) = try await startHLSDownload(option, live: true)
-                newSession = session
-                playback = local
-            case .hls:
-                let (session, local) = try await startHLSDownload(option)
-                newSession = session
-                playback = local
-            case .generated:
-                let url: URL
-                if let audioSource = option.audio, audioSource.pluginType == "DashManifestRawAudioSource" {
-                    url = try await resolveGeneratedPair(video: option.video, audio: audioSource, generation: generation)
-                } else {
-                    url = try await resolveGenerated(option.video, generation: generation)
+            if let resolveForTesting = localPlaybackForTesting {
+                playback = try await resolveForTesting(option)
+            } else {
+                switch option.kind {
+                case .live:
+                    let (session, local) = try await startHLSDownload(option, live: true)
+                    newSession = session
+                    playback = local
+                case .hls:
+                    let (session, local) = try await startHLSDownload(option)
+                    newSession = session
+                    playback = local
+                case .generated:
+                    let url: URL
+                    if let audioSource = option.audio, audioSource.pluginType == "DashManifestRawAudioSource" {
+                        url = try await resolveGeneratedPair(video: option.video, audio: audioSource, generation: generation)
+                    } else {
+                        url = try await resolveGenerated(option.video, generation: generation)
+                    }
+                    newPresentation = url
+                    playback = try LocalPlayback(video: url, servedBy: .generatedMedia)
+                case .progressive:
+                    let (session, local) = try await startDownload(option)
+                    newSession = session
+                    playback = local
                 }
-                newPresentation = url
-                playback = try LocalPlayback(video: url, servedBy: .generatedMedia)
-            case .progressive:
-                let (session, local) = try await startDownload(option)
-                newSession = session
-                playback = local
             }
             startup?.mark(.resolved)
             let newPipelineTask = newSession.map(observePipeline)
@@ -980,6 +1001,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         dismissFullscreen()
         backend?.stop()
         backend = nil
+        pictureInPictureState = .unsupported
         // Downloads stop with the player; what was downloaded stays cached and
         // resumes the next time this video plays.
         let session = vodSession, presentation = generatedPresentation

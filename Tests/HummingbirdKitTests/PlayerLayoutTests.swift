@@ -166,7 +166,6 @@ private final class LayoutBackend: MediaBackend {
     var currentTime = 7200.0
     var duration = 86400.0
     var isPlaying = false
-    var pictureInPictureSupported = true
     let tracks = [
         MediaTrack(id: "video", kind: .video, language: nil, label: "Video"),
         MediaTrack(id: "audio", kind: .audio, language: "en", label: "Audio"),

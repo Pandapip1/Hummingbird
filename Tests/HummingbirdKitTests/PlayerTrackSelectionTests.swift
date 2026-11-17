@@ -213,7 +213,6 @@ private final class DelayedStartBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     var failNextLoad = false
     private(set) var loads = 0
 
@@ -238,7 +237,6 @@ private final class RecordingSelectionBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     var loadedResumeTime: Double?
     var loadedAutoplay: Bool?
 
@@ -274,7 +272,6 @@ private final class RecoveringReplacementBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     private var loadCount = 0
 
     func selectTrack(_ track: MediaTrack?) {}
@@ -305,7 +302,6 @@ private final class SelectionBackend: MediaBackend {
     var onFailure: (@MainActor (String) -> Void)?
     let tracks: [MediaTrack]
     private var selected: [MediaTrack.Kind: MediaTrack]
-    var pictureInPictureSupported = false
 
     init(tracks: [MediaTrack], selected: [MediaTrack.Kind: MediaTrack]) {
         self.tracks = tracks; self.selected = selected
@@ -335,7 +331,6 @@ private final class SupersedingBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     private var loadCount = 0
     private var firstLoadContinuation: CheckedContinuation<Void, Never>?
     private var firstLoadStarted: CheckedContinuation<Void, Never>?
@@ -381,7 +376,6 @@ private final class FailingReplacementBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     private var loadCount = 0
 
     func selectTrack(_ track: MediaTrack?) {}
@@ -410,7 +404,6 @@ private final class InstalledLoadBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     var firstItemInstalled = false
     var firstItemFinished = false
     private var loadCount = 0
@@ -457,7 +450,6 @@ private final class CancellableLoadBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     let installsFirstItem: Bool
     var firstItemInstalled = false
     private var loadCount = 0

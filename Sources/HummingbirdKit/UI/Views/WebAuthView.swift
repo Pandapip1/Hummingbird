@@ -45,9 +45,7 @@ struct WebAuthSheet: View {
                 }
             }
                 .navigationTitle(spec.title)
-                #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-                #endif
+                .detailNavigationStyle()
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { session.cancel() } }
                     if !spec.hasExplicitCompletion {

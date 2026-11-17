@@ -4,12 +4,7 @@ import os
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
-#if os(iOS) || os(macOS)
-import AVFoundation
-#endif
-#if os(macOS)
-import Security
-#endif
+import PlatformSupport
 
 /// The running platform's permission prompts. Apple platforms prompt for local
 /// network and camera access; Linux never prompts, so the gate passes straight
@@ -25,13 +20,7 @@ final class PlatformPermissions: SystemPermissions {
         self.localNetworkStatus = localNetworkStatus
     }
 
-    var presentsPrompts: Bool {
-        #if canImport(Darwin)
-        true
-        #else
-        false
-        #endif
-    }
+    var presentsPrompts: Bool { PrivacyPrompts.areShownBySystem }
 
     func status(of resource: ProtectedResource) -> PermissionStatus {
         switch resource {
@@ -42,16 +31,14 @@ final class PlatformPermissions: SystemPermissions {
         case .camera:
             // The system reports camera authorization itself, however it keys
             // it, so no record of ours is involved.
-            #if os(iOS) || os(macOS)
-            switch AVCaptureDevice.authorizationStatus(for: .video) {
+            switch CameraAuthorization.status() {
             case .authorized: return .granted
             case .notDetermined: return .undetermined
-            case .denied, .restricted: return .denied
-            @unknown default: return .undetermined
+            case .denied: return .denied
+            // No per-app authorization to report: where the system prompts
+            // for nothing (Linux) the camera is open; elsewhere it is closed.
+            case nil: return presentsPrompts ? .denied : .granted
             }
-            #else
-            return presentsPrompts ? .denied : .granted
-            #endif
         }
     }
 
@@ -60,23 +47,17 @@ final class PlatformPermissions: SystemPermissions {
         case .localNetwork:
             return true
         case .camera:
-            #if os(iOS) || os(macOS)
-            return await AVCaptureDevice.requestAccess(for: .video)
-            #else
-            return !presentsPrompts
-            #endif
+            return await CameraAuthorization.request() ?? !presentsPrompts
         }
     }
 
     /// The local network decision macOS has stored for this app, read from
-    /// its world-readable rule file. Nil elsewhere, or when nothing is stored.
+    /// its world-readable rule file. Nil where the system keeps no such file,
+    /// or when nothing is stored.
     nonisolated static func recordedLocalNetworkStatus() -> PermissionStatus? {
-        #if os(macOS)
-        guard let data = try? Data(contentsOf: LocalNetworkPrivacyRules.systemFile) else { return nil }
+        guard let file = LocalNetworkPrivacy.recordedDecisionsFile,
+              let data = try? Data(contentsOf: file) else { return nil }
         return LocalNetworkPrivacyRules.status(for: AppSigningIdentity.current(), in: data)
-        #else
-        return nil
-        #endif
     }
 }
 
@@ -107,48 +88,17 @@ enum AppSigningIdentity {
     }
 
     private static let currentIdentity: String = {
-        #if os(macOS)
-        if let identifier = signingIdentifier() { return identifier }
-        #endif
+        if let identifier = CodeSigningIdentity.signingIdentifier() { return identifier }
         return Bundle.main.bundleIdentifier ?? Bundle.main.bundleURL.path
     }()
 
     private static let legacyIdentity: String = {
-        #if os(macOS)
-        if let requirement = designatedRequirement() { return requirement }
-        return Bundle.main.bundleURL.path
-        #else
-        return Bundle.main.bundleIdentifier ?? "app"
-        #endif
+        // Must match what earlier builds stored: their code-signing
+        // requirement where apps are identified by signature (macOS), else
+        // the bundle identifier.
+        guard CodeSigningIdentity.isAvailable else { return Bundle.main.bundleIdentifier ?? "app" }
+        return CodeSigningIdentity.designatedRequirement() ?? Bundle.main.bundleURL.path
     }()
-
-    #if os(macOS)
-    private static func staticSelf() -> SecStaticCode? {
-        var code: SecCode?
-        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
-        var staticCode: SecStaticCode?
-        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess else { return nil }
-        return staticCode
-    }
-
-    private static func signingIdentifier() -> String? {
-        guard let staticCode = staticSelf() else { return nil }
-        var information: CFDictionary?
-        guard SecCodeCopySigningInformation(staticCode, [], &information) == errSecSuccess,
-              let values = information as? [String: Any] else { return nil }
-        return values[kSecCodeInfoIdentifier as String] as? String
-    }
-
-    private static func designatedRequirement() -> String? {
-        guard let staticCode = staticSelf() else { return nil }
-        var requirement: SecRequirement?
-        guard SecCodeCopyDesignatedRequirement(staticCode, [], &requirement) == errSecSuccess,
-              let requirement else { return nil }
-        var text: CFString?
-        guard SecRequirementCopyString(requirement, [], &text) == errSecSuccess, let text else { return nil }
-        return text as String
-    }
-    #endif
 }
 
 /// Reads macOS's stored local network decisions without touching the network.
@@ -162,8 +112,6 @@ enum AppSigningIdentity {
 /// signed `com.eightybps.hummingbird` was not prompted again after the user
 /// had allowed `com.eightybps.Hummingbird`.
 enum LocalNetworkPrivacyRules {
-    static let systemFile = URL(fileURLWithPath: "/Library/Preferences/com.apple.networkextension.plist")
-
     static func status(for signingIdentifier: String, in data: Data) -> PermissionStatus? {
         guard let objects = archivedObjects(data) else { return nil }
         let references = Set(objects.indices.filter {
@@ -350,12 +298,7 @@ final class FilePermissionLedger: PermissionLedger {
                 at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
             )
             try JSONEncoder().encode(record).write(to: fileURL, options: .atomic)
-            #if os(iOS) || os(tvOS) || os(visionOS)
-            var url = fileURL
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            try url.setResourceValues(values)
-            #endif
+            try FileProtection.excludeFromDeviceBackup(fileURL)
         } catch {
             // Losing the record costs one extra explanation, never a silent prompt.
             Logger.permissions.error("record_save_failed error=\(String(reflecting: type(of: error)), privacy: .public) message=\(error.localizedDescription)")

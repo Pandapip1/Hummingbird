@@ -59,6 +59,37 @@ final class FullscreenHandoverUITests: XCTestCase {
         assertOneSurface(app, "after returning")
     }
 
+    /// Screenshots of the glass controls over a white and a black frame, inline
+    /// and full screen (kept as attachments for review).
+    @MainActor
+    func testControlsOverLightAndDarkFrames() throws {
+        for (shade, name) in [(255, "white"), (0, "black")] {
+            let app = IsolatedApp.make()
+            app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-fullscreen"
+            app.launchEnvironment["HUMMINGBIRD_DEBUG_CLIP_SHADE"] = String(shade)
+            app.launch()
+            let state = app.staticTexts["debug-playback-state"]
+            XCTAssertTrue(state.waitForExistence(timeout: 60))
+            XCTAssertTrue(waitUntil(60) { state.label == "playing" })
+            reveal(app)
+            attach(app, "controls-inline-over-\(name)")
+            let enter = app.buttons["Enter Full Screen"]
+            if enter.waitForExistence(timeout: 5) { enter.tap() }
+            Thread.sleep(forTimeInterval: 1)
+            reveal(app)
+            attach(app, "controls-fullscreen-over-\(name)")
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    private func attach(_ app: XCUIApplication, _ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     @MainActor
     private func assertOneSurface(_ app: XCUIApplication, _ step: String) {
         // Let the transition settle, then count at several moments.

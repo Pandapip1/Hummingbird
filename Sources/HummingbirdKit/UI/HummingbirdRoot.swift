@@ -187,7 +187,8 @@ struct FullscreenHandoverDebugScene: View {
 
     private func start() async {
         do {
-            let clip = try await DebugClip.make()
+            let shade = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_CLIP_SHADE"].flatMap(Int32.init)
+            let clip = try await DebugClip.make(shade: shade)
             player.localPlaybackForTesting = { _ in try LocalPlayback(video: clip, servedBy: .mediaCache) }
             let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://debug.invalid/clip.mp4"}"#.utf8))
             await player.select(PlaybackOption(id: "debug-clip", label: "Clip", kind: .hls, video: source, audio: nil, height: 180))
@@ -242,9 +243,11 @@ enum DebugClip {
             if let buffer { input.append(buffer) }
     }
 
+    /// `shade`: every frame that grey level (0 black ... 255 white); nil: frames
+    /// cycle through all levels.
     @concurrent
-    static func make() async throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("debug-clip-with-audio.mp4")
+    static func make(shade: Int32? = nil) async throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("debug-clip-with-audio-\(shade.map(String.init) ?? "cycle").mp4")
         if FileManager.default.fileExists(atPath: url.path) { return url }
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
@@ -273,7 +276,7 @@ enum DebugClip {
             guard let buffer else { continue }
             CVPixelBufferLockBaseAddress(buffer, [])
             if let base = CVPixelBufferGetBaseAddress(buffer) {
-                memset(base, Int32(frame % 255), CVPixelBufferGetDataSize(buffer))
+                memset(base, shade ?? Int32(frame % 255), CVPixelBufferGetDataSize(buffer))
             }
             CVPixelBufferUnlockBaseAddress(buffer, [])
             adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: fps))

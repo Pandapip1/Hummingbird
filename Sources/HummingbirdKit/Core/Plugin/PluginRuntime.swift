@@ -374,9 +374,21 @@ final class PluginRuntime: @unchecked Sendable {
         return src
     }
 
+    /// Runs `body` on the plugin's queue. Signposted as `PluginQueueWait`
+    /// (time spent behind other calls on this plugin's single JavaScript
+    /// context) and `PluginWork` (the call itself, including its blocking
+    /// HTTP), so a slow start shows whether a call was slow or stuck behind
+    /// another one.
     private func perform<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
-        try await withCheckedThrowingContinuation { cont in
+        let signposter = OSSignposter.plugin
+        let pluginID = config.id
+        let waitID = signposter.makeSignpostID()
+        let wait = signposter.beginInterval("PluginQueueWait", id: waitID, "plugin=\(pluginID, privacy: .public)")
+        return try await withCheckedThrowingContinuation { cont in
             queue.async {
+                signposter.endInterval("PluginQueueWait", wait)
+                let work = signposter.beginInterval("PluginWork", id: signposter.makeSignpostID(), "plugin=\(pluginID, privacy: .public)")
+                defer { signposter.endInterval("PluginWork", work) }
                 do { cont.resume(returning: try body()) } catch { cont.resume(throwing: error) }
             }
         }

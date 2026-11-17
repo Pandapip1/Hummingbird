@@ -74,8 +74,21 @@ extension XCTestCase {
         )
     }
 
+    /// Local playback for an option without a plugin (see `PlayerModel.localPlaybackForTesting`).
     @MainActor
-    func makeTestPlayerModel(backend: (any MediaBackend)? = nil) -> PlayerModel {
-        PlayerModel(stores: makeTestStores(), backend: backend)
+    static func loopbackPlayback(_ option: PlaybackOption) throws -> LocalPlayback {
+        let id = option.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "option"
+        guard let url = URL(string: "http://127.0.0.1:9/\(id).m3u8") else { throw URLError(.badURL) }
+        return try LocalPlayback(video: url, servedBy: .mediaCache)
+    }
+
+    @MainActor
+    func makeTestPlayerModel(backend: (any MediaBackend)? = nil,
+                             confirmsSwitchOnLoad: Bool = true) -> PlayerModel {
+        let model = PlayerModel(stores: makeTestStores(), backend: backend)
+        model.localPlaybackForTesting = Self.loopbackPlayback
+        // Fake backends rarely play; unless a test opts in, a load confirms a switch.
+        model.confirmsSwitchOnLoadForTesting = confirmsSwitchOnLoad
+        return model
     }
 }

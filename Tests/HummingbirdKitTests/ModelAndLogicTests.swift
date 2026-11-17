@@ -368,9 +368,9 @@ final class ModelAndLogicTests: XCTestCase {
         let options = PlaybackSelector.options(for: d)
         XCTAssertEqual(options.count, 2, "WebM video must be dropped")
         XCTAssertTrue(options.allSatisfy { $0.audio?.url == "https://x/hi.m4a" }, "best playable audio is chosen")
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true)?.height, 1080)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720, preferAdaptive: true)?.height, 720)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 480, preferAdaptive: true)?.height, 720, "falls back to the smallest if all are too tall")
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080)?.height, 1080)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720)?.height, 720)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 480)?.height, 720, "falls back to the smallest if all are too tall")
     }
 
     func testAudioSelectionPrefersViewerLanguageBeforeOriginalTrack() throws {
@@ -389,7 +389,7 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(PlaybackSelector.audioChoices(d.audioSources).count, 2)
     }
 
-    func testHLSPreferredWhenAdaptive() throws {
+    func testFilesPreferredOverHLSAndHLSUsedWhenAlone() throws {
         let d = try decode(VideoDetails.self, """
         {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},"description":"",
          "video":{"isUnMuxed":false,"videoSources":[
@@ -397,8 +397,9 @@ final class ModelAndLogicTests: XCTestCase {
             {"plugin_type":"HLSSource","url":"https://x/master.m3u8","name":"HLS"}]}}
         """)
         let options = PlaybackSelector.options(for: d)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true)?.kind, .hls)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: false)?.kind, .progressive)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080)?.kind, .progressive)
+        let hlsOnly = options.filter { $0.kind == .hls }
+        XCTAssertEqual(PlaybackSelector.best(hlsOnly, maxHeight: 1080)?.kind, .hls)
     }
 
     func testGeneratedPlaybackSelectionKeepsMP4QualitiesOnly() throws {
@@ -413,8 +414,8 @@ final class ModelAndLogicTests: XCTestCase {
         let options = PlaybackSelector.options(for: d)
         XCTAssertEqual(options.map(\.height).sorted(), [720, 1080])
         XCTAssertTrue(options.allSatisfy { $0.kind == .generated })
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720, preferAdaptive: true)?.height, 720)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true)?.height, 1080)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720)?.height, 720)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080)?.height, 1080)
     }
 
     func testGeneratedPlaybackPairsSeparateGeneratedAudio() throws {

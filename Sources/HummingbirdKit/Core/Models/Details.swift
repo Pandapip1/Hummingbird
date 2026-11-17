@@ -25,6 +25,12 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
     var handle: Int?
     var hasGenerate: Bool = false
     var hasRequestExecutor: Bool = false
+    /// Byte layout of a `VideoUrlRangeSource` / `AudioUrlRangeSource` (fragmented MP4):
+    /// the initialization segment and the segment index (`sidx`) ranges, inclusive.
+    var initRange: ClosedRange<Int64>?
+    var indexRange: ClosedRange<Int64>?
+    /// The plugin's stable format identifier (YouTube itag), when it has one.
+    var formatID: String?
 
     var id: String { "\(pluginType)|\(url)|\(handle ?? 0)|\(language)|\(name)" }
     var isHLS: Bool { pluginType.hasPrefix("HLS") }
@@ -34,6 +40,7 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case plugin_type, name, url, width, height, container, codec, bitrate, duration, language, priority, original, requestModifier
         case __handle, hasGenerate, hasRequestExecutor
+        case initStart, initEnd, indexStart, indexEnd, itagId
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -53,6 +60,14 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
         handle = c.looseInt(.__handle)
         hasGenerate = c.looseBool(.hasGenerate) ?? false
         hasRequestExecutor = c.looseBool(.hasRequestExecutor) ?? false
+        initRange = Self.range(c.looseInt(.initStart), c.looseInt(.initEnd))
+        indexRange = Self.range(c.looseInt(.indexStart), c.looseInt(.indexEnd))
+        formatID = c.looseString(.itagId)
+    }
+
+    private static func range(_ start: Int?, _ end: Int?) -> ClosedRange<Int64>? {
+        guard let start, let end, start >= 0, end >= start else { return nil }
+        return Int64(start)...Int64(end)
     }
 }
 

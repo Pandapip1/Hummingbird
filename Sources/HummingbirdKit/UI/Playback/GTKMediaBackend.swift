@@ -29,7 +29,12 @@ final class GTKMediaBackend: MediaBackend {
     var currentTime: Double { player.currentTime().seconds }
     var duration: Double { player._swiftOpenUIDuration.seconds }
     var isPlaying: Bool { player.rate > 0 }
-    var pictureInPictureSupported: Bool { true }
+    var onPictureInPictureChange: (@MainActor (PictureInPictureState) -> Void)?
+    var onRestoreFromPictureInPicture: (@MainActor () -> Void)?
+    /// GStreamer's Picture in Picture is a floating window; possible once an item is loaded.
+    private(set) var pictureInPictureState: PictureInPictureState = .unavailable {
+        didSet { if pictureInPictureState != oldValue { onPictureInPictureChange?(pictureInPictureState) } }
+    }
     var tracks: [MediaTrack] {
         if let asset = player.currentItem?.asset {
             asset._swiftOpenUIRefreshMediaSelectionGroups?()
@@ -97,6 +102,7 @@ final class GTKMediaBackend: MediaBackend {
         guard canCommitLoad(generation) else { throw MediaBackendLoadError.superseded }
         player.replaceCurrentItem(with: item)
         committedLoadGeneration = generation
+        if pictureInPictureController == nil { pictureInPictureState = .possible }
         committedAsset = item.asset
         mediaSelectionGroups = [:]
         if let didInstallItem { try await didInstallItem(item) }
@@ -160,14 +166,20 @@ final class GTKMediaBackend: MediaBackend {
     }
     func seek(to seconds: Double) { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
     func startPictureInPicture() {
+        guard pictureInPictureState == .possible else { return }
+        pictureInPictureState = .starting
         if pictureInPictureController == nil {
             pictureInPictureController = AVPictureInPictureController(playerLayer: AVPlayerLayer(player: player))
         }
         pictureInPictureController?.startPictureInPicture()
+        pictureInPictureState = .active
     }
     func stopPictureInPicture() {
+        let wasActive = pictureInPictureController != nil
+        if wasActive { pictureInPictureState = .stopping }
         pictureInPictureController?.stopPictureInPicture()
         pictureInPictureController = nil
+        pictureInPictureState = player.currentItem == nil ? .unavailable : .possible
     }
     func stop() {
         loadGeneration &+= 1
@@ -180,6 +192,7 @@ final class GTKMediaBackend: MediaBackend {
         mediaSelectionRefreshGeneration &+= 1
         stopPictureInPicture()
         player.pause(); player.replaceCurrentItem(with: nil)
+        pictureInPictureState = .unavailable
         mediaSelectionGroups = [:]
     }
 

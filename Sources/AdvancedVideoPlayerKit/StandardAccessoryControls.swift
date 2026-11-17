@@ -45,6 +45,8 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
     public let title: String
     public let options: [Option]
     public let selectedID: Option.ID?
+    /// A choice the player is switching to; the checkmark stays on `selectedID` until it is confirmed.
+    public let pendingID: Option.ID?
     private let label: (Option) -> String
     private let select: (Option) -> Void
     private let interacted: () -> Void
@@ -53,6 +55,7 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
         title: String = "Video",
         options: [Option],
         selectedID: Option.ID?,
+        pendingID: Option.ID? = nil,
         label: @escaping (Option) -> String,
         onSelect: @escaping (Option) -> Void,
         interacted: @escaping () -> Void = {}
@@ -60,6 +63,7 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
         self.title = title
         self.options = options
         self.selectedID = selectedID
+        self.pendingID = pendingID
         self.label = label
         self.select = onSelect
         self.interacted = interacted
@@ -71,10 +75,11 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
                 Text(title)
             } content: {
                 ForEach(options) { option in
-                    Button { interacted(); select(option) } label: {
-                        if option.id == selectedID { Label(label(option), systemImage: "checkmark") }
-                        else { Text(label(option)) }
+                    CheckableMenuItem(label(option), state: option.id == pendingID ? .pending : option.id == selectedID ? .checked : .unchecked) {
+                        interacted(); select(option)
                     }
+                    // One switch at a time: nothing else is chosen while one is pending.
+                    .disabled(pendingID != nil)
                 }
             }
         }
@@ -113,10 +118,9 @@ public struct MediaTrackControl: View {
                 Text(title)
             } content: {
                 ForEach(tracks, id: \.id) { track in
-                    Button { interacted(); select(track) } label: {
-                        let text = track.label ?? track.language ?? fallbackLabel
-                        if track.id == selectedID { Label(text, systemImage: "checkmark") }
-                        else { Text(text) }
+                    CheckableMenuItem(track.label ?? track.language ?? fallbackLabel,
+                                   state: track.id == selectedID ? .checked : .unchecked) {
+                        interacted(); select(track)
                     }
                 }
             }
@@ -143,6 +147,8 @@ public struct SubtitleControl<AppearanceControls: View>: View {
     public let external: [SubtitleOption]
     public let selectedEmbeddedID: String?
     public let selectedExternalID: SubtitleOption.ID?
+    /// An external subtitle still loading; the checkmark stays on the current choice.
+    public let pendingExternalID: SubtitleOption.ID?
     private let selectEmbedded: (MediaTrack) -> Void
     private let selectExternal: (SubtitleOption?) -> Void
     private let interacted: () -> Void
@@ -153,6 +159,7 @@ public struct SubtitleControl<AppearanceControls: View>: View {
         external: [SubtitleOption],
         selectedEmbeddedID: String?,
         selectedExternalID: SubtitleOption.ID?,
+        pendingExternalID: SubtitleOption.ID? = nil,
         onSelectEmbedded: @escaping (MediaTrack) -> Void,
         onSelectExternal: @escaping (SubtitleOption?) -> Void,
         interacted: @escaping () -> Void = {},
@@ -162,6 +169,7 @@ public struct SubtitleControl<AppearanceControls: View>: View {
         self.external = external
         self.selectedEmbeddedID = selectedEmbeddedID
         self.selectedExternalID = selectedExternalID
+        self.pendingExternalID = pendingExternalID
         self.selectEmbedded = onSelectEmbedded
         self.selectExternal = onSelectExternal
         self.interacted = interacted
@@ -173,21 +181,18 @@ public struct SubtitleControl<AppearanceControls: View>: View {
             PlayerMenu {
                 Text("Subtitles")
             } content: {
-                Button { interacted(); selectExternal(nil) } label: {
-                    if selectedEmbeddedID == nil && selectedExternalID == nil { Label("Off", systemImage: "checkmark") }
-                    else { Text("Off") }
+                CheckableMenuItem("Off", state: selectedEmbeddedID == nil && selectedExternalID == nil ? .checked : .unchecked) {
+                    interacted(); selectExternal(nil)
                 }
                 ForEach(embedded, id: \.id) { track in
-                    Button { interacted(); selectEmbedded(track) } label: {
-                        let name = track.label ?? track.language ?? "Embedded"
-                        if selectedEmbeddedID == track.id { Label(name, systemImage: "checkmark") }
-                        else { Text(name) }
+                    CheckableMenuItem(track.label ?? track.language ?? "Embedded",
+                                   state: selectedEmbeddedID == track.id ? .checked : .unchecked) {
+                        interacted(); selectEmbedded(track)
                     }
                 }
                 ForEach(external) { subtitle in
-                    Button { interacted(); selectExternal(subtitle) } label: {
-                        if selectedExternalID == subtitle.id { Label(subtitle.name, systemImage: "checkmark") }
-                        else { Text(subtitle.name) }
+                    CheckableMenuItem(subtitle.name, state: pendingExternalID == subtitle.id ? .pending : selectedExternalID == subtitle.id ? .checked : .unchecked) {
+                        interacted(); selectExternal(subtitle)
                     }
                 }
                 appearanceControls()

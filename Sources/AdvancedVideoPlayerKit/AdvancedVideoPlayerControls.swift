@@ -85,7 +85,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                     Text(model.title).font(.headline)
                 }
                 Spacer()
-                accessories(interacted)
+                accessories(interacted).disabled(!model.isMediaReady)
             }
             .modifier(FocusSection()).foregroundStyle(Color.white)
             .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
@@ -93,7 +93,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
 
             Spacer().frame(minHeight: AdvancedVideoPlayerLayout.minimumBarSeparation, maxHeight: .infinity)
-            transport.modifier(FocusSection()).foregroundStyle(Color.white)
+            transport.disabled(!model.isMediaReady).modifier(FocusSection()).foregroundStyle(Color.white)
                 .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
@@ -139,8 +139,21 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     }
 
     @ViewBuilder private var secondaryButtons: some View {
-        if model.pictureInPictureSupported {
-            Button { interacted(); model.startPictureInPicture() } label: { Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture") }
+        switch model.pictureInPictureState {
+        case .unsupported:
+            EmptyView()
+        case .starting, .stopping:
+            // Changing: an indeterminate spinner in place of the button until it settles.
+            ProgressView().accessibilityLabel("Picture in Picture is changing")
+        case .active:
+            Button { interacted(); model.stopPictureInPicture() } label: {
+                Image(systemName: "pip.exit").accessibilityLabel("Exit Picture in Picture")
+            }
+        case .possible, .unavailable:
+            Button { interacted(); model.startPictureInPicture() } label: {
+                Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
+            }
+            .disabled(model.pictureInPictureState == .unavailable)
         }
         Button { interacted(); model.toggleFullscreen() } label: {
             Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
@@ -150,9 +163,9 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×").foregroundStyle(.white)
         } content: {
             ForEach([Float(0.25), 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in
-                Button { interacted(); model.setPlaybackRate(rate) } label: {
-                    let label = rate == 1 ? "Normal" : "\(rate.formatted())×"
-                    if rate == model.playbackRate { Label(label, systemImage: "checkmark") } else { Text(label) }
+                CheckableMenuItem(rate == 1 ? "Normal" : "\(rate.formatted())×",
+                               state: rate == model.playbackRate ? .checked : .unchecked) {
+                    interacted(); model.setPlaybackRate(rate)
                 }
             }
         }

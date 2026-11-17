@@ -45,6 +45,8 @@ public struct HummingbirdRoot: View {
                 .task { await model.plugins.checkForUpdates(origin: .settings) }
                 .onOpenURL { model.handleIncomingURL($0) }
                 .observesApplicationLifecycle(model)
+                // Closing the window (or quitting) stops its players: nothing plays from a closed window.
+                .onSceneEnd { model.closeWindow() }
         }
     }
 
@@ -112,13 +114,15 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
     let duration: Double = 600
     var isPlaying = false
     var playbackRate: Float = 1
-    let pictureInPictureSupported = false
+    let pictureInPictureState = PictureInPictureState.unsupported
+    let isMediaReady = true
 
     func togglePlayback() { isPlaying.toggle() }
     func skip(by seconds: Double) { seek(to: playbackTime + seconds) }
     func seek(to seconds: Double) { playbackTime = min(max(0, seconds), duration) }
     func setPlaybackRate(_ rate: Float) { playbackRate = rate }
     func startPictureInPicture() {}
+    func stopPictureInPicture() {}
     func toggleFullscreen() {}
 }
 

@@ -87,7 +87,7 @@ extension PlayerLayoutTests {
         for (width, viewportHeight) in [(800, 800), (1100, 400), (800, 150), (320, 600), (390, 600), (200, 600)] {
             let model = makeTestPlayerModel(backend: LayoutBackend())
             let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://example.com/test.mp4"}"#.utf8))
-            await model.select(PlaybackOption(id: "layout", label: "Video", kind: .progressive,
+            await model.select(PlaybackOption(id: "layout", label: "Video", kind: .hls,
                                               video: source, audio: nil, height: 1080))
             let expectedHeight = PlayerLayout.height(width: CGFloat(width), viewportHeight: CGFloat(viewportHeight))
             let content = GeometryReader { geometry in
@@ -166,7 +166,6 @@ private final class LayoutBackend: MediaBackend {
     var currentTime = 7200.0
     var duration = 86400.0
     var isPlaying = false
-    var pictureInPictureSupported = true
     let tracks = [
         MediaTrack(id: "video", kind: .video, language: nil, label: "Video"),
         MediaTrack(id: "audio", kind: .audio, language: "en", label: "Audio"),

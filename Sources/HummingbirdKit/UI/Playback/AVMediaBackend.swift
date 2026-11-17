@@ -25,6 +25,20 @@ final class AVMediaBackend: MediaBackend {
     private var itemObserver: NSObjectProtocol?
     private var itemFailureObserver: NSObjectProtocol?
     private var itemStatusObserver: NSKeyValueObservation?
+    private var timeControlObserver: NSKeyValueObservation?
+    var onPictureInPictureChange: (@MainActor (PictureInPictureState) -> Void)?
+    var onRestoreFromPictureInPicture: (@MainActor () -> Void)?
+    private(set) var pictureInPictureState: PictureInPictureState = PictureInPictureSupport.isAvailable ? .unavailable : .unsupported {
+        didSet { if pictureInPictureState != oldValue { onPictureInPictureChange?(pictureInPictureState) } }
+    }
+    /// The layer Picture in Picture takes the video from. The surface puts it in
+    /// the view hierarchy (AVKit requires that); on macOS it is the surface.
+    let pictureInPictureLayer = AVPlayerLayer()
+    #if !os(visionOS)
+    private var pictureInPicture: AVPictureInPictureController?
+    private var pictureInPictureDelegate: PictureInPictureDelegate?
+    private var pictureInPicturePossibleObserver: NSKeyValueObservation?
+    #endif
     private var mediaSelectionGroups: [AVMediaCharacteristic: AVMediaSelectionGroup] = [:]
     private var loadGeneration = 0
     private var activeLoadGenerations: Set<Int> = []
@@ -91,7 +105,7 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
-        Logger.avPlayer.info("load_started videoHost=\(request.video.url.host ?? "unknown", privacy: .public) audioHost=\(request.audio?.url.host ?? "none", privacy: .public) separateAudio=\(request.audio != nil)")
+        Logger.avPlayer.info("load_started videoHost=\(request.video.url.host ?? "unknown", privacy: .private) audioHost=\(request.audio?.url.host ?? "none", privacy: .private) separateAudio=\(request.audio != nil)")
         loadGeneration &+= 1
         let generation = loadGeneration
         activeLoadGenerations.insert(generation)
@@ -116,8 +130,9 @@ final class AVMediaBackend: MediaBackend {
         removeObservers()
         let p = player ?? AVPlayer()
         p.replaceCurrentItem(with: item)
-        observeStatus(of: item)
         player = p
+        pictureInPictureLayer.player = p
+        observeStatus(of: item)
         committedLoadGeneration = generation
         committedAsset = item.asset
         mediaSelectionGroups = [:]
@@ -164,6 +179,57 @@ final class AVMediaBackend: MediaBackend {
     }
     func seek(to seconds: Double) { player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
 
+    // MARK: Picture in Picture
+
+    /// Called by the surface once `pictureInPictureLayer` is in a window.
+    func pictureInPictureLayerDidMoveToWindow() {
+        #if !os(visionOS)
+        guard PictureInPictureSupport.isAvailable, pictureInPicture == nil else { return }
+        guard let controller = AVPictureInPictureController(playerLayer: pictureInPictureLayer) else { return }
+        let delegate = PictureInPictureDelegate(
+            event: { [weak self] event in self?.pictureInPictureEvent(event) },
+            restore: { [weak self] in self?.onRestoreFromPictureInPicture?() }
+        )
+        controller.delegate = delegate
+        pictureInPicture = controller
+        pictureInPictureDelegate = delegate
+        pictureInPicturePossibleObserver = controller.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] controller, _ in
+            MainActor.assumeIsolated {
+                guard let self, self.pictureInPictureState == .possible || self.pictureInPictureState == .unavailable else { return }
+                self.pictureInPictureState = controller.isPictureInPicturePossible ? .possible : .unavailable
+            }
+        }
+        #endif
+    }
+
+    func startPictureInPicture() {
+        #if !os(visionOS)
+        guard pictureInPictureState == .possible, let pictureInPicture else { return }
+        pictureInPictureState = .starting
+        pictureInPicture.startPictureInPicture()
+        #endif
+    }
+
+    func stopPictureInPicture() {
+        #if !os(visionOS)
+        guard pictureInPictureState == .active, let pictureInPicture else { return }
+        pictureInPictureState = .stopping
+        pictureInPicture.stopPictureInPicture()
+        #endif
+    }
+
+    #if !os(visionOS)
+    private func pictureInPictureEvent(_ event: PictureInPictureDelegate.Event) {
+        switch event {
+        case .willStart: pictureInPictureState = .starting
+        case .didStart: pictureInPictureState = .active
+        case .willStop: pictureInPictureState = .stopping
+        case .didStop, .failed:
+            pictureInPictureState = pictureInPicture?.isPictureInPicturePossible == true ? .possible : .unavailable
+        }
+    }
+    #endif
+
     func stop() {
         deactivatePlaybackEnvironment()
         loadGeneration &+= 1
@@ -172,6 +238,11 @@ final class AVMediaBackend: MediaBackend {
         committedLoadGeneration = nil
         resumeLoadCompletionWaiters()
         removeObservers()
+        #if !os(visionOS)
+        // Closing the player (its tab or window) ends Picture in Picture too.
+        pictureInPicture?.stopPictureInPicture()
+        #endif
+        pictureInPictureLayer.player = nil
         player?.pause()
         player?.replaceCurrentItem(with: nil)
         player = nil
@@ -184,9 +255,25 @@ final class AVMediaBackend: MediaBackend {
         if let o = itemFailureObserver { NotificationCenter.default.removeObserver(o); itemFailureObserver = nil }
         itemStatusObserver?.invalidate()
         itemStatusObserver = nil
+        timeControlObserver?.invalidate()
+        timeControlObserver = nil
     }
 
     private func observeStatus(of item: AVPlayerItem) {
+        // Where the player waits, and why (e.g. "evaluating buffering rate",
+        // "to minimize stalls"): the last step of a slow start or a stall.
+        timeControlObserver = player?.observe(\.timeControlStatus, options: [.new]) { player, _ in
+            let status = player.timeControlStatus
+            let name = switch status {
+            case .paused: "paused"
+            case .waitingToPlayAtSpecifiedRate: "waiting"
+            case .playing: "playing"
+            @unknown default: "other"
+            }
+            let reason = player.reasonForWaitingToPlay?.rawValue ?? ""
+            Logger.avPlayer.info("time_control status=\(name, privacy: .public) reason=\(reason, privacy: .public)")
+            OSSignposter.player.emitEvent("PlayerTimeControl", "status=\(name, privacy: .public) reason=\(reason, privacy: .public)")
+        }
         itemStatusObserver = item.observe(\.status, options: [.initial, .new]) { [weak self, weak item] _, change in
             guard let status = change.newValue else { return }
             let name: String = switch status {
@@ -202,7 +289,7 @@ final class AVMediaBackend: MediaBackend {
             }
             if status == .failed, let event = item?.errorLog()?.events.last {
                 let uriHost = event.uri.flatMap { URL(string: $0)?.host } ?? ""
-                Logger.avPlayer.error("error_log httpStatus=\(event.errorStatusCode) uriHost=\(uriHost, privacy: .public) server=\(event.serverAddress ?? "") comment=\(event.errorComment ?? "")")
+                Logger.avPlayer.error("error_log httpStatus=\(event.errorStatusCode) uriHost=\(uriHost, privacy: .private) server=\(event.serverAddress ?? "") comment=\(event.errorComment ?? "")")
             }
             if status == .failed, let message = item?.error?.localizedDescription {
                 Task { @MainActor in self?.onFailure?(message) }
@@ -377,6 +464,26 @@ final class AVMediaBackend: MediaBackend {
 struct PlayerSurface: UIViewControllerRepresentable {
     let model: PlayerModel
 
+    /// Puts the backend's Picture in Picture layer in the window, beneath the
+    /// controller's own video (AVKit requires the layer to be on screen).
+    private func installPictureInPictureLayer(in controller: AVPlayerViewController) {
+        guard let backend = model.backend as? AVMediaBackend else { return }
+        let layer = backend.pictureInPictureLayer
+        if layer.superlayer !== controller.view.layer {
+            layer.removeFromSuperlayer()
+            controller.view.layer.insertSublayer(layer, at: 0)
+        }
+        layer.frame = controller.view.bounds
+        if controller.view.window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
+        // After layout, when the controller's view has its size and window.
+        Task { @MainActor [weak controller] in
+            await Task.yield()
+            guard let controller else { return }
+            backend.pictureInPictureLayer.frame = controller.view.bounds
+            if controller.view.window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
+        }
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
@@ -384,6 +491,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         controller.showsPlaybackControls = false
         controller.allowsPictureInPicturePlayback = true
         controller.player = (model.backend as? AVMediaBackend)?.player
+        installPictureInPictureLayer(in: controller)
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
         return controller
@@ -391,6 +499,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         controller.player = (model.backend as? AVMediaBackend)?.player
+        installPictureInPictureLayer(in: controller)
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
     }
@@ -568,15 +677,93 @@ private struct FullscreenPlayerControls: View {
 struct PlayerSurface: NSViewRepresentable {
     let model: PlayerModel
 
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
-        view.controlsStyle = .none
-        view.player = (model.backend as? AVMediaBackend)?.player
+    /// Shows the backend's `pictureInPictureLayer`, so the same layer drives
+    /// Picture in Picture (AVKit needs it on screen).
+    final class LayerView: NSView {
+        weak var backend: AVMediaBackend?
+
+        func show(_ backend: AVMediaBackend?) {
+            guard backend !== self.backend else { return }
+            self.backend = backend
+            // A layer-hosting view: the layer is set before `wantsLayer`.
+            layer = backend?.pictureInPictureLayer ?? CALayer()
+            wantsLayer = true
+            layer?.frame = bounds
+            backend?.pictureInPictureLayer.videoGravity = .resizeAspect
+            if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+        }
+
+        override func layout() {
+            super.layout()
+            layer?.frame = bounds
+        }
+    }
+
+    func makeNSView(context: Context) -> LayerView {
+        let view = LayerView()
+        view.show(model.backend as? AVMediaBackend)
         return view
     }
 
-    func updateNSView(_ view: AVPlayerView, context: Context) {
-        view.player = (model.backend as? AVMediaBackend)?.player
+    func updateNSView(_ view: LayerView, context: Context) {
+        view.show(model.backend as? AVMediaBackend)
+    }
+}
+#endif
+
+@MainActor
+enum PictureInPictureSupport {
+    /// Whether this device can show Picture in Picture at all.
+    static var isAvailable: Bool {
+        #if os(visionOS)
+        false
+        #else
+        AVPictureInPictureController.isPictureInPictureSupported()
+        #endif
+    }
+}
+
+#if !os(visionOS)
+/// Relays AVKit's Picture in Picture callbacks (delivered on the main thread).
+@MainActor
+final class PictureInPictureDelegate: NSObject, AVPictureInPictureControllerDelegate {
+    enum Event { case willStart, didStart, failed, willStop, didStop }
+    private let event: @MainActor (Event) -> Void
+    private let restore: @MainActor () -> Void
+
+    init(event: @escaping @MainActor (Event) -> Void, restore: @escaping @MainActor () -> Void) {
+        self.event = event
+        self.restore = restore
+    }
+
+    nonisolated func pictureInPictureControllerWillStartPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { event(.willStart) }
+    }
+    nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { event(.didStart) }
+    }
+    nonisolated func pictureInPictureController(_ controller: AVPictureInPictureController,
+                                                failedToStartPictureInPictureWithError error: any Error) {
+        MainActor.assumeIsolated { event(.failed) }
+    }
+    nonisolated func pictureInPictureControllerWillStopPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { event(.willStop) }
+    }
+    nonisolated func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
+        MainActor.assumeIsolated { event(.didStop) }
+    }
+    nonisolated func pictureInPictureController(
+        _ controller: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        // Bring the player's tab back before the video returns to it.
+        MainActor.assumeIsolated { restore() }
+        completionHandler(true)
     }
 }
 #endif

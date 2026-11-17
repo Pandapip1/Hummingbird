@@ -560,9 +560,9 @@ struct AppSettingsView: View {
 @MainActor
 private struct AppSettingsForm: View {
     @AppStorage private var maxHeight: Int
-    @AppStorage private var preferAdaptive: Bool
     @AppStorage private var subtitlesDefault: Bool
     @AppStorage private var fetchLimit: Int
+    @AppStorage private var mediaCacheLimitGigabytes: Int
     @Environment(\.openRoute) private var openRoute
     private let stores: AppDataStores
     let browserToolbar: BrowserToolbarContext?
@@ -572,11 +572,13 @@ private struct AppSettingsForm: View {
         self.browserToolbar = browserToolbar
         let defaults = stores.defaults
         _maxHeight = AppStorage(wrappedValue: 1080, PlaybackPreferenceKey.maxVideoHeight, store: defaults)
-        _preferAdaptive = AppStorage(wrappedValue: true, PlaybackPreferenceKey.preferAdaptive, store: defaults)
         _subtitlesDefault = AppStorage(
             wrappedValue: false, PlaybackPreferenceKey.showSubtitlesByDefault, store: defaults
         )
         _fetchLimit = AppStorage(wrappedValue: 0, PlaybackPreferenceKey.subscriptionFetchLimit, store: defaults)
+        _mediaCacheLimitGigabytes = AppStorage(
+            wrappedValue: MediaCache.defaultLimitGigabytes, PlaybackPreferenceKey.mediaCacheLimitGigabytes, store: defaults
+        )
     }
 
     var body: some View {
@@ -597,8 +599,16 @@ private struct AppSettingsForm: View {
                 Picker("Maximum resolution", selection: $maxHeight) {
                     ForEach([360, 480, 720, 1080, 1440, 2160], id: \.self) { Text("\($0)p").tag($0) }
                 }
-                Toggle("Prefer adaptive streaming (HLS)", isOn: $preferAdaptive)
                 Toggle("Show subtitles by default", isOn: $subtitlesDefault)
+            }
+            Section(footer: Text("Videos download in full as soon as they play, and keep downloading in the background after you close them; whatever is playing always gets the bandwidth first. They stay on this device until the cache is full, then the videos watched longest ago are removed.")) {
+                Picker("Video cache", selection: $mediaCacheLimitGigabytes) {
+                    ForEach([2, 5, 10, 20, 50, 100], id: \.self) { Text("\($0) GB").tag($0) }
+                }
+                .onChange(of: mediaCacheLimitGigabytes) { _, gigabytes in
+                    let cache = stores.mediaCache
+                    Task { await cache.setLimit(MediaCache.bytes(gigabytes: gigabytes)) }
+                }
             }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
                 RemoteFriendlyBoundedSelection(

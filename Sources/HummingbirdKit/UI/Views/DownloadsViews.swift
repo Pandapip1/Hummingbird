@@ -242,3 +242,12 @@ struct BackgroundTransport: MediaTransport {
         try await BackgroundTransferSession.shared.data(for: request)
     }
 }
+
+extension TranscodeEncoder {
+    /// The platform's hardware encoder (SwiftOpenUI `MediaTranscoder`).
+    static let platform = TranscodeEncoder(
+        isAvailable: { MediaTranscoder.isAvailable },
+        conditionsAllow: { await MediaTranscoder.conditionsAllowBackgroundWork },
+        transcode: { source, destination in try await MediaTranscoder.transcodeToHEVC(source: source, destination: destination) }
+    )
+}

@@ -17,6 +17,8 @@ struct VODTrackSpec: Sendable {
     var width: Int
     var height: Int
     var declaredDuration: Double?
+    /// The track is the transcode stage's output (re-encoded, complete).
+    var isTranscoded = false
 }
 
 /// What to download for an on-demand HLS presentation.

@@ -127,6 +127,8 @@ actor TrackDownloader {
     private var stopped = false
     private var didResetForMismatch = false
     private let scheduler: DownloadScheduler?
+    /// Serves a transcoded track: its transcode stage is complete too.
+    private let reportsTranscoded: Bool
     private(set) var priority: DownloadPriority = .foreground
     private var finishHandler: (@Sendable () async -> Void)?
     private(set) var isFinished = false
@@ -139,6 +141,7 @@ actor TrackDownloader {
          refreshSigner: (@Sendable () async throws -> UpstreamRequestSigner)? = nil,
          transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession),
          scheduler: DownloadScheduler? = nil,
+         reportsTranscoded: Bool = false,
          configuration: Configuration = Configuration()) {
         self.role = role
         self.cache = cache
@@ -149,6 +152,7 @@ actor TrackDownloader {
         self.refreshSigner = refreshSigner
         self.transport = transport
         self.scheduler = scheduler
+        self.reportsTranscoded = reportsTranscoded
         self.configuration = configuration
     }
 
@@ -217,7 +221,10 @@ actor TrackDownloader {
         if case .indexed(let layout) = layout { timeline = layout.timeline }
         return MediaTrackPipelineState(
             role: role, totalBytes: totalBytes, timeline: timeline, declaredDuration: declaredDuration,
-            stages: [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight)]
+            stages: reportsTranscoded
+                ? [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight),
+                   .transcode: MediaStageState(condition: .complete, completed: completed)]
+                : [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight)]
         )
     }
 

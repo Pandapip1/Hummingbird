@@ -607,6 +607,9 @@ private struct AppSettingsForm: View {
                 }
                 MediaCacheUsageRows(cache: stores.mediaCache, limitGigabytes: mediaCacheLimitGigabytes)
             }
+            Section(footer: Text("Off by default. Finished downloads are re-encoded with the hardware encoder in the background, only while the device is cool, not in Low Power Mode and, on iPhone and iPad, charging. The original is deleted only once the smaller copy is stored.")) {
+                TranscodeToggle(stage: stores.transcoding, defaults: stores.defaults)
+            }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
                 RemoteFriendlyBoundedSelection(
                     title: "Channels per refresh",
@@ -711,5 +714,46 @@ struct MediaCacheUsageRows: View {
             }
         }
         .disabled(working || usage == nil || usage == 0)
+    }
+}
+
+/// Turns optional transcoding on or off. The toggle shows what the stage
+/// reports: it is indeterminate with a spinner until the stage has applied
+/// the change, and unavailable (with the reason) without a hardware encoder.
+@MainActor
+struct TranscodeToggle: View {
+    let stage: TranscodeStage
+    let defaults: UserDefaults
+    @State private var isEnabled: Bool?
+    @State private var isAvailable = true
+    @State private var applying = false
+
+    var body: some View {
+        HStack {
+            Toggle("Save space by re-encoding videos", isOn: Binding(
+                get: { isEnabled ?? false },
+                set: { newValue in apply(newValue) }
+            ))
+            .disabled(applying || isEnabled == nil || !isAvailable)
+            if applying || isEnabled == nil { ProgressView() }
+        }
+        .task {
+            isAvailable = await stage.isAvailable
+            isEnabled = await stage.isEnabled
+        }
+        if !isAvailable {
+            Text("This device has no hardware video encoder Hummingbird can use.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func apply(_ enabled: Bool) {
+        applying = true
+        Task {
+            await stage.setEnabled(enabled)
+            defaults.set(enabled, forKey: PlaybackPreferenceKey.transcodeDownloads)
+            isEnabled = await stage.isEnabled
+            applying = false
+        }
     }
 }

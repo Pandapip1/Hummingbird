@@ -218,6 +218,13 @@ final class AppModel {
         // Downloads keep going while the app is suspended (iOS and friends).
         let mediaDownloads = stores.mediaDownloads
         Task { await mediaDownloads.useTransport(BackgroundTransport()) }
+        // Optional transcoding uses the platform's hardware encoder.
+        let transcoding = stores.transcoding
+        let transcodeEnabled = stores.defaults.bool(forKey: PlaybackPreferenceKey.transcodeDownloads)
+        Task {
+            await transcoding.useEncoder(TranscodeEncoder.platform)
+            await transcoding.setEnabled(transcodeEnabled)
+        }
         self.downloads = downloadsModel
         self.stores = stores
         self.plugins = plugins

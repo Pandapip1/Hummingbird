@@ -43,6 +43,8 @@ enum PlaybackPreferenceKey {
     static let subtitleSize = "subtitleSize"
     /// Gigabytes the media cache may hold before it removes least recently used videos.
     static let mediaCacheLimitGigabytes = "mediaCacheLimitGigabytes"
+    /// Re-encode finished downloads to save space (off by default).
+    static let transcodeDownloads = "transcodeDownloads"
 }
 
 @MainActor
@@ -575,8 +577,18 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         let declared = declaredDuration > 0 ? declaredDuration : nil
         let muxed = option.audio == nil
-        let video = try trackSpec(option.video, role: muxed ? .muxed : .video, runtime: runtime,
+        var video = try trackSpec(option.video, role: muxed ? .muxed : .video, runtime: runtime,
                                   sourceURL: sourceURL, declaredDuration: declared)
+        // A video the transcode stage has re-encoded plays from its output; the
+        // original was consumed. It is complete, so nothing is fetched.
+        let transcoded = TranscodeStage.transcodedIdentity(video.identity)
+        if await mediaCache.isComplete(identity: transcoded) {
+            video.identity = transcoded
+            video.indexHint = nil
+            video.codec = ""
+            video.container = "video/mp4"
+            video.isTranscoded = true
+        }
         let audio = try option.audio.map {
             try trackSpec($0, role: .audio, runtime: runtime, sourceURL: sourceURL, declaredDuration: declared)
         }

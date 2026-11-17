@@ -314,18 +314,20 @@ final class MediaPipelineTests: XCTestCase {
                          width: 1920, height: 1080, declaredDuration: 30)
         }
         let audioSpec = try spec(.audio, "/a")
+        let highSpec = try spec(.video, "/1080")
+        let lowSpec = try spec(.video, "/720")
         let (first, _) = try await bounded {
-            try await VODSession.start(video: try spec(.video, "/1080"), audio: audioSpec, downloads: downloads, server: server)
+            try await VODSession.start(video: highSpec, audio: audioSpec, downloads: downloads, server: server)
         }
         // References to the downloads (a hold, released at once).
         let sharedAudio = try await downloads.hold(audioSpec)
         await downloads.release(track: audioSpec.identity)
-        let oldVideo = try await downloads.hold(try spec(.video, "/1080"))
+        let oldVideo = try await downloads.hold(highSpec)
         await downloads.release(track: "switch-/1080")
 
         // Switch to 720p: a new session; then the old one ends.
         let (second, playback) = try await bounded {
-            try await VODSession.start(video: try spec(.video, "/720"), audio: audioSpec, downloads: downloads, server: server)
+            try await VODSession.start(video: lowSpec, audio: audioSpec, downloads: downloads, server: server)
         }
         await first.stop()
         let audioAfter = try await downloads.hold(audioSpec)

@@ -97,9 +97,9 @@ final class YouTubeStartupTimingTests: XCTestCase {
         }
         let started = try await until(600) { player.isPlaying && player.playbackTime > 5 }
         XCTAssertTrue(started, "playback did not start")
-        print("[timing] options=\(player.options.map { "\(/tmp/yt.pl.height)p:\(/tmp/yt.pl.kind)" })")
+        print("[timing] options=\(player.options.map { "\($0.height)p:\($0.kind)" })")
         for height in [720, 1080] {
-            guard let option = player.options.first(where: { /tmp/yt.pl.height == height }) else {
+            guard let option = player.options.first(where: { $0.height == height }) else {
                 print("[timing] no \(height)p option"); continue
             }
             let before = player.playbackTime

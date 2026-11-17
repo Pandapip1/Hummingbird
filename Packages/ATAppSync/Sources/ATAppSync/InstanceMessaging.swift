@@ -452,12 +452,16 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
               request.appID == envelope.appID else { return .init(status: .forbidden) }
         do {
             let journal = lock.withLock { self.journal }
-            let events = journal?.events() ?? []
+            // A reader that says where it got up to gets only what arrived
+            // since; one that doesn't (or an older instance) gets everything.
+            let delta = journal?.events(after: request.since)
+            let events = delta?.events ?? []
             let batch = try events.isEmpty ? nil : journal?.signedBatch(
                 type: NSID(rawValue: "com.eightybps.appsync.journal")!, mutations: events
             )
             let snapshot = AppSyncLANSnapshot(
-                nonce: request.nonce, journal: batch, trustFacts: trustStore.facts()
+                nonce: request.nonce, journal: batch, trustFacts: trustStore.facts(),
+                cursor: delta?.cursor
             )
             let response = try InstanceInboxEnvelope.seal(
                 snapshot, appID: request.appID, from: identity, to: envelope.sender

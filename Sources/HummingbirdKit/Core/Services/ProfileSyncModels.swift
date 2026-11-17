@@ -58,6 +58,12 @@ enum ProfileEntity: Hashable, Sendable {
     case history(HistoryEntry)
     case plugin(SyncedPlugin)
 
+    /// The collections `LibraryStore` holds.
+    static let libraryCollections: Set<NSID> = [
+        HummingbirdProfileSchema.subscription, HummingbirdProfileSchema.playlist,
+        HummingbirdProfileSchema.watchLater, HummingbirdProfileSchema.history,
+    ]
+
     var collection: NSID {
         switch self {
         case .subscription: HummingbirdProfileSchema.subscription
@@ -180,17 +186,22 @@ final class ProfileChangeStore: @unchecked Sendable {
         }
     }
 
-    /// Records `entities` as the profile's starting state if the journal has
-    /// no events yet. The check runs in order with queued edits, so it sees
-    /// every edit submitted before it.
+    /// Introduces existing local state to the journal: every entity the
+    /// journal has no version for (put or delete) is appended, in one
+    /// durable write. Entities created before sync was active, or while the
+    /// journal already held other devices' records, are therefore never left
+    /// out; anything the journal already knows is left to the journal. The
+    /// check runs in order with queued edits, so it sees every edit
+    /// submitted before it.
     func bootstrap(_ entities: [ProfileEntity]) {
         writer.async { [self] in
-            guard let mutationLog, mutationLog.isEmpty, !entities.isEmpty else { return }
+            guard let mutationLog, !entities.isEmpty else { return }
             do {
-                for entity in entities {
-                    try mutationLog.appendPut(collection: entity.collection, key: entity.recordKey, value: entity.json())
+                let puts = try entities.map {
+                    JournalPut(collection: $0.collection, key: $0.recordKey, value: try $0.json())
                 }
-                lock.withLock { mutationHandler }?()
+                let appended = try mutationLog.appendPuts(puts, onlyUnknownRecords: true)
+                if !appended.isEmpty { lock.withLock { mutationHandler }?() }
             } catch {
                 lock.withLock { storedError = error }
             }

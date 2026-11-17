@@ -260,12 +260,37 @@ public struct ReplicatedJournalBatch: Codable, Hashable, Sendable {
     }
 }
 
+/// Where a reader of a journal got up to: the journal's identity and the
+/// last local arrival it has seen. Arrivals are local to one journal file.
+public struct JournalCursor: Codable, Hashable, Sendable {
+    public let epoch: UUID
+    public let arrival: UInt64
+
+    public init(epoch: UUID, arrival: UInt64) {
+        self.epoch = epoch
+        self.arrival = arrival
+    }
+}
+
 public struct JournalSnapshot: Codable, Sendable {
     public var clock: HybridLogicalClock
+    /// The winning event of every record (puts and deletes). Superseded
+    /// events carry no state, so they are dropped as soon as they lose.
     public var events: [JournalMutation]
     public var pending: [JournalMutation]
     public var tombstones: [String: JournalEventVersion]
     public var versions: [String: JournalEventVersion]
+    /// The version of each record the application has made its state match.
+    /// Local edits are applied when they are made; merged events are applied
+    /// only when the application says so, so a failed apply is retried.
+    /// Journals written before this was tracked decode with none applied,
+    /// which makes the application reconcile every record once.
+    public var applied: [String: JournalEventVersion]
+    /// The local arrival number of each event in `events`, keyed by event ID.
+    public var arrivals: [String: UInt64]
+    public var lastArrival: UInt64
+    /// Identifies this journal's arrival numbering to incremental readers.
+    public var epoch: UUID
 
     public init(clock: HybridLogicalClock, events: [JournalMutation] = [], pending: [JournalMutation] = [],
                 tombstones: [String: JournalEventVersion] = [:],
@@ -275,9 +300,16 @@ public struct JournalSnapshot: Codable, Sendable {
         self.pending = pending
         self.tombstones = tombstones
         self.versions = versions
+        applied = [:]
+        arrivals = [:]
+        lastArrival = 0
+        epoch = UUID()
+        numberUnnumberedEvents()
     }
 
-    enum CodingKeys: String, CodingKey { case clock, events, pending, tombstones, versions }
+    enum CodingKeys: String, CodingKey {
+        case clock, events, pending, tombstones, versions, applied, arrivals, lastArrival, epoch
+    }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -297,9 +329,74 @@ public struct JournalSnapshot: Codable, Sendable {
             versions = legacy.mapValues { JournalEventVersion(timestamp: $0, eventID: Self.legacyEventID) }
             if versions.isEmpty { versions = tombstones }
         }
+        applied = try values.decodeIfPresent([String: JournalEventVersion].self, forKey: .applied) ?? [:]
+        arrivals = try values.decodeIfPresent([String: UInt64].self, forKey: .arrivals) ?? [:]
+        lastArrival = try values.decodeIfPresent(UInt64.self, forKey: .lastArrival) ?? 0
+        epoch = try values.decodeIfPresent(UUID.self, forKey: .epoch) ?? UUID()
+        compact()
+        numberUnnumberedEvents()
+    }
+
+    static func path(_ collection: NSID, _ key: RecordKey) -> String {
+        collection.rawValue + "/" + key.rawValue
+    }
+
+    /// Keeps only each record's newest event. Journals written before
+    /// superseded events were dropped can hold thousands of them (a progress
+    /// update every few seconds), all copied into every snapshot.
+    mutating func compact() {
+        var newest: [String: JournalEventVersion] = [:]
+        for event in events {
+            let path = Self.path(event.collection, event.recordKey)
+            if newest[path].map({ $0 < event.version }) ?? true { newest[path] = event.version }
+        }
+        let superseded = Set(events.filter {
+            newest[Self.path($0.collection, $0.recordKey)] != $0.version
+        }.map(\.id))
+        guard !superseded.isEmpty else { return }
+        events.removeAll { superseded.contains($0.id) }
+        pending.removeAll { superseded.contains($0.id) }
+        for id in superseded { arrivals[id.uuidString] = nil }
+    }
+
+    private mutating func numberUnnumberedEvents() {
+        for event in events where arrivals[event.id.uuidString] == nil {
+            lastArrival += 1
+            arrivals[event.id.uuidString] = lastArrival
+        }
+    }
+
+    /// Records `mutation` as its record's winner: it replaces the previous
+    /// winner's event and gets the next arrival number. Returns the ID of the
+    /// event it superseded, if any.
+    mutating func insertWinner(_ mutation: JournalMutation, pending isPending: Bool) -> UUID? {
+        let path = Self.path(mutation.collection, mutation.recordKey)
+        let previous = versions[path]
+        events.append(mutation)
+        if isPending { pending.append(mutation) }
+        versions[path] = mutation.version
+        tombstones[path] = mutation.operation == .delete ? mutation.version : nil
+        lastArrival += 1
+        arrivals[mutation.id.uuidString] = lastArrival
+        guard let previous, previous.eventID != mutation.id else { return nil }
+        arrivals[previous.eventID.uuidString] = nil
+        return previous.eventID
     }
 
     private static let legacyEventID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+}
+
+/// A record to append, for appending many in one durable write.
+public struct JournalPut: Sendable {
+    public let collection: NSID
+    public let key: RecordKey
+    public let value: JSONValue
+
+    public init(collection: NSID, key: RecordKey, value: JSONValue) {
+        self.collection = collection
+        self.key = key
+        self.value = value
+    }
 }
 
 /// Durable, thread-safe outbox. Mutations are written atomically before the
@@ -337,38 +434,71 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     @discardableResult
     public func appendPut(collection: NSID, key: RecordKey, now: Date = Date(),
                           value: (HybridLogicalTimestamp) throws -> JSONValue) throws -> JournalMutation {
-        lock.lock()
-        defer { lock.unlock() }
-        var updated = snapshot
-        let timestamp = updated.clock.tick(now: now)
-        let encoded = try value(timestamp)
-        let mutation = JournalMutation(collection: collection, recordKey: key,
-                                  operation: .put, value: encoded, timestamp: timestamp)
-        updated.pending.append(mutation)
-        updated.events.append(mutation)
-        updated.tombstones[Self.path(collection, key)] = nil
-        updated.versions[Self.path(collection, key)] = mutation.version
-        try persist(updated)
-        snapshot = updated
-        knownEventIDs.insert(mutation.id)
-        return mutation
+        try appendLocal { updated in
+            let timestamp = updated.clock.tick(now: now)
+            return JournalMutation(collection: collection, recordKey: key,
+                                   operation: .put, value: try value(timestamp), timestamp: timestamp)
+        }
     }
 
     @discardableResult
     public func appendDelete(collection: NSID, key: RecordKey,
                              now: Date = Date()) throws -> JournalMutation {
+        try appendLocal { updated in
+            let timestamp = updated.clock.tick(now: now)
+            return JournalMutation(collection: collection, recordKey: key,
+                                   operation: .delete, value: nil, timestamp: timestamp)
+        }
+    }
+
+    /// Appends local puts in one durable write. With `onlyUnknownRecords`,
+    /// a record the journal already has a version for (including a delete)
+    /// is skipped, which is how existing local state is introduced to a
+    /// journal without overriding anything it already knows. Returns the
+    /// appended mutations.
+    @discardableResult
+    public func appendPuts(_ puts: [JournalPut], onlyUnknownRecords: Bool,
+                           now: Date = Date()) throws -> [JournalMutation] {
         lock.lock()
         defer { lock.unlock() }
         var updated = snapshot
-        let timestamp = updated.clock.tick(now: now)
-        let mutation = JournalMutation(collection: collection, recordKey: key,
-                                  operation: .delete, value: nil, timestamp: timestamp)
-        updated.pending.append(mutation)
-        updated.events.append(mutation)
-        updated.tombstones[Self.path(collection, key)] = mutation.version
-        updated.versions[Self.path(collection, key)] = mutation.version
+        var appended: [JournalMutation] = []
+        var superseded = Set<UUID>()
+        for put in puts {
+            let path = JournalSnapshot.path(put.collection, put.key)
+            if onlyUnknownRecords, updated.versions[path] != nil { continue }
+            let timestamp = updated.clock.tick(now: now)
+            let mutation = JournalMutation(collection: put.collection, recordKey: put.key,
+                                           operation: .put, value: put.value, timestamp: timestamp)
+            if let old = updated.insertWinner(mutation, pending: true) { superseded.insert(old) }
+            updated.applied[path] = mutation.version
+            appended.append(mutation)
+        }
+        guard !appended.isEmpty else { return [] }
+        updated.events.removeAll { superseded.contains($0.id) }
+        updated.pending.removeAll { superseded.contains($0.id) }
         try persist(updated)
         snapshot = updated
+        knownEventIDs.subtract(superseded)
+        knownEventIDs.formUnion(appended.map(\.id))
+        return appended
+    }
+
+    /// A local edit is applied by definition: the application made it.
+    private func appendLocal(_ make: (inout JournalSnapshot) throws -> JournalMutation) throws -> JournalMutation {
+        lock.lock()
+        defer { lock.unlock() }
+        var updated = snapshot
+        let mutation = try make(&updated)
+        let superseded = updated.insertWinner(mutation, pending: true)
+        if let superseded {
+            updated.events.removeAll { $0.id == superseded }
+            updated.pending.removeAll { $0.id == superseded }
+        }
+        updated.applied[JournalSnapshot.path(mutation.collection, mutation.recordKey)] = mutation.version
+        try persist(updated)
+        snapshot = updated
+        if let superseded { knownEventIDs.remove(superseded) }
         knownEventIDs.insert(mutation.id)
         return mutation
     }
@@ -379,13 +509,58 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     public func events() -> [JournalMutation] {
         lock.withLock { snapshot.events }
     }
+
+    /// The events that arrived after `cursor`, and the cursor to ask from
+    /// next time. A cursor from another journal (or none) gets every event.
+    public func events(after cursor: JournalCursor?) -> (events: [JournalMutation], cursor: JournalCursor) {
+        lock.withLock {
+            let next = JournalCursor(epoch: snapshot.epoch, arrival: snapshot.lastArrival)
+            guard let cursor, cursor.epoch == snapshot.epoch, cursor.arrival <= snapshot.lastArrival else {
+                return (snapshot.events, next)
+            }
+            let arrivals = snapshot.arrivals
+            return (snapshot.events.filter { (arrivals[$0.id.uuidString] ?? .max) > cursor.arrival }, next)
+        }
+    }
+
     public var isEmpty: Bool { lock.withLock { snapshot.events.isEmpty } }
     public func tombstone(collection: NSID, key: RecordKey) -> JournalEventVersion? {
-        lock.withLock { snapshot.tombstones[Self.path(collection, key)] }
+        lock.withLock { snapshot.tombstones[JournalSnapshot.path(collection, key)] }
     }
 
     public func version(collection: NSID, key: RecordKey) -> JournalEventVersion? {
-        lock.withLock { snapshot.versions[Self.path(collection, key)] }
+        lock.withLock { snapshot.versions[JournalSnapshot.path(collection, key)] }
+    }
+
+    /// Every record whose winning event the application has not applied
+    /// yet, as that event. A record stays here until `markApplied` names
+    /// its current winner, so an apply that fails is offered again.
+    public func unappliedWinners() -> [JournalMutation] {
+        lock.withLock {
+            snapshot.events.filter { event in
+                let path = JournalSnapshot.path(event.collection, event.recordKey)
+                return snapshot.versions[path] == event.version && snapshot.applied[path] != event.version
+            }
+        }
+    }
+
+    /// Records that the application's state now matches these events. An
+    /// event that has since lost to a newer one is ignored: the newer one
+    /// still needs applying.
+    public func markApplied(_ mutations: [JournalMutation]) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        var updated = snapshot
+        var changed = false
+        for mutation in mutations {
+            let path = JournalSnapshot.path(mutation.collection, mutation.recordKey)
+            guard updated.versions[path] == mutation.version, updated.applied[path] != mutation.version else { continue }
+            updated.applied[path] = mutation.version
+            changed = true
+        }
+        guard changed else { return }
+        try persist(updated)
+        snapshot = updated
     }
 
     /// Unions an immutable event into the journal. Peer-originated events are
@@ -399,7 +574,9 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     /// Unions several immutable events with a single durable write, which a
     /// pull of many events needs: the journal is rewritten whole on every
     /// write. Returns, in order, the events that changed their record's
-    /// materialized winner at the moment they were merged.
+    /// materialized winner at the moment they were merged. An event that
+    /// loses to what the journal has carries no state and is not kept. The
+    /// result is the same whatever order events arrive in.
     @discardableResult
     public func merge(_ mutations: [JournalMutation], needsUpload: Bool) throws -> [JournalMutation] {
         lock.lock()
@@ -407,20 +584,23 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         var updated = snapshot
         var known = knownEventIDs
         var winners: [JournalMutation] = []
+        var superseded = Set<UUID>()
         for mutation in mutations where !known.contains(mutation.id) {
-            updated.events.append(mutation)
-            if needsUpload { updated.pending.append(mutation) }
+            let path = JournalSnapshot.path(mutation.collection, mutation.recordKey)
+            // A losing event is older than a winner the clock has already
+            // observed, so only winners move the clock.
+            guard updated.versions[path].map({ $0 < mutation.version }) ?? true else { continue }
             updated.clock.observe(mutation.timestamp)
-            let path = Self.path(mutation.collection, mutation.recordKey)
-            let wins = updated.versions[path].map({ $0 < mutation.version }) ?? true
-            if wins {
-                updated.versions[path] = mutation.version
-                updated.tombstones[path] = mutation.operation == .delete ? mutation.version : nil
-                winners.append(mutation)
+            if let old = updated.insertWinner(mutation, pending: needsUpload) {
+                superseded.insert(old)
+                known.remove(old)
             }
+            winners.append(mutation)
             known.insert(mutation.id)
         }
-        guard known.count != knownEventIDs.count else { return [] }
+        guard !winners.isEmpty else { return [] }
+        updated.events.removeAll { superseded.contains($0.id) }
+        updated.pending.removeAll { superseded.contains($0.id) }
         try persist(updated)
         snapshot = updated
         knownEventIDs = known
@@ -449,10 +629,6 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try encoder.encode(value).write(to: fileURL, options: [.atomic])
-    }
-
-    private static func path(_ collection: NSID, _ key: RecordKey) -> String {
-        collection.rawValue + "/" + key.rawValue
     }
 
     public func signedBatch(type: NSID, mutations: [JournalMutation]) throws -> ReplicatedJournalBatch {

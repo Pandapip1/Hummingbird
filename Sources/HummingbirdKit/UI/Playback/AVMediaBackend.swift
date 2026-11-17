@@ -24,6 +24,9 @@ final class AVMediaBackend: MediaBackend {
     private var sessionObservers: [NSObjectProtocol] = []
     /// Playing when an audio interruption (a call, Siri) began.
     private var playingBeforeInterruption = false
+    #if os(iOS)
+    private var audioSessionActive = false
+    #endif
 
     /// Video keeps playing (as audio) when the app goes to the background or
     /// the device locks; by default AVFoundation pauses it silently.
@@ -311,6 +314,9 @@ final class AVMediaBackend: MediaBackend {
         sessionObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 Logger.avPlayer.error("media_services_reset")
+                #if os(iOS)
+                self?.audioSessionActive = false
+                #endif
                 self?.onFailure?("The system restarted its media services")
             }
         })
@@ -322,6 +328,9 @@ final class AVMediaBackend: MediaBackend {
         switch type {
         case .began?:
             playingBeforeInterruption = activity.wantsToPlay
+            #if os(iOS)
+            audioSessionActive = false // the system deactivated it
+            #endif
             Logger.avPlayer.notice("audio_interruption_began playing=\(self.playingBeforeInterruption)")
         case .ended?:
             Logger.avPlayer.notice("audio_interruption_ended resume=\(shouldResume)")
@@ -411,6 +420,10 @@ final class AVMediaBackend: MediaBackend {
     private func activatePlaybackEnvironment() {
         #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = true
+        // Re-applying the category to an active session reconfigures audio
+        // and is audible as a stutter; do it only when it is not active.
+        guard !audioSessionActive else { return }
+        audioSessionActive = true
         Self.audioSessionQueue.async { [weak self] in
             let session = AVAudioSession.sharedInstance()
             do {
@@ -432,6 +445,7 @@ final class AVMediaBackend: MediaBackend {
     private func deactivatePlaybackEnvironment() {
         #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = false
+        audioSessionActive = false
         // setActive performs a synchronous XPC round-trip and was repeatedly
         // blocking pause-button handling for 600+ ms on real hardware.
         Self.audioSessionQueue.async {
@@ -682,8 +696,11 @@ struct PlayerSurface: UIViewControllerRepresentable {
             // AVPlayerViewController may pause its player while it tears down.
             // Transfer ownership back to the inline controller before dismissal
             // so late AVKit cleanup cannot pause the shared player after restore.
+            // Hand the same player over without a gap: the inline surface takes
+            // it first, then the full-screen one lets go.
+            let player = (model?.backend as? AVMediaBackend)?.player
+            if inlineController?.player !== player { inlineController?.player = player }
             detachFullscreenPlayer()
-            inlineController?.player = (model?.backend as? AVMediaBackend)?.player
             controller.dismiss(animated: animated) { [weak self] in self?.finishDismissal() }
         }
 
@@ -697,7 +714,8 @@ struct PlayerSurface: UIViewControllerRepresentable {
             overlayController?.removeFromParent()
             overlayController = nil
             fullscreenController = nil
-            inlineController?.player = (model?.backend as? AVMediaBackend)?.player
+            let player = (model?.backend as? AVMediaBackend)?.player
+            if inlineController?.player !== player { inlineController?.player = player }
             model?.fullscreenDidChange(false)
             model?.restorePlaybackAfterSurfaceTransfer()
         }

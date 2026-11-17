@@ -1129,11 +1129,14 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     // MARK: teardown
 
+    /// After moving between the inline and full-screen surfaces. The same
+    /// player moves without pausing, so normally nothing is done: touching
+    /// the rate (or the audio session behind `play`) while it plays is
+    /// audible. Only if a surface did pause it is playback resumed.
     func restorePlaybackAfterSurfaceTransfer() {
-        guard playbackRequested, let backend else { return }
+        guard playbackRequested, let backend, backend.activity == .paused else { return }
         backend.play()
-        backend.setPlaybackRate(playbackRate)
-        isPlaying = true
+        if playbackRate != 1 { backend.setPlaybackRate(playbackRate) }
     }
 
     func teardown() {

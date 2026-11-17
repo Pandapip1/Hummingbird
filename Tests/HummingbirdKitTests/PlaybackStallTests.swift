@@ -68,6 +68,31 @@ final class PlaybackStallTests: XCTestCase {
         XCTAssertEqual(restarts, 1)
     }
 
+    func testLeavingFullscreenNeitherPausesNorSeeksNorTouchesTheRate() {
+        let backend = ActivityBackend()
+        let model = makeTestPlayerModel(backend: backend)
+        model.togglePlayback()
+        XCTAssertEqual(backend.activity, .playing)
+        backend.calls.removeAll()
+        var seen: [PlaybackActivity] = []
+        backend.onActivityChange = { seen.append($0) }
+
+        model.fullscreenDidChange(true)
+        model.restorePlaybackAfterSurfaceTransfer()
+        model.fullscreenDidChange(false)
+        model.restorePlaybackAfterSurfaceTransfer()
+
+        XCTAssertEqual(backend.calls, [], "the same player moves between surfaces untouched: no play, rate change or seek")
+        XCTAssertEqual(seen, [], "it never leaves playing")
+        XCTAssertEqual(backend.activity, .playing)
+
+        // Only if a surface did pause it is playback resumed, once.
+        backend.report(.paused)
+        model.restorePlaybackAfterSurfaceTransfer()
+        XCTAssertEqual(backend.calls, ["play"])
+        model.teardown()
+    }
+
     func testAQueuedBackgroundPieceRunsAsSoonAsThePlayerNeedsItsTrack() async {
         let scheduler = DownloadScheduler(backgroundLimit: 2)
         // Another track keeps the scheduler busy in the foreground.
@@ -103,8 +128,10 @@ private final class ActivityBackend: MediaBackend {
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {}
-    func play() { report(.playing) }
-    func pause() { report(.paused) }
-    func seek(to seconds: Double) { currentTime = seconds }
+    var calls: [String] = []
+    func play() { calls.append("play"); report(.playing) }
+    func pause() { calls.append("pause"); report(.paused) }
+    func setPlaybackRate(_ rate: Float) { calls.append("rate \(rate)") }
+    func seek(to seconds: Double) { calls.append("seek"); currentTime = seconds }
     func stop() { report(.paused) }
 }

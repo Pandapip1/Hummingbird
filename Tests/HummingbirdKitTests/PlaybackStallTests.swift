@@ -96,6 +96,34 @@ final class PlaybackStallTests: XCTestCase {
         model.teardown()
     }
 
+    /// Background -> active: a playing video keeps playing with no reload or
+    /// seek; one the system paused while away resumes in place; one the user
+    /// paused stays paused.
+    func testReturningToTheAppKeepsPlaybackAsTheUserLeftIt() {
+        let app = makeTestAppModel()
+        let backend = ActivityBackend()
+        app.makePlayer = { stores in PlayerModel(stores: stores, backend: backend) }
+        let model = app.player(forTab: app.activeTabID)
+        model.togglePlayback()
+        backend.calls.removeAll()
+
+        app.applicationBecameActive()
+        XCTAssertEqual(backend.calls, [], "still playing: untouched (no reload, seek or rate change)")
+        XCTAssertEqual(backend.activity, .playing)
+
+        backend.report(.paused)  // the system paused it while away
+        app.applicationBecameActive()
+        XCTAssertEqual(backend.calls, ["play"], "resumed in place")
+        XCTAssertTrue(model.isPlaying)
+
+        model.togglePlayback()  // the user pauses
+        backend.calls.removeAll()
+        app.applicationBecameActive()
+        XCTAssertEqual(backend.calls, [], "a video the user paused stays paused")
+        XCTAssertFalse(model.isPlaying)
+        app.closeWindow()
+    }
+
     func testAQueuedBackgroundPieceRunsAsSoonAsThePlayerNeedsItsTrack() async {
         let scheduler = DownloadScheduler(backgroundLimit: 2)
         // Another track keeps the scheduler busy in the foreground.
@@ -130,7 +158,7 @@ private final class ActivityBackend: MediaBackend {
         onActivityChange?(activity)
     }
 
-    func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {}
+    func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws { calls.append("load") }
     var calls: [String] = []
     func play() { calls.append("play"); report(.playing) }
     func pause() { calls.append("pause"); report(.paused) }

@@ -34,6 +34,31 @@ final class FullscreenHandoverUITests: XCTestCase {
         XCTAssertEqual(state.label, "playing")
     }
 
+    /// Home, then back: a playing video keeps playing (no pause, no jump back)
+    /// and one surface shows it again.
+    @MainActor
+    func testBackgroundAndReturnKeepsPlaying() throws {
+        let app = IsolatedApp.make()
+        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-fullscreen"
+        app.launch()
+        let state = app.staticTexts["debug-playback-state"]
+        let time = app.staticTexts["debug-playback-time"]
+        XCTAssertTrue(state.waitForExistence(timeout: 60))
+        XCTAssertTrue(waitUntil(60) { state.label == "playing" })
+        let before = Int(time.label) ?? 0
+
+        XCUIDevice.shared.press(.home)
+        Thread.sleep(forTimeInterval: 5)
+        app.activate()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+
+        XCTAssertTrue(waitUntil(10) { state.label == "playing" }, "still playing after returning (state: \(state.label))")
+        let after = Int(time.label) ?? 0
+        XCTAssertGreaterThanOrEqual(after, before + 4, "it kept playing in the background, no jump back")
+        XCTAssertTrue(waitUntil(10) { (Int(time.label) ?? 0) >= after + 2 }, "and keeps advancing")
+        assertOneSurface(app, "after returning")
+    }
+
     @MainActor
     private func assertOneSurface(_ app: XCUIApplication, _ step: String) {
         // Let the transition settle, then count at several moments.

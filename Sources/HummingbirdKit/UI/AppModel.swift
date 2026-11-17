@@ -171,6 +171,12 @@ final class AppModel {
         for player in players { player.teardown() }
     }
 
+    /// The app is back in front: each tab's player continues as the user left
+    /// it (see `PlayerModel.applicationBecameActive`).
+    func applicationBecameActive() {
+        for player in tabPlayers.values { player.applicationBecameActive() }
+    }
+
     /// Players this window still owns (tests, debugging).
     var openPlayerCount: Int { tabPlayers.count }
 

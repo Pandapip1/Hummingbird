@@ -101,6 +101,23 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Called when playback starts; the window pauses its other tabs.
     @ObservationIgnored var onStartedPlaying: (() -> Void)?
 
+    /// The app is back in front. A video the user had playing keeps playing:
+    /// if the system paused it meanwhile (an interruption, a route change,
+    /// the surface going away), it resumes where it is, without a reload or a
+    /// seek. A video the user paused stays paused. The loopback server is
+    /// checked (a suspended app's sockets are reclaimed).
+    func applicationBecameActive() {
+        if currentPlayback?.origin == .mediaCache {
+            let server = mediaServer
+            Task { _ = try? await server.ensureListening() }
+        }
+        guard playbackRequested, let backend, backend.activity == .paused, !isRecovering,
+              pictureInPictureState != .active, !didFinishCurrentItem else { return }
+        Logger.player.notice("resume_after_foreground position=\(backend.currentTime)")
+        backend.play()
+        if playbackRate != 1 { backend.setPlaybackRate(playbackRate) }
+    }
+
     /// Another tab of the window started playing: this one pauses, unless
     /// it is in Picture in Picture.
     func pauseForAnotherTab() {

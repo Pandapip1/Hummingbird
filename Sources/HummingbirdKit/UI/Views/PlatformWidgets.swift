@@ -411,7 +411,9 @@ private struct ApplicationLifecycleModifier: ViewModifier {
                 model.library.persistSubscriptionState()
                 model.profileChanges.flushBeforeTermination()
                 model.stores.flushBeforeTermination()
-            case .phase(.active), .phase(.inactive):
+            case .phase(.active):
+                model.applicationBecameActive()
+            case .phase(.inactive):
                 break
             }
         }

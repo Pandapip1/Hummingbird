@@ -103,6 +103,16 @@ public final class AppDataStores: Sendable {
                 stores[key] = created
                 return created
             }
+            #else
+            // Only debug builds can isolate their data. Whoever asked for an
+            // isolated launch (a UI test, a profiling run) must never get the
+            // real data instead, so a release build refuses to start.
+            if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_DATA_ROOT"] != nil {
+                fatalError("""
+                    HUMMINGBIRD_DEBUG_DATA_ROOT is set, but this is a release build, which only uses the \
+                    real data. Run a debug build to isolate the app's data.
+                    """)
+            }
             #endif
             #if os(tvOS)
             // tvOS does not provide durable application-managed local storage.

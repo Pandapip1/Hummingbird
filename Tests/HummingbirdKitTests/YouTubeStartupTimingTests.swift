@@ -78,6 +78,7 @@ final class YouTubeStartupTimingTests: XCTestCase {
         let configURL = environment["HUMMINGBIRD_YOUTUBE_CONFIG_URL"] ?? "https://plugins.grayjay.app/Youtube/YoutubeConfig.json"
         let videoURL = environment["HUMMINGBIRD_YOUTUBE_VIDEO_URL"] ?? "https://www.youtube.com/watch?v=ukE4nf9WeQU"
         let model = makeTestAppModel()
+        try await condition(model, environment)
         model.plugins.commit(try await model.plugins.prepareInstall(from: configURL))
         let (runtime, content) = try await model.platform.details(url: videoURL)
         guard case .video(let details) = content else { return XCTFail("expected video details") }
@@ -136,6 +137,7 @@ final class YouTubeStartupTimingTests: XCTestCase {
         let videoURL = environment["HUMMINGBIRD_YOUTUBE_VIDEO_URL"] ?? "https://www.youtube.com/watch?v=ukE4nf9WeQU"
         let minutes = Double(environment["HUMMINGBIRD_YOUTUBE_PLAY_MINUTES"] ?? "20") ?? 20
         let model = makeTestAppModel()
+        try await condition(model, environment)
         model.plugins.commit(try await model.plugins.prepareInstall(from: configURL))
         let (runtime, content) = try await model.platform.details(url: videoURL)
         guard case .video(let details) = content else { return XCTFail("expected video details") }
@@ -153,6 +155,8 @@ final class YouTubeStartupTimingTests: XCTestCase {
         var stuckSince: ContinuousClock.Instant?
         var pauses = 0
         var pausedSeconds = 0.0
+        var pauseReported = false
+        var firstFrame: Double?
         var seenIssues: [String: Int] = [:]
         while ContinuousClock.now < end {
             try await Task.sleep(for: .milliseconds(250))
@@ -168,16 +172,24 @@ final class YouTubeStartupTimingTests: XCTestCase {
             }
             // Pauses: wanted to play, clock not advancing.
             if player.isPlaying, abs(position - lastPosition) < 0.01, position > 0 {
-                if stuckSince == nil {
-                    stuckSince = .now
+                if stuckSince == nil { stuckSince = .now }
+                if let since = stuckSince, since.duration(to: .now) >= .seconds(1), !pauseReported {
+                    pauseReported = true
                     pauses += 1
                     print("[health] t=\(t()) PAUSE begins position=\(String(format: "%.1f", position)) reason=\(player.waitingReason ?? "none") recovering=\(player.isRecovering) margins: \(margins)")
                 }
             } else if let since = stuckSince {
                 let length = Double(since.duration(to: .now).components.seconds)
+                stuckSince = nil
+                guard pauseReported else { lastPosition = position; continue }
+                pauseReported = false
                 pausedSeconds += length
                 print("[health] t=\(t()) PAUSE ends after \(length) s position=\(String(format: "%.1f", position)) margins: \(margins)")
                 stuckSince = nil
+            }
+            if firstFrame == nil, player.isPlaying, position > 0.2 {
+                firstFrame = Double(start.duration(to: .now).components.seconds)
+                print("[health] t=\(t()) first_frame startup_s=\(firstFrame ?? -1)")
             }
             lastPosition = position
             if lastSample.duration(to: .now) >= .seconds(10) {
@@ -193,7 +205,7 @@ final class YouTubeStartupTimingTests: XCTestCase {
             if let error = player.errorMessage { print("[health] t=\(t()) player_error=\(error)") ; break }
             if let duration = details.item.duration, position > Double(duration) - 2 { break }
         }
-        print("[health] summary pauses=\(pauses) paused_seconds=\(pausedSeconds) played=\(player.playbackTime) issues=\(seenIssues)")
+        print("[health] summary profile=\(environment["HUMMINGBIRD_NETWORK_PROFILE"] ?? "none") startup_s=\(firstFrame ?? -1) pauses=\(pauses) paused_seconds=\(pausedSeconds) played=\(player.playbackTime) issues=\(seenIssues)")
         await runtime.stop()
     }
 
@@ -251,6 +263,18 @@ final class YouTubeStartupTimingTests: XCTestCase {
     }
 
     private struct OldModifiedRequest: Decodable { var url: String?; var headers: [String: String]? }
+
+    /// Puts the in-process network conditioner (HUMMINGBIRD_NETWORK_PROFILE) between
+    /// the media downloads and upstream.
+    @MainActor
+    private func condition(_ model: AppModel, _ environment: [String: String]) async throws {
+        guard let name = environment["HUMMINGBIRD_NETWORK_PROFILE"], name != "none" else { return }
+        let profile = try XCTUnwrap(NetworkProfile.all[name], "unknown profile \(name)")
+        let downloads = model.stores.mediaDownloads
+        let base = await downloads.currentTransport
+        await downloads.useTransport(NetworkConditioner(base: base, profile: profile))
+        print("[health] network profile=\(name)")
+    }
 
     private func ms(_ duration: Duration) -> Int64 {
         duration.components.seconds * 1_000 + duration.components.attoseconds / 1_000_000_000_000_000

@@ -695,7 +695,7 @@ struct DownloadHealthSection: View {
                                 Text(issue).font(.caption).foregroundStyle(row.issueIsRecent ? .orange : .secondary)
                             }
                         }
-                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel([row.title, row.summary, row.lastIssue].compactMap { $0 }.joined(separator: ". "))
                     }
                 }
                 .padding(.top, 4)

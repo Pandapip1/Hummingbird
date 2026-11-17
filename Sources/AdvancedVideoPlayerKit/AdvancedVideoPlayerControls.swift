@@ -65,7 +65,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 .padding(12)
                 .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                 .allowsHitTesting(false)
-                .accessibilityElement(children: .combine)
+                .accessibilityLabel(reason)
             }
         }
         .onRemoteMove { interacted() }

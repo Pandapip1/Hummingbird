@@ -105,7 +105,7 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
-        Logger.avPlayer.info("load_started videoHost=\(request.video.url.host ?? "unknown", privacy: .private) audioHost=\(request.audio?.url.host ?? "none", privacy: .private) separateAudio=\(request.audio != nil)")
+        Logger.avPlayer.info("load_started videoHost=\(LogRedaction.redact(request.video.url.host ?? "unknown"), privacy: .public) audioHost=\(LogRedaction.redact(request.audio?.url.host ?? "none"), privacy: .public) separateAudio=\(request.audio != nil)")
         loadGeneration &+= 1
         let generation = loadGeneration
         activeLoadGenerations.insert(generation)
@@ -291,7 +291,7 @@ final class AVMediaBackend: MediaBackend {
             }
             if status == .failed, let event = item?.errorLog()?.events.last {
                 let uriHost = event.uri.flatMap { URL(string: $0)?.host } ?? ""
-                Logger.avPlayer.error("error_log httpStatus=\(event.errorStatusCode) uriHost=\(uriHost, privacy: .private) server=\(event.serverAddress ?? "") comment=\(event.errorComment ?? "")")
+                Logger.avPlayer.error("error_log httpStatus=\(event.errorStatusCode) uriHost=\(LogRedaction.redact(uriHost), privacy: .public) server=\(event.serverAddress ?? "") comment=\(event.errorComment ?? "")")
             }
             if status == .failed, let message = item?.error?.localizedDescription {
                 Task { @MainActor in self?.onFailure?(message) }

@@ -553,7 +553,7 @@ actor TrackDownloader {
         let rate = seconds > 0 ? Double(data.count) / seconds : 0
         outcome = "ok bytes=\(data.count) kbps=\(Int(rate * 8 / 1_000))"
         if data.count >= 256 * 1_024, rate < 128 * 1_024 {
-            Logger.mediaCache.notice("slow_piece role=\(self.role.rawValue, privacy: .public) host=\(request.url?.host ?? "", privacy: .private) bytes=\(data.count) seconds=\(seconds)")
+            Logger.mediaCache.notice("slow_piece role=\(self.role.rawValue, privacy: .public) host=\(LogRedaction.redact(request.url?.host ?? ""), privacy: .public) bytes=\(data.count) seconds=\(seconds)")
         }
     }
 

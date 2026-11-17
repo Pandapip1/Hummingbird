@@ -269,7 +269,7 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         // throttled media fetched through a plugin) show up here by host.
         let signposter = OSSignposter.plugin
         let signpost = signposter.beginInterval("PluginHTTP", id: signposter.makeSignpostID(),
-                                                "host=\(request.url?.host ?? "", privacy: .private) method=\(request.httpMethod ?? "", privacy: .public)")
+                                                "host=\(LogRedaction.redact(request.url?.host ?? ""), privacy: .public) method=\(request.httpMethod ?? "", privacy: .public)")
         task.resume()
         semaphore.wait()
         let status = (taskResult.response as? HTTPURLResponse)?.statusCode ?? -1
@@ -300,7 +300,7 @@ final class HostHTTP: NSObject, @unchecked Sendable {
            !(200..<300).contains(http.statusCode) {
             let body = String(decoding: (responseData ?? Data()).prefix(2_048), as: UTF8.self)
                 .replacingOccurrences(of: "\n", with: "\\n")
-            Logger.http.notice("plugin_http_failure method=\(request.httpMethod ?? "", privacy: .public) host=\(http.url?.host ?? "unknown", privacy: .private) status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)")
+            Logger.http.notice("plugin_http_failure method=\(request.httpMethod ?? "", privacy: .public) host=\(LogRedaction.redact(http.url?.host ?? "unknown"), privacy: .public) status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)")
         }
 
         if traceUMP {

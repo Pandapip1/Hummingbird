@@ -185,8 +185,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore,
                       sourceURL: String, reloadAttempt: Int, resumeOverride: Double?, autoplay: Bool) async {
         let host = URL(string: sourceURL)?.host ?? "unknown"
-        Logger.player.info("load_started plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .private) attempt=\(reloadAttempt)")
-        let signpost = OSSignposter.player.beginInterval("LoadContent", id: OSSignposter.player.makeSignpostID(), "plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .private)")
+        Logger.player.info("load_started plugin=\(runtime.id, privacy: .public) host=\(LogRedaction.redact(host), privacy: .public) attempt=\(reloadAttempt)")
+        let signpost = OSSignposter.player.beginInterval("LoadContent", id: OSSignposter.player.makeSignpostID(), "plugin=\(runtime.id, privacy: .public) host=\(LogRedaction.redact(host), privacy: .public)")
         defer { OSSignposter.player.endInterval("LoadContent", signpost, "error=\(self.errorMessage != nil)") }
         teardown()
         loadedURL = sourceURL
@@ -459,7 +459,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         do {
             let videoHost = URL(string: option.video.url)?.host ?? "generated"
             let audioHost = option.audio.flatMap { URL(string: $0.url)?.host } ?? "none"
-            Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) height=\(option.video.height) videoBitrate=\(option.video.bitrate) audioBitrate=\(option.audio?.bitrate ?? 0) videoHost=\(videoHost, privacy: .private) audioHost=\(audioHost, privacy: .private)")
+            Logger.player.info("source_selected kind=\(String(describing: option.kind), privacy: .public) videoType=\(option.video.pluginType, privacy: .public) height=\(option.video.height) videoBitrate=\(option.video.bitrate) audioBitrate=\(option.audio?.bitrate ?? 0) videoHost=\(LogRedaction.redact(videoHost), privacy: .public) audioHost=\(LogRedaction.redact(audioHost), privacy: .public)")
             startup?.mark(.selected)
             let playback: LocalPlayback
             if let resolveForTesting = localPlaybackForTesting {

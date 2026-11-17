@@ -69,7 +69,9 @@ struct RootView: View {
     }
 
     private var browserTabItems: [BrowserTabItem] {
-        model.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) }
+        model.contentTabs.map {
+            BrowserTabItem(id: $0.id, title: $0.title, systemImage: Route.systemImage(for: $0.current))
+        }
     }
 
     private var activeTabBinding: Binding<UUID> {

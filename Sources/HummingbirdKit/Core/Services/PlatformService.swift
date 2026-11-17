@@ -296,6 +296,27 @@ enum Route: Hashable {
     case oauthAuthorization(UUID)
 }
 
+extension Route {
+    /// The symbol for what a tab shows, beside its title in the tab overview;
+    /// the sections use the same symbols as the new-tab menu.
+    static func systemImage(for route: Route?) -> String {
+        switch route {
+        case .home: "house"
+        case .subscriptions, .manageSubscriptions: "rectangle.stack.person.crop"
+        case .search: "magnifyingglass"
+        case .library: "books.vertical"
+        case .sources, .plugin: "puzzlepiece.extension"
+        case .settings: "gearshape"
+        case .syncSettings: "arrow.triangle.2.circlepath"
+        case .content, .item: "play.rectangle"
+        case .channel: "person.crop.square"
+        case .playlist: "list.bullet.rectangle"
+        case .oauthAuthorization: "person.badge.key"
+        case nil: "plus.square"
+        }
+    }
+}
+
 // MARK: - Merged feeds
 
 struct FeedSource: Sendable {

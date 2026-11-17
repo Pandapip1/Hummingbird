@@ -39,6 +39,9 @@ final class AppModel {
     var activeTabID: BrowserTab.ID { didSet { persistBrowserSession() } }
 
     @ObservationIgnored private var tabPlayers: [BrowserTab.ID: PlayerModel] = [:]
+    private struct WeakPlayer { weak var player: PlayerModel? }
+    /// Every tab player alive in the process, by tab (see `player(forTab:)`).
+    private static var livePlayers: [BrowserTab.ID: WeakPlayer] = [:]
     /// Makes each tab's player (tests supply players with fake backends).
     @ObservationIgnored var makePlayer: @MainActor (AppDataStores) -> PlayerModel = { PlayerModel(stores: $0) }
 
@@ -106,6 +109,7 @@ final class AppModel {
             }
         }
         tabPlayers.removeValue(forKey: id)?.teardown()
+        Self.livePlayers[id] = nil
         contentTabs.remove(at: index)
         persistBrowserSession()
         guard activeTabID == id else { return }
@@ -132,7 +136,20 @@ final class AppModel {
     /// elsewhere (`shouldKeepPlaybackWhenHidden`) or is closed.
     func player(forTab id: BrowserTab.ID) -> PlayerModel {
         if let player = tabPlayers[id] { return player }
+        // One player per tab, in the whole process: a second one for the same
+        // tab (a tab restored twice, two scenes restoring one session) would
+        // play the same video twice.
+        if let existing = Self.livePlayers[id]?.player, existing !== tabPlayers[id] {
+            Logger.player.fault("second_player_for_tab")
+            assertionFailure("A second PlayerModel was created for tab \(id)")
+        }
         let player = makePlayer(stores)
+        Self.livePlayers[id] = WeakPlayer(player: player)
+        // At most one tab plays in a window (Picture in Picture aside).
+        player.onStartedPlaying = { [weak self, weak player] in
+            guard let self, let player else { return }
+            for other in self.tabPlayers.values where other !== player { other.pauseForAnotherTab() }
+        }
         // Returning from Picture in Picture brings this tab back.
         player.onRestoreRequested = { [weak self] in self?.activeTabID = id }
         tabPlayers[id] = player
@@ -148,6 +165,7 @@ final class AppModel {
     /// windows have their own models and are unaffected.
     func closeWindow() {
         downloads.stop()
+        for id in tabPlayers.keys { Self.livePlayers[id] = nil }
         let players = tabPlayers.values
         tabPlayers.removeAll()
         for player in players { player.teardown() }

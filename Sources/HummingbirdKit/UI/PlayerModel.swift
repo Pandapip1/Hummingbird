@@ -94,6 +94,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Brings this player's page back (its tab becomes active) when the user
     /// returns from Picture in Picture. Set by the tab that owns the player.
     @ObservationIgnored var onRestoreRequested: (() -> Void)?
+    /// Called when playback starts; the window pauses its other tabs.
+    @ObservationIgnored var onStartedPlaying: (() -> Void)?
+
+    /// Another tab of the window started playing: this one pauses, unless
+    /// it is in Picture in Picture.
+    func pauseForAnotherTab() {
+        guard isPlaying, pictureInPictureState != .active else { return }
+        togglePlayback()
+    }
     private(set) var playbackTime: Double = 0
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
@@ -205,7 +214,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// The engine's state is the truth: a pause the system makes (an
     /// interruption, a route change, a torn-down view) shows as paused.
     private func activityChanged(_ activity: PlaybackActivity) {
+        let started = activity.wantsToPlay && !isPlaying
         isPlaying = activity.wantsToPlay
+        if started { onStartedPlaying?() }
         updateWaitingReason()
         if watchdog == nil { startWatchdog() }
     }
@@ -584,7 +595,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 else if normalizeSavedPosition, r <= 5 { start = nil }
                 else if normalizeSavedPosition, let duration, Double(duration) - r < 15 { start = nil }
             }
+            // A teardown or a newer load while this one was resolving retires
+            // this play: loading the old engine now would start a second,
+            // invisible player (doubled audio).
+            guard generation == playGeneration, self.backend === backend else { throw MediaBackendLoadError.superseded }
             try await backend.load(playback.request, resumeAt: start, autoplay: autoplay)
+            guard generation == playGeneration, self.backend === backend else {
+                if self.backend !== backend { backend.stop() }
+                throw MediaBackendLoadError.superseded
+            }
             startup?.mark(.playerLoaded)
             do {
                 try await confirmPlayback(of: backend, autoplay: autoplay, generation: generation)
@@ -1140,6 +1159,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
 
     func teardown() {
+        // Every load in flight belongs to the media being torn down.
+        playGeneration &+= 1
         pendingSeekTask?.cancel()
         pendingSeekTask = nil
         trackerTask?.cancel(); trackerTask = nil

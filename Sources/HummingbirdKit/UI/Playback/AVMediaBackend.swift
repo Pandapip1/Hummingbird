@@ -24,6 +24,9 @@ final class AVMediaBackend: MediaBackend {
     private var sessionObservers: [NSObjectProtocol] = []
     /// Playing when an audio interruption (a call, Siri) began.
     private var playingBeforeInterruption = false
+    /// Stopped for good (its model tore it down): it never plays again, so
+    /// a load still in flight cannot start an invisible second player.
+    private(set) var isRetired = false
     #if os(iOS)
     private var audioSessionActive = false
     #endif
@@ -150,6 +153,7 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
+        guard !isRetired else { throw MediaBackendLoadError.superseded }
         Logger.avPlayer.info("load_started videoHost=\(LogRedaction.redact(request.video.url.host ?? "unknown"), privacy: .public) audioHost=\(LogRedaction.redact(request.audio?.url.host ?? "none"), privacy: .public) separateAudio=\(request.audio != nil)")
         loadGeneration &+= 1
         let generation = loadGeneration
@@ -171,7 +175,7 @@ final class AVMediaBackend: MediaBackend {
         try Task.checkCancellation()
         try await waitForNewerLoads(than: generation)
         try Task.checkCancellation()
-        guard canCommitLoad(generation) else { throw MediaBackendLoadError.superseded }
+        guard canCommitLoad(generation), !isRetired else { throw MediaBackendLoadError.superseded }
         removeObservers()
         let p = player ?? Self.makePlayer()
         observeAudioSession()
@@ -212,7 +216,7 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func play() {
-        guard player != nil else { return }
+        guard player != nil, !isRetired else { return }
         activatePlaybackEnvironment()
         player?.play()
     }
@@ -282,6 +286,7 @@ final class AVMediaBackend: MediaBackend {
 
     func stop() {
         deactivatePlaybackEnvironment()
+        isRetired = true
         loadGeneration &+= 1
         invalidatedThroughGeneration = loadGeneration
         activeLoadGenerations.removeAll()

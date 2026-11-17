@@ -23,6 +23,11 @@ private final class FakeTransport {
     private(set) var exposeCount = 0
     private(set) var concealCount = 0
     var failure: (any Error)?
+    private let denial = AsyncStream.makeStream(of: Void.self)
+
+    /// What iOS does after "Don't Allow": the start succeeded, then DNS-SD
+    /// reports the policy denial.
+    func denyAfterStart() { denial.continuation.yield() }
 
     var transport: LocalNetworkSyncController.Transport {
         .init(
@@ -30,7 +35,8 @@ private final class FakeTransport {
                 exposeCount += 1
                 if let failure { throw failure }
             },
-            conceal: { [self] in concealCount += 1 }
+            conceal: { [self] in concealCount += 1 },
+            denials: { [denial] in denial.stream }
         )
     }
 }
@@ -175,7 +181,10 @@ final class PermissionGateTests: XCTestCase {
         network.failure = InstanceMessagingError.localNetworkDiscoveryFailed(operation: .browse, code: -65570)
         let sync = makeSync(enabled: false)
         await sync.setEnabled(true)
-        guard case .failed = sync.state else { return XCTFail("Expected failure, got \(sync.state)") }
+        // A privacy denial is not an error to retry: it is blocked until the
+        // user allows it in the system's settings, and the toggle shows off.
+        XCTAssertEqual(sync.state, .blockedBySystem)
+        XCTAssertFalse(sync.isOnHere)
         XCTAssertTrue(ledger.hasUsed(.localNetwork), "The system has had its chance to prompt")
     }
 
@@ -189,6 +198,32 @@ final class PermissionGateTests: XCTestCase {
         XCTAssertEqual(network.exposeCount, 0)
         XCTAssertEqual(sync.state, .disabled)
         XCTAssertEqual(persisted, [false])
+    }
+
+    func testDenialAfterStartTurnsTheToggleOff() async {
+        system.presentsPrompts = false
+        let sync = makeSync(enabled: true)
+        await sync.applyStoredSetting()
+        XCTAssertEqual(sync.state, .available)
+        XCTAssertTrue(sync.isOnHere)
+
+        network.denyAfterStart()
+        for _ in 0..<1_000 where sync.state != .blockedBySystem { await Task.yield() }
+        XCTAssertEqual(sync.state, .blockedBySystem)
+        XCTAssertFalse(sync.isOnHere, "a toggle that reads on must mean sync can run")
+        XCTAssertFalse(sync.isActive)
+        XCTAssertGreaterThan(network.concealCount, 0)
+    }
+
+    func testPolicyDeniedStartIsBlockedNotFailed() async {
+        system.presentsPrompts = false
+        network.failure = InstanceMessagingError.localNetworkDiscoveryFailed(
+            operation: .advertise, code: InstanceMessagingError.dnsServicePolicyDenied
+        )
+        let sync = makeSync(enabled: true)
+        await sync.applyStoredSetting()
+        XCTAssertEqual(sync.state, .blockedBySystem)
+        XCTAssertFalse(sync.isOnHere)
     }
 
     func testPlatformWithoutPromptsPassesStraightThrough() async {

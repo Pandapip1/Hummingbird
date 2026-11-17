@@ -7,11 +7,9 @@ import AVKit
 
 @main
 struct HummingbirdApp: App {
-    init() {
-        // MetricKit crash, hang, CPU and disk-write diagnostics and daily
-        // metrics, in every build: logged and kept for export from Settings.
-        PerformanceReports.start(stores: AppDataStores.live())
-    }
+    // Nothing runs before the first frame: the splash is drawn first, then
+    // the stores, credential checks and MetricKit start away from the main
+    // thread (`LaunchGate`).
 
     var body: some Scene {
         #if os(macOS)
@@ -26,6 +24,10 @@ struct HummingbirdApp: App {
     }
 }
 
+/// Shows the splash on the very first frame, then does everything else away
+/// from the main thread: opening the stores, probing the credential store,
+/// starting MetricKit and loading the profile.
+///
 /// AVPlayerViewController performs substantial one-time AVKit setup on the main
 /// thread. Pay that cost behind launch chrome so the first player navigation
 /// does not freeze an already-interactive interface.
@@ -33,27 +35,49 @@ struct HummingbirdApp: App {
 private struct LaunchGate: View {
     @State private var preparedRoot: HummingbirdRoot?
     @State private var selectedProfileID: UUID?
+    /// The user's real data, once opened. This entry point is the only place
+    /// that opens it.
+    @State private var stores: AppDataStores?
     #if os(macOS)
     @State private var storageDecision: CredentialStorageDecision?
     #endif
-    @State private var credentialsLocked: Bool
+    @State private var credentialsLocked = false
     @State private var unlockFailure: String?
     @Environment(\.openIdentifiedWindow) private var openIdentifiedWindow
 
-    /// The user's real data. This entry point is the only place that opens it.
-    private let stores = AppDataStores.live()
-
     init(profileID: UUID? = nil) {
         _selectedProfileID = State(initialValue: profileID)
+    }
+
+    /// What launch needs before a profile can open, found off the main thread.
+    private struct Opened: Sendable {
+        let stores: AppDataStores
+        #if os(macOS)
+        let storageDecision: CredentialStorageDecision?
+        #endif
+        let credentialsLocked: Bool
+    }
+
+    @concurrent
+    private static func open() async -> Opened {
+        let stores = AppDataStores.live()
         #if os(macOS)
         // Probes the credential store before anything is written to it.
-        _storageDecision = State(initialValue: stores.keychain.flatMap(CredentialStorageDecision.pending(for:)))
+        let decision = stores.keychain.flatMap(CredentialStorageDecision.pending(for:))
+        return Opened(stores: stores, storageDecision: decision,
+                      credentialsLocked: stores.credentialStore.requiresExplicitUnlock())
+        #else
+        return Opened(stores: stores, credentialsLocked: stores.credentialStore.requiresExplicitUnlock())
         #endif
-        _credentialsLocked = State(initialValue: stores.credentialStore.requiresExplicitUnlock())
+    }
+
+    @concurrent
+    private static func requiresUnlock(_ stores: AppDataStores) async -> Bool {
+        stores.credentialStore.requiresExplicitUnlock()
     }
 
     var body: some View {
-        if let preparedRoot {
+        if let preparedRoot, let stores {
             preparedRoot.environment(
                 \.openHummingbirdProfile,
                 OpenHummingbirdProfileAction { id in
@@ -68,6 +92,7 @@ private struct LaunchGate: View {
                     #endif
                 }
             )
+            .onAppear { DispatchQueue.main.async { LaunchTiming.mark(.interfaceVisible) } }
         } else {
             ZStack {
                 Color.black.ignoresSafeArea()
@@ -79,10 +104,12 @@ private struct LaunchGate: View {
                         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     Text("Hummingbird").font(.title.bold())
                     #if os(macOS)
-                    if let storageDecision, let store = stores.keychain {
+                    if let storageDecision, let stores, let store = stores.keychain {
                         CredentialStorageDecisionView(decision: storageDecision, store: store) {
-                            self.storageDecision = nil
-                            credentialsLocked = stores.credentialStore.requiresExplicitUnlock()
+                            Task {
+                                credentialsLocked = await Self.requiresUnlock(stores)
+                                self.storageDecision = nil
+                            }
                         }
                     } else {
                         unlockOrProgress
@@ -93,7 +120,22 @@ private struct LaunchGate: View {
                 }
                 .foregroundStyle(.white)
             }
-            .task(id: "\(awaitingStorageDecision):\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
+            .onAppear { DispatchQueue.main.async { LaunchTiming.mark(.splashVisible) } }
+            .task(id: "\(stores != nil):\(awaitingStorageDecision):\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
+                guard let stores else {
+                    let opened = await Self.open()
+                    #if os(macOS)
+                    storageDecision = opened.storageDecision
+                    #endif
+                    credentialsLocked = opened.credentialsLocked
+                    self.stores = opened.stores
+                    LaunchTiming.mark(.storesOpened)
+                    // MetricKit crash, hang, CPU and disk-write diagnostics
+                    // and daily metrics, in every build: logged and kept for
+                    // export from Settings.
+                    PerformanceReports.start(stores: opened.stores)
+                    return
+                }
                 guard !awaitingStorageDecision, !credentialsLocked else { return }
                 // Give SwiftUI a frame to put the splash on screen before the
                 // intentionally synchronous AVKit initialization begins.
@@ -102,7 +144,9 @@ private struct LaunchGate: View {
                 #if os(iOS) || os(tvOS)
                 prewarmAVKit()
                 #endif
-                preparedRoot = await HummingbirdRoot.prepared(stores: stores, profileID: selectedProfileID)
+                let root = await HummingbirdRoot.prepared(stores: stores, profileID: selectedProfileID)
+                LaunchTiming.mark(.rootPrepared)
+                preparedRoot = root
             }
         }
     }
@@ -126,6 +170,7 @@ private struct LaunchGate: View {
             Button("Unlock") {
                 Task {
                     do {
+                        guard let stores else { return }
                         try await Task.detached {
                             try stores.credentialStore.requestUnlock()
                         }.value

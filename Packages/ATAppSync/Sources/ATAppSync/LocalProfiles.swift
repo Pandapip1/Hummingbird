@@ -80,6 +80,18 @@ public final class AppSyncProfileRegistry: @unchecked Sendable {
         }
     }
 
+    /// Fires when local network privacy blocks any exposed profile's
+    /// advertising or browsing. Covers the profiles loaded when called.
+    public func localNetworkDenials() -> AsyncStream<Void> {
+        let sources = lock.withLock { loaded.values.map { $0.localNetworkDenials() } }
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let forwarders = sources.map { source in
+                Task { for await _ in source { continuation.yield() } }
+            }
+            continuation.onTermination = { _ in forwarders.forEach { $0.cancel() } }
+        }
+    }
+
     /// Stops LAN listeners and DNS-SD activity for every loaded profile.
     /// Profile identities, trust, inboxes, and offline journals remain intact.
     public func concealAll() {

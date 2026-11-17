@@ -341,6 +341,7 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
     private(set) var endpoint: URL?
     private var registration: AppSyncInstanceRegistration?
     private var journal: OfflineMutationJournal?
+    private var verifier: AppSyncPeerVerifier?
 
     public init(identity: InstanceIdentity, inbox: InstanceInbox, trustStore: AppSyncTrustStore) {
         self.identity = identity
@@ -354,6 +355,15 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
 
     public func attach(journal: OfflineMutationJournal) {
         lock.withLock { self.journal = journal }
+    }
+
+    func attach(verifier: AppSyncPeerVerifier) {
+        lock.withLock { self.verifier = verifier }
+    }
+
+    /// The registration this server currently publishes.
+    var publishedRegistration: AppSyncInstanceRegistration? {
+        lock.withLock { registration }
     }
 
     deinit {
@@ -380,6 +390,16 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
                                 return .init(status: .serviceUnavailable)
                             }
                             return .init(status: .ok, body: body, contentType: "application/json")
+                        }
+                        if head.method == .POST, head.uri == AppSyncPeerVerifier.route {
+                            guard let verifier = self.lock.withLock({ self.verifier }) else {
+                                return .init(status: .serviceUnavailable)
+                            }
+                            let reply = verifier.handle(data)
+                            return .init(
+                                status: HTTPResponseStatus(statusCode: reply.status), body: reply.body,
+                                contentType: reply.body.isEmpty ? nil : "application/json"
+                            )
                         }
                         if head.method == .POST, head.uri == "/appsync/v1/sync" {
                             return self.syncResponse(data, appIDs: appIDs)
@@ -482,6 +502,7 @@ public final class InstanceMessagingService: @unchecked Sendable {
     }
     private let server: InstanceInboxLANServer
     private let discovery = AppSyncLANDiscovery()
+    private let verifier: AppSyncPeerVerifier
     private let trustLock = NSLock()
     private var trustClock: HybridLogicalClock
 
@@ -503,7 +524,33 @@ public final class InstanceMessagingService: @unchecked Sendable {
         )
         trustClock = HybridLogicalClock(deviceID: identity.publicIdentity.id)
         server = InstanceInboxLANServer(identity: identity, inbox: inbox, trustStore: trustStore)
+        let server = server
+        verifier = AppSyncPeerVerifier(identity: identity) { server.publishedRegistration }
+        server.attach(verifier: verifier)
+        verifier.setTrustHandler { [weak self] peer in _ = try self?.trust(peer) }
     }
+
+    // MARK: Emoji verification
+
+    /// Starts emoji verification with a reachable instance. Both instances
+    /// then show the same emoji; once the user confirms on both, each trusts
+    /// the other.
+    public func startVerification(with registration: AppSyncInstanceRegistration) async throws -> UUID {
+        try await verifier.start(with: registration)
+    }
+
+    /// The user says the emoji match.
+    public func confirmVerification(_ id: UUID) async throws { try await verifier.confirm(id) }
+
+    /// The user says the emoji differ, or gives up.
+    public func cancelVerification(_ id: UUID) async { await verifier.cancel(id) }
+
+    /// Forgets a finished verification.
+    public func dismissVerification(_ id: UUID) { verifier.dismiss(id) }
+
+    /// Verifications in progress or recently finished, started here or by
+    /// another instance.
+    public func verifications() -> [AppSyncPeerVerification] { verifier.verifications() }
 
     public func startLANServer(appIDs: Set<AppSyncAppID>) async throws -> InstanceInboxAdvertisement {
         let advertisement = InstanceInboxAdvertisement(
@@ -515,6 +562,27 @@ public final class InstanceMessagingService: @unchecked Sendable {
         server.publish(registration)
         try await discovery.start(advertising: registration)
         return advertisement
+    }
+
+    /// Fires whenever `peers(appIDs:)` or `verifications()` may return
+    /// something different: an instance appeared, changed or went away on the
+    /// local network, trust changed, or a verification progressed. Each
+    /// element only says "look again".
+    public func changes() -> AsyncStream<Void> {
+        let sources = [discovery.changes.stream(), trustStore.changes.stream(),
+                       verifier.changes.stream()]
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let forwarders = sources.map { source in
+                Task { for await _ in source { continuation.yield() } }
+            }
+            continuation.onTermination = { _ in forwarders.forEach { $0.cancel() } }
+        }
+    }
+
+    /// Fires when local network privacy blocks this instance's advertising or
+    /// browsing after `startLANServer` returned.
+    public func localNetworkDenials() -> AsyncStream<Void> {
+        discovery.policyDenials.stream()
     }
 
     /// Recently observed, cryptographically authenticated LAN registrations.
@@ -535,21 +603,28 @@ public final class InstanceMessagingService: @unchecked Sendable {
 
     public func attach(journal: OfflineMutationJournal) { server.attach(journal: journal) }
 
+    /// Peers with a trust relationship or a compatible registration nearby.
+    /// Trusted peers that aren't reachable now are included without a
+    /// registration.
     public func peers(appIDs: Set<AppSyncAppID>) -> [AppSyncPeerTrustSummary] {
-        trustStore.peers(among: discovery.registrations(), localAppIDs: appIDs)
+        trustStore.knownPeers(among: discovery.registrations(), localAppIDs: appIDs)
     }
 
     @discardableResult
     public func verifyPeer(
         _ code: AppSyncPeerVerificationCode, appIDs: Set<AppSyncAppID>
     ) throws -> AppSyncPeerTrustSummary {
-        let compatible = peers(appIDs: appIDs)
-        guard let match = compatible.first(where: { $0.id == code.peerID }) else {
+        // Verification needs the peer's current signed registration.
+        let compatible = trustStore.peers(
+            among: discovery.registrations(), localAppIDs: appIDs
+        )
+        guard let match = compatible.first(where: { $0.id == code.peerID }),
+              let registration = match.registration else {
             throw AppSyncPeerVerificationError.peerNotFound
         }
         _ = try trust(match.peer)
         return .init(
-            registration: match.registration,
+            registration: registration,
             state: trustStore.state(of: match.id)
         )
     }
@@ -660,7 +735,7 @@ public enum InstanceMessagingError: LocalizedError, Equatable {
     }
 
     /// kDNSServiceErr_PolicyDenied: local network privacy blocked the request.
-    static let dnsServicePolicyDenied: Int32 = -65570
+    public static let dnsServicePolicyDenied: Int32 = -65570
 
     public var errorDescription: String? {
         switch self {
@@ -688,8 +763,8 @@ private extension Data {
     }
 }
 
-private enum VerificationEmoji {
-    private static let values = [
+enum VerificationEmoji {
+    static let values = [
         "🐶", "🐱", "🦁", "🐎", "🦄", "🐷", "🐘", "🐰",
         "🐼", "🐓", "🐧", "🐢", "🐟", "🐙", "🦋", "🌷",
         "🌳", "🌵", "🍄", "🌏", "🌙", "☀️", "☁️", "🔥",

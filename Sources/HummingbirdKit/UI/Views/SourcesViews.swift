@@ -20,7 +20,8 @@ struct SourcesView: View {
                         .hiddenListRowSeparator()
                 }
                 ForEach(app.plugins.installed) { p in
-                    PluginRow(plugin: p) { removeTarget = p.id }
+                    PluginRow(plugin: .init(p)) { removeTarget = p.id }
+                        .equatable()
                 }
             }
             .navigationTitle("Sources")
@@ -58,9 +59,34 @@ struct SourcesView: View {
 
 /// A source row keeps the most useful plugin actions available without opening its detail page.
 @MainActor
-private struct PluginRow: View {
-    let plugin: InstalledPlugin
+private struct PluginRow: View, Equatable {
+    /// What the row shows, and nothing else: an installed plugin carries its
+    /// whole script.
+    struct Model: Equatable {
+        let id: String
+        let name: String
+        let version: Int
+        let availableVersion: Int?
+        let enabled: Bool
+        let iconURL: URL?
+
+        init(_ plugin: InstalledPlugin) {
+            id = plugin.id
+            name = plugin.config.name
+            version = plugin.config.version
+            availableVersion = plugin.availableVersion
+            enabled = plugin.enabled
+            iconURL = plugin.iconURL.flatMap(URL.init(string:))
+        }
+    }
+
+    let plugin: Model
     let requestRemove: () -> Void
+
+    /// The closure never compares equal, which would redraw every row (with
+    /// its swipe action and context menu) whenever the list changes. It only
+    /// ever names this row's plugin, so the model decides.
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.plugin == rhs.plugin }
     @Environment(AppModel.self) private var app
     @Environment(\.openRoute) private var openRoute
 
@@ -68,13 +94,13 @@ private struct PluginRow: View {
         // A plain Button draws none of List's automatic NavigationLink
         // chevron, since opening a plugin's page now opens a tab rather than
         // pushing — draw the same affordance explicitly.
-        let row = Button { openRoute(.plugin(plugin.id), title: plugin.config.name) } label: {
+        let row = Button { openRoute(.plugin(plugin.id), title: plugin.name) } label: {
             HStack(spacing: 12) {
-                RemoteImage(url: plugin.iconURL.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
+                RemoteImage(url: plugin.iconURL).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(plugin.config.name).font(.headline)
+                    Text(plugin.name).font(.headline)
                     HStack(spacing: 6) {
-                        Text("v\(plugin.config.version)").font(.caption).foregroundStyle(.secondary)
+                        Text("v\(plugin.version)").font(.caption).foregroundStyle(.secondary)
                         if let v = plugin.availableVersion { Text("Update: v\(v)").font(.caption.bold()).foregroundStyle(.orange) }
                         if !plugin.enabled { Text("Off").font(.caption).foregroundStyle(.secondary) }
                     }
@@ -107,6 +133,7 @@ struct AddSourceSheet: View {
     @State private var working = false
     @State private var errorText: String?
     @State private var preview: InstallPreview?
+    @State private var hasCamera = false
 
     var body: some View {
         NavigationStack {
@@ -125,12 +152,22 @@ struct AddSourceSheet: View {
                                 .autocorrectionDisabled()
                                 .urlEntryStyle()
                         }
-                        if QRCodeScanning.isAvailable {
+                        if hasCamera {
                             Section { Button { scanning = true } label: { Label("Scan QR code", systemImage: "qrcode.viewfinder") } }
                         }
-                        if let errorText { Section { Text(errorText).foregroundStyle(.red).font(.footnote) } }
-                        Section(footer: Text("Plugins are third-party code that runs on your device. Only add sources you trust.")) { EmptyView() }
+                        if working {
+                            Section { ProgressView("Checking the plugin…") }
+                        }
+                        if let errorText {
+                            Section {
+                                Text(errorText).foregroundStyle(.red).font(.footnote)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Section(footer: Text("Plugins are third-party code that runs on your device. Only add sources you trust.")
+                            .fixedSize(horizontal: false, vertical: true)) { EmptyView() }
                     }
+                    .task { hasCamera = await QRCodeScanning.isAvailable() }
                 }
             }
             .navigationTitle("Add source")
@@ -153,15 +190,14 @@ struct AddSourceSheet: View {
                 }
                 if preview == nil && !scanning {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button { Task { await prepare() } } label: {
-                            if working { ProgressView() } else { Text("Continue") }
-                        }
-                        .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
+                        // The label stays put; progress shows in the form.
+                        Button("Continue") { Task { await prepare() } }
+                            .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || working)
                     }
                 }
             }
         }
-        .frame(minHeight: 320)
+        .sheetSize()
     }
 
     private func prepare() async {
@@ -194,7 +230,11 @@ struct PreviewView: View {
                     }
                 }
                 .modifier(TVPreviewFocus())
-                if !c.description.isEmpty { Text(c.description).font(.subheadline).modifier(TVPreviewFocus()) }
+                if !c.description.isEmpty {
+                    Text(c.description).font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .modifier(TVPreviewFocus())
+                }
                 if preview.existing != nil { Label("Replaces your installed version", systemImage: "arrow.triangle.2.circlepath").font(.footnote).modifier(TVPreviewFocus()) }
             }
             if !preview.warnings.isEmpty {
@@ -203,6 +243,7 @@ struct PreviewView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Label(w.title, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.subheadline.bold())
                             Text(w.detail).font(.footnote).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .modifier(TVPreviewFocus())
                     }
@@ -290,7 +331,12 @@ struct PluginDetailView: View {
 
                 let settings = p.config.settings
                 if !settings.isEmpty {
-                    Section("Settings") { ForEach(settings) { SettingRow(plugin: p, setting: $0) } }
+                    Section("Settings") {
+                        ForEach(settings) { setting in
+                            SettingRow(pluginID: p.id, setting: setting, stored: app.plugins.settingValue(p, setting))
+                                .equatable()
+                        }
+                    }
                 }
 
                 Section("Library") {
@@ -377,12 +423,17 @@ struct PluginDetailView: View {
 // MARK: - Plugin settings editor
 
 @MainActor
-struct SettingRow: View {
-    let plugin: InstalledPlugin
+struct SettingRow: View, Equatable {
+    let pluginID: String
     let setting: PluginSetting
+    /// The value in effect, passed in so that one changed setting redraws
+    /// only its own row.
+    let stored: String?
     @Environment(AppModel.self) private var app
 
-    private var stored: String? { app.plugins.plugin(plugin.id).flatMap { app.plugins.settingValue($0, setting) } }
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.pluginID == rhs.pluginID && lhs.setting == rhs.setting && lhs.stored == rhs.stored
+    }
 
     var body: some View {
         switch setting.kind {
@@ -392,20 +443,30 @@ struct SettingRow: View {
                 if let d = setting.description, !d.isEmpty { Text(d).font(.caption).foregroundStyle(.secondary) }
             }
         case "boolean", "toggle", "switch":
-            Toggle(isOn: Binding(get: { stored == "true" }, set: { app.plugins.setSetting(pluginID: plugin.id, key: setting.key, value: $0 ? "true" : "false") })) {
+            PendingToggle(title: setting.name, isOn: stored == "true", apply: { value in
+                try await apply(value ? "true" : "false")
+            }) {
                 label
             }
         case "dropdown", "select", "list":
-            Picker(setting.name, selection: Binding(get: { Int(stored ?? "0") ?? 0 }, set: { app.plugins.setSetting(pluginID: plugin.id, key: setting.key, value: String($0)) })) {
+            PendingPicker(title: setting.name, selection: Int(stored ?? "0") ?? 0, apply: { index in
+                try await apply(String(index))
+            }) {
                 ForEach(Array((setting.options ?? []).enumerated()), id: \.offset) { i, o in Text(o).tag(i) }
             }
         default:
             VStack(alignment: .leading) {
                 label
-                TextField(setting.name, text: Binding(get: { Self.decodeText(stored) }, set: { app.plugins.setSetting(pluginID: plugin.id, key: setting.key, value: Self.encodeText($0)) }))
-                    .settingsTextEntryStyle()
+                PendingTextField(title: setting.name, text: Self.decodeText(stored)) { text in
+                    try await apply(Self.encodeText(text))
+                }
             }
         }
+    }
+
+    /// Takes effect only once the plugin runs with the new value.
+    private func apply(_ value: String) async throws {
+        try await app.plugins.applySetting(pluginID: pluginID, key: setting.key, value: value)
     }
 
     private var label: some View {
@@ -507,13 +568,15 @@ private struct AppSettingsForm: View {
 
 #if !os(tvOS)
 /// Shares the MetricKit reports kept on this device (crashes, hangs, CPU and
-/// disk-write exceptions, daily metrics) as one JSON file.
+/// disk-write exceptions, daily metrics), and in debug builds the main-thread
+/// stalls the app recorded, as one JSON file.
 @MainActor
 private struct PerformanceReportsSection: View {
     let store: PerformanceReportStore
     let exportDirectory: URL
     @State private var exportURL: URL?
     @State private var reportCount = 0
+    @State private var stallCount = 0
 
     var body: some View {
         Section("Diagnostics") {
@@ -521,8 +584,13 @@ private struct PerformanceReportsSection: View {
                 ShareContentAction(item: exportURL) {
                     Label("Export performance reports (\(reportCount))", systemImage: "square.and.arrow.up")
                 }
+                if stallCount > 0 {
+                    Text("Includes \(stallCount) recorded main-thread stall\(stallCount == 1 ? "" : "s").")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             } else {
-                Text("No crash or hang reports yet.")
+                Text("No crash, hang or stall reports yet.")
                     .foregroundStyle(.secondary)
             }
             Text("Reports come from the system's MetricKit and stay on this device unless you share them.")
@@ -533,10 +601,11 @@ private struct PerformanceReportsSection: View {
             let store = store
             let destination = exportDirectory.appendingPathComponent("Export", isDirectory: true)
             let result = await Task.detached(priority: .utility) {
-                (store.reports().count, try? store.exportBundle(to: destination))
+                (store.reports().count, store.stallLog.records().count, try? store.exportBundle(to: destination))
             }.value
             reportCount = result.0
-            exportURL = result.1 ?? nil
+            stallCount = result.1
+            exportURL = result.2 ?? nil
         }
     }
 }

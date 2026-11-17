@@ -7,13 +7,14 @@ final class ModelAndLogicTests: XCTestCase {
     }
 
     @MainActor
-    func testAppStartsWithDurableLocalProfileBeforeLogin() throws {
+    func testAppStartsWithDurableLocalProfileBeforeLogin() async throws {
         let model = makeTestAppModel()
         XCTAssertFalse(model.localNetworkSync.isEnabled)
         XCTAssertNil(model.profileAccount.account)
         let changes = try XCTUnwrap(model.profileChanges.mutationLog)
 
         _ = model.library.createPlaylist(name: "Local only")
+        await model.profileChanges.flush()
 
         XCTAssertEqual(changes.pending().last?.collection, HummingbirdProfileSchema.playlist)
     }

@@ -135,11 +135,28 @@ public struct AppSyncPeerTrustSuggestion: Equatable, Sendable {
 }
 
 public struct AppSyncPeerTrustSummary: Equatable, Sendable, Identifiable {
-    public let registration: AppSyncInstanceRegistration
+    public let peer: AppSyncPeer
+    /// The instance's signed registration while it can be reached, on the
+    /// local network or through the account. `nil` for a peer known only from
+    /// trust facts, which is not reachable right now.
+    public let registration: AppSyncInstanceRegistration?
     public let state: AppSyncPeerTrustState
 
-    public var id: AppSyncPeerID { registration.stablePeerID }
-    public var peer: AppSyncPeer { registration.peer }
+    public init(registration: AppSyncInstanceRegistration, state: AppSyncPeerTrustState) {
+        self.peer = registration.peer
+        self.registration = registration
+        self.state = state
+    }
+
+    /// A peer with a known trust relationship but no current registration.
+    public init(unreachable peer: AppSyncPeer, state: AppSyncPeerTrustState) {
+        self.peer = peer
+        self.registration = nil
+        self.state = state
+    }
+
+    public var id: AppSyncPeerID { peer.stableID }
+    public var isReachable: Bool { registration != nil }
     public var recommendation: AppSyncTrustRecommendation? {
         switch state {
         case .indirectlyTrusted: .verifyDirectly
@@ -157,6 +174,8 @@ public final class AppSyncTrustStore: @unchecked Sendable {
     private let observer: AppSyncPeer
     private let fileURL: URL?
     private var factsByID: [UUID: AppSyncTrustFact]
+    /// Fires after merged facts change who is trusted.
+    let changes = AppSyncChangeSignal()
 
     public init(observer: AppSyncPeer, fileURL: URL? = nil) throws {
         self.observer = observer; self.fileURL = fileURL
@@ -167,7 +186,7 @@ public final class AppSyncTrustStore: @unchecked Sendable {
     }
 
     public func merge(_ incoming: [AppSyncTrustFact]) throws -> Bool {
-        try lock.withLock {
+        let changed = try lock.withLock {
             var next = factsByID; var changed = false
             for fact in incoming {
                 try fact.verify()
@@ -179,6 +198,8 @@ public final class AppSyncTrustStore: @unchecked Sendable {
             if changed { try persist(next); factsByID = next }
             return changed
         }
+        if changed { changes.send() }
+        return changed
     }
 
     public func facts() -> [AppSyncTrustFact] {
@@ -202,9 +223,10 @@ public final class AppSyncTrustStore: @unchecked Sendable {
         localAppIDs: Set<AppSyncAppID>
     ) -> [AppSyncPeerTrustSuggestion] {
         peers(among: registrations, localAppIDs: localAppIDs).compactMap { summary in
-            guard let recommendation = summary.recommendation else { return nil }
+            guard let recommendation = summary.recommendation,
+                  let registration = summary.registration else { return nil }
             return .init(
-                registration: summary.registration, state: summary.state,
+                registration: registration, state: summary.state,
                 recommendation: recommendation
             )
         }
@@ -224,6 +246,33 @@ public final class AppSyncTrustStore: @unchecked Sendable {
             }
             .sorted { $0.id < $1.id }
         }
+    }
+
+    /// Every peer this instance has a trust relationship with, reachable or
+    /// not: first those in `registrations` (exactly as `peers(among:localAppIDs:)`
+    /// returns them), then peers known only from trust facts, without a
+    /// registration. Peers in neither with no trust state are left out.
+    public func knownPeers(
+        among registrations: [AppSyncInstanceRegistration],
+        localAppIDs: Set<AppSyncAppID>
+    ) -> [AppSyncPeerTrustSummary] {
+        let reachable = peers(among: registrations, localAppIDs: localAppIDs)
+        let reachableIDs = Set(reachable.map(\.id))
+        let unreachable: [AppSyncPeerTrustSummary] = lock.withLock {
+            var known: [AppSyncPeerID: AppSyncPeer] = [:]
+            for fact in factsByID.values {
+                known[fact.subject.stableID] = fact.subject
+                known[fact.issuer.stableID] = fact.issuer
+            }
+            return known.compactMap { id, peer -> AppSyncPeerTrustSummary? in
+                guard id != observer.stableID, !reachableIDs.contains(id) else { return nil }
+                let state = stateUnlocked(of: id)
+                guard state != .unknown else { return nil }
+                return .init(unreachable: peer, state: state)
+            }
+            .sorted { $0.id < $1.id }
+        }
+        return reachable + unreachable
     }
 
     private func stateUnlocked(of peer: AppSyncPeerID) -> AppSyncPeerTrustState {

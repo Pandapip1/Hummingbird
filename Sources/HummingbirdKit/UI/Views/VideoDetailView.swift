@@ -75,7 +75,7 @@ struct VideoDetailView: View {
             }
         }
         .sheet(isPresented: $showPlaylistPicker) {
-            if case .video(_, let d) = state { PlaylistPicker(video: SavedVideo(d.item)) }
+            if case .video(_, let d) = state { PlaylistPicker(video: SavedVideo(d.item)).sheetSize() }
         }
     }
 

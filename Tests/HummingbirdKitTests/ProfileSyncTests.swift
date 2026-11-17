@@ -30,7 +30,7 @@ final class ProfileSyncTests: XCTestCase {
     }
 
     @MainActor
-    func testPluginSettingsAreReplicatedButCredentialsAreNot() throws {
+    func testPluginSettingsAreReplicatedButCredentialsAreNot() async throws {
         let directory = makeTestDirectory()
         let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
         let recorder = ProfileChangeStore(mutationLog: mutationLog)
@@ -43,8 +43,10 @@ final class ProfileSyncTests: XCTestCase {
         )
 
         manager.setSetting(pluginID: "example", key: "region", value: "ca")
+        await recorder.flush()
         let beforeCredential = mutationLog.pending()
         manager.saveAuth(SourceAuth(headers: ["plugins.example": ["authorization": "Bearer secret"]]), pluginID: "example")
+        await recorder.flush()
 
         XCTAssertEqual(mutationLog.pending(), beforeCredential)
         let encoded = try JSONEncoder().encode(try XCTUnwrap(beforeCredential.last?.value))
@@ -55,14 +57,14 @@ final class ProfileSyncTests: XCTestCase {
     }
 
     @MainActor
-    func testLibraryDeletionLeavesDurableTombstone() throws {
+    func testLibraryDeletionLeavesDurableTombstone() async throws {
         let directory = makeTestDirectory()
         let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
-        let library = LibraryStore(
-            profileChanges: ProfileChangeStore(mutationLog: mutationLog), storage: makeTestStores().storage
-        )
+        let changes = ProfileChangeStore(mutationLog: mutationLog)
+        let library = LibraryStore(profileChanges: changes, storage: makeTestStores().storage)
         let playlist = library.createPlaylist(name: "Offline")
         library.deletePlaylist(playlist.id)
+        await changes.flush()
 
         let key = try XCTUnwrap(RecordKey(rawValue: playlist.id.uuidString.lowercased()))
         XCTAssertNotNil(mutationLog.tombstone(collection: HummingbirdProfileSchema.playlist, key: key))

@@ -103,13 +103,18 @@ final class PluginManager {
 
     init(installed: [InstalledPlugin] = [], profileChanges: ProfileChangeStore? = nil,
          storage: Storage, credentialStore: any CredentialStore,
-         storageName: String = "plugins", credentialNamespace: String = "") {
+         storageName: String = "plugins", credentialNamespace: String = "",
+         preloadedCredentials: PreloadedPluginCredentials? = nil) {
         self.installed = installed
         self.profileChanges = profileChanges
         self.storage = storage
         self.credentialStore = credentialStore
         self.storageName = storageName
         self.credentialNamespace = credentialNamespace
+        if let preloadedCredentials {
+            storedCredentials = preloadedCredentials.credentials
+            if let failure = preloadedCredentials.failure { recordCredentialFailure(failure) }
+        }
         for plugin in installed { loadCredentials(for: plugin.id) }
     }
 
@@ -150,6 +155,12 @@ final class PluginManager {
             await r.stop()
             return existing
         }
+        adopt(r, for: id)
+        return r
+    }
+
+    /// Makes `r` the plugin's running runtime, reporting its toasts and logs.
+    private func adopt(_ r: PluginRuntime, for id: String) {
         r.onToast = { [weak self] msg in
             Logger.plugin.notice("alert plugin=\(id, privacy: .public) message=\(msg.prefix(500))")
             Task { @MainActor in self?.toast = msg }
@@ -169,7 +180,6 @@ final class PluginManager {
             Logger.pluginConsole.debug("plugin=\(id, privacy: .public) \(bounded)")
         }
         runtimes[id] = r
-        return r
     }
 
     func enabledRuntimes(where predicate: (PluginConfig) -> Bool = { _ in true }) async -> [PluginRuntime] {
@@ -222,30 +232,43 @@ final class PluginManager {
         guard let scriptURL = config.resolve(config.scriptUrl, base: base) else { throw InstallError.invalidConfig("scriptUrl is missing") }
         let scriptData: Data
         do { scriptData = try await download(scriptURL, origin: origin, source: config.name) } catch { throw InstallError.download(error.localizedDescription) }
-        guard let script = String(data: scriptData, encoding: .utf8), !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw InstallError.emptyScript
-        }
-
-        var signatureValid: Bool?
-        if let sig = config.scriptSignature, let key = config.scriptPublicKey, !sig.isEmpty, !key.isEmpty {
-            signatureValid = ScriptSignature.verify(script: script, signatureBase64: sig, publicKeyBase64: key)
-            if signatureValid == false { throw InstallError.invalidSignature }
-        }
+        let (script, signatureValid) = try await Self.checkScript(
+            scriptData, config: config,
+            localNetworkCheck: localNetworkAccess?.runtimeCheck(source: config.name)
+        )
 
         var warnings = config.warnings(signatureValid: signatureValid)
         let existing = plugin(config.id)
         if let existing, let old = existing.config.scriptPublicKey, !old.isEmpty, old != (config.scriptPublicKey ?? "") {
             warnings.insert(("Different author", "This plugin is signed with a different key than the version you have installed."), at: 0)
         }
-        // Dry run so unsupported packages or missing entry points are reported before installing.
-        let probe = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil,
-                                  localNetworkAccess: localNetworkAccess?.runtimeCheck(source: config.name))
-        do { try await probe.validate() } catch { await probe.stop(); throw InstallError.invalid(error.localizedDescription) }
-        await probe.stop()
-
         return InstallPreview(config: config, script: script,
                               iconURL: config.resolve(config.iconUrl, base: base)?.absoluteString,
                               warnings: warnings, existing: existing)
+    }
+
+    /// Decodes a downloaded script, checks its signature and does a dry run, so
+    /// unsupported packages or missing entry points are reported before
+    /// installing. Scripts run to megabytes, and a dry run starts a JavaScript
+    /// context, so none of this happens on the main actor.
+    @concurrent
+    private static func checkScript(
+        _ scriptData: Data, config: PluginConfig, localNetworkCheck: (@Sendable (URL) async -> Bool)?
+    ) async throws -> (script: String, signatureValid: Bool?) {
+        guard let script = String(data: scriptData, encoding: .utf8),
+              script.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) else {
+            throw InstallError.emptyScript
+        }
+        var signatureValid: Bool?
+        if let sig = config.scriptSignature, let key = config.scriptPublicKey, !sig.isEmpty, !key.isEmpty {
+            signatureValid = ScriptSignature.verify(script: script, signatureBase64: sig, publicKeyBase64: key)
+            if signatureValid == false { throw InstallError.invalidSignature }
+        }
+        let probe = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil,
+                                  localNetworkAccess: localNetworkCheck)
+        do { try await probe.validate() } catch { await probe.stop(); throw InstallError.invalid(error.localizedDescription) }
+        await probe.stop()
+        return (script, signatureValid)
     }
 
     /// Stores a previewed plugin. Reinstalling keeps the user's settings and credentials.
@@ -259,7 +282,7 @@ final class PluginManager {
         }
         installed.append(entry)
         installed.sort { $0.config.name.localizedCaseInsensitiveCompare($1.config.name) == .orderedAscending }
-        loadCredentials(for: entry.id)
+        loadCredentialsInBackground(for: entry.id)
         invalidate(entry.id)
         persist()
         if !applyingRemoteChange { recordPlugin(entry) }
@@ -303,6 +326,47 @@ final class PluginManager {
         if !applyingRemoteChange { recordPlugin(installed[i]) }
     }
 
+    /// Changes a setting only once the plugin runs with it. A runtime is
+    /// started with the candidate value away from the main actor; the setting
+    /// is stored and synced, and that runtime adopted, only if it starts.
+    /// Otherwise nothing changes and the error is thrown.
+    func applySetting(pluginID: String, key: String, value: String) async throws {
+        guard let current = plugin(pluginID) else { throw InstallError.invalid("The source isn’t installed.") }
+        var candidate = current
+        candidate.settings[key] = value
+        let started = try await Self.startRuntime(
+            candidate, credentials: credentials(for: pluginID),
+            localNetworkCheck: localNetworkAccess?.runtimeCheck(source: current.config.name)
+        )
+        guard let i = installed.firstIndex(where: { $0.id == pluginID }), installed[i] == current else {
+            await started.stop()
+            throw InstallError.invalid("The source changed while the setting was being applied. Try again.")
+        }
+        installed[i].settings[key] = value
+        invalidate(pluginID)
+        adopt(started, for: pluginID)
+        persist()
+        if !applyingRemoteChange { recordPlugin(installed[i]) }
+    }
+
+    /// Starts a runtime for `plugin` as it would be with its settings, and
+    /// checks it runs. The JavaScript context is made off the main actor.
+    @concurrent
+    private static func startRuntime(
+        _ plugin: InstalledPlugin, credentials: PluginCredentials,
+        localNetworkCheck: (@Sendable (URL) async -> Bool)?
+    ) async throws -> PluginRuntime {
+        let runtime = PluginRuntime(
+            config: plugin.config, script: plugin.script, settings: plugin.settings,
+            auth: credentials.auth, captcha: credentials.captcha, localNetworkAccess: localNetworkCheck
+        )
+        do { try await runtime.validate() } catch {
+            await runtime.stop()
+            throw error
+        }
+        return runtime
+    }
+
     // MARK: credentials
 
     func isLoggedIn(_ id: String) -> Bool {
@@ -332,6 +396,24 @@ final class PluginManager {
             recordCredentialFailure(error)
         }
         storedCredentials[id] = loaded
+    }
+
+    /// `loadCredentials(for:)` for a plugin installed while the app runs: its
+    /// credential-store read happens away from the main actor. A runtime
+    /// started before it finishes is replaced once it has.
+    private func loadCredentialsInBackground(for id: String) {
+        guard storedCredentials[id] == nil else { return }
+        let preload = (store: credentialStore, namespace: credentialNamespace)
+        Task { [weak self] in
+            let loaded = await PreloadedPluginCredentials.load(
+                pluginIDs: [id], from: preload.store, namespace: preload.namespace
+            )
+            guard let self, self.storedCredentials[id] == nil else { return }
+            self.storedCredentials[id] = loaded.credentials[id] ?? PluginCredentials()
+            if let failure = loaded.failure { self.recordCredentialFailure(failure) }
+            let found = loaded.credentials[id]
+            if found?.auth != nil || found?.captcha != nil { self.invalidate(id) }
+        }
     }
 
     func saveAuth(_ auth: SourceAuth, pluginID: String) {
@@ -382,10 +464,32 @@ final class PluginManager {
 
     /// Re-downloads each plugin's config and records newer versions. The user applies them explicitly.
     /// `origin` is `.settings` for the automatic check at launch.
+    /// Checks every plugin for a newer version. The configs are fetched and
+    /// decoded concurrently away from the main actor, and the results land in
+    /// one write that touches only plugins whose answer changed, so the list
+    /// redraws once, and only the rows that changed.
     func checkForUpdates(origin: PermissionOrigin) async {
+        var checks: [(id: String, url: URL, version: Int)] = []
         for p in installed {
-            _ = try? await checkForUpdate(p.id, origin: origin)
+            guard let src = p.config.sourceUrl, let url = URL(string: src) else { continue }
+            if let localNetworkAccess, !(await localNetworkAccess.authorize(url, source: p.config.name, origin: origin)) {
+                continue
+            }
+            checks.append((p.id, url, p.config.version))
         }
+        let session = urlSession
+        let results = await withTaskGroup(of: (String, Int?)?.self) { group in
+            for check in checks {
+                group.addTask {
+                    guard let fresh = try? await Self.fetchConfig(check.url, session: session) else { return nil }
+                    return (check.id, fresh.version > check.version ? fresh.version : nil)
+                }
+            }
+            var results: [String: Int?] = [:]
+            for await result in group { if let result { results[result.0] = result.1 } }
+            return results
+        }
+        applyAvailableVersions(results)
     }
 
     /// Checks one plugin immediately and reports whether a newer version exists.
@@ -393,16 +497,40 @@ final class PluginManager {
     func checkForUpdate(_ id: String, origin: PermissionOrigin = .userAction) async throws -> Int? {
         guard let p = plugin(id), let src = p.config.sourceUrl,
               let url = URL(string: src) else { throw InstallError.badURL }
-        let data = try await download(url, origin: origin, source: p.config.name)
-        let fresh: PluginConfig
-        do { fresh = try JSONDecoder().decode(PluginConfig.self, from: data) }
-        catch { throw InstallError.invalidConfig(error.localizedDescription) }
-        let available = fresh.version > p.config.version ? fresh.version : nil
-        if let i = installed.firstIndex(where: { $0.id == id }) {
-            installed[i].availableVersion = available
-            persist()
+        if let localNetworkAccess, !(await localNetworkAccess.authorize(url, source: p.config.name, origin: origin)) {
+            throw LocalNetworkAccessDeclined(host: url.host ?? url.absoluteString)
         }
+        let fresh = try await Self.fetchConfig(url, session: urlSession)
+        let available = fresh.version > p.config.version ? fresh.version : nil
+        applyAvailableVersions([id: available])
         return available
+    }
+
+    /// Records update-check answers. Every write to `installed` redraws
+    /// whatever lists plugins, so unchanged answers write nothing.
+    private func applyAvailableVersions(_ results: [String: Int?]) {
+        var updated = installed
+        var changed = false
+        for (id, available) in results {
+            guard let i = updated.firstIndex(where: { $0.id == id }), updated[i].availableVersion != available else { continue }
+            updated[i].availableVersion = available
+            changed = true
+        }
+        guard changed else { return }
+        installed = updated
+        persist()
+    }
+
+    @concurrent
+    private static func fetchConfig(_ url: URL, session: URLSession) async throws -> PluginConfig {
+        var req = URLRequest(url: url)
+        req.setValue("Hummingbird/0.1", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: req)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw InstallError.download("HTTP \(http.statusCode) from \(url.host ?? url.absoluteString)")
+        }
+        do { return try JSONDecoder().decode(PluginConfig.self, from: data) }
+        catch { throw InstallError.invalidConfig(error.localizedDescription) }
     }
 
     func update(_ id: String) async throws {
@@ -455,5 +583,30 @@ final class PluginManager {
         applyingRemoteChange = true
         defer { applyingRemoteChange = false }
         remove(id)
+    }
+}
+
+/// The installed plugins' credentials, read at launch away from the main
+/// actor: two credential-store reads per plugin add up, and the login
+/// keychain can be slow to answer.
+struct PreloadedPluginCredentials: Sendable {
+    var credentials: [String: PluginManager.PluginCredentials] = [:]
+    var failure: (any Error)?
+
+    @concurrent
+    static func load(pluginIDs: [String], from store: any CredentialStore, namespace: String) async -> Self {
+        var preloaded = Self()
+        for id in pluginIDs {
+            var loaded = PluginManager.PluginCredentials()
+            do {
+                loaded.auth = try store.loadSourceAuth(pluginID: id, kind: "auth", namespace: namespace)
+                loaded.captcha = try store.loadSourceAuth(pluginID: id, kind: "captcha", namespace: namespace)
+            } catch {
+                // As on the main path: reported once, remembered as empty.
+                preloaded.failure = preloaded.failure ?? error
+            }
+            preloaded.credentials[id] = loaded
+        }
+        return preloaded
     }
 }

@@ -6,6 +6,7 @@ import SwiftOpenUI
 @MainActor
 struct SyncSettingsView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.isBrowserTabVisible) private var isVisible
     @State private var peers: [AppSyncPeerTrustSummary] = []
     @State private var isLoading = false
     @State private var isScanning = false
@@ -13,6 +14,8 @@ struct SyncSettingsView: View {
     @State private var peerToDistrust: AppSyncPeerTrustSummary?
     @State private var showingLocalCode = false
     @State private var accountIdentifier = ""
+    @State private var enteringCode = false
+    @State private var enteredCode = ""
 
     var body: some View {
         Group {
@@ -53,6 +56,16 @@ struct SyncSettingsView: View {
                         case .available:
                             Label("Available to trusted instances nearby", systemImage: "checkmark.circle")
                                 .font(.footnote).foregroundStyle(.secondary)
+                        case .blockedBySystem:
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label("Local network access is off for Hummingbird", systemImage: "hand.raised.slash")
+                                    .foregroundStyle(.orange)
+                                Text("Allow local network access for Hummingbird in \(PrivacySettings.location(of: .localNetwork)), then turn Local Network Sync on again.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                                if PrivacySettings.canOpen(.localNetwork) {
+                                    Button("Open Settings") { PrivacySettings.open(.localNetwork) }
+                                }
+                            }
                         case .failed(let message):
                             VStack(alignment: .leading, spacing: 4) {
                                 Label("Local sync is unavailable", systemImage: "exclamationmark.triangle")
@@ -90,7 +103,9 @@ struct SyncSettingsView: View {
                             ForEach(peers) { peer in
                                 PeerTrustRow(
                                     peer: peer,
-                                    verify: { isScanning = true },
+                                    compareEmoji: { Task { await compareEmoji(with: peer) } },
+                                    scan: { isScanning = true },
+                                    enterCode: { enteringCode = true },
                                     distrust: { peerToDistrust = peer }
                                 )
                             }
@@ -107,17 +122,48 @@ struct SyncSettingsView: View {
         .toolbar {
             if !isScanning {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { isScanning = true } label: {
-                        Label("Verify instance", systemImage: "qrcode.viewfinder")
+                    Menu {
+                        Button { isScanning = true } label: {
+                            Label("Scan Its Code", systemImage: "qrcode.viewfinder")
+                        }
+                        Button { enteringCode = true } label: {
+                            Label("Enter Its Code", systemImage: "keyboard")
+                        }
+                    } label: {
+                        Label("Verify instance", systemImage: "checkmark.shield")
                     }
-                    .disabled(!QRCodeScanning.isAvailable || app.peerService == nil)
+                    .disabled(app.peerService == nil)
+                }
+            } else {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { isScanning = false }
                 }
             }
         }
-        .task { await reload() }
+        .task(id: isVisible) {
+            // Instances come and go and trust changes from other devices;
+            // keep the list current while it is on screen, and leave it
+            // idle in a background tab (it reloads when shown again).
+            guard isVisible else { return }
+            await reload()
+            for await _ in app.profileAccount.peerChanges() { await reload() }
+        }
+        .alert("Enter Verification Code", isPresented: $enteringCode) {
+            TextField("Code", text: $enteredCode)
+                .autocorrectionDisabled()
+            Button("Verify") {
+                let code = enteredCode.trimmingCharacters(in: .whitespacesAndNewlines)
+                enteredCode = ""
+                Task { await verify(code) }
+            }
+            Button("Cancel", role: .cancel) { enteredCode = "" }
+        } message: {
+            Text("On the other instance, open Sync › Show Verification Code and copy the code under the QR code.")
+        }
         .sheet(isPresented: $showingLocalCode) {
             if let service = app.peerService {
                 PeerVerificationCodeSheet(code: service.verificationCode)
+                    .sheetSize()
             }
         }
         .confirmationDialog(
@@ -201,6 +247,8 @@ struct SyncSettingsView: View {
         } else {
             TextField("Handle or DID", text: $accountIdentifier)
                 .settingsTextEntryStyle()
+                // A handle or DID is an identifier, not prose.
+                .autocorrectionDisabled()
             Button("Sign In with AT Protocol") {
                 Task {
                     await app.profileAccount.signIn(identifier: accountIdentifier)
@@ -240,6 +288,12 @@ struct SyncSettingsView: View {
             try await app.profileAccount.verifyPeer(code)
             await reload()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func compareEmoji(with peer: AppSyncPeerTrustSummary) async {
+        errorMessage = nil
+        do { try await app.profileAccount.startVerification(with: peer) }
+        catch { errorMessage = error.localizedDescription }
     }
 
     private func distrust(_ summary: AppSyncPeerTrustSummary) async {
@@ -307,20 +361,31 @@ private struct PeerQRCode: View {
 @MainActor
 private struct PeerTrustRow: View {
     let peer: AppSyncPeerTrustSummary
-    let verify: () -> Void
+    let compareEmoji: () -> Void
+    let scan: () -> Void
+    let enterCode: () -> Void
     let distrust: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             PeerIdentityLabel(peerID: peer.id)
             Label(statusText, systemImage: statusIcon).font(.subheadline).foregroundStyle(statusColor)
+            if !peer.isReachable {
+                Label("Not reachable right now", systemImage: "wifi.slash")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if case .indirectlyTrusted(let path) = peer.state {
                 Text("Trusted through \(max(0, path.count - 2)) intermediate instance\(path.count == 3 ? "" : "s"). Sync remains enabled.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
-                if peer.recommendation != nil || isExplicitlyDistrusted {
-                    Button("Verify Directly", action: verify)
+                // Verifying needs the instance's current registration.
+                if peer.isReachable, peer.recommendation != nil || isExplicitlyDistrusted {
+                    Menu("Verify Directly") {
+                        Button("Compare Emoji", action: compareEmoji)
+                        Button("Scan Its Code", action: scan)
+                        Button("Enter Its Code", action: enterCode)
+                    }
                 }
                 if !isExplicitlyDistrusted { Button("Distrust", role: .destructive, action: distrust) }
             }

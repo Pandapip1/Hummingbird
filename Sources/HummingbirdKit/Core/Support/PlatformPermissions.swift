@@ -88,24 +88,39 @@ final class PlatformPermissions: SystemPermissions {
 /// `SigningIdentifier`, no designated requirement, and
 /// `AllowEmptyDesignatedRequirement`. A rebuilt or re-signed app with the same
 /// identifier keeps its grant; a different bundle identifier starts over.
+///
+/// Both answers are fixed for the life of the process, so each is worked out
+/// once. The code-signing calls behind them must not run on the main thread
+/// (Security reports them as a runtime issue there); `prepare()` runs them
+/// during launch, off the main thread, before anything asks.
 enum AppSigningIdentity {
-    static func current() -> String {
+    static func current() -> String { currentIdentity }
+
+    /// What earlier builds keyed their record by: the designated requirement
+    /// on macOS, the bundle identifier elsewhere.
+    static func legacyKey() -> String { legacyIdentity }
+
+    /// Works both answers out now. Call it off the main thread.
+    static func prepare() {
+        _ = currentIdentity
+        _ = legacyIdentity
+    }
+
+    private static let currentIdentity: String = {
         #if os(macOS)
         if let identifier = signingIdentifier() { return identifier }
         #endif
         return Bundle.main.bundleIdentifier ?? Bundle.main.bundleURL.path
-    }
+    }()
 
-    /// What earlier builds keyed their record by: the designated requirement
-    /// on macOS, the bundle identifier elsewhere.
-    static func legacyKey() -> String {
+    private static let legacyIdentity: String = {
         #if os(macOS)
         if let requirement = designatedRequirement() { return requirement }
         return Bundle.main.bundleURL.path
         #else
         return Bundle.main.bundleIdentifier ?? "app"
         #endif
-    }
+    }()
 
     #if os(macOS)
     private static func staticSelf() -> SecStaticCode? {

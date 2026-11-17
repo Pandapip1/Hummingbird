@@ -8,22 +8,78 @@ import FoundationNetworking
 /// Standard DNS-SD presence for AppSync instances. DNS-SD only supplies a
 /// routable HTTP endpoint and expected key digest; the signed registration at
 /// that endpoint remains the authority for identity, capabilities, and apps.
+///
+/// An instance counts as present while its advertisement exists: its signed
+/// registration is fetched when the advertisement resolves and again every
+/// `refreshInterval`, and it is dropped as soon as DNS-SD reports the
+/// advertisement gone. `lifetime` only bounds how long a registration
+/// survives without a successful refresh, for hosts that vanish without a
+/// goodbye.
 final class AppSyncLANDiscovery: @unchecked Sendable {
     private static let serviceType = AppSyncAuthority.bonjourServiceType
     private static let lifetime: TimeInterval = 90
+    private static let refreshInterval: TimeInterval = 30
 
     private struct Seen {
         let registration: AppSyncInstanceRegistration
         let receivedAt: Date
     }
 
+    /// A DNS-SD operation and the dispatch source that services its socket.
+    private struct Operation {
+        let reference: DNSServiceRef
+        let source: DispatchSourceRead?
+    }
+
+    /// One advertisement, as seen on one interface.
+    private struct AdvertKey: Hashable {
+        let name: String
+        let interfaceIndex: UInt32
+    }
+
+    /// Where an advertisement's signed registration is served.
+    private struct Endpoint: Hashable {
+        let url: URL
+        let peerID: AppSyncPeerID
+    }
+
+    private struct Advert {
+        let resolver: Operation
+        var endpoint: Endpoint?
+    }
+
     private let lock = NSLock()
+    /// Every DNS-SD callback runs here, so tearing down on this queue
+    /// guarantees none is mid-flight.
     private let queue = DispatchQueue(label: "com.eightybps.appsync.dnssd")
-    private var registrationRef: DNSServiceRef?
-    private var browseRef: DNSServiceRef?
-    private var resolveRefs: [DNSServiceRef] = []
-    private var sources: [DispatchSourceRead] = []
+    private static let queueKey = DispatchSpecificKey<Void>()
+    /// Registration fetches share nothing (cookies, cache, credentials) with
+    /// the host app's other traffic.
+    private let session = URLSession(configuration: .ephemeral)
+    private var registration: Operation?
+    private var browser: Operation?
+    private var adverts: [AdvertKey: Advert] = [:]
+    private var refreshTimer: DispatchSourceTimer?
     private var seen: [AppSyncPeerID: Seen] = [:]
+    /// What DNS-SD's C callbacks receive as their context. It refers to this
+    /// object weakly and stays alive until every DNS-SD source has finished
+    /// cancelling, so a callback that arrives after this object is freed
+    /// finds nil instead of freed memory.
+    private var callbackContext: CallbackContext?
+    /// Fires when an instance appears, changes its registration, or goes.
+    let changes = AppSyncChangeSignal()
+    /// Fires when local network privacy blocks advertising or browsing. On
+    /// iOS the user's "Don't Allow" arrives this way, after starting succeeded.
+    let policyDenials = AppSyncChangeSignal()
+
+    init() {
+        queue.setSpecific(key: Self.queueKey, value: ())
+        callbackContext = CallbackContext(owner: self)
+    }
+
+    private var contextPointer: UnsafeMutableRawPointer? {
+        callbackContext.map { Unmanaged.passUnretained($0).toOpaque() }
+    }
 
     func start(advertising registration: AppSyncInstanceRegistration) async throws {
         try registration.verify()
@@ -31,9 +87,9 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
               let port = endpoint.port, (1...Int(UInt16.max)).contains(port) else {
             throw InstanceMessagingError.serverUnavailable
         }
-        if lock.withLock({ registrationRef != nil }) { return }
+        if lock.withLock({ self.registration != nil }) { return }
 
-        let context = Unmanaged.passUnretained(self).toOpaque()
+        let context = contextPointer
         var registerRef: DNSServiceRef?
         let txt = Self.txtRecord(peerID: registration.stablePeerID)
         let registerError = txt.withUnsafeBytes { bytes in
@@ -59,60 +115,99 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
             throw InstanceMessagingError.localNetworkDiscoveryFailed(
                 operation: .browse, code: browseError)
         }
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.refreshInterval, repeating: Self.refreshInterval)
+        timer.setEventHandler { [weak self] in self?.refresh() }
+
+        let register = Operation(reference: registerRef, source: monitor(registerRef))
+        let browse = Operation(reference: browseRef, source: monitor(browseRef))
         lock.withLock {
-            self.registrationRef = registerRef
-            self.browseRef = browseRef
+            self.registration = register
+            self.browser = browse
+            self.refreshTimer = timer
         }
-        monitor(registerRef)
-        monitor(browseRef)
+        timer.resume()
     }
 
     func registrations() -> [AppSyncInstanceRegistration] {
-        let cutoff = Date().addingTimeInterval(-Self.lifetime)
-        return lock.withLock {
-            seen = seen.filter { $0.value.receivedAt >= cutoff }
-            return seen.values.map(\.registration)
+        let (current, expired) = lock.withLock { () -> ([AppSyncInstanceRegistration], Bool) in
+            let expired = pruneExpired()
+            return (seen.values.map(\.registration), expired)
         }
+        if expired { changes.send() }
+        return current
     }
 
     func observe(_ registration: AppSyncInstanceRegistration) throws {
         try registration.verify()
-        lock.withLock {
+        let changed = lock.withLock {
+            let previous = seen[registration.stablePeerID]?.registration
             seen[registration.stablePeerID] = Seen(
                 registration: registration, receivedAt: Date()
             )
+            return previous != registration
         }
+        if changed { changes.send() }
     }
 
+    /// Drops registrations not refreshed within `lifetime`. Call with `lock` held.
+    private func pruneExpired() -> Bool {
+        let cutoff = Date().addingTimeInterval(-Self.lifetime)
+        let before = seen.count
+        seen = seen.filter { $0.value.receivedAt >= cutoff }
+        return seen.count != before
+    }
+
+    /// Ends advertising and browsing. Callbacks reach this object through an
+    /// unretained pointer, so the sources are cancelled on their own queue:
+    /// once cancelled there, no callback can be running or start again.
     func stop() {
-        let state = lock.withLock { () -> ([DispatchSourceRead], [DNSServiceRef]) in
-            let refs = [registrationRef, browseRef].compactMap { $0 } + resolveRefs
-            let result = (sources, refs)
-            sources = []
-            resolveRefs = []
-            registrationRef = nil
-            browseRef = nil
-            return result
+        if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
+            tearDown()
+        } else {
+            queue.sync { tearDown() }
         }
-        state.0.forEach { $0.cancel() }
-        state.1.forEach(DNSServiceRefDeallocate)
     }
 
-    deinit { stop() }
+    private func tearDown() {
+        let (operations, timer) = lock.withLock { () -> ([Operation], DispatchSourceTimer?) in
+            let operations = [registration, browser].compactMap { $0 }
+                + adverts.values.map(\.resolver)
+            let timer = refreshTimer
+            registration = nil
+            browser = nil
+            adverts = [:]
+            refreshTimer = nil
+            return (operations, timer)
+        }
+        timer?.cancel()
+        operations.forEach(Self.release)
+    }
 
-    fileprivate func resolve(name: String, type: String, domain: String,
-                             interfaceIndex: UInt32) {
+    deinit {
+        stop()
+        session.invalidateAndCancel()
+    }
+
+    // MARK: DNS-SD callbacks (on `queue`)
+
+    fileprivate func browsed(name: String, type: String, domain: String,
+                             interfaceIndex: UInt32, added: Bool) {
+        let key = AdvertKey(name: name, interfaceIndex: interfaceIndex)
+        guard added else { return removeAdvert(key) }
+        if lock.withLock({ adverts[key] != nil }) { return }
         var reference: DNSServiceRef?
         let error = DNSServiceResolve(
             &reference, 0, interfaceIndex, name, type, domain,
-            appSyncResolveReply, Unmanaged.passUnretained(self).toOpaque()
+            appSyncResolveReply, contextPointer
         )
         guard error == kDNSServiceErr_NoError, let reference else { return }
-        lock.withLock { resolveRefs.append(reference) }
-        monitor(reference)
+        let resolver = Operation(reference: reference, source: monitor(reference))
+        lock.withLock { adverts[key] = Advert(resolver: resolver, endpoint: nil) }
     }
 
-    fileprivate func found(host: String, port: UInt16, txt: Data) {
+    fileprivate func resolved(_ reference: DNSServiceRef, host: String, port: UInt16, txt: Data) {
         guard let expected = Self.txtValue("id", in: txt).flatMap(AppSyncPeerID.init),
               Self.txtValue("v", in: txt) == "1" else { return }
         var components = URLComponents()
@@ -121,24 +216,80 @@ final class AppSyncLANDiscovery: @unchecked Sendable {
         components.port = Int(port)
         components.path = "/appsync/v1/registration"
         guard let url = components.url else { return }
+        let endpoint = Endpoint(url: url, peerID: expected)
+        lock.withLock {
+            if let key = adverts.first(where: { $0.value.resolver.reference == reference })?.key {
+                adverts[key]?.endpoint = endpoint
+            }
+        }
+        fetch(endpoint)
+    }
+
+    // MARK: Presence
+
+    private func removeAdvert(_ key: AdvertKey) {
+        let (removed, gone) = lock.withLock { () -> (Advert?, Bool) in
+            guard let advert = adverts.removeValue(forKey: key) else { return (nil, false) }
+            // The same instance can be advertised on several interfaces; it
+            // is gone only when none remain.
+            if let peerID = advert.endpoint?.peerID,
+               !adverts.values.contains(where: { $0.endpoint?.peerID == peerID }) {
+                return (advert, seen.removeValue(forKey: peerID) != nil)
+            }
+            return (advert, false)
+        }
+        if let removed { Self.release(removed.resolver) }
+        if gone { changes.send() }
+    }
+
+    private func refresh() {
+        let (endpoints, expired) = lock.withLock {
+            (adverts.values.compactMap(\.endpoint), pruneExpired())
+        }
+        if expired { changes.send() }
+        var byPeer: [AppSyncPeerID: Endpoint] = [:]
+        for endpoint in endpoints { byPeer[endpoint.peerID] = endpoint }
+        byPeer.values.forEach(fetch)
+    }
+
+    private func fetch(_ endpoint: Endpoint) {
+        let session = session
         Task { [weak self] in
-            guard let (data, response) = try? await URLSession.shared.data(from: url),
+            guard let (data, response) = try? await session.data(from: endpoint.url),
                   (response as? HTTPURLResponse)?.statusCode == 200,
                   let registration = try? JSONDecoder().decode(
                     AppSyncInstanceRegistration.self, from: data
-                  ), registration.stablePeerID == expected,
+                  ), registration.stablePeerID == endpoint.peerID,
                   (try? registration.verify()) != nil else { return }
             try? self?.observe(registration)
         }
     }
 
-    private func monitor(_ reference: DNSServiceRef) {
+    // MARK: DNS-SD plumbing
+
+    private func monitor(_ reference: DNSServiceRef) -> DispatchSourceRead? {
         let descriptor = DNSServiceRefSockFD(reference)
-        guard descriptor >= 0 else { return }
+        guard descriptor >= 0 else { return nil }
         let source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         source.setEventHandler { _ = DNSServiceProcessResult(reference) }
+        // The socket belongs to the reference; release it only once the
+        // source can no longer read from it. Holding the callback context
+        // until then keeps every callback's context pointer valid.
+        let context = callbackContext
+        source.setCancelHandler {
+            DNSServiceRefDeallocate(reference)
+            withExtendedLifetime(context) {}
+        }
         source.resume()
-        lock.withLock { sources.append(source) }
+        return source
+    }
+
+    private static func release(_ operation: Operation) {
+        if let source = operation.source {
+            source.cancel()
+        } else {
+            DNSServiceRefDeallocate(operation.reference)
+        }
     }
 
     private static func txtRecord(peerID: AppSyncPeerID) -> Data {
@@ -167,7 +318,11 @@ private func appSyncRegisterReply(
     _ sdRef: DNSServiceRef?, _ flags: DNSServiceFlags, _ errorCode: DNSServiceErrorType,
     _ name: UnsafePointer<CChar>?, _ regtype: UnsafePointer<CChar>?,
     _ domain: UnsafePointer<CChar>?, _ context: UnsafeMutableRawPointer?
-) {}
+) {
+    guard errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied),
+          let owner = CallbackContext.owner(of: context) else { return }
+    owner.policyDenials.send()
+}
 
 private func appSyncBrowseReply(
     _ sdRef: DNSServiceRef?, _ flags: DNSServiceFlags, _ interfaceIndex: UInt32,
@@ -175,12 +330,17 @@ private func appSyncBrowseReply(
     _ regtype: UnsafePointer<CChar>?, _ replyDomain: UnsafePointer<CChar>?,
     _ context: UnsafeMutableRawPointer?
 ) {
+    guard let owner = CallbackContext.owner(of: context) else { return }
+    if errorCode == DNSServiceErrorType(kDNSServiceErr_PolicyDenied) {
+        owner.policyDenials.send()
+        return
+    }
     guard errorCode == kDNSServiceErr_NoError,
-          flags & DNSServiceFlags(kDNSServiceFlagsAdd) != 0,
-          let serviceName, let regtype, let replyDomain, let context else { return }
-    Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().resolve(
+          let serviceName, let regtype, let replyDomain else { return }
+    owner.browsed(
         name: String(cString: serviceName), type: String(cString: regtype),
-        domain: String(cString: replyDomain), interfaceIndex: interfaceIndex
+        domain: String(cString: replyDomain), interfaceIndex: interfaceIndex,
+        added: flags & DNSServiceFlags(kDNSServiceFlagsAdd) != 0
     )
 }
 
@@ -190,9 +350,23 @@ private func appSyncResolveReply(
     _ hosttarget: UnsafePointer<CChar>?, _ port: UInt16, _ txtLen: UInt16,
     _ txtRecord: UnsafePointer<UInt8>?, _ context: UnsafeMutableRawPointer?
 ) {
-    guard errorCode == kDNSServiceErr_NoError, let hosttarget, let context else { return }
+    guard errorCode == kDNSServiceErr_NoError, let sdRef, let hosttarget,
+          let owner = CallbackContext.owner(of: context) else { return }
     let txt = txtRecord.map { Data(bytes: $0, count: Int(txtLen)) } ?? Data()
-    Unmanaged<AppSyncLANDiscovery>.fromOpaque(context).takeUnretainedValue().found(
-        host: String(cString: hosttarget), port: UInt16(bigEndian: port), txt: txt
+    owner.resolved(
+        sdRef, host: String(cString: hosttarget), port: UInt16(bigEndian: port), txt: txt
     )
+}
+
+/// The context DNS-SD passes back to the C callbacks: a weak reference to the
+/// discovery object, so late callbacks can't reach a freed object.
+private final class CallbackContext: Sendable {
+    weak let owner: AppSyncLANDiscovery?
+
+    init(owner: AppSyncLANDiscovery) { self.owner = owner }
+
+    static func owner(of context: UnsafeMutableRawPointer?) -> AppSyncLANDiscovery? {
+        guard let context else { return nil }
+        return Unmanaged<CallbackContext>.fromOpaque(context).takeUnretainedValue().owner
+    }
 }

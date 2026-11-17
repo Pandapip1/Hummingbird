@@ -283,38 +283,28 @@ import UIKit
 
 struct QRScannerView: UIViewControllerRepresentable {
     let onCode: (String) -> Void
+    let onUnavailable: () -> Void
 
     func makeUIViewController(context: Context) -> ScannerController {
         let c = ScannerController()
         c.onCode = onCode
+        c.onUnavailable = onUnavailable
         return c
     }
     func updateUIViewController(_ uiViewController: ScannerController, context: Context) {}
 
     final class ScannerController: UIViewController, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
-        private final class CaptureSessionBox: @unchecked Sendable {
-            let value = AVCaptureSession()
-        }
-
         var onCode: ((String) -> Void)?
-        private let sessionBox = CaptureSessionBox()
-        private var session: AVCaptureSession { sessionBox.value }
+        var onUnavailable: (() -> Void)?
+        private let capture = QRCaptureSession()
         private var preview: AVCaptureVideoPreviewLayer?
         private var done = false
 
         override func viewDidLoad() {
             super.viewDidLoad()
             view.backgroundColor = .black
-            guard let device = AVCaptureDevice.default(for: .video),
-                  let input = try? AVCaptureDeviceInput(device: device),
-                  session.canAddInput(input) else { return }
-            session.addInput(input)
-            let output = AVCaptureMetadataOutput()
-            guard session.canAddOutput(output) else { return }
-            session.addOutput(output)
-            output.setMetadataObjectsDelegate(self, queue: .main)
-            output.metadataObjectTypes = [.qr]
-            let layer = AVCaptureVideoPreviewLayer(session: session)
+            capture.output.setMetadataObjectsDelegate(self, queue: .main)
+            let layer = AVCaptureVideoPreviewLayer(session: capture.session)
             layer.videoGravity = .resizeAspectFill
             view.layer.addSublayer(layer)
             preview = layer
@@ -327,15 +317,12 @@ struct QRScannerView: UIViewControllerRepresentable {
 
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
-            let sessionBox = sessionBox
-            DispatchQueue.global(qos: .userInitiated).async {
-                if !sessionBox.value.isRunning { sessionBox.value.startRunning() }
-            }
+            capture.start { [weak self] in self?.onUnavailable?() }
         }
 
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
-            session.stopRunning()
+            capture.stop()
         }
 
         func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from connection: AVCaptureConnection) {
@@ -352,51 +339,28 @@ import AVFoundation
 
 struct QRScannerView: NSViewRepresentable {
     let onCode: (String) -> Void
+    let onUnavailable: () -> Void
 
     func makeNSView(context: Context) -> ScannerNSView {
         let v = ScannerNSView()
         v.onCode = onCode
+        v.onUnavailable = onUnavailable
         return v
     }
     func updateNSView(_ nsView: ScannerNSView, context: Context) {}
 
-    private final class CaptureSessionController: @unchecked Sendable {
-        let session = AVCaptureSession()
-        private let queue = DispatchQueue(label: "app.hummingbird.qr-capture", qos: .userInitiated)
-
-        func start() {
-            queue.async { [self] in
-                if !session.isRunning { session.startRunning() }
-            }
-        }
-
-        func stop() {
-            queue.async { [self] in
-                if session.isRunning { session.stopRunning() }
-            }
-        }
-    }
-
     final class ScannerNSView: NSView, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
         var onCode: ((String) -> Void)?
-        private let capture = CaptureSessionController()
+        var onUnavailable: (() -> Void)?
+        private let capture = QRCaptureSession()
         private var preview: AVCaptureVideoPreviewLayer?
         private var done = false
 
         override init(frame: NSRect) {
             super.init(frame: frame)
             wantsLayer = true
-            let session = capture.session
-            guard let device = AVCaptureDevice.default(for: .video),
-                  let input = try? AVCaptureDeviceInput(device: device),
-                  session.canAddInput(input) else { return }
-            session.addInput(input)
-            let output = AVCaptureMetadataOutput()
-            guard session.canAddOutput(output) else { return }
-            session.addOutput(output)
-            output.setMetadataObjectsDelegate(self, queue: .main)
-            output.metadataObjectTypes = [.qr]
-            let layer = AVCaptureVideoPreviewLayer(session: session)
+            capture.output.setMetadataObjectsDelegate(self, queue: .main)
+            let layer = AVCaptureVideoPreviewLayer(session: capture.session)
             layer.videoGravity = .resizeAspectFill
             self.layer?.addSublayer(layer)
             preview = layer
@@ -412,7 +376,7 @@ struct QRScannerView: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if window != nil {
-                capture.start()
+                capture.start { [weak self] in self?.onUnavailable?() }
             } else {
                 capture.stop()
             }
@@ -423,6 +387,61 @@ struct QRScannerView: NSViewRepresentable {
             done = true
             onCode?(code)
         }
+    }
+}
+#endif
+
+#if (os(iOS) || os(macOS)) && !BACKEND_GTK
+/// The camera session behind the QR scanner. Opening a camera and configuring
+/// a session can block for a second or more, so all of it happens on this
+/// object's own queue, never the main thread; the view only attaches its
+/// preview layer and metadata delegate.
+final class QRCaptureSession: @unchecked Sendable {
+    // Sendability: `session` and `output` are AVFoundation objects designed
+    // for exactly this split (configured and run on a private queue, previewed
+    // from the main thread); `configured` is only touched on `queue`.
+    let session = AVCaptureSession()
+    let output = AVCaptureMetadataOutput()
+    private let queue = DispatchQueue(label: "com.eightybps.hummingbird.qr-capture", qos: .userInitiated)
+    private var configured = false
+    private var usable = false
+
+    /// Starts the camera. `unavailable` runs on the main actor if this
+    /// device's camera can't be opened or can't read QR codes.
+    func start(unavailable: @escaping @MainActor @Sendable () -> Void) {
+        queue.async { [self] in
+            if !configured {
+                configured = true
+                usable = configure()
+            }
+            guard usable else {
+                Task { @MainActor in unavailable() }
+                return
+            }
+            if !session.isRunning { session.startRunning() }
+        }
+    }
+
+    func stop() {
+        queue.async { [self] in
+            if session.isRunning { session.stopRunning() }
+        }
+    }
+
+    /// Whether the camera can scan QR codes. A camera whose driver failed to
+    /// start offers no metadata types, and asking it for QR anyway raises an
+    /// Objective-C exception, so only ask for what it offers.
+    private func configure() -> Bool {
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device) else { return false }
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        guard session.canAddInput(input), session.canAddOutput(output) else { return false }
+        session.addInput(input)
+        session.addOutput(output)
+        guard output.availableMetadataObjectTypes.contains(.qr) else { return false }
+        output.metadataObjectTypes = [.qr]
+        return true
     }
 }
 #endif

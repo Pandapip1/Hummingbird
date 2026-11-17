@@ -822,13 +822,17 @@ struct SettingsDetailContainer<Content: View>: View {
 }
 
 enum QRCodeScanning {
-    static let isAvailable: Bool = {
+    /// Whether this device has a camera. Looking up capture devices can block
+    /// for a noticeable time, so it never runs on the main thread.
+    static func isAvailable() async -> Bool {
         #if (os(iOS) || os(macOS)) && !BACKEND_GTK
-        AVCaptureDevice.default(for: .video) != nil
+        await Task.detached(priority: .userInitiated) {
+            AVCaptureDevice.default(for: .video) != nil
+        }.value
         #else
         false
         #endif
-    }()
+    }
 }
 
 @MainActor
@@ -838,14 +842,21 @@ struct QRCodeScanner: View {
     #if (os(iOS) || os(macOS)) && !BACKEND_GTK
     @Environment(AppModel.self) private var app
     @State private var access: PermissionDecision?
+    @State private var hasCamera = true
     #endif
 
     var body: some View {
         #if (os(iOS) || os(macOS)) && !BACKEND_GTK
         Group {
+            if !hasCamera {
+                ContentUnavailableView(
+                    "Can’t scan with this camera", systemImage: "camera",
+                    description: Text("This device’s camera can’t read QR codes right now. Enter the code instead.")
+                )
+            } else {
             switch access {
             case .allowed:
-                QRScannerView(onCode: onCode)
+                QRScannerView(onCode: onCode, onUnavailable: { hasCamera = false })
                     #if os(iOS)
                     .ignoresSafeArea()
                     #endif
@@ -860,8 +871,13 @@ struct QRCodeScanner: View {
                     description: Text("Allow camera access for Hummingbird in Settings to scan codes, or paste the URL instead.")
                 )
             }
+            }
         }
         .task {
+            guard await QRCodeScanning.isAvailable() else {
+                hasCamera = false
+                return
+            }
             // The scanner only appears after the user taps Scan, so the system
             // prompt answers that tap and can show straight away.
             access = await app.permissions.authorize(

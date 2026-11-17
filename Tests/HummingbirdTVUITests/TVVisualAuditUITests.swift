@@ -7,7 +7,7 @@ import XCTest
 /// peer-overlap and screen-boundary checks. Intentional compositing belongs in
 /// `allowedOverlap`; broad geometry exemptions are deliberately unsupported.
 final class TVVisualAuditUITests: XCTestCase {
-    private var app: XCUIApplication!
+    private var app: XCTest.XCUIApplication!
 
     /// Launches the app on its default route. Each test calls this itself:
     /// XCTest's `setUp` is not main-actor isolated, and an isolated override
@@ -15,7 +15,7 @@ final class TVVisualAuditUITests: XCTestCase {
     @MainActor
     private func launchApp() {
         continueAfterFailure = true
-        app = XCUIApplication()
+        app = IsolatedApp.make()
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     }
@@ -80,7 +80,7 @@ final class TVVisualAuditUITests: XCTestCase {
     @MainActor
     private func launch(_ route: String) {
         app?.terminate()
-        app = XCUIApplication()
+        app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_VISUAL_AUDIT_ROUTE"] = route
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))

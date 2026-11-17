@@ -211,6 +211,21 @@ main actor. For more checks, set `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` in a
 scheme's environment, which makes blocking the Swift concurrency pool show up
 quickly.
 
+## Isolated data
+
+A debug build launched with `HUMMINGBIRD_DEBUG_DATA_ROOT=<directory>` keeps
+everything (profile, library, caches, preferences) under that directory and
+its credentials in memory, never touching the real profile or keychain. An
+absolute path is used as given; a relative one is inside the app's own
+temporary directory, which also works on devices. Use it for profiling,
+screenshots and anything else that runs the app.
+
+UI tests must launch the app this way. In the UI test targets
+`XCUIApplication` is shadowed by an unavailable type, so creating one
+directly does not compile; launch with `IsolatedApp.make()` or
+`IsolatedApp.launch()` (`Tests/UITestSupport`), which give every launch a
+fresh data root. Relaunching the same instance keeps its data.
+
 ## Linux (GTK build)
 
 - **Logs:** SwiftOpenUI's `os` writes each entry to the systemd journal with

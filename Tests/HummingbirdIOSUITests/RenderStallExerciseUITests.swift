@@ -5,15 +5,16 @@ final class RenderStallExerciseUITests: XCTestCase {
 
     @MainActor
     func testRepeatedColdLaunchInteractionPaths() throws {
-        var app = XCUIApplication()
+        let app = IsolatedApp.make()
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
         try installYouTubeIfNeeded(in: app)
 
         for iteration in 0..<12 {
             if iteration > 0 {
+                // A cold launch of the same instance keeps its isolated data
+                // (and the source installed above).
                 app.terminate()
-                app = XCUIApplication()
                 app.launch()
                 XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
             }
@@ -30,7 +31,7 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func installYouTubeIfNeeded(in app: XCUIApplication) throws {
+    private func installYouTubeIfNeeded(in app: XCTest.XCUIApplication) throws {
         openNewTab(named: "Sources", in: app)
         if app.staticTexts["YouTube"].waitForExistence(timeout: 2) { return }
 
@@ -52,13 +53,13 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func exerciseScrolling(in app: XCUIApplication) {
+    private func exerciseScrolling(in app: XCTest.XCUIApplication) {
         for _ in 0..<4 { app.swipeUp(velocity: .fast) }
         for _ in 0..<2 { app.swipeDown(velocity: .fast) }
     }
 
     @MainActor
-    private func openNewTab(named section: String, in app: XCUIApplication) {
+    private func openNewTab(named section: String, in app: XCTest.XCUIApplication) {
         guard let menu = hittableButton("Open section in new tab", in: app, timeout: 10) else {
             XCTFail("Missing hittable new-tab menu")
             return
@@ -72,7 +73,7 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func hittableButton(_ label: String, in app: XCUIApplication,
+    private func hittableButton(_ label: String, in app: XCTest.XCUIApplication,
                                 timeout: TimeInterval) -> XCUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
@@ -85,7 +86,7 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func openFirstVideoCard(in app: XCUIApplication) {
+    private func openFirstVideoCard(in app: XCTest.XCUIApplication) {
         let deadline = Date().addingTimeInterval(30)
         repeat {
             if let card = app.buttons.allElementsBoundByIndex.first(where: {

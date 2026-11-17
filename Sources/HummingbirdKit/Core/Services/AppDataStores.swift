@@ -94,7 +94,12 @@ public final class AppDataStores: Sendable {
             if let existing = stores[key] { return existing }
             #if DEBUG
             if let root = ProcessInfo.processInfo.environment[debugDataRootVariable], !root.isEmpty {
-                let created = debugIsolated(root: URL(fileURLWithPath: root, isDirectory: true))
+                // A relative root is inside the app's own temporary directory,
+                // which UI tests use so isolation works on devices too.
+                let rootURL = root.hasPrefix("/")
+                    ? URL(fileURLWithPath: root, isDirectory: true)
+                    : FileManager.default.temporaryDirectory.appendingPathComponent(root, isDirectory: true)
+                let created = debugIsolated(root: rootURL)
                 stores[key] = created
                 return created
             }

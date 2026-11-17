@@ -17,7 +17,7 @@ struct InstalledPlugin: Codable, Identifiable, Hashable, Sendable {
     var id: String { config.id }
 }
 
-struct InstallPreview: Identifiable {
+struct InstallPreview: Identifiable, Sendable {
     var id: String { config.id }
     var config: PluginConfig
     var script: String
@@ -79,7 +79,14 @@ final class PluginManager {
     @ObservationIgnored private let credentialStore: any CredentialStore
     @ObservationIgnored private let storageName: String
     @ObservationIgnored private let credentialNamespace: String
-    @ObservationIgnored private var applyingRemoteChange = false
+    /// Counts local edits per plugin, so a synced change prepared while the
+    /// user changed the same plugin never overwrites that change.
+    @ObservationIgnored private var localEdits: [String: Int] = [:]
+    /// Plugins from other devices being installed here, or that failed to.
+    private(set) var syncInstalls: [String: SyncInstall] = [:]
+    /// Fetches plugin configs and scripts. Tests substitute their own; the
+    /// app uses `urlSession`.
+    @ObservationIgnored private let fetch: PluginFetch?
     /// Puts downloads and plugin requests to local-network hosts behind the
     /// permission gate. Nil (tests, previews) lets them through.
     @ObservationIgnored var localNetworkAccess: PluginLocalNetworkAccess?
@@ -104,7 +111,8 @@ final class PluginManager {
     init(installed: [InstalledPlugin] = [], profileChanges: ProfileChangeStore? = nil,
          storage: Storage, credentialStore: any CredentialStore,
          storageName: String = "plugins", credentialNamespace: String = "",
-         preloadedCredentials: PreloadedPluginCredentials? = nil) {
+         preloadedCredentials: PreloadedPluginCredentials? = nil, fetch: PluginFetch? = nil) {
+        self.fetch = fetch
         self.installed = installed
         self.profileChanges = profileChanges
         self.storage = storage
@@ -285,22 +293,26 @@ final class PluginManager {
         loadCredentialsInBackground(for: entry.id)
         invalidate(entry.id)
         persist()
-        if !applyingRemoteChange { recordPlugin(entry) }
+        recordLocalEdit(entry)
     }
 
     func remove(_ id: String) {
-        invalidate(id)
         installed.removeAll { $0.id == id }
+        forget(id)
+        persist()
+        localEdits[id, default: 0] &+= 1
+        profileChanges?.delete(collection: HummingbirdProfileSchema.plugin, key: HummingbirdProfileSchema.key(for: id))
+    }
+
+    /// Stops a removed plugin and deletes its credentials.
+    private func forget(_ id: String) {
+        invalidate(id)
         do {
             try credentialStore.saveSourceAuth(nil, pluginID: id, kind: "auth", namespace: credentialNamespace)
             try credentialStore.saveSourceAuth(nil, pluginID: id, kind: "captcha", namespace: credentialNamespace)
             storedCredentials[id] = nil
         } catch {
             recordCredentialFailure(error)
-        }
-        persist()
-        if !applyingRemoteChange { profileChanges?.delete(collection: HummingbirdProfileSchema.plugin,
-                               key: HummingbirdProfileSchema.key(for: id))
         }
     }
 
@@ -309,7 +321,7 @@ final class PluginManager {
         installed[i].enabled = on
         if !on { invalidate(id) }
         persist()
-        if !applyingRemoteChange { recordPlugin(installed[i]) }
+        recordLocalEdit(installed[i])
     }
 
     // MARK: settings
@@ -323,7 +335,7 @@ final class PluginManager {
         installed[i].settings[key] = value
         invalidate(pluginID)
         persist()
-        if !applyingRemoteChange { recordPlugin(installed[i]) }
+        recordLocalEdit(installed[i])
     }
 
     /// Changes a setting only once the plugin runs with it. A runtime is
@@ -346,7 +358,7 @@ final class PluginManager {
         invalidate(pluginID)
         adopt(started, for: pluginID)
         persist()
-        if !applyingRemoteChange { recordPlugin(installed[i]) }
+        recordLocalEdit(installed[i])
     }
 
     /// Starts a runtime for `plugin` as it would be with its settings, and
@@ -552,7 +564,8 @@ final class PluginManager {
         }
         var req = URLRequest(url: url)
         req.setValue("Hummingbird/0.1", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await urlSession.data(for: req)
+        let (data, response): (Data, URLResponse)
+        if let fetch { (data, response) = try await fetch(req) } else { (data, response) = try await urlSession.data(for: req) }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw InstallError.download("HTTP \(http.statusCode) from \(url.host ?? url.absoluteString)")
         }
@@ -561,28 +574,174 @@ final class PluginManager {
 
     /// Only the deliberately constrained `SyncedPlugin` crosses this boundary;
     /// runtime source and SourceAuth/keychain data are structurally unavailable.
-    private func recordPlugin(_ plugin: InstalledPlugin) {
+    /// Every local edit goes through here, so sync can tell that a plugin
+    /// changed while a synced change to it was being prepared.
+    private func recordLocalEdit(_ plugin: InstalledPlugin) {
+        localEdits[plugin.id, default: 0] &+= 1
         guard let synced = SyncedPlugin(plugin) else { return }
         profileChanges?.put(.plugin(synced))
     }
 
-    func applyRemote(_ plugin: SyncedPlugin) async throws {
-        let preview = try await prepareInstall(from: plugin.sourceURL, origin: .settings)
-        applyingRemoteChange = true
-        defer { applyingRemoteChange = false }
-        commit(preview)
-        guard let index = installed.firstIndex(where: { $0.id == plugin.pluginID }) else { return }
-        installed[index].enabled = plugin.enabled
-        installed[index].settings = plugin.settings
-        invalidate(plugin.pluginID)
+    // MARK: sync
+
+    /// How many synced plugins download and verify at once.
+    static let maximumConcurrentSyncInstalls = 6
+
+    /// Applies synced plugin records in one batch. A plugin already
+    /// installed from the same source only takes the synced enabled state
+    /// and settings; nothing is downloaded. Every other plugin is downloaded
+    /// and checked concurrently (at most `maximumConcurrentSyncInstalls` at
+    /// a time) while its row shows it installing; then everything that
+    /// succeeded lands in `installed` with one assignment and one save. A
+    /// plugin that fails stays listed with its error and is not reported as
+    /// applied, so the next sync tries it again; it never holds back the
+    /// others. Returns the record keys whose state now matches the change.
+    func applySynced(_ changes: [PluginSyncChange]) async -> Set<RecordKey> {
+        guard !changes.isEmpty else { return [] }
+        let editsAtStart = localEdits
+        var applied = Set<RecordKey>()
+        var toInstall: [(change: PluginSyncChange, plugin: SyncedPlugin)] = []
+        for change in changes {
+            guard let plugin = change.plugin else { continue }
+            if let current = self.plugin(plugin.pluginID), current.config.sourceUrl == plugin.sourceURL { continue }
+            toInstall.append((change, plugin))
+        }
+
+        var installs = syncInstalls
+        for item in toInstall {
+            installs[item.plugin.pluginID] = SyncInstall(
+                pluginID: item.plugin.pluginID, sourceURL: item.plugin.sourceURL, failure: nil
+            )
+        }
+        if installs != syncInstalls { syncInstalls = installs }
+
+        let prepared = await prepareSyncedInstalls(toInstall.map(\.plugin))
+
+        // Everything below is one batch on the main actor.
+        var updated = installed
+        var removedIDs: [String] = []
+        var changedIDs: [String] = []
+        installs = syncInstalls
+        for change in changes {
+            // A plugin edited here meanwhile keeps the local edit; its journal
+            // event supersedes this change.
+            let id = change.plugin?.pluginID
+                ?? updated.first { HummingbirdProfileSchema.key(for: $0.id) == change.key }?.id
+            if let id, localEdits[id] != editsAtStart[id] {
+                if installs[id]?.failure == nil { installs[id] = nil }
+                continue
+            }
+            guard let plugin = change.plugin else {
+                if let id {
+                    updated.removeAll { $0.id == id }
+                    removedIDs.append(id)
+                    installs[id] = nil
+                }
+                applied.insert(change.key)
+                continue
+            }
+            var entry: InstalledPlugin
+            if let index = updated.firstIndex(where: { $0.id == plugin.pluginID }),
+               updated[index].config.sourceUrl == plugin.sourceURL {
+                entry = updated[index]
+            } else {
+                switch prepared[plugin.pluginID] {
+                case .success(let preview)?:
+                    entry = InstalledPlugin(config: preview.config, script: preview.script, iconURL: preview.iconURL)
+                    if let old = updated.first(where: { $0.id == plugin.pluginID }) { entry.installedAt = old.installedAt }
+                    installs[plugin.pluginID] = nil
+                case .failure(let error)?:
+                    installs[plugin.pluginID]?.failure = error.localizedDescription
+                    continue
+                case nil:
+                    installs[plugin.pluginID] = nil
+                    continue
+                }
+            }
+            let before = updated.first { $0.id == plugin.pluginID }
+            entry.enabled = plugin.enabled
+            entry.settings = plugin.settings
+            applied.insert(change.key)
+            guard entry != before else { continue }
+            updated.removeAll { $0.id == plugin.pluginID }
+            updated.append(entry)
+            changedIDs.append(plugin.pluginID)
+        }
+        // A row is only for a plugin that is still missing here.
+        installs = installs.filter { entry in
+            !updated.contains { $0.id == entry.key && $0.config.sourceUrl == entry.value.sourceURL }
+        }
+        if installs != syncInstalls { syncInstalls = installs }
+        guard !removedIDs.isEmpty || !changedIDs.isEmpty else { return applied }
+        updated.sort { $0.config.name.localizedCaseInsensitiveCompare($1.config.name) == .orderedAscending }
+        installed = updated
         persist()
+        for id in removedIDs { forget(id) }
+        for id in changedIDs {
+            loadCredentialsInBackground(for: id)
+            invalidate(id)
+        }
+        return applied
     }
 
-    func applyRemoteDelete(key: RecordKey) {
-        guard let id = installed.first(where: { HummingbirdProfileSchema.key(for: $0.id) == key })?.id else { return }
-        applyingRemoteChange = true
-        defer { applyingRemoteChange = false }
-        remove(id)
+    /// Downloads and checks every plugin concurrently, at most
+    /// `maximumConcurrentSyncInstalls` at a time. Downloads and script checks
+    /// run away from the main actor; one failure fails only its plugin.
+    private func prepareSyncedInstalls(_ plugins: [SyncedPlugin]) async -> [String: Result<InstallPreview, any Error>] {
+        guard !plugins.isEmpty else { return [:] }
+        return await withTaskGroup(of: (String, Result<InstallPreview, any Error>).self) { group in
+            var results: [String: Result<InstallPreview, any Error>] = [:]
+            var pending = plugins[...]
+            var running = 0
+            while let plugin = pending.popFirst() {
+                // At the limit, start the next one only when one finishes.
+                if running == Self.maximumConcurrentSyncInstalls, let finished = await group.next() {
+                    results[finished.0] = finished.1
+                    running -= 1
+                }
+                group.addTask { await self.prepareSyncedInstall(plugin) }
+                running += 1
+            }
+            for await finished in group { results[finished.0] = finished.1 }
+            return results
+        }
+    }
+
+    private func prepareSyncedInstall(_ plugin: SyncedPlugin) async -> (String, Result<InstallPreview, any Error>) {
+        do {
+            let preview = try await prepareInstall(from: plugin.sourceURL, origin: .settings)
+            guard preview.config.id == plugin.pluginID else {
+                throw InstallError.invalid("The plugin at \(plugin.sourceURL) is no longer “\(plugin.pluginID)”.")
+            }
+            return (plugin.pluginID, .success(preview))
+        } catch {
+            Logger.plugin.error("sync_install_failed plugin=\(plugin.pluginID, privacy: .public) error=\(error.localizedDescription)")
+            return (plugin.pluginID, .failure(error))
+        }
+    }
+}
+
+/// A synced plugin record: its key, and the plugin, or nil for a removal.
+struct PluginSyncChange: Sendable {
+    let key: RecordKey
+    let plugin: SyncedPlugin?
+}
+
+/// A plugin another device has that this one is installing, or failed to.
+/// Sources lists these until they install: installing (with a spinner)
+/// while `failure` is nil, then the error; sync retries failures.
+struct SyncInstall: Equatable, Identifiable, Sendable {
+    let pluginID: String
+    let sourceURL: String
+    var failure: String?
+    var id: String { pluginID }
+
+    /// What to call it before its config is known.
+    var displayName: String {
+        guard let url = URL(string: sourceURL) else { return sourceURL }
+        let file = url.deletingPathExtension().lastPathComponent
+        let name = file.hasSuffix("Config") ? String(file.dropLast("Config".count)) : file
+        return name.isEmpty ? (url.host ?? sourceURL) : name
     }
 }
 
@@ -610,3 +769,6 @@ struct PreloadedPluginCredentials: Sendable {
         return preloaded
     }
 }
+
+/// Fetches a plugin download: the config or script. Runs off the main actor.
+typealias PluginFetch = @Sendable (URLRequest) async throws -> (Data, URLResponse)

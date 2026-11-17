@@ -14,10 +14,16 @@ struct SourcesView: View {
     var body: some View {
         NavigationStack {
             List {
-                if app.plugins.installed.isEmpty {
+                if app.plugins.installed.isEmpty, app.plugins.syncInstalls.isEmpty {
                     ContentUnavailableView("No sources", systemImage: "puzzlepiece.extension",
                                            description: Text("Tap + and paste a plugin URL or scan its QR code."))
                         .hiddenListRowSeparator()
+                }
+                // Sources another device has that this one is still
+                // installing, or couldn't install. Never shown as installed
+                // before they are.
+                ForEach(app.plugins.syncInstalls.values.sorted { $0.displayName < $1.displayName }) { install in
+                    SyncInstallRow(install: install)
                 }
                 ForEach(app.plugins.installed) { p in
                     PluginRow(plugin: .init(p)) { removeTarget = p.id }
@@ -55,6 +61,38 @@ struct SourcesView: View {
         }
     }
 
+}
+
+/// A source another device has that is installing here (spinner), or that
+/// couldn't install (its error, and a retry that runs a sync pass). Retrying
+/// shows the pass running rather than pretending the install is underway.
+@MainActor
+private struct SyncInstallRow: View {
+    let install: SyncInstall
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let syncing = app.profileAccount.syncService?.state == .syncing
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(install.displayName).font(.headline)
+                if let failure = install.failure {
+                    Text("Couldn’t install from your other device: \(failure)")
+                        .font(.caption).foregroundStyle(.red)
+                } else {
+                    Text("Installing from your other device…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if install.failure == nil || syncing {
+                ProgressView()
+            }
+            if install.failure != nil {
+                Button("Retry") { Task { await app.profileAccount.sync() } }
+                    .disabled(syncing)
+            }
+        }
+    }
 }
 
 /// A source row keeps the most useful plugin actions available without opening its detail page.

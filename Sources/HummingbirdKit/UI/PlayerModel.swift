@@ -279,6 +279,13 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             backend.pause()
             isPlaying = false
             playbackRequested = false
+            // A pause is where progress is worth syncing; ticks only update
+            // the library (see LibraryStore.recordProgress).
+            let seconds = backend.currentTime
+            if seconds.isFinite, seconds > 1, let details, let library {
+                library.recordProgress(SavedVideo(details.item), seconds: seconds)
+                library.syncHistory()
+            }
         } else {
             backend.play()
             backend.setPlaybackRate(playbackRate)

@@ -219,6 +219,12 @@ struct SyncSettingsView: View {
                     case .offline: Text("Offline — changes are queued")
                     case .failed(let message): Text(message).foregroundStyle(.red)
                     }
+                    // What the last pass couldn't do, even when the rest synced.
+                    ForEach(sync.issues, id: \.self) { issue in
+                        Label(issue, systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 Button(localOnly ? "Sync with Local Devices" : "Sync Now") {
                     Task {

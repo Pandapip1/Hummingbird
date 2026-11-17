@@ -112,6 +112,19 @@ public actor SpaceSyncEngine {
 
     private func compactBatches(coveredBy newest: ReplicatedJournalBatch) async {
         guard let newestEntries = try? newest.verifiedEntries() else { return }
+        // The journal keeps only each record's winning event, so a newer
+        // checkpoint covers an older event either by containing it or by
+        // containing a newer event for the same record.
+        var newestVersions: [String: JournalEventVersion] = [:]
+        for mutation in newestEntries.values {
+            let path = mutation.collection.rawValue + "/" + mutation.recordKey.rawValue
+            if newestVersions[path].map({ $0 < mutation.version }) ?? true { newestVersions[path] = mutation.version }
+        }
+        func covered(_ entry: (key: JournalEventReference, value: JournalMutation)) -> Bool {
+            if newestEntries[entry.key] == entry.value { return true }
+            let path = entry.value.collection.rawValue + "/" + entry.value.recordKey.rawValue
+            return newestVersions[path].map { entry.value.version <= $0 } ?? false
+        }
         var cursor: String?
         repeat {
             guard let page = try? await spaces.listRecords(
@@ -130,7 +143,7 @@ public actor SpaceSyncEngine {
                       older.originInstanceID == newest.originInstanceID,
                       older.originSigningKey == newest.originSigningKey,
                       let olderEntries = try? older.verifiedEntries(),
-                      olderEntries.allSatisfy({ newestEntries[$0.key] == $0.value }) else { continue }
+                      olderEntries.allSatisfy(covered) else { continue }
                 try? await spaces.deleteRecord(.init(
                     repo: repo, space: space, collection: journalCollection, rkey: key
                 ))

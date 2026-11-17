@@ -1,8 +1,6 @@
 import Foundation
 import os
-#if canImport(MetricKit) && !os(tvOS)
-import MetricKit
-#endif
+import PlatformSupport
 
 /// What a MetricKit diagnostic says, reduced to values that are safe to log
 /// in public: kinds, build numbers, signals, durations and sizes. Call stacks
@@ -27,6 +25,18 @@ public struct PerformanceDiagnostic: Sendable, Equatable {
         self.milliseconds = milliseconds
         self.bytes = bytes
         self.signal = signal
+    }
+
+    /// A diagnostic the system reported.
+    init(_ diagnostic: SystemPerformanceDiagnostic) {
+        let kind: Kind = switch diagnostic.kind {
+        case .crash: .crash
+        case .hang: .hang
+        case .cpuException: .cpuException
+        case .diskWriteException: .diskWriteException
+        }
+        self.init(kind: kind, applicationBuild: diagnostic.applicationBuild, milliseconds: diagnostic.milliseconds,
+                  bytes: diagnostic.bytes, signal: diagnostic.signal)
     }
 
     /// Writes one unified-logging entry: crashes as faults, the rest as errors.
@@ -206,11 +216,11 @@ public struct StallLog: Sendable {
     }
 }
 
-#if canImport(MetricKit) && !os(tvOS)
-/// Receives MetricKit payloads: logs a privacy-safe line per diagnostic and
-/// keeps the JSON in a `PerformanceReportStore`. On Linux, SwiftOpenUI's
-/// MetricKit delivers crashes recorded by systemd-coredump.
-public final class PerformanceReporter: NSObject, MXMetricManagerSubscriber, Sendable {
+/// Receives the system's performance reports (SwiftOpenUI's
+/// `SystemPerformanceReports`: MetricKit, or on Linux crashes recorded by
+/// systemd-coredump): logs a privacy-safe line per diagnostic and keeps the
+/// JSON in a `PerformanceReportStore`.
+public final class PerformanceReporter: Sendable {
     private let store: PerformanceReportStore
     /// File writes stay off MetricKit's delivery thread.
     private let writer = DispatchQueue(label: "com.eightybps.hummingbird.performance-reports", qos: .utility)
@@ -219,28 +229,21 @@ public final class PerformanceReporter: NSObject, MXMetricManagerSubscriber, Sen
         self.store = store
     }
 
-    /// Subscribes to MetricKit. Payloads arrive later, typically on the next
-    /// launch (crashes) or at most once a day (metrics); in Xcode use
-    /// Debug > Simulate MetricKit Payloads.
+    /// Subscribes to the system's reports. They arrive later, typically on
+    /// the next launch (crashes) or at most once a day (metrics).
     public func start() {
-        MXMetricManager.shared.add(self)
+        SystemPerformanceReports.subscribe { [self] payload in receive(payload) }
     }
 
-    public func didReceive(_ payloads: [MXDiagnosticPayload]) {
-        for payload in payloads {
-            record(
-                Self.diagnostics(in: payload), json: payload.jsonRepresentation(),
-                begin: payload.timeStampBegin, end: payload.timeStampEnd
-            )
-        }
-    }
-
-    public func didReceive(_ payloads: [MXMetricPayload]) {
-        for payload in payloads {
+    func receive(_ payload: SystemPerformancePayload) {
+        switch payload {
+        case .diagnostics(let diagnostics, let json, let begin, let end):
+            record(diagnostics.map { PerformanceDiagnostic($0) }, json: json, begin: begin, end: end)
+        case .metrics(let version, let multipleVersions, let json, let begin, let end):
             Logger.performance.info(
-                "metrickit_metrics version=\(payload.latestApplicationVersion, privacy: .public) multipleVersions=\(payload.includesMultipleApplicationVersions)"
+                "metrickit_metrics version=\(version, privacy: .public) multipleVersions=\(multipleVersions)"
             )
-            store(payload.jsonRepresentation(), kind: "metrics", begin: payload.timeStampBegin, end: payload.timeStampEnd)
+            store(json, kind: "metrics", begin: begin, end: end)
         }
     }
 
@@ -268,55 +271,21 @@ public final class PerformanceReporter: NSObject, MXMetricManagerSubscriber, Sen
         }
     }
 
-    static func diagnostics(in payload: MXDiagnosticPayload) -> [PerformanceDiagnostic] {
-        var result: [PerformanceDiagnostic] = []
-        for crash in payload.crashDiagnostics ?? [] {
-            result.append(PerformanceDiagnostic(
-                kind: .crash, applicationBuild: crash.metaData.applicationBuildVersion,
-                signal: crash.signal?.intValue
-            ))
-        }
-        for hang in payload.hangDiagnostics ?? [] {
-            result.append(PerformanceDiagnostic(
-                kind: .hang, applicationBuild: hang.metaData.applicationBuildVersion,
-                milliseconds: Int(hang.hangDuration.converted(to: .milliseconds).value)
-            ))
-        }
-        for exception in payload.cpuExceptionDiagnostics ?? [] {
-            result.append(PerformanceDiagnostic(
-                kind: .cpuException, applicationBuild: exception.metaData.applicationBuildVersion,
-                milliseconds: Int(exception.totalCPUTime.converted(to: .milliseconds).value)
-            ))
-        }
-        for exception in payload.diskWriteExceptionDiagnostics ?? [] {
-            result.append(PerformanceDiagnostic(
-                kind: .diskWriteException, applicationBuild: exception.metaData.applicationBuildVersion,
-                bytes: Int(exception.totalWritesCaused.converted(to: .bytes).value)
-            ))
-        }
-        return result
-    }
 }
 
-#endif
-
 /// The process's MetricKit subscription, started once at launch by each
-/// entry point (the Apple app and the GTK executable). A no-op where there is
-/// no MetricKit (tvOS).
+/// entry point (the Apple app and the GTK executable). A no-op where the system
+/// delivers no reports (tvOS).
 @MainActor
 public enum PerformanceReports {
-    #if canImport(MetricKit) && !os(tvOS)
     private static var reporter: PerformanceReporter?
-    #endif
 
     /// Subscribes to MetricKit, storing payloads under `stores.cachesDirectory`.
     public static func start(stores: AppDataStores) {
-        #if canImport(MetricKit) && !os(tvOS)
-        guard reporter == nil else { return }
+        guard reporter == nil, SystemPerformanceReports.isAvailable else { return }
         let reporter = PerformanceReporter(store: PerformanceReportStore(cachesDirectory: stores.cachesDirectory))
         self.reporter = reporter
         reporter.start()
-        #endif
     }
 
     /// Where stored payloads are, for the Settings export.

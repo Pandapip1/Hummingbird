@@ -1,4 +1,3 @@
-#if os(macOS) && !BACKEND_GTK
 import CredentialStorage
 import Foundation
 import SwiftOpenUI
@@ -167,8 +166,9 @@ public struct CredentialStorageDecisionView: View {
     }
 }
 
-/// Settings for where credentials are stored on this Mac, including revoking
-/// the login-keychain fallback.
+/// Settings for where credentials are stored on this device, including
+/// revoking the login-keychain fallback. Shown only where the platform offers
+/// a fallback (`KeychainCredentialStore.offersLoginKeychainFallback`).
 struct CredentialStorageSettingsSection: View {
     let store: KeychainCredentialStore
     @State private var revision = 0
@@ -306,4 +306,3 @@ struct CredentialStorageSettingsSection: View {
         }
     }
 }
-#endif

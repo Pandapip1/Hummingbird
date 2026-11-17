@@ -1,6 +1,7 @@
 import Foundation
 import os
 import Crypto
+import PlatformSupport
 
 /// Hosts one plugin in its own JavaScript context (JavaScriptCore, see `JSEngines`).
 ///
@@ -186,14 +187,13 @@ final class PluginRuntime: @unchecked Sendable {
         }
     }
 
+    /// What Grayjay plugins see as `bridge.buildPlatform`.
     private static var buildPlatform: String {
-#if os(macOS) || os(Linux) || os(Windows)
-        "desktop"
-#elseif os(Android)
-        "android"
-#else
-        "ios"
-#endif
+        switch HostPlatform.family {
+        case .desktop: "desktop"
+        case .android: "android"
+        case .appleMobile: "ios"
+        }
     }
 
     /// The single native entry point plugin code can reach (`__hostCall` in the prelude). Runs on `queue`.

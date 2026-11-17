@@ -29,9 +29,7 @@ struct OAuthAuthorizationView: View {
                 }
             }
             .navigationTitle("Sign In")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .detailNavigationStyle()
         }
     }
 

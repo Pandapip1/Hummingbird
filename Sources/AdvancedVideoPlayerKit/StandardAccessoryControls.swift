@@ -18,7 +18,10 @@ struct PlayerMenu<Label: View, Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
+        // Every dropdown over video is its own glass element (menus keep
+        // CheckableMenuItem's left column inside).
         PresentationMenu(onPresentationChange: presentationChanged, content: content, label: label)
+            .playerControlGlass()
     }
 }
 

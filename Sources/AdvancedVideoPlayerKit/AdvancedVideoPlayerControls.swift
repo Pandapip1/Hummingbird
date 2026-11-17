@@ -57,13 +57,13 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             if !showingControls { RemoteRevealTarget { interacted() } }
             if let reason = model.waitingReason {
                 // Playback that should advance but does not: say so, and why.
-                VStack(spacing: 8) {
-                    ProgressView()
-                    Text(reason).font(.callout)
+                PlayerControlGroup {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text(reason).font(.callout)
+                    }
+                    .playerSurfaceGlass()
                 }
-                .foregroundStyle(Color.white)
-                .padding(12)
-                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                 .allowsHitTesting(false)
                 .accessibilityLabel(reason)
             }
@@ -82,21 +82,23 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         VStack(spacing: 6) {
             HStack(spacing: 12) {
                 if isFullscreen && !AdvancedVideoPlayerLayout.usesStackedTransport(width: availableWidth) {
-                    Text(model.title).font(.headline)
+                    Text(model.title).font(.headline).playerTitleGlass()
                 }
                 Spacer()
-                accessories(interacted).disabled(!model.isMediaReady)
+                PlayerControlGroup {
+                    HStack(spacing: 12) { accessories(interacted) }
+                }
+                .disabled(!model.isMediaReady)
             }
-            .remoteFocusSection().foregroundStyle(Color.white)
+            .remoteFocusSection()
             .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
-            .padding(.horizontal, 12).padding(.vertical, 9)
-            .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
+            .padding(.horizontal, 8)
 
             Spacer().frame(minHeight: AdvancedVideoPlayerLayout.minimumBarSeparation, maxHeight: .infinity)
-            transport.disabled(!model.isMediaReady).remoteFocusSection().foregroundStyle(Color.white)
+            PlayerControlGroup { transport }
+                .disabled(!model.isMediaReady).remoteFocusSection()
                 .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
-                .padding(.horizontal, 12).padding(.vertical, 9)
-                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
+                .padding(.horizontal, 8)
         }.padding(.vertical, 8)
     }
 
@@ -126,18 +128,22 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 onJumpToLive: content.isLive ? { interacted(); model.jumpToLive() } : nil
             )
             .frame(minWidth: 80, maxWidth: .infinity)
+            .playerSurfaceGlass()
         } else {
-            HStack { Text(timeLabel).font(.caption.monospacedDigit()); Spacer() }
+            HStack { Text(timeLabel).font(.caption.monospacedDigit()); Spacer() }.playerSurfaceGlass()
         }
     }
 
     @ViewBuilder private var primaryButtons: some View {
         Button { interacted(); model.skip(by: -10) } label: { Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds") }
+            .playerControlGlass()
         Button { interacted(); model.togglePlayback() } label: {
             Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").accessibilityLabel(model.isPlaying ? "Pause" : "Play")
         }
+        .playerControlGlass()
         .remotePrefersDefaultFocus(isFullscreen)
         Button { interacted(); model.skip(by: 10) } label: { Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds") }
+            .playerControlGlass()
     }
 
     @ViewBuilder private var secondaryButtons: some View {
@@ -146,23 +152,26 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             EmptyView()
         case .starting, .stopping:
             // Changing: an indeterminate spinner in place of the button until it settles.
-            ProgressView().accessibilityLabel("Picture in Picture is changing")
+            ProgressView().accessibilityLabel("Picture in Picture is changing").playerControlGlass()
         case .active:
             Button { interacted(); model.stopPictureInPicture() } label: {
                 Image(systemName: "pip.exit").accessibilityLabel("Exit Picture in Picture")
             }
+            .playerControlGlass()
         case .possible, .unavailable:
             Button { interacted(); model.startPictureInPicture() } label: {
                 Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
             }
+            .playerControlGlass()
             .disabled(model.pictureInPictureState == .unavailable)
         }
         Button { interacted(); model.toggleFullscreen() } label: {
             Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                 .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
         }
+        .playerControlGlass()
         PlayerMenu {
-            Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×").foregroundStyle(.white)
+            Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×")
         } content: {
             ForEach([Float(0.25), 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in
                 CheckableMenuItem(rate == 1 ? "Normal" : "\(rate.formatted())×",

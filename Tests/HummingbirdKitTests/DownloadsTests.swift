@@ -81,6 +81,24 @@ final class DownloadsTests: XCTestCase {
         XCTAssertTrue(rows.isEmpty, "Clear forgets finished rows")
     }
 
+    func testClearingTheCacheKeepsWhatIsPlaying() async throws {
+        let (_, cache) = makeDownloads(file: Data())
+        let playing = try await cache.open(identity: "playing")
+        try await cache.write(Data(repeating: 1, count: 4_096), at: 0, to: playing)
+        let idle = try await cache.open(identity: "idle")
+        try await cache.write(Data(repeating: 2, count: 8_192), at: 0, to: idle)
+        await cache.close(idle)
+        let before = await cache.usage()
+        XCTAssertGreaterThan(before, 0)
+        let freed = await cache.clearUnused()
+        XCTAssertGreaterThan(freed, 0)
+        let kept = try await cache.read(playing, range: 0..<4_096)
+        XCTAssertEqual(kept, Data(repeating: 1, count: 4_096), "an open (playing) entry is never cleared")
+        let reopened = try await cache.open(identity: "idle")
+        let gone = try await cache.read(reopened, range: 0..<8_192)
+        XCTAssertNil(gone, "the idle entry was removed")
+    }
+
     func testDownloadsUseTheInstalledTransport() async throws {
         let data = Data((0..<100_000).map { UInt8($0 % 251) })
         let (downloads, _) = makeDownloads(file: Data())

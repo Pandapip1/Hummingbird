@@ -219,6 +219,12 @@ actor MediaCache {
         return freed
     }
 
+    /// Removes every entry not in use (Settings' Clear). Returns the bytes freed.
+    @discardableResult
+    func clearUnused() async -> Int64 {
+        await evict(freeing: Int64.max / 4)
+    }
+
     /// `write`, but a failed write (typically a full disk) first frees space by
     /// evicting other entries and tries again, so a download is never lost to
     /// space that the cache itself holds.

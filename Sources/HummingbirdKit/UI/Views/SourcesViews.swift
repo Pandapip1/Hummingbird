@@ -605,10 +605,7 @@ private struct AppSettingsForm: View {
                 Picker("Video cache", selection: $mediaCacheLimitGigabytes) {
                     ForEach([2, 5, 10, 20, 50, 100], id: \.self) { Text("\($0) GB").tag($0) }
                 }
-                .onChange(of: mediaCacheLimitGigabytes) { _, gigabytes in
-                    let cache = stores.mediaCache
-                    Task { await cache.setLimit(MediaCache.bytes(gigabytes: gigabytes)) }
-                }
+                MediaCacheUsageRows(cache: stores.mediaCache, limitGigabytes: mediaCacheLimitGigabytes)
             }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
                 RemoteFriendlyBoundedSelection(
@@ -676,3 +673,43 @@ private struct PerformanceReportsSection: View {
     }
 }
 #endif
+
+/// How much the video cache holds, applying a new limit, and clearing what
+/// is not playing. Slow work shows as such: the usage line shows a spinner
+/// while it is measured or while a new limit or a clear is applied, and the
+/// button is disabled meanwhile.
+@MainActor
+struct MediaCacheUsageRows: View {
+    let cache: MediaCache
+    let limitGigabytes: Int
+    @State private var usage: Int64?
+    @State private var working = false
+
+    var body: some View {
+        HStack {
+            Text("In use")
+            Spacer()
+            if working || usage == nil {
+                ProgressView()
+            } else if let usage {
+                Text(Fmt.bytes(usage)).foregroundStyle(.secondary)
+            }
+        }
+        .task(id: limitGigabytes) {
+            // A new limit evicts what no longer fits before the usage is shown.
+            working = true
+            await cache.setLimit(MediaCache.bytes(gigabytes: limitGigabytes))
+            usage = await cache.usage()
+            working = false
+        }
+        Button("Clear videos that are not playing") {
+            Task {
+                working = true
+                await cache.clearUnused()
+                usage = await cache.usage()
+                working = false
+            }
+        }
+        .disabled(working || usage == nil || usage == 0)
+    }
+}

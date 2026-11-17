@@ -152,3 +152,88 @@ struct TVInstallPreviewDebugScene: View {
     }
 }
 #endif
+
+#if canImport(SwiftUI) && !BACKEND_GTK && os(iOS)
+import AVFoundation
+
+/// UI tests of the surface handover (`HUMMINGBIRD_DEBUG_SCENE=player-fullscreen`):
+/// a real player with the real surfaces and controls, playing a clip
+/// generated on the device, so no plugin or network is involved.
+@MainActor
+struct FullscreenHandoverDebugScene: View {
+    @State private var player: PlayerModel
+    @State private var status = "preparing"
+
+    init(stores: AppDataStores) {
+        _player = State(wrappedValue: PlayerModel(stores: stores, backend: AVMediaBackend()))
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Color.black
+                if player.hasMedia { PlayerSurface(model: player) }
+                PlayerControls(model: player, isFullscreen: false)
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .playerFullscreenPresentation(model: player)
+            Text("\(Int(player.playbackTime))").accessibilityIdentifier("debug-playback-time")
+            Text(player.isPlaying && player.waitingReason == nil ? "playing" : status)
+                .accessibilityIdentifier("debug-playback-state")
+        }
+        .padding()
+        .task { await start() }
+    }
+
+    private func start() async {
+        do {
+            let clip = try await DebugClip.make()
+            player.localPlaybackForTesting = { _ in try LocalPlayback(video: clip, servedBy: .mediaCache) }
+            let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://debug.invalid/clip.mp4"}"#.utf8))
+            await player.select(PlaybackOption(id: "debug-clip", label: "Clip", kind: .hls, video: source, audio: nil, height: 180))
+            if !player.isPlaying { player.togglePlayback() }
+            status = "loaded"
+        } catch {
+            status = "failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+/// A two-minute H.264 clip written to the temporary directory.
+enum DebugClip {
+    @concurrent
+    static func make() async throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("debug-clip.mp4")
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 320, AVVideoHeightKey: 180,
+        ])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: 320, kCVPixelBufferHeightKey as String: 180,
+        ])
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+        let fps: Int32 = 10
+        for frame in 0..<(120 * Int(fps)) {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+            guard let pool = adaptor.pixelBufferPool else { break }
+            var buffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+            guard let buffer else { continue }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            if let base = CVPixelBufferGetBaseAddress(buffer) {
+                memset(base, Int32(frame % 255), CVPixelBufferGetDataSize(buffer))
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame), timescale: fps))
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
+        return url
+    }
+}
+#endif

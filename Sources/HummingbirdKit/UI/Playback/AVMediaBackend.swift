@@ -77,6 +77,8 @@ final class AVMediaBackend: MediaBackend {
     /// The layer Picture in Picture takes the video from. The surface puts it in
     /// the view hierarchy (AVKit requires that); on macOS it is the surface.
     let pictureInPictureLayer = AVPlayerLayer()
+    /// Which surface shows the player: one at a time.
+    let surfaces = PlayerSurfaceOwnership()
     #if !os(visionOS)
     private var pictureInPicture: AVPictureInPictureController?
     private var pictureInPictureDelegate: PictureInPictureDelegate?
@@ -176,6 +178,7 @@ final class AVMediaBackend: MediaBackend {
         p.replaceCurrentItem(with: item)
         player = p
         pictureInPictureLayer.player = p
+        surfaces.refresh()
         observeStatus(of: item)
         refreshActivity()
         committedLoadGeneration = generation
@@ -560,28 +563,60 @@ final class AVMediaBackend: MediaBackend {
 /// underlying view controller so Hummingbird can provide one shared control
 /// surface on Apple and GTK.
 @MainActor
+/// Holds the backend's Picture in Picture layer at the back of a player
+/// controller's view, always filling it (rotation, resizing): AVKit needs the
+/// layer on screen, and a layer with a stale frame would show a second copy
+/// of the video in the corner.
+@MainActor
+final class PictureInPictureHostView: UIView {
+    weak var backend: AVMediaBackend?
+
+    func host(_ backend: AVMediaBackend) {
+        self.backend = backend
+        let layer = backend.pictureInPictureLayer
+        if layer.superlayer !== self.layer {
+            layer.removeFromSuperlayer()
+            self.layer.addSublayer(layer)
+        }
+        // Marks the one surface that shows the player (UI tests count them).
+        isAccessibilityElement = true
+        accessibilityIdentifier = "player-surface"
+        setNeedsLayout()
+        if window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
+    }
+
+    func release() {
+        isAccessibilityElement = false
+        accessibilityIdentifier = nil
+        if let layer = backend?.pictureInPictureLayer, layer.superlayer === self.layer { layer.removeFromSuperlayer() }
+        backend = nil
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backend?.pictureInPictureLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+    }
+
+    /// Installs a host at the back of `controller`'s view.
+    static func install(in controller: AVPlayerViewController) -> PictureInPictureHostView {
+        let host = PictureInPictureHostView(frame: controller.view.bounds)
+        host.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        host.isUserInteractionEnabled = false
+        controller.view.insertSubview(host, at: 0)
+        return host
+    }
+}
+
 struct PlayerSurface: UIViewControllerRepresentable {
     let model: PlayerModel
-
-    /// Puts the backend's Picture in Picture layer in the window, beneath the
-    /// controller's own video (AVKit requires the layer to be on screen).
-    private func installPictureInPictureLayer(in controller: AVPlayerViewController) {
-        guard let backend = model.backend as? AVMediaBackend else { return }
-        let layer = backend.pictureInPictureLayer
-        if layer.superlayer !== controller.view.layer {
-            layer.removeFromSuperlayer()
-            controller.view.layer.insertSublayer(layer, at: 0)
-        }
-        layer.frame = controller.view.bounds
-        if controller.view.window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
-        // After layout, when the controller's view has its size and window.
-        Task { @MainActor [weak controller] in
-            await Task.yield()
-            guard let controller else { return }
-            backend.pictureInPictureLayer.frame = controller.view.bounds
-            if controller.view.window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
-        }
-    }
 
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
@@ -589,21 +624,18 @@ struct PlayerSurface: UIViewControllerRepresentable {
         let controller = AVPlayerViewController()
         controller.showsPlaybackControls = false
         controller.allowsPictureInPicturePlayback = true
-        controller.player = (model.backend as? AVMediaBackend)?.player
-        installPictureInPictureLayer(in: controller)
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
+        // Only the owner of the player is attached to it (see
+        // PlayerSurfaceOwnership): this surface claims it now.
+        context.coordinator.claimInline(controller)
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         // SwiftUI updates this view for any change it observes (every tick,
-        // menus, tabs). Only attach the player when it is not attached and the
-        // full-screen player does not own it: reassigning it to a second
-        // controller is what lets AVKit pause it behind the UI's back.
-        let player = (model.backend as? AVMediaBackend)?.player
-        if !context.coordinator.isFullscreen, controller.player !== player { controller.player = player }
-        installPictureInPictureLayer(in: controller)
+        // menus, tabs). Nothing here touches the player: attaching is the
+        // ownership's job, so updates cannot pause it or attach a second copy.
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
     }
@@ -611,9 +643,9 @@ struct PlayerSurface: UIViewControllerRepresentable {
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
         coordinator.dismissFullscreen(animated: false)
         // A torn-down AVPlayerViewController pauses its player (tab switches,
-        // overview cards, layout changes rebuild this view). Detach first so
-        // only the user and the model decide when playback stops.
-        controller.player = nil
+        // layout changes rebuild this view): resigning detaches it first and
+        // hands the player to the surface before it, if any.
+        coordinator.resignInline()
         coordinator.model?.removeFullscreenPresenter()
     }
 
@@ -623,6 +655,33 @@ struct PlayerSurface: UIViewControllerRepresentable {
         weak var inlineController: AVPlayerViewController?
         private var fullscreenController: UIViewController?
         private var overlayController: UIViewController?
+        private var inlineClaim: PlayerSurfaceOwnership.Claim?
+        private var fullscreenClaim: PlayerSurfaceOwnership.Claim?
+        private var inlineHost: PictureInPictureHostView?
+        private var fullscreenHost: PictureInPictureHostView?
+
+        private var backend: AVMediaBackend? { model?.backend as? AVMediaBackend }
+
+        func claimInline(_ controller: AVPlayerViewController) {
+            guard let backend else { return }
+            let host = PictureInPictureHostView.install(in: controller)
+            inlineHost = host
+            let claim = PlayerSurfaceOwnership.Claim(name: "inline", attach: { [weak controller, weak backend, weak host] in
+                guard let controller, let backend else { return }
+                if controller.player !== backend.player { controller.player = backend.player }
+                host?.host(backend)
+            }, detach: { [weak controller, weak host] in
+                controller?.player = nil
+                host?.release()
+            })
+            inlineClaim = claim
+            backend.surfaces.claim(claim)
+        }
+
+        func resignInline() {
+            if let inlineClaim { backend?.surfaces.resign(inlineClaim) }
+            inlineClaim = nil
+        }
         var isFullscreen: Bool { fullscreenController != nil }
 
         init(model: PlayerModel) { self.model = model }
@@ -641,7 +700,6 @@ struct PlayerSurface: UIViewControllerRepresentable {
                   let presenter = presentingController(from: inlineController) else { return }
 
             let playerController = AVPlayerViewController()
-            playerController.player = (model.backend as? AVMediaBackend)?.player
             playerController.showsPlaybackControls = false
             playerController.allowsPictureInPicturePlayback = true
             #if os(tvOS)
@@ -678,7 +736,22 @@ struct PlayerSurface: UIViewControllerRepresentable {
 
             fullscreenController = controller
             overlayController = overlay
-            inlineController.player = nil
+            // The full-screen controller takes the player (attached before the
+            // inline one lets go), with the Picture in Picture layer.
+            if let backend {
+                let host = PictureInPictureHostView.install(in: playerController)
+                fullscreenHost = host
+                let claim = PlayerSurfaceOwnership.Claim(name: "fullscreen", attach: { [weak playerController, weak backend, weak host] in
+                    guard let playerController, let backend else { return }
+                    if playerController.player !== backend.player { playerController.player = backend.player }
+                    host?.host(backend)
+                }, detach: { [weak playerController, weak host] in
+                    playerController?.player = nil
+                    host?.release()
+                })
+                fullscreenClaim = claim
+                backend.surfaces.claim(claim)
+            }
             model.fullscreenDidChange(true)
             presenter.present(controller, animated: true) {
                 model.restorePlaybackAfterSurfaceTransfer()
@@ -696,11 +769,9 @@ struct PlayerSurface: UIViewControllerRepresentable {
             // AVPlayerViewController may pause its player while it tears down.
             // Transfer ownership back to the inline controller before dismissal
             // so late AVKit cleanup cannot pause the shared player after restore.
-            // Hand the same player over without a gap: the inline surface takes
-            // it first, then the full-screen one lets go.
-            let player = (model?.backend as? AVMediaBackend)?.player
-            if inlineController?.player !== player { inlineController?.player = player }
-            detachFullscreenPlayer()
+            // Hand the same player back without a gap: the inline surface
+            // attaches first, then the full-screen one lets go.
+            resignFullscreen()
             controller.dismiss(animated: animated) { [weak self] in self?.finishDismissal() }
         }
 
@@ -713,19 +784,16 @@ struct PlayerSurface: UIViewControllerRepresentable {
             overlayController?.view.removeFromSuperview()
             overlayController?.removeFromParent()
             overlayController = nil
+            resignFullscreen()
             fullscreenController = nil
-            let player = (model?.backend as? AVMediaBackend)?.player
-            if inlineController?.player !== player { inlineController?.player = player }
             model?.fullscreenDidChange(false)
             model?.restorePlaybackAfterSurfaceTransfer()
         }
 
-        private func detachFullscreenPlayer() {
-            #if os(tvOS)
-            (fullscreenController as? FullscreenPlayerViewController)?.playerController.player = nil
-            #else
-            (fullscreenController as? AVPlayerViewController)?.player = nil
-            #endif
+        private func resignFullscreen() {
+            if let fullscreenClaim { backend?.surfaces.resign(fullscreenClaim) }
+            fullscreenClaim = nil
+            fullscreenHost = nil
         }
 
         private func presentingController(from controller: UIViewController) -> UIViewController? {
@@ -794,26 +862,54 @@ struct PlayerSurface: NSViewRepresentable {
     /// Picture in Picture (AVKit needs it on screen).
     final class LayerView: NSView {
         weak var backend: AVMediaBackend?
+        private var claim: PlayerSurfaceOwnership.Claim?
 
         func show(_ backend: AVMediaBackend?) {
             guard backend !== self.backend else { return }
+            resign()
             self.backend = backend
-            // A layer-hosting view: the layer is set before `wantsLayer`.
-            layer = backend?.pictureInPictureLayer ?? CALayer()
             wantsLayer = true
-            layer?.frame = bounds
-            backend?.pictureInPictureLayer.videoGravity = .resizeAspect
-            if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+            if window != nil { claimPlayer() }
+        }
+
+        /// Only the owner hosts the layer (see PlayerSurfaceOwnership): a
+        /// second view hosting the same layer is a second copy on screen.
+        private func claimPlayer() {
+            guard let backend, claim == nil else { return }
+            let claim = PlayerSurfaceOwnership.Claim(name: "mac", attach: { [weak self, weak backend] in
+                guard let self, let backend else { return }
+                let layer = backend.pictureInPictureLayer
+                layer.videoGravity = .resizeAspect
+                if layer.superlayer !== self.layer {
+                    layer.removeFromSuperlayer()
+                    self.layer?.addSublayer(layer)
+                }
+                layer.frame = self.bounds
+                backend.pictureInPictureLayerDidMoveToWindow()
+            }, detach: { [weak self, weak backend] in
+                guard let layer = backend?.pictureInPictureLayer, layer.superlayer === self?.layer else { return }
+                layer.removeFromSuperlayer()
+            })
+            self.claim = claim
+            backend.surfaces.claim(claim)
+        }
+
+        private func resign() {
+            if let claim { backend?.surfaces.resign(claim) }
+            claim = nil
         }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+            if window != nil { claimPlayer() } else { resign() }
         }
 
         override func layout() {
             super.layout()
-            layer?.frame = bounds
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            if let layer = backend?.pictureInPictureLayer, layer.superlayer === self.layer { layer.frame = bounds }
+            CATransaction.commit()
         }
     }
 

@@ -445,7 +445,12 @@ struct DebugSceneSelection<Content: View>: View {
 
     @ViewBuilder
     var body: some View {
-        #if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
+        #if canImport(SwiftUI) && !BACKEND_GTK && os(iOS)
+        switch ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] {
+        case "player-fullscreen": FullscreenHandoverDebugScene(stores: stores)
+        default: content
+        }
+        #elseif canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
         switch ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] {
         case "player": TVPlayerDebugScene(stores: stores)
         case "player-seek": TVSeekDebugScene()

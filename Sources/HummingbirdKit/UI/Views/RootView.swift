@@ -221,7 +221,9 @@ struct BrowserTabStrip: View {
             ),
             onClose: { app.closeTab($0) },
             onMove: { app.moveTab($0, to: $1) }
-        )
+        ) {
+            NewTabDestinationMenu { route, title in app.openSection(route, title: title) }
+        }
     }
 }
 

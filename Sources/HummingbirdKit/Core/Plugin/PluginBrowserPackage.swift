@@ -230,7 +230,7 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
             guard let self, self.webView.navigationDelegate != nil else { return }
             if let rules { self.webView.configuration.userContentController.add(rules) }
             self.loadSignpost = OSSignposter.plugin.beginInterval(
-                "BrowserPageLoad", id: OSSignposter.plugin.makeSignpostID(), "host=\(url.host ?? "unknown", privacy: .public)"
+                "BrowserPageLoad", id: OSSignposter.plugin.makeSignpostID(), "host=\(LogRedaction.redact(url.host ?? "unknown"), privacy: .public)"
             )
             self.webView.load(URLRequest(url: url))
         }

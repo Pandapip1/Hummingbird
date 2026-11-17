@@ -83,10 +83,13 @@ final class PlatformService {
     }
 
     func details(url: String) async throws -> (PluginRuntime, ContentDetails) {
-        Logger.routing.info("content_details host=\(URL(string: url)?.host ?? "unknown", privacy: .public)")
+        Logger.routing.info("content_details host=\(LogRedaction.redact(URL(string: url)?.host ?? "unknown"), privacy: .public)")
+        let started = ContinuousClock.now
         guard let rt = await route(url: url, check: "isContentDetailsUrl") else { throw PluginError.notInstalled }
+        let routed = ContinuousClock.now
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getContentDetails", [url], kind: "details") }
+            Logger.routing.notice("details_timing plugin=\(rt.id, privacy: .public) route_ms=\(Self.milliseconds(started.duration(to: routed))) details_ms=\(Self.milliseconds(routed.duration(to: .now)))")
             detailsCacheWasUsed = true
             if data.count <= Self.maximumCachedDetailBytes {
                 detailsCache[url] = CachedDetails(payload: data, runtimeFingerprint: rt.detailsCacheFingerprint)
@@ -95,6 +98,10 @@ final class PlatformService {
             scheduleDetailsCacheSave()
             return (rt, try await PluginRuntime.decodeOffMain(ContentDetails.self, from: data))
         } catch { _ = surface(error, pluginID: rt.id); throw error }
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int64 {
+        duration.components.seconds * 1_000 + duration.components.attoseconds / 1_000_000_000_000_000
     }
 
     private static func trimmedDetailsCache(_ cache: [String: CachedDetails]) -> [String: CachedDetails] {
@@ -139,7 +146,7 @@ final class PlatformService {
     }
 
     func channel(url: String) async throws -> (PluginRuntime, ChannelInfo) {
-        Logger.routing.info("channel host=\(URL(string: url)?.host ?? "unknown", privacy: .public)")
+        Logger.routing.info("channel host=\(LogRedaction.redact(URL(string: url)?.host ?? "unknown"), privacy: .public)")
         guard let rt = await route(url: url, check: "isChannelUrl") else { throw PluginError.notInstalled }
         do {
             let info = try await withReload(rt) { try await rt.call("getChannel", [url], as: ChannelInfo.self) }
@@ -148,7 +155,7 @@ final class PlatformService {
     }
 
     func playlist(url: String) async throws -> (PluginRuntime, PlaylistDetailsPayload, PluginPager<ContentItem>) {
-        Logger.routing.info("playlist host=\(URL(string: url)?.host ?? "unknown", privacy: .public)")
+        Logger.routing.info("playlist host=\(LogRedaction.redact(URL(string: url)?.host ?? "unknown"), privacy: .public)")
         guard let rt = await route(url: url, check: "isPlaylistUrl", requires: ["getPlaylist", "isPlaylistUrl"]) else { throw PluginError.notInstalled }
         do {
             let data = try await withReload(rt) { try await rt.callRaw("getPlaylist", [url], kind: "playlist") }

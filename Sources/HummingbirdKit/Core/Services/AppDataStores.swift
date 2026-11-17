@@ -18,8 +18,8 @@ public final class AppDataStores: Sendable {
     /// pairing inboxes (`peer-messages/`) and the permission record
     /// (`permissions/`).
     public let dataDirectory: URL
-    /// Disposable data: the generated-media cache and MetricKit reports
-    /// (`MetricKit/`).
+    /// Disposable data: the media cache (`Media-v1/`, `UMP-v2/`) and MetricKit
+    /// reports (`MetricKit/`).
     public let cachesDirectory: URL
     /// Device-local settings that are not synced.
     public let preferences: PreferencesDomain
@@ -29,6 +29,13 @@ public final class AppDataStores: Sendable {
     let storage: Storage
     /// Serves generated media to the player, caching it in `cachesDirectory`.
     let mediaProxy: PluginMediaProxy
+    /// Every downloaded on-demand track (`Media-v1/` in `cachesDirectory`),
+    /// with the generated-media cache counted toward the same limit.
+    let mediaCache: MediaCache
+    /// Serves `mediaCache` to the player over loopback HTTP.
+    let mediaServer = LocalMediaServer()
+    /// Every VOD download; they outlive the players that started them.
+    let mediaDownloads: MediaDownloads
 
     public convenience init(dataDirectory: URL, cachesDirectory: URL, preferences: PreferencesDomain,
                             credentialStore: any CredentialStore) {
@@ -45,7 +52,13 @@ public final class AppDataStores: Sendable {
         self.preferences = preferences
         self.credentialStore = credentialStore
         self.storage = storage
-        mediaProxy = PluginMediaProxy(cache: UMPMediaCache(directory: cachesDirectory))
+        let generatedCache = UMPMediaCache(directory: cachesDirectory)
+        mediaProxy = PluginMediaProxy(cache: generatedCache)
+        let limitGigabytes = preferences.defaults.object(forKey: PlaybackPreferenceKey.mediaCacheLimitGigabytes) as? Int
+        mediaCache = MediaCache(directory: cachesDirectory,
+                                limitBytes: MediaCache.bytes(gigabytes: limitGigabytes ?? MediaCache.defaultLimitGigabytes),
+                                sharing: [generatedCache])
+        mediaDownloads = MediaDownloads(cache: mediaCache)
     }
 
     var defaults: UserDefaults { preferences.defaults }
@@ -58,6 +71,9 @@ public final class AppDataStores: Sendable {
 
     /// Waits for every pending write to `storage.sqlite3`.
     public func flush() async { await storage.flush() }
+
+    /// Blocks until pending writes are done; only for quitting.
+    func flushBeforeTermination() { storage.flushBeforeTermination() }
 
     /// The key under which the window that opens next finds its profile.
     static let localProfileIDKey = "appsync.localProfileID"

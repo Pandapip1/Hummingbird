@@ -38,6 +38,10 @@ final class Storage: Sendable {
             writer.async { continuation.resume() }
         }
     }
+
+    /// Blocks until every write submitted so far is done. Only for the
+    /// moment the application quits, when nothing may run afterwards.
+    func flushBeforeTermination() { writer.sync {} }
 }
 
 /// Serializes migration and ordinary reads/writes as one operation. A legacy

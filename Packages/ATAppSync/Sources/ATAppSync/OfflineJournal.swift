@@ -291,6 +291,10 @@ public struct JournalSnapshot: Codable, Sendable {
     public var lastArrival: UInt64
     /// Identifies this journal's arrival numbering to incremental readers.
     public var epoch: UUID
+    /// Per collection with a retention limit: the best-ranked record dropped
+    /// to keep within it. A record ranked at or below it is ignored, whether
+    /// merged or introduced locally, so nothing dropped comes back.
+    public var floors: [String: RetentionFloor]
 
     public init(clock: HybridLogicalClock, events: [JournalMutation] = [], pending: [JournalMutation] = [],
                 tombstones: [String: JournalEventVersion] = [:],
@@ -304,11 +308,12 @@ public struct JournalSnapshot: Codable, Sendable {
         arrivals = [:]
         lastArrival = 0
         epoch = UUID()
+        floors = [:]
         numberUnnumberedEvents()
     }
 
     enum CodingKeys: String, CodingKey {
-        case clock, events, pending, tombstones, versions, applied, arrivals, lastArrival, epoch
+        case clock, events, pending, tombstones, versions, applied, arrivals, lastArrival, epoch, floors
     }
 
     public init(from decoder: Decoder) throws {
@@ -333,7 +338,9 @@ public struct JournalSnapshot: Codable, Sendable {
         arrivals = try values.decodeIfPresent([String: UInt64].self, forKey: .arrivals) ?? [:]
         lastArrival = try values.decodeIfPresent(UInt64.self, forKey: .lastArrival) ?? 0
         epoch = try values.decodeIfPresent(UUID.self, forKey: .epoch) ?? UUID()
+        floors = try values.decodeIfPresent([String: RetentionFloor].self, forKey: .floors) ?? [:]
         compact()
+        adoptLegacyVersions()
         numberUnnumberedEvents()
     }
 
@@ -357,6 +364,55 @@ public struct JournalSnapshot: Codable, Sendable {
         events.removeAll { superseded.contains($0.id) }
         pending.removeAll { superseded.contains($0.id) }
         for id in superseded { arrivals[id.uuidString] = nil }
+    }
+
+    /// Journals from before event IDs recorded versions as bare timestamps.
+    /// Where the record's event is still here, its full version replaces
+    /// the bare one, so the record can be matched (and applied) again.
+    private mutating func adoptLegacyVersions() {
+        for event in events {
+            let path = Self.path(event.collection, event.recordKey)
+            guard let version = versions[path], version.eventID == Self.legacyEventID,
+                  version.timestamp == event.timestamp else { continue }
+            versions[path] = event.version
+            if tombstones[path] != nil { tombstones[path] = event.version }
+        }
+    }
+
+    /// Drops the lowest-ranked records of each collection over its limit,
+    /// without tombstones, raising that collection's floor. Returns the
+    /// dropped event IDs. Ranks come from the records themselves, so every
+    /// device drops the same records, and the app can keep the same ones.
+    mutating func enforce(_ retention: [NSID: JournalRetention]) -> Set<UUID> {
+        var dropped = Set<UUID>()
+        for (collection, rule) in retention {
+            let records = events.filter { $0.collection == collection }
+            guard records.count > rule.limit else { continue }
+            let ranked = records.map { (event: $0, floor: rule.floor(for: $0)) }
+            let oldest = ranked.sorted { $1.floor < $0.floor }.dropFirst(rule.limit)
+            for (event, _) in oldest {
+                let path = Self.path(event.collection, event.recordKey)
+                versions[path] = nil
+                tombstones[path] = nil
+                applied[path] = nil
+                arrivals[event.id.uuidString] = nil
+                dropped.insert(event.id)
+            }
+            if let best = oldest.first?.floor {
+                floors[collection.rawValue] = max(floors[collection.rawValue] ?? best, best)
+            }
+        }
+        guard !dropped.isEmpty else { return [] }
+        events.removeAll { dropped.contains($0.id) }
+        pending.removeAll { dropped.contains($0.id) }
+        return dropped
+    }
+
+    /// Whether retention already dropped a record ranked like `mutation`.
+    func isBelowFloor(_ mutation: JournalMutation, _ retention: [NSID: JournalRetention]) -> Bool {
+        guard let rule = retention[mutation.collection],
+              let floor = floors[mutation.collection.rawValue] else { return false }
+        return rule.floor(for: mutation) <= floor
     }
 
     private mutating func numberUnnumberedEvents() {
@@ -386,6 +442,43 @@ public struct JournalSnapshot: Codable, Sendable {
     private static let legacyEventID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 }
 
+/// Keeps a collection to its `limit` best-ranked records. `rank` reads a
+/// record's own value (for playback history, when it was watched), so every
+/// device ranks a record the same and the app can order its own copy the
+/// same way. Records without a rank (deletions) rank by their time.
+public struct JournalRetention: Sendable {
+    public let limit: Int
+    public let rank: @Sendable (JournalMutation) -> Double?
+
+    public init(limit: Int, rank: @escaping @Sendable (JournalMutation) -> Double?) {
+        self.limit = limit
+        self.rank = rank
+    }
+
+    func floor(for mutation: JournalMutation) -> RetentionFloor {
+        RetentionFloor(
+            rank: rank(mutation) ?? Double(mutation.timestamp.milliseconds) / 1_000,
+            path: JournalSnapshot.path(mutation.collection, mutation.recordKey)
+        )
+    }
+}
+
+/// A retention position: higher ranks are kept first; equal ranks keep the
+/// smaller record path. `a < b` means `a` is dropped before `b`.
+public struct RetentionFloor: Codable, Hashable, Comparable, Sendable {
+    public let rank: Double
+    public let path: String
+
+    public init(rank: Double, path: String) {
+        self.rank = rank
+        self.path = path
+    }
+
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.rank != rhs.rank ? lhs.rank < rhs.rank : lhs.path > rhs.path
+    }
+}
+
 /// A record to append, for appending many in one durable write.
 public struct JournalPut: Sendable {
     public let collection: NSID
@@ -410,15 +503,23 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let signer: JournalEventSigner?
+    private let retention: [NSID: JournalRetention]
 
-    public init(fileURL: URL, deviceID: UUID = UUID(), signer: JournalEventSigner? = nil) throws {
+    /// `retention` caps how many records a collection keeps: beyond it the
+    /// lowest-ranked are dropped without tombstones, the same on every
+    /// device, so a journal of an ever-growing collection (playback
+    /// history) stays bounded.
+    public init(fileURL: URL, deviceID: UUID = UUID(), signer: JournalEventSigner? = nil,
+                retention: [NSID: JournalRetention] = [:]) throws {
         self.fileURL = fileURL
         self.signer = signer
+        self.retention = retention
         if let data = try? Data(contentsOf: fileURL) {
             snapshot = try decoder.decode(JournalSnapshot.self, from: data)
         } else {
             snapshot = JournalSnapshot(clock: HybridLogicalClock(deviceID: deviceID))
         }
+        _ = snapshot.enforce(retention)
         knownEventIDs = Set(snapshot.events.map(\.id))
     }
 
@@ -470,6 +571,9 @@ public final class OfflineMutationJournal: @unchecked Sendable {
             let timestamp = updated.clock.tick(now: now)
             let mutation = JournalMutation(collection: put.collection, recordKey: put.key,
                                            operation: .put, value: put.value, timestamp: timestamp)
+            // Existing state introduced to the journal never brings back what
+            // retention dropped.
+            if onlyUnknownRecords, updated.isBelowFloor(mutation, retention) { continue }
             if let old = updated.insertWinner(mutation, pending: true) { superseded.insert(old) }
             updated.applied[path] = mutation.version
             appended.append(mutation)
@@ -477,9 +581,10 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         guard !appended.isEmpty else { return [] }
         updated.events.removeAll { superseded.contains($0.id) }
         updated.pending.removeAll { superseded.contains($0.id) }
+        let dropped = updated.enforce(retention)
         try persist(updated)
         snapshot = updated
-        knownEventIDs.subtract(superseded)
+        knownEventIDs.subtract(superseded.union(dropped))
         knownEventIDs.formUnion(appended.map(\.id))
         return appended
     }
@@ -496,9 +601,11 @@ public final class OfflineMutationJournal: @unchecked Sendable {
             updated.pending.removeAll { $0.id == superseded }
         }
         updated.applied[JournalSnapshot.path(mutation.collection, mutation.recordKey)] = mutation.version
+        let dropped = updated.enforce(retention)
         try persist(updated)
         snapshot = updated
         if let superseded { knownEventIDs.remove(superseded) }
+        knownEventIDs.subtract(dropped)
         knownEventIDs.insert(mutation.id)
         return mutation
     }
@@ -524,6 +631,12 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     }
 
     public var isEmpty: Bool { lock.withLock { snapshot.events.isEmpty } }
+
+    /// The rank below which retention has dropped `collection`'s records,
+    /// if it has: the app drops its own copies at or below it too.
+    public func retentionFloor(for collection: NSID) -> RetentionFloor? {
+        lock.withLock { snapshot.floors[collection.rawValue] }
+    }
     public func tombstone(collection: NSID, key: RecordKey) -> JournalEventVersion? {
         lock.withLock { snapshot.tombstones[JournalSnapshot.path(collection, key)] }
     }
@@ -590,6 +703,8 @@ public final class OfflineMutationJournal: @unchecked Sendable {
             // A losing event is older than a winner the clock has already
             // observed, so only winners move the clock.
             guard updated.versions[path].map({ $0 < mutation.version }) ?? true else { continue }
+            // Older than what retention already dropped: gone for good.
+            if updated.isBelowFloor(mutation, retention) { continue }
             updated.clock.observe(mutation.timestamp)
             if let old = updated.insertWinner(mutation, pending: needsUpload) {
                 superseded.insert(old)
@@ -601,10 +716,11 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         guard !winners.isEmpty else { return [] }
         updated.events.removeAll { superseded.contains($0.id) }
         updated.pending.removeAll { superseded.contains($0.id) }
+        let dropped = updated.enforce(retention)
         try persist(updated)
         snapshot = updated
-        knownEventIDs = known
-        return winners
+        knownEventIDs = known.subtracting(dropped)
+        return winners.filter { !dropped.contains($0.id) }
     }
 
     public func acknowledge(_ ids: Set<UUID>) throws {

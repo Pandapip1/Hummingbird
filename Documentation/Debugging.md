@@ -15,22 +15,24 @@ them.
 
 | Category | What |
 |---|---|
-| `player` | loading content, source selection, plugin reloads, UMP refreshes and UMP progress lines |
-| `avplayer` | AVPlayer item status, error-log entries, failures to play to the end |
+| `player` | loading content, source selection (`source_inventory`, `source_selected`), plugin reloads, UMP refreshes, local playback recovery, and one `startup_timing` line per video (`selected_ms resolved_ms first_bytes_ms player_loaded_ms first_frame_ms`, from the start of the load) |
+| `avplayer` | AVPlayer item status, `time_control` changes with the reason the player waits, error-log entries, failures to play to the end |
 | `plugin` | alerts (toasts), compatibility patches, unsupported capabilities, call timeouts, failed feed sources (`feed_source_failed`) |
 | `plugin.console` | plugins' own `log()` output (debug level, private) |
 | `plugin.browser` | the hidden browser page (content rules) |
 | `http` | opt-in traces (see below) and non-2xx plugin responses when `HUMMINGBIRD_PLUGIN_VERBOSE=1` |
-| `media-proxy` | the local media proxy (cache failures) |
-| `routing` | which plugin handles a URL; content rows opened |
+| `media-proxy` | the generated-media (UMP) proxy: cache failures, segment retries |
+| `media-cache` | VOD downloads into the media cache: piece retries and their reason, `slow_piece` (under 128 KB/s, e.g. a throttled URL), source refreshes, completed tracks, eviction |
+| `routing` | which plugin handles a URL; content rows opened; `details_timing` (`route_ms`, `details_ms`: the plugin's `getContentDetails`) |
 | `account` | AT Protocol sign-in |
 | `permissions` | the permission record |
 | `performance` | MetricKit diagnostics, render stalls |
 | `appsync.lan` | refused LAN sync requests (ATAppSync) |
 
 **Privacy.** Interpolated strings are private unless marked `.public`. Only
-values we chose (plugin IDs, event names, states, counts) and hosts are public.
-URLs, titles, toasts, plugin output and error descriptions are private, so a
+values we chose (plugin IDs, event names, states, counts) are public, and
+hosts after `LogRedaction` (which removes IP literals). URLs, titles, toasts,
+plugin output and error descriptions are private, so a
 sysdiagnose or `log collect` from a user's device doesn't contain them. Private
 values show when the debugger is attached, or with a logging profile that
 enables private data. Secrets are never logged. The HTTP traces replace
@@ -87,8 +89,9 @@ Signposts (`OSSignposter`, same subsystem) mark the slow paths:
 
 | Category | Intervals | Events |
 |---|---|---|
-| `plugin` | `PluginCall` (plugin, function, kind; ends ok or failed), `BrowserPageLoad`, `BrowserScript` (BotGuard minting runs here) | `PluginTimeout` (the 60 s deadline) |
-| `player` | `LoadContent`, `ResolveSource`, `UMPRefresh` | `UMPRefreshExhausted` |
+| `plugin` | `PluginCall` (plugin, function, kind; ends ok or failed), `PluginQueueWait` (time behind other calls on the plugin's one JavaScript context), `PluginWork` (the call itself), `PluginHTTP` (host, status, bytes: plugin HTTP blocks its queue), `BrowserPageLoad`, `BrowserScript` (BotGuard minting runs here) | `PluginTimeout` (the 60 s deadline) |
+| `player` | `LoadContent`, `ResolveSource`, `UMPRefresh` | `UMPRefreshExhausted`, `StartupStage` (stage, ms), `PlayerTimeControl` (status, reason) |
+| `media-cache` | `VODStartup` (until every track's layout is known), `VODLayout` (indexed or progressive), `VODPiece` (role, offset, bytes; ends with status and kbps), `VODServe` (bytes served to the player; waits while they download) | `VODTrackComplete` |
 | `media-proxy` | `ProxyRequest` (status), `UMPSegment` (track, bytes), `UMPPrefetch` | `UMPCacheHit` |
 | `account` | `OAuthSignIn`, `OAuthAuthorize`, `SaveCredential`, `KeychainRead` | |
 | `sync` | `SyncPass`, `LANPull`, `PDSPull` | |

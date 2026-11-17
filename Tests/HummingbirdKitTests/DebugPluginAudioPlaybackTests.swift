@@ -4,6 +4,8 @@ import XCTest
 import CGTK
 @_spi(SwiftOpenUIBackend) import SwiftOpenUI
 @testable import HummingbirdKit
+// Builds PlayRequests from arbitrary URLs to test the backend itself.
+@testable import AdvancedVideoPlayerKit
 
 /// Redmine #9 regression test for Linux audio output.
 ///
@@ -42,7 +44,7 @@ final class DebugPluginAudioPlaybackTests: XCTestCase {
         }
 
         let options = PlaybackSelector.options(for: details)
-        let option = try XCTUnwrap(PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true))
+        let option = try XCTUnwrap(PlaybackSelector.best(options, maxHeight: 1080))
         XCTAssertNil(option.audio, "debug-video-1 is muxed; PlaybackSelector should not have split it into separate audio/video sources")
 
         var backend: GTKMediaBackend? = GTKMediaBackend()

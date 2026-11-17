@@ -206,3 +206,30 @@ actor UMPMediaCache {
         #endif
     }
 }
+
+extension UMPMediaCache: EvictableMediaStore {
+    /// Generated-media entries this process has not opened; they count toward
+    /// the media cache limit and may be removed by its eviction.
+    func evictionCandidates() -> [MediaCacheEvictionCandidate] {
+        guard let root = try? cacheRoot(),
+              let files = try? FileManager.default.contentsOfDirectory(
+                  at: root, includingPropertiesForKeys: [.fileAllocatedSizeKey, .contentModificationDateKey]
+              ) else { return [] }
+        return files.compactMap { url -> MediaCacheEvictionCandidate? in
+            guard url.pathExtension == "media" else { return nil }
+            let id = url.deletingPathExtension().lastPathComponent
+            guard entries[id] == nil else { return nil }
+            let values = try? url.resourceValues(forKeys: [.fileAllocatedSizeKey, .contentModificationDateKey])
+            let index = root.appendingPathComponent("\(id).json")
+            let used = (try? index.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            return MediaCacheEvictionCandidate(id: id, bytes: Int64(values?.fileAllocatedSize ?? 0),
+                                               lastAccess: used ?? values?.contentModificationDate ?? .distantPast)
+        }
+    }
+
+    func remove(_ id: String) {
+        guard entries[id] == nil, let root = try? cacheRoot() else { return }
+        try? FileManager.default.removeItem(at: root.appendingPathComponent("\(id).media"))
+        try? FileManager.default.removeItem(at: root.appendingPathComponent("\(id).json"))
+    }
+}

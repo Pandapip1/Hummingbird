@@ -3,6 +3,61 @@ import XCTest
 
 @MainActor
 final class PlayerTrackSelectionTests: XCTestCase {
+    /// No optimistic checkmark: the menu keeps the current stream selected and
+    /// marks the new one pending until it is playing; a failed switch keeps
+    /// the old stream and shows the error.
+    func testSourceSwitchStaysPendingUntilTheNewStreamPlays() async throws {
+        let backend = DelayedStartBackend()
+        let model = makeTestPlayerModel(backend: backend, confirmsSwitchOnLoad: false)
+        let first = playbackOption(id: "first", url: "https://example.com/first.m3u8")
+        await model.select(first)  // paused: confirmed by loading
+        XCTAssertEqual(model.selected, first)
+        backend.isPlaying = true
+
+        let second = playbackOption(id: "second", url: "https://example.com/second.m3u8")
+        let switching = Task { await model.select(second) }
+        try await waitUntil { backend.loads == 2 }
+        XCTAssertEqual(model.selected, first, "the checkmark stays on the playing stream")
+        XCTAssertEqual(model.pendingOption, second)
+        XCTAssertFalse(model.isMediaReady)
+
+        backend.advance()
+        await switching.value
+        XCTAssertEqual(model.selected, second)
+        XCTAssertNil(model.pendingOption)
+
+        backend.failNextLoad = true
+        let third = playbackOption(id: "third", url: "https://example.com/third.m3u8")
+        await model.select(third)
+        XCTAssertEqual(model.selected, second, "a failed switch keeps the old stream")
+        XCTAssertNil(model.pendingOption)
+        XCTAssertEqual(model.errorMessage, "switch failed")
+
+        // A slow stream stays pending (no deadline); one the player reports as
+        // failed is a failed switch: the previous stream is loaded back and the
+        // checkmark never moves.
+        let loadsBefore = backend.loads
+        let broken = playbackOption(id: "broken", url: "https://example.com/broken.m3u8")
+        let failing = Task { await model.select(broken) }
+        try await waitUntil { backend.loads == loadsBefore + 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(model.pendingOption, broken, "still pending while it has not played")
+        backend.reportFailure("decode error")
+        await failing.value
+        XCTAssertEqual(model.selected, second)
+        XCTAssertNil(model.pendingOption)
+        XCTAssertEqual(backend.loads, loadsBefore + 2, "the new stream, then the previous one again")
+        XCTAssertEqual(model.errorMessage, PlayerModel.PlaybackNotConfirmed(reason: "decode error").errorDescription)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return XCTFail("condition not met in 5 s") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testSelectionReflectsBackendInitialAndRejectedChoices() async {
         let video = MediaTrack(id: "video-0", kind: .video, language: nil, label: "Main")
         let alternate = MediaTrack(id: "video-1", kind: .video, language: nil, label: "Alternate")
@@ -149,8 +204,36 @@ final class PlayerTrackSelectionTests: XCTestCase {
             MediaSource.self,
             from: Data("{\"url\":\"\(url)\",\"container\":\"video/mp4\"}".utf8)
         )
-        return PlaybackOption(id: id, label: id, kind: .progressive, video: source, audio: nil, height: 720)
+        // Upstream adaptive HLS goes straight to the backend; these tests are about
+        // load generations and cancellation, not where on-demand bytes come from.
+        return PlaybackOption(id: id, label: id, kind: .hls, video: source, audio: nil, height: 720)
     }
+}
+
+@MainActor
+private final class DelayedStartBackend: MediaBackend {
+    var currentTime = 10.0
+    var duration = 120.0
+    var isPlaying = false
+    var onTick: (@MainActor (Double) -> Void)?
+    var onEnded: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (String) -> Void)?
+    var failNextLoad = false
+    private(set) var loads = 0
+
+    func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
+        loads += 1
+        if failNextLoad { failNextLoad = false; throw PluginError.execution("switch failed") }
+        isPlaying = autoplay
+    }
+    /// The new item shows its first frames.
+    func advance() { currentTime += 1 }
+    /// The new item fails, as AVPlayer reports a failed item.
+    func reportFailure(_ message: String) { onFailure?(message) }
+    func play() { isPlaying = true }
+    func pause() { isPlaying = false }
+    func seek(to seconds: Double) { currentTime = seconds }
+    func stop() { isPlaying = false }
 }
 
 @MainActor
@@ -161,7 +244,6 @@ private final class RecordingSelectionBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     var loadedResumeTime: Double?
     var loadedAutoplay: Bool?
 
@@ -197,7 +279,6 @@ private final class RecoveringReplacementBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     private var loadCount = 0
 
     func selectTrack(_ track: MediaTrack?) {}
@@ -228,7 +309,6 @@ private final class SelectionBackend: MediaBackend {
     var onFailure: (@MainActor (String) -> Void)?
     let tracks: [MediaTrack]
     private var selected: [MediaTrack.Kind: MediaTrack]
-    var pictureInPictureSupported = false
 
     init(tracks: [MediaTrack], selected: [MediaTrack.Kind: MediaTrack]) {
         self.tracks = tracks; self.selected = selected
@@ -258,7 +338,6 @@ private final class SupersedingBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     private var loadCount = 0
     private var firstLoadContinuation: CheckedContinuation<Void, Never>?
     private var firstLoadStarted: CheckedContinuation<Void, Never>?
@@ -304,7 +383,6 @@ private final class FailingReplacementBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     private var loadCount = 0
 
     func selectTrack(_ track: MediaTrack?) {}
@@ -333,7 +411,6 @@ private final class InstalledLoadBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     var firstItemInstalled = false
     var firstItemFinished = false
     private var loadCount = 0
@@ -380,7 +457,6 @@ private final class CancellableLoadBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
-    var pictureInPictureSupported = false
     let installsFirstItem: Bool
     var firstItemInstalled = false
     private var loadCount = 0

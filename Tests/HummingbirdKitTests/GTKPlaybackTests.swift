@@ -4,6 +4,8 @@ import XCTest
 import CGTK
 @_spi(SwiftOpenUIBackend) import SwiftOpenUI
 @testable import HummingbirdKit
+// Builds PlayRequests from arbitrary URLs to test the backend itself.
+@testable import AdvancedVideoPlayerKit
 
 final class GTKPlaybackTests: XCTestCase {
     @MainActor
@@ -28,7 +30,7 @@ final class GTKPlaybackTests: XCTestCase {
             return XCTFail("Expected YouTube video details")
         }
         let options = PlaybackSelector.options(for: details)
-        guard let option = PlaybackSelector.best(options, maxHeight: 1080, preferAdaptive: true),
+        guard let option = PlaybackSelector.best(options, maxHeight: 1080),
               option.kind == .progressive, let audio = option.audio else {
             return XCTFail("Expected separate progressive YouTube video and audio")
         }

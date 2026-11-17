@@ -386,26 +386,35 @@ extension View {
     }
 }
 
+/// Writes what is only in memory when the window stops being in front for
+/// a while, and before the application quits: playback history (which
+/// also reaches the synced profile's journal) and subscription refresh
+/// state. One lifecycle API on every backend (SwiftOpenUI's
+/// `onLifecycle`), so GTK and quitting without backgrounding flush too.
 private struct ApplicationLifecycleModifier: ViewModifier {
     let model: AppModel
-    #if canImport(SwiftUI) && !BACKEND_GTK
-    @Environment(\.scenePhase) private var scenePhase
-    #endif
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        #if canImport(SwiftUI) && !BACKEND_GTK
-        content.onChange(of: scenePhase) { _, phase in
-            if phase == .background {
+        let model = model
+        return content.onLifecycle { event in
+            switch event {
+            case .phase(.background):
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
                 let stores = model.stores
                 Task.detached { await stores.flush() }
+            case .sceneEnded, .willTerminate:
+                // Closing the last window can quit the application with no
+                // termination event reaching this window (it has already
+                // ended), so both wait for the queued writes here.
+                model.library.flushHistory()
+                model.library.persistSubscriptionState()
+                model.profileChanges.flushBeforeTermination()
+                model.stores.flushBeforeTermination()
+            case .phase(.active), .phase(.inactive):
+                break
             }
         }
-        #else
-        content
-        #endif
     }
 }
 

@@ -59,7 +59,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     var hasMedia: Bool { backend != nil }
     /// Playable media is loaded. Until then the controls are disabled and the
     /// page shows progress.
-    var isMediaReady: Bool { selected != nil && !isPreparing }
+    /// Media is loaded. A stream switch in progress does not change this:
+    /// every control stays usable while a switch is pending.
+    var isMediaReady: Bool { selected != nil }
     private(set) var loadedURL: String?
     private(set) var options: [PlaybackOption] = []
     private(set) var selected: PlaybackOption?
@@ -77,6 +79,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// backend failure that ended the wait, if any.
     @ObservationIgnored private var confirmingGeneration: Int?
     @ObservationIgnored private var confirmationFailure: String?
+    /// The play generation the user cancelled by choosing the current stream.
+    @ObservationIgnored private var cancelledSwitchGeneration: Int?
     /// Tests only: turns an option into local playback without a plugin, so
     /// load generations, switching and confirmation can be driven by a fake
     /// backend. Nil in the app.
@@ -364,6 +368,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// first frames shown); meanwhile `pendingOption` names the choice. On
     /// failure the old stream keeps playing and the error is shown.
     func select(_ option: PlaybackOption) async {
+        // Choosing the stream that is playing cancels a pending switch.
+        if option.id == selected?.id {
+            if pendingOption != nil || pendingAudioSource != nil { cancelPendingSwitch() }
+            return
+        }
         let position = backend?.currentTime
         let autoplay = backend?.isPlaying ?? true
         var choice = option
@@ -377,6 +386,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     /// Switches the audio stream, confirming it the same way as `select`.
     func selectAudioSource(_ source: MediaSource) async {
+        if source.id == selectedAudioSource?.id, pendingOption == nil {
+            if pendingAudioSource != nil { cancelPendingSwitch() }
+            return
+        }
         guard var choice = selected else { return }
         let position = backend?.currentTime
         let autoplay = backend?.isPlaying ?? true
@@ -389,9 +402,28 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         selectedAudioSource = source
     }
 
+    /// Cancels the pending stream switch: the stream that is playing stays
+    /// (it is put back if the new one had already replaced it).
+    func cancelPendingSwitch() {
+        cancelledSwitchGeneration = playGeneration
+        playGeneration &+= 1
+        pendingOption = nil
+        pendingAudioSource = nil
+    }
+
     struct PlaybackNotConfirmed: Error, LocalizedError {
         let reason: String
         var errorDescription: String? { "The new stream could not play (\(reason)), so the previous one was kept. Try again." }
+    }
+
+    /// The new stream had replaced the playing one when the user cancelled the
+    /// switch: the previous stream is loaded back where playback is.
+    private func restoreAfterCancel(_ generation: Int, on backend: MediaBackend, resumeAt: Double?, autoplay: Bool) async {
+        guard cancelledSwitchGeneration == generation, self.backend === backend, let previous = currentPlayback else { return }
+        cancelledSwitchGeneration = nil
+        let position = backend.currentTime > 0 ? backend.currentTime : resumeAt
+        try? await backend.load(previous.request, resumeAt: position, autoplay: autoplay)
+        backend.setPlaybackRate(playbackRate)
     }
 
     /// After a load, waits until the new item is visibly playing: its time
@@ -602,11 +634,16 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             try await backend.load(playback.request, resumeAt: start, autoplay: autoplay)
             guard generation == playGeneration, self.backend === backend else {
                 if self.backend !== backend { backend.stop() }
+                else { await restoreAfterCancel(generation, on: backend, resumeAt: resumeAt, autoplay: autoplay) }
                 throw MediaBackendLoadError.superseded
             }
             startup?.mark(.playerLoaded)
             do {
                 try await confirmPlayback(of: backend, autoplay: autoplay, generation: generation)
+            } catch MediaBackendLoadError.superseded {
+                await restoreAfterCancel(generation, on: backend, resumeAt: resumeAt, autoplay: autoplay)
+                newPipelineTask?.cancel()
+                throw MediaBackendLoadError.superseded
             } catch let failure as PlaybackNotConfirmed {
                 // The new item replaced the old one in the player but never
                 // played: put the previous stream back where it was.

@@ -62,8 +62,6 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
                     CheckableMenuItem(label(option), state: option.id == pendingID ? .pending : option.id == selectedID ? .checked : .unchecked) {
                         interacted(); select(option)
                     }
-                    // One switch at a time: nothing else is chosen while one is pending.
-                    .disabled(pendingID != nil)
                 }
             }
         }

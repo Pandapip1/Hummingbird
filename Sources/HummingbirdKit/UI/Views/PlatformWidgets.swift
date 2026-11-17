@@ -754,32 +754,18 @@ struct SettingsDetailContainer<Content: View>: View {
     }
 }
 
-enum QRCodeScanning {
-    /// Whether this device has a camera. Looking up capture devices can block
-    /// for a noticeable time, so it never runs on the main thread.
-    static func isAvailable() async -> Bool {
-        #if (os(iOS) || os(macOS)) && !BACKEND_GTK
-        await Task.detached(priority: .userInitiated) {
-            AVCaptureDevice.default(for: .video) != nil
-        }.value
-        #else
-        false
-        #endif
-    }
-}
-
+/// Scans a QR code with the camera once the user allows camera access, the
+/// same on every platform: SwiftOpenUI's scanner (`QRCodeScannerView`) shows
+/// the camera where there is one and says so where there isn't.
 @MainActor
 struct QRCodeScanner: View {
     let instruction: String
     let onCode: (String) -> Void
-    #if (os(iOS) || os(macOS)) && !BACKEND_GTK
     @Environment(AppModel.self) private var app
     @State private var access: PermissionDecision?
     @State private var hasCamera = true
-    #endif
 
     var body: some View {
-        #if (os(iOS) || os(macOS)) && !BACKEND_GTK
         Group {
             if !hasCamera {
                 ContentUnavailableView(
@@ -787,23 +773,21 @@ struct QRCodeScanner: View {
                     description: Text("This device’s camera can’t read QR codes right now. Enter the code instead.")
                 )
             } else {
-            switch access {
-            case .allowed:
-                QRScannerView(onCode: onCode, onUnavailable: { hasCamera = false })
-                    #if os(iOS)
-                    .ignoresSafeArea()
-                    #endif
-                    .overlay(alignment: .bottom) {
-                        Text(instruction).padding(10).background(.thinMaterial, in: Capsule()).padding()
-                    }
-            case nil:
-                ProgressView("Waiting for camera access…")
-            case .notNow, .declinedOnThisDevice, .deniedBySystem:
-                ContentUnavailableView(
-                    "Camera access is off", systemImage: "camera",
-                    description: Text("Allow camera access for Hummingbird in Settings to scan codes, or paste the URL instead.")
-                )
-            }
+                switch access {
+                case .allowed:
+                    QRCodeScannerView(onCode: onCode, onUnavailable: { hasCamera = false })
+                        .ignoresSafeArea()
+                        .overlay(alignment: .bottom) {
+                            Text(instruction).padding(10).background(.thinMaterial, in: Capsule()).padding()
+                        }
+                case nil:
+                    ProgressView("Waiting for camera access…")
+                case .notNow, .declinedOnThisDevice, .deniedBySystem:
+                    ContentUnavailableView(
+                        "Camera access is off", systemImage: "camera",
+                        description: Text("Allow camera access for Hummingbird in Settings to scan codes, or paste the URL instead.")
+                    )
+                }
             }
         }
         .task {
@@ -817,9 +801,6 @@ struct QRCodeScanner: View {
                 .camera, for: "qr-scanner", origin: .userAction, explanation: .qrScanner
             )
         }
-        #else
-        Text("QR scanning is not available on this platform. Paste the URL instead.")
-        #endif
     }
 }
 

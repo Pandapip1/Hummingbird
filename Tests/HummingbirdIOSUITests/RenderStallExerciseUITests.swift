@@ -31,7 +31,7 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func installYouTubeIfNeeded(in app: XCTest.XCUIApplication) throws {
+    private func installYouTubeIfNeeded(in app: XCUIApplication) throws {
         openNewTab(named: "Sources", in: app)
         if app.staticTexts["YouTube"].waitForExistence(timeout: 2) { return }
 
@@ -53,13 +53,13 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func exerciseScrolling(in app: XCTest.XCUIApplication) {
+    private func exerciseScrolling(in app: XCUIApplication) {
         for _ in 0..<4 { app.swipeUp(velocity: .fast) }
         for _ in 0..<2 { app.swipeDown(velocity: .fast) }
     }
 
     @MainActor
-    private func openNewTab(named section: String, in app: XCTest.XCUIApplication) {
+    private func openNewTab(named section: String, in app: XCUIApplication) {
         guard let menu = hittableButton("Open section in new tab", in: app, timeout: 10) else {
             XCTFail("Missing hittable new-tab menu")
             return
@@ -73,7 +73,7 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func hittableButton(_ label: String, in app: XCTest.XCUIApplication,
+    private func hittableButton(_ label: String, in app: XCUIApplication,
                                 timeout: TimeInterval) -> XCUIElement? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
@@ -86,7 +86,7 @@ final class RenderStallExerciseUITests: XCTestCase {
     }
 
     @MainActor
-    private func openFirstVideoCard(in app: XCTest.XCUIApplication) {
+    private func openFirstVideoCard(in app: XCUIApplication) {
         let deadline = Date().addingTimeInterval(30)
         repeat {
             if let card = app.buttons.allElementsBoundByIndex.first(where: {

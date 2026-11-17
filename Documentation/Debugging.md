@@ -220,11 +220,10 @@ absolute path is used as given; a relative one is inside the app's own
 temporary directory, which also works on devices. Use it for profiling,
 screenshots and anything else that runs the app.
 
-UI tests must launch the app this way. In the UI test targets
-`XCUIApplication` is shadowed by an unavailable type, so creating one
-directly does not compile; launch with `IsolatedApp.make()` or
+UI tests must launch the app this way: with `IsolatedApp.make()` or
 `IsolatedApp.launch()` (`Tests/UITestSupport`), which give every launch a
-fresh data root. Relaunching the same instance keeps its data.
+fresh data root. `UITestIsolationTests` fails if a UI test creates an
+`XCUIApplication` itself. Relaunching the same instance keeps its data.
 
 ## Linux (GTK build)
 

@@ -173,10 +173,14 @@ let package = Package(
 )
 
 // The app itself (Apps/iOS), for building with xtool (https://xtool.sh) instead
-// of Xcode: `xtool dev build --triple arm64-apple-macosx` makes Hummingbird.app,
-// configured by xtool.yml. Xcode builds the same sources from project.yml.
+// of Xcode: `xtool dev build --triple arm64-apple-macosx` makes
+// HummingbirdApp.app (xtool names the bundle after the product; install it as
+// Hummingbird.app), configured by xtool.yml. Xcode builds the same sources from
+// project.yml. The product is not called "Hummingbird": that is the Xcode
+// project's app target, and a package product of the same name was picked up
+// by its schemes, so UI tests tried to install it as the app.
 #if os(macOS)
-package.products.append(.library(name: "Hummingbird", targets: ["HummingbirdApp"]))
+package.products.append(.library(name: "HummingbirdApp", targets: ["HummingbirdApp"]))
 package.targets.append(
     .target(
         name: "HummingbirdApp",

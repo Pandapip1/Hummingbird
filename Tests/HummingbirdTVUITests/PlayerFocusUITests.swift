@@ -132,12 +132,14 @@ final class PlayerFocusUITests: XCTestCase {
                       "Every allowed URL must be reachable by moving focus through the preview")
     }
 
-    private func playerControlHasFocus(in app: XCTest.XCUIApplication) -> Bool {
+    @MainActor
+    private func playerControlHasFocus(in app: XCUIApplication) -> Bool {
         let labels = Set(["Back 10 seconds", "Play", "Forward 10 seconds", "Exit Full Screen", "Speed"])
         return app.buttons.allElementsBoundByIndex.contains { labels.contains($0.label) && $0.hasFocus }
     }
 
-    private func focusedButton(label: String, in app: XCTest.XCUIApplication) -> XCUIElement? {
+    @MainActor
+    private func focusedButton(label: String, in app: XCUIApplication) -> XCUIElement? {
         app.buttons.allElementsBoundByIndex.first { $0.label == label && $0.hasFocus }
     }
 }

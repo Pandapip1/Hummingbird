@@ -7,7 +7,7 @@ import XCTest
 /// peer-overlap and screen-boundary checks. Intentional compositing belongs in
 /// `allowedOverlap`; broad geometry exemptions are deliberately unsupported.
 final class TVVisualAuditUITests: XCTestCase {
-    private var app: XCTest.XCUIApplication!
+    private var app: XCUIApplication!
 
     /// Launches the app on its default route. Each test calls this itself:
     /// XCTest's `setUp` is not main-actor isolated, and an isolated override
@@ -73,6 +73,7 @@ final class TVVisualAuditUITests: XCTestCase {
 
     }
 
+    @MainActor
     private var tabOverviewButton: XCUIElement {
         app.buttons["Tabs"]
     }
@@ -119,14 +120,17 @@ final class TVVisualAuditUITests: XCTestCase {
             .filter { $0.exists && !$0.frame.isEmpty && $0.frame.width.isFinite && $0.frame.height.isFinite }
     }
 
+    @MainActor
     private func contains(_ outer: CGRect, _ inner: CGRect) -> Bool {
         outer.insetBy(dx: -1, dy: -1).contains(inner)
     }
 
+    @MainActor
     private func overlapRatio(_ intersection: CGRect, relativeTo frame: CGRect) -> CGFloat {
         intersection.width * intersection.height / max(1, frame.width * frame.height)
     }
 
+    @MainActor
     private func allowedOverlap(_ first: XCUIElement, _ second: XCUIElement) -> Bool {
         let pair = Set([first.label, second.label])
         // Thumbnail badges and player chrome are intentional compositing.
@@ -135,6 +139,7 @@ final class TVVisualAuditUITests: XCTestCase {
         return false
     }
 
+    @MainActor
     private func describe(_ element: XCUIElement) -> String {
         "\(element.elementType) '\(element.label)' frame=\(element.frame)"
     }

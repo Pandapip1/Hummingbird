@@ -1,10 +1,11 @@
-# Builds Hummingbird.app with xtool (https://xtool.sh) rather than Xcode:
+# Builds the app with xtool (https://xtool.sh) rather than Xcode:
 #   xtool dev build --triple arm64-apple-macosx
-# The app is the Hummingbird product in Package.swift; the Info.plist, icon and
+# The app is the HummingbirdApp product in Package.swift (so xtool makes
+# HummingbirdApp.app; install it as Hummingbird.app); the Info.plist, icon and
 # asset catalog are the ones the Xcode project (project.yml) uses.
 version: 1
 bundleID: com.eightybps.hummingbird
-product: Hummingbird
+product: HummingbirdApp
 infoPath: Apps/iOS/Info.plist
 iconPath: Apps/iOS/Hummingbird.icon
 resources:

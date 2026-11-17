@@ -66,6 +66,59 @@ final class YouTubeStartupTimingTests: XCTestCase {
         XCTAssertNotNil(firstFrameAt, "playback did not start within 10 minutes")
     }
 
+    /// Switching streams on a playing YouTube video (1080p -> 720p -> 1080p):
+    /// each switch must complete (the checkmark moves), resume near the same
+    /// position and keep playing.
+    @MainActor
+    func testYouTubeStreamSwitches() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["HUMMINGBIRD_YOUTUBE_TIMING"] == "1" else {
+            throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_TIMING=1 to measure YouTube stream switches over the network")
+        }
+        let configURL = environment["HUMMINGBIRD_YOUTUBE_CONFIG_URL"] ?? "https://plugins.grayjay.app/Youtube/YoutubeConfig.json"
+        let videoURL = environment["HUMMINGBIRD_YOUTUBE_VIDEO_URL"] ?? "https://www.youtube.com/watch?v=ukE4nf9WeQU"
+        let model = makeTestAppModel()
+        model.plugins.commit(try await model.plugins.prepareInstall(from: configURL))
+        let (runtime, content) = try await model.platform.details(url: videoURL)
+        guard case .video(let details) = content else { return XCTFail("expected video details") }
+        let player = PlayerModel(stores: model.stores)
+        let loading = Task { @MainActor in
+            await player.load(details: details, runtime: runtime, library: model.library, sourceURL: videoURL)
+        }
+        defer { loading.cancel(); player.teardown() }
+        func until(_ seconds: Double, _ condition: () -> Bool) async throws -> Bool {
+            let end = ContinuousClock.now.advanced(by: .seconds(seconds))
+            while ContinuousClock.now < end {
+                if condition() { return true }
+                if let error = player.errorMessage { print("[timing] player_error=\(error)"); return false }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            return condition()
+        }
+        let started = try await until(600) { player.isPlaying && player.playbackTime > 5 }
+        XCTAssertTrue(started, "playback did not start")
+        print("[timing] options=\(player.options.map { "\(/tmp/yt.pl.height)p:\(/tmp/yt.pl.kind)" })")
+        for height in [720, 1080] {
+            guard let option = player.options.first(where: { /tmp/yt.pl.height == height }) else {
+                print("[timing] no \(height)p option"); continue
+            }
+            let before = player.playbackTime
+            let switchStart = ContinuousClock.now
+            let switching = Task { @MainActor in await player.select(option) }
+            let moved = try await until(300) { player.selected?.id == option.id }
+            let switchedAt = ContinuousClock.now
+            let advancing = try await until(60) { player.isPlaying && player.playbackTime > player.playbackTime.rounded(.down) && player.waitingReason == nil }
+            let after = player.playbackTime
+            await switching.value
+            print("[timing] switch_to=\(height)p confirmed=\(moved) ms=\(ms(switchStart.duration(to: switchedAt))) before=\(before) after=\(after) playing=\(advancing)")
+            XCTAssertTrue(moved, "the switch to \(height)p completed")
+            XCTAssertGreaterThanOrEqual(after, before - 6, "resumed where playback was (within a segment), not earlier")
+            let resumed = try await until(30) { player.playbackTime > after + 2 }
+            XCTAssertTrue(resumed, "playback keeps advancing after the switch to \(height)p")
+        }
+        await runtime.stop()
+    }
+
     /// What the removed progressive path did: AVURLAssets on the upstream
     /// URLs with the request modifier's headers from one call, loading
     /// duration and tracks as AVMediaBackend.makeItem did. Measures how long

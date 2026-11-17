@@ -294,6 +294,62 @@ final class MediaPipelineTests: XCTestCase {
         await session.stop()
     }
 
+    /// Switching YouTube-style streams (byte-range fMP4 video + a shared audio
+    /// track) mid-playback: the new format gets its own local presentation,
+    /// the shared audio download is kept (not restarted or stopped), the new
+    /// presentation serves the segment at the current position, and the old
+    /// format keeps downloading at low priority after the old session ends.
+    func testSwitchingFormatsKeepsAudioAndTheOldTrackDownloading() async throws {
+        let high = FakeMedia.fragmentedMP4(segmentSizes: Array(repeating: 300_000, count: 6), segmentMilliseconds: 5_000)
+        let low = FakeMedia.fragmentedMP4(segmentSizes: Array(repeating: 100_000, count: 6), segmentMilliseconds: 5_000)
+        let audio = FakeMedia.fragmentedMP4(segmentSizes: Array(repeating: 20_000, count: 6), segmentMilliseconds: 5_000)
+        let transport = FakeUpstream(files: ["/1080": high.data, "/720": low.data, "/a": audio.data], failures: 0)
+        let downloads = MediaDownloads(cache: temporaryCache(), transport: transport)
+        let server = LocalMediaServer()
+        func spec(_ role: MediaTrackRole, _ path: String) throws -> VODTrackSpec {
+            VODTrackSpec(role: role, identity: "switch-\(path)",
+                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test" + path))),
+                         refresh: nil, indexHint: nil, container: role == .audio ? "audio/mp4" : "video/mp4",
+                         codec: role == .audio ? "mp4a.40.2" : "avc1.64001f", bandwidth: 1_000_000,
+                         width: 1920, height: 1080, declaredDuration: 30)
+        }
+        let audioSpec = try spec(.audio, "/a")
+        let (first, _) = try await bounded {
+            try await VODSession.start(video: try spec(.video, "/1080"), audio: audioSpec, downloads: downloads, server: server)
+        }
+        // References to the downloads (a hold, released at once).
+        let sharedAudio = try await downloads.hold(audioSpec)
+        await downloads.release(track: audioSpec.identity)
+        let oldVideo = try await downloads.hold(try spec(.video, "/1080"))
+        await downloads.release(track: "switch-/1080")
+
+        // Switch to 720p: a new session; then the old one ends.
+        let (second, playback) = try await bounded {
+            try await VODSession.start(video: try spec(.video, "/720"), audio: audioSpec, downloads: downloads, server: server)
+        }
+        await first.stop()
+        let audioAfter = try await downloads.hold(audioSpec)
+        await downloads.release(track: audioSpec.identity)
+        XCTAssertTrue(audioAfter === sharedAudio, "the shared audio download continues, it is not restarted")
+        let audioStopped = await sharedAudio.isStopped
+        XCTAssertFalse(audioStopped)
+        let oldPriority = await oldVideo.priority
+        let oldStopped = await oldVideo.isStopped
+        XCTAssertEqual(oldPriority, .background, "the old format keeps downloading at low priority")
+        XCTAssertFalse(oldStopped)
+
+        // The new presentation serves the segment at the current position (15 s: segment 3).
+        let base = playback.request.video.url.deletingLastPathComponent()
+        let (playlist, _) = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("video.m3u8")) }
+        let offset = Int(low.firstSegmentOffset) + 3 * 100_000
+        XCTAssertTrue(String(decoding: playlist, as: UTF8.self).contains("#EXT-X-BYTERANGE:100000@\(offset)"))
+        var ranged = URLRequest(url: base.appendingPathComponent("video.mp4"))
+        ranged.setValue("bytes=\(offset)-\(offset + 99_999)", forHTTPHeaderField: "Range")
+        let (bytes, _) = try await bounded { [ranged] in try await URLSession.shared.data(for: ranged) }
+        XCTAssertEqual(bytes, low.data.subdata(in: offset..<(offset + 100_000)))
+        await second.stop()
+    }
+
     // MARK: HLS
 
     private static let hlsFiles: [String: Data] = [

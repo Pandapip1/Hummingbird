@@ -630,6 +630,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             // A teardown or a newer load while this one was resolving retires
             // this play: loading the old engine now would start a second,
             // invisible player (doubled audio).
+            // A switch resumes where playback is now: the old stream kept
+            // playing while the new one was prepared.
+            if !normalizeSavedPosition, option.kind != .live, currentPlayback != nil, backend.currentTime > 0 {
+                start = backend.currentTime
+            }
             guard generation == playGeneration, self.backend === backend else { throw MediaBackendLoadError.superseded }
             try await backend.load(playback.request, resumeAt: start, autoplay: autoplay)
             guard generation == playGeneration, self.backend === backend else {

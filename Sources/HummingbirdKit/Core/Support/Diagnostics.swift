@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Synchronization
 
 /// Hummingbird's unified logging subsystem. Every logger and signposter in
 /// the app and its packages uses it, so one predicate shows everything:
@@ -31,12 +32,6 @@ extension Logger {
     static let avPlayer = Logger(subsystem: Diagnostics.subsystem, category: "avplayer")
     /// Plugin lifecycle, alerts and compatibility patches.
     static let plugin = Logger(subsystem: Diagnostics.subsystem, category: "plugin")
-    /// Plugins' own `log()` output (debug level; private).
-    static let pluginConsole = Logger(subsystem: Diagnostics.subsystem, category: "plugin.console")
-    /// The hidden browser plugins drive (BotGuard and similar).
-    static let pluginBrowser = Logger(subsystem: Diagnostics.subsystem, category: "plugin.browser")
-    /// Plugin HTTP traffic (traces are opt-in, see HostHTTP).
-    static let http = Logger(subsystem: Diagnostics.subsystem, category: "http")
     /// The local proxy that serves plugin media to the player.
     static let mediaProxy = Logger(subsystem: Diagnostics.subsystem, category: "media-proxy")
     /// Which plugin handles a URL, and navigation to content.
@@ -105,6 +100,25 @@ enum LogRedaction {
         return s
     }
 
+    /// The same redaction, plus what the user recently searched for, as the
+    /// only type the plugin log accepts (`PluginLog`).
+    static func text(_ text: String, removing terms: [String] = [], limit: Int = 500) -> RedactedText {
+        RedactedText(redact(text, removing: terms + rememberedTerms.withLock { $0 }, limit: limit))
+    }
+
+    /// What the user recently typed (searches). Plugins echo it into their own
+    /// log output long after the call that carried it, so plugin log text
+    /// (`text`) drops the last few, held in memory only.
+    static func remember(_ terms: [String]) {
+        rememberedTerms.withLock { remembered in
+            remembered.removeAll { terms.contains($0) }
+            remembered.append(contentsOf: terms)
+            if remembered.count > 20 { remembered.removeFirst(remembered.count - 20) }
+        }
+    }
+
+    private static let rememberedTerms = Mutex<[String]>([])
+
     /// Each term as typed, URL-encoded both ways, and its longer words on their own.
     private static func expanded(_ terms: [String]) -> [String] {
         var out: [String] = []
@@ -122,4 +136,12 @@ enum LogRedaction {
         // Longest first, so a phrase is replaced before its words.
         return Array(Set(out)).sorted { $0.count > $1.count }
     }
+}
+
+/// Text that has been through `LogRedaction`. Only `LogRedaction.text` makes
+/// one, and `PluginLog` takes nothing else for what plugins and their
+/// network traffic produce, so plugin output can't reach the log unredacted.
+struct RedactedText: Sendable, CustomStringConvertible {
+    let description: String
+    fileprivate init(_ description: String) { self.description = description }
 }

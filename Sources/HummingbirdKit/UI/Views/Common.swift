@@ -2,12 +2,32 @@ import Foundation
 import os
 import SwiftOpenUI
 
+/// A remote image.
+///
+/// `.fill` never sizes the layout: a filled image on its own reports the size
+/// it needs to fill (a 6:1 banner given a 100 pt height asks for ~600 pt of
+/// width), which widens every container above it past the screen. So a
+/// clear placeholder takes exactly the offered size and the image is drawn
+/// over it, cropped. Callers must therefore give a filled image a size (a
+/// frame or an aspect ratio). `.fit` keeps the image's own proportions; it
+/// never exceeds the space offered.
 @MainActor
 struct RemoteImage: View {
     let url: URL?
     var contentMode: ContentMode = .fill
 
     var body: some View {
+        switch contentMode {
+        case .fill:
+            Color.clear
+                .overlay { image }
+                .clipped()
+        case .fit:
+            image
+        }
+    }
+
+    private var image: some View {
         DecodedAsyncImage(url: url) { phase in
             switch phase {
             case .success(let image): image.resizable().aspectRatio(contentMode: contentMode)

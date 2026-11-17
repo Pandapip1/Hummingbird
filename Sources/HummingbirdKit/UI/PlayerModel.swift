@@ -56,11 +56,19 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     // exact initial seek completes, and `selected` is intentionally committed
     // only after `backend.load` returns.
     var hasMedia: Bool { backend != nil }
+    /// Playable media is loaded. Until then the controls are disabled and the
+    /// page shows progress.
+    var isMediaReady: Bool { selected != nil && !isPreparing }
     private(set) var loadedURL: String?
     private(set) var options: [PlaybackOption] = []
     private(set) var selected: PlaybackOption?
     private(set) var audioSources: [MediaSource] = []
     private(set) var selectedAudioSource: MediaSource?
+    /// A source or audio stream being switched to, not yet confirmed playing.
+    private(set) var pendingOption: PlaybackOption?
+    private(set) var pendingAudioSource: MediaSource?
+    /// How long a switch waits for the new item's first frames before accepting it.
+    @ObservationIgnored var playbackConfirmationTimeout: Duration = .seconds(15)
     private(set) var errorMessage: String?
     private(set) var isPreparing = false
     private(set) var preparationMessage: String?
@@ -229,25 +237,49 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         await startTracker()
     }
 
+    /// Switches to another source. `selected` keeps naming the stream that is
+    /// playing until the new one is confirmed (loaded and, when playing, its
+    /// first frames shown); meanwhile `pendingOption` names the choice. On
+    /// failure the old stream keeps playing and the error is shown.
     func select(_ option: PlaybackOption) async {
         let position = backend?.currentTime
         let autoplay = backend?.isPlaying ?? true
         var choice = option
         if choice.audio != nil, let selectedAudioSource { choice.audio = selectedAudioSource }
+        pendingOption = option
+        defer { if pendingOption?.id == option.id { pendingOption = nil } }
         guard await play(choice, resumeAt: position, duration: details?.item.duration,
                          autoplay: autoplay, normalizeSavedPosition: false) else { return }
         refreshAudioSources(for: choice)
     }
 
+    /// Switches the audio stream, confirming it the same way as `select`.
     func selectAudioSource(_ source: MediaSource) async {
         guard var choice = selected else { return }
         let position = backend?.currentTime
         let autoplay = backend?.isPlaying ?? true
         guard choice.audio != nil else { return }
         choice.audio = source
+        pendingAudioSource = source
+        defer { if pendingAudioSource?.id == source.id { pendingAudioSource = nil } }
         guard await play(choice, resumeAt: position, duration: details?.item.duration,
                          autoplay: autoplay, normalizeSavedPosition: false) else { return }
         selectedAudioSource = source
+    }
+
+    /// After a load, waits until the new item is visibly playing: its time
+    /// advances while the player plays. A paused load is confirmed by loading.
+    /// Gives up waiting (and accepts the loaded item) after `timeout`, e.g.
+    /// when the network stalls the first frames.
+    private func confirmPlayback(of backend: MediaBackend, autoplay: Bool, generation: Int) async {
+        guard autoplay else { return }
+        let start = backend.currentTime
+        let deadline = ContinuousClock.now.advanced(by: playbackConfirmationTimeout)
+        while ContinuousClock.now < deadline, generation == playGeneration, !Task.isCancelled {
+            if backend.isPlaying, backend.currentTime > start + 0.05 { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        Logger.player.notice("playback_unconfirmed generation=\(generation)")
     }
 
     private func refreshAudioSources(for choice: PlaybackOption) {
@@ -414,6 +446,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             }
             try await backend.load(playback.request, resumeAt: start, autoplay: autoplay)
             startup?.mark(.playerLoaded)
+            await confirmPlayback(of: backend, autoplay: autoplay, generation: generation)
             currentPlayback = playback
             localRecoveryAttempts = 0
             vodSession = newSession

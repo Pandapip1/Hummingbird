@@ -237,3 +237,18 @@ struct LoadingErrorView: View {
         }
     }
 }
+
+/// Stands in for a section whose data is still loading: an indeterminate
+/// spinner and what is being loaded. Never a fake value.
+@MainActor
+struct SectionLoadingPlaceholder: View {
+    let title: String
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+            Text(title).font(.subheadline).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+    }
+}

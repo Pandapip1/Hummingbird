@@ -33,16 +33,22 @@ struct VideoDetailView: View {
         GeometryReader { geometry in
             ScrollView {
                 switch state {
-                case .loading:
-                    VStack(alignment: .leading, spacing: 12) {
-                        Rectangle().fill(.secondary.opacity(0.15)).aspectRatio(16 / 9, contentMode: .fit)
-                        Text(activePreview?.name ?? "Loading…").font(.title3.bold()).padding(.horizontal)
-                        ProgressView().frame(maxWidth: .infinity)
+                case .loading, .failed:
+                    // The page appears at once from what the tapped item already
+                    // says; the plugin's details (often 10 s or more) fill the rest.
+                    if let item = pendingVideoItem {
+                        VideoBody(item: item, loaded: nil, failure: failureMessage, retry: retry, player: player, tab: $tab,
+                                  showPlaylistPicker: $showPlaylistPicker,
+                                  playerWidth: geometry.size.width,
+                                  playerHeight: PlayerLayout.height(width: geometry.size.width, viewportHeight: geometry.size.height))
+                    } else if let failureMessage {
+                        LoadingErrorView(message: failureMessage, retry: retry).padding(.top, 60)
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
                     }
-                case .failed(let message):
-                    LoadingErrorView(message: message) { Task { await load() } }.padding(.top, 60)
                 case .video(let rt, let d):
-                    VideoBody(runtime: rt, details: d, player: player, tab: $tab,
+                    VideoBody(item: d.item, loaded: VideoBody.Loaded(runtime: rt, details: d), failure: nil, retry: retry,
+                              player: player, tab: $tab,
                               showPlaylistPicker: $showPlaylistPicker,
                               playerWidth: geometry.size.width,
                               playerHeight: PlayerLayout.height(width: geometry.size.width, viewportHeight: geometry.size.height))
@@ -76,13 +82,28 @@ struct VideoDetailView: View {
         }
         .sheet(isPresented: $showPlaylistPicker) {
             if case .video(_, let d) = state { PlaylistPicker(video: SavedVideo(d.item)).sheetSize() }
+            else if let item = pendingVideoItem { PlaylistPicker(video: SavedVideo(item)).sheetSize() }
         }
     }
+
+    /// The tapped item, when it is a video, while its details load or failed.
+    private var pendingVideoItem: ContentItem? {
+        guard let activePreview, activePreview.kind == .video, activePreview.url == activeURL else { return nil }
+        return activePreview
+    }
+
+    private var failureMessage: String? {
+        if case .failed(let message) = state { message } else { nil }
+    }
+
+    private var retry: () -> Void { { Task { await load() } } }
 
     private func load() async {
         state = .loading
         var displayedCache = false
-        let playerAlreadyLoaded = player.hasMedia && player.loadedURL == activeURL
+        // A player still showing this video is kept (tab switches, history)
+        // unless it failed: reopening must not leave a broken player.
+        let playerAlreadyLoaded = player.hasMedia && player.loadedURL == activeURL && player.errorMessage == nil
         if let (runtime, cached) = await app.platform.cachedDetails(url: activeURL) {
             displayedCache = true
             // Persisted details are only a fast UI placeholder. Playback sources can
@@ -126,8 +147,18 @@ struct VideoDetailView: View {
 
 @MainActor
 private struct VideoBody: View {
-    let runtime: PluginRuntime
-    let details: VideoDetails
+    struct Loaded {
+        let runtime: PluginRuntime
+        let details: VideoDetails
+    }
+
+    /// What is known before the details arrive: the tapped item.
+    let item: ContentItem
+    /// The plugin's details, once they arrive.
+    let loaded: Loaded?
+    /// Why the details could not be loaded.
+    let failure: String?
+    let retry: () -> Void
     let player: PlayerModel
     @Binding var tab: VideoDetailView.DetailTab
     @Binding var showPlaylistPicker: Bool
@@ -139,7 +170,6 @@ private struct VideoBody: View {
     @State private var descriptionExpanded = false
 
     var body: some View {
-        let item = details.item
         let saved = SavedVideo(item)
         VStack(alignment: .leading, spacing: 12) {
             if isOverviewPreview {
@@ -148,12 +178,16 @@ private struct VideoBody: View {
                     .overlay { Image(systemName: "play.fill").font(.largeTitle).foregroundStyle(.white.opacity(0.7)) }
                     .frame(width: playerWidth, height: playerHeight)
             } else {
-                PlayerSection(model: player, width: playerWidth, height: playerHeight)
+                PlayerSection(model: player, width: playerWidth, height: playerHeight,
+                              poster: item.thumbnailURL,
+                              pending: playerPending)
             }
 
             VStack(alignment: .leading, spacing: 10) {
                 Text(item.name).font(.title3.bold()).lineLimit(nil)
-                Text(statsLine).font(.footnote).foregroundStyle(.secondary).lineLimit(nil)
+                if !statsLine.isEmpty {
+                    Text(statsLine).font(.footnote).foregroundStyle(.secondary).lineLimit(nil)
+                }
 
                 if let author = item.author, !author.url.isEmpty {
                     Button { openRoute(.channel(author.url), title: author.name) } label: {
@@ -181,36 +215,53 @@ private struct VideoBody: View {
                     }.buttonStyle(.bordered)
                 }
 
-                Picker("", selection: $tab) {
-                    ForEach(VideoDetailView.DetailTab.allCases.filter { $0 != .comments || hasComments }, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented)
+                if let loaded {
+                    Picker("", selection: $tab) {
+                        ForEach(VideoDetailView.DetailTab.allCases.filter { $0 != .comments || hasComments(loaded) }, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
+                }
             }
             .padding(.horizontal)
 
-            switch tab {
-            case .about:
-                VStack(alignment: .leading) {
-                    Text(plain(details.description)).font(.subheadline).lineLimit(descriptionExpanded ? nil : 6)
-                    if details.description.count > 280 { Button(descriptionExpanded ? "Show less" : "Show more") { descriptionExpanded.toggle() }.font(.footnote) }
-                }.padding(.horizontal)
-            case .comments:
-                CommentsSection(runtime: runtime, details: details)
-            case .related:
-                RelatedSection(runtime: runtime, details: details)
+            if let loaded {
+                switch tab {
+                case .about:
+                    VStack(alignment: .leading) {
+                        Text(plain(loaded.details.description)).font(.subheadline).lineLimit(descriptionExpanded ? nil : 6)
+                        if loaded.details.description.count > 280 { Button(descriptionExpanded ? "Show less" : "Show more") { descriptionExpanded.toggle() }.font(.footnote) }
+                    }.padding(.horizontal)
+                case .comments:
+                    CommentsSection(runtime: loaded.runtime, details: loaded.details)
+                case .related:
+                    RelatedSection(runtime: loaded.runtime, details: loaded.details)
+                }
+            } else if let failure {
+                // The details failed: say so where they would be, with a retry.
+                LoadingErrorView(message: failure, retry: retry).padding(.horizontal)
+            } else {
+                // Description, comments and related videos come with the details.
+                SectionLoadingPlaceholder(title: "Loading description, comments and related videos")
+                    .padding(.horizontal)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var hasComments: Bool { details.hasComments || runtime.has("getComments") }
+    private var playerPending: PlayerSection.Pending? {
+        guard loaded == nil else { return nil }
+        return failure == nil ? .loading : .failed(retry)
+    }
+
+    private func hasComments(_ loaded: Loaded) -> Bool { loaded.details.hasComments || loaded.runtime.has("getComments") }
 
     private var statsLine: String {
         var p: [String] = []
-        if let v = details.item.viewCount, v >= 0 { p.append("\(Fmt.count(v)) views") }
-        if let d = details.item.date { p.append(Fmt.relative(d)) }
-        if let r = details.rating {
+        if let v = item.viewCount, v >= 0 { p.append("\(Fmt.count(v)) views") }
+        if let d = item.date { p.append(Fmt.relative(d)) }
+        if let r = loaded?.details.rating {
             if let l = r.likes, l >= 0 { p.append("\(Fmt.count(l)) likes") }
         }
+        if loaded == nil, let duration = item.duration, duration > 0 { p.append(Fmt.duration(duration)) }
         return p.joined(separator: " · ")
     }
 
@@ -236,9 +287,18 @@ extension AdvancedVideoPlayerLayout {
 
 @MainActor
 struct PlayerSection: View {
+    /// The page's details have not produced media yet.
+    enum Pending {
+        case loading
+        case failed(() -> Void)
+    }
+
     let model: PlayerModel
     let width: CGFloat
     let height: CGFloat
+    /// The tapped item's thumbnail, shown until the video's first frame.
+    var poster: URL?
+    var pending: Pending?
 
     var body: some View {
         player
@@ -248,8 +308,19 @@ struct PlayerSection: View {
     private var player: some View {
         ZStack {
             Color.black
+            if !model.isMediaReady, let poster {
+                RemoteImage(url: poster).frame(width: width, height: height).clipped().opacity(0.6)
+            }
             if model.hasMedia { PlayerSurface(model: model) }
-            if model.isPreparing {
+            if case .loading = pending {
+                ProgressView().tint(.white).padding()
+            } else if case .failed(let retry) = pending {
+                VStack(spacing: 10) {
+                    Text("This video could not be loaded.").font(.footnote).foregroundStyle(.white)
+                    Button("Try again", action: retry).buttonStyle(.bordered)
+                }
+                .padding()
+            } else if model.isPreparing {
                 VStack(spacing: 10) {
                     ProgressView().tint(.white)
                     if let message = model.preparationMessage {
@@ -364,7 +435,7 @@ private struct VideoMenu: View {
     var body: some View {
         let tracks = model.tracks.filter { $0.kind == .video }
         if model.options.count > 1 {
-            VideoSourceControl(options: model.options, selectedID: model.selected?.id, label: \.label,
+            VideoSourceControl(options: model.options, selectedID: model.selected?.id, pendingID: model.pendingOption?.id, label: \.label,
                                onSelect: { option in Task { await model.select(option) } }, interacted: interacted)
         }
         if !tracks.isEmpty {
@@ -384,6 +455,7 @@ private struct AudioMenu: View {
         if !model.audioSources.isEmpty {
             VideoSourceControl(title: "Audio", options: model.audioSources,
                                selectedID: model.selectedAudioSource?.id,
+                               pendingID: model.pendingAudioSource?.id,
                                label: PlaybackSelector.audioLabel,
                                onSelect: { source in Task { await model.selectAudioSource(source) } },
                                interacted: interacted)
@@ -417,16 +489,14 @@ private struct SubtitleMenu: View {
             if model.embeddedSubtitleChoice == nil && !model.subtitleSources.isEmpty {
                 Divider()
                 ForEach(SubtitleColorChoice.allCases, id: \.rawValue) { choice in
-                    Button { interacted(); model.setSubtitleColor(choice) } label: {
-                        if model.subtitleColorChoice == choice { Label("Caption Color: \(choice.label)", systemImage: "checkmark") }
-                        else { Text("Caption Color: \(choice.label)") }
+                    PlayerMenuItem("Caption Color: \(choice.label)", state: model.subtitleColorChoice == choice ? .selected : .unselected) {
+                        interacted(); model.setSubtitleColor(choice)
                     }
                 }
                 Divider()
                 ForEach(SubtitleSizeChoice.allCases, id: \.rawValue) { choice in
-                    Button { interacted(); model.setSubtitleSize(choice) } label: {
-                        if model.subtitleSizeChoice == choice { Label("Caption Size: \(choice.label)", systemImage: "checkmark") }
-                        else { Text("Caption Size: \(choice.label)") }
+                    PlayerMenuItem("Caption Size: \(choice.label)", state: model.subtitleSizeChoice == choice ? .selected : .unselected) {
+                        interacted(); model.setSubtitleSize(choice)
                     }
                 }
             }

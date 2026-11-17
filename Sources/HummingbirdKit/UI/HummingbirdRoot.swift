@@ -113,6 +113,7 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
     var isPlaying = false
     var playbackRate: Float = 1
     let pictureInPictureSupported = false
+    let isMediaReady = true
 
     func togglePlayback() { isPlaying.toggle() }
     func skip(by seconds: Double) { seek(to: playbackTime + seconds) }

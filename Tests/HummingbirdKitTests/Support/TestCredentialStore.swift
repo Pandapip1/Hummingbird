@@ -75,7 +75,11 @@ extension XCTestCase {
     }
 
     @MainActor
-    func makeTestPlayerModel(backend: (any MediaBackend)? = nil) -> PlayerModel {
-        PlayerModel(stores: makeTestStores(), backend: backend)
+    func makeTestPlayerModel(backend: (any MediaBackend)? = nil,
+                             playbackConfirmationTimeout: Duration = .milliseconds(200)) -> PlayerModel {
+        let model = PlayerModel(stores: makeTestStores(), backend: backend)
+        // Fake backends rarely advance time; do not wait long for first frames.
+        model.playbackConfirmationTimeout = playbackConfirmationTimeout
+        return model
     }
 }

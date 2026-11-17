@@ -81,6 +81,9 @@ public extension MediaBackend {
 @MainActor
 public protocol AdvancedVideoPlayerControlling: AnyObject, Observable {
     var title: String { get }
+    /// False until playable media is loaded. The controls stay disabled until
+    /// then (the host shows its own progress), never pretending to play.
+    var isMediaReady: Bool { get }
     var playbackTime: Double { get }
     var duration: Double { get }
     var isPlaying: Bool { get }

@@ -3,6 +3,45 @@ import XCTest
 
 @MainActor
 final class PlayerTrackSelectionTests: XCTestCase {
+    /// No optimistic checkmark: the menu keeps the current stream selected and
+    /// marks the new one pending until it is playing; a failed switch keeps
+    /// the old stream and shows the error.
+    func testSourceSwitchStaysPendingUntilTheNewStreamPlays() async throws {
+        let backend = DelayedStartBackend()
+        let model = makeTestPlayerModel(backend: backend, playbackConfirmationTimeout: .seconds(10))
+        let first = playbackOption(id: "first", url: "https://example.com/first.m3u8")
+        await model.select(first)  // paused: confirmed by loading
+        XCTAssertEqual(model.selected, first)
+        backend.isPlaying = true
+
+        let second = playbackOption(id: "second", url: "https://example.com/second.m3u8")
+        let switching = Task { await model.select(second) }
+        try await waitUntil { backend.loads == 2 }
+        XCTAssertEqual(model.selected, first, "the checkmark stays on the playing stream")
+        XCTAssertEqual(model.pendingOption, second)
+        XCTAssertFalse(model.isMediaReady)
+
+        backend.advance()
+        await switching.value
+        XCTAssertEqual(model.selected, second)
+        XCTAssertNil(model.pendingOption)
+
+        backend.failNextLoad = true
+        let third = playbackOption(id: "third", url: "https://example.com/third.m3u8")
+        await model.select(third)
+        XCTAssertEqual(model.selected, second, "a failed switch keeps the old stream")
+        XCTAssertNil(model.pendingOption)
+        XCTAssertEqual(model.errorMessage, "switch failed")
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return XCTFail("condition not met in 5 s") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testSelectionReflectsBackendInitialAndRejectedChoices() async {
         let video = MediaTrack(id: "video-0", kind: .video, language: nil, label: "Main")
         let alternate = MediaTrack(id: "video-1", kind: .video, language: nil, label: "Alternate")
@@ -153,6 +192,31 @@ final class PlayerTrackSelectionTests: XCTestCase {
         // load generations and cancellation, not where on-demand bytes come from.
         return PlaybackOption(id: id, label: id, kind: .hls, video: source, audio: nil, height: 720)
     }
+}
+
+@MainActor
+private final class DelayedStartBackend: MediaBackend {
+    var currentTime = 10.0
+    var duration = 120.0
+    var isPlaying = false
+    var onTick: (@MainActor (Double) -> Void)?
+    var onEnded: (@MainActor () -> Void)?
+    var onFailure: (@MainActor (String) -> Void)?
+    var pictureInPictureSupported = false
+    var failNextLoad = false
+    private(set) var loads = 0
+
+    func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
+        loads += 1
+        if failNextLoad { failNextLoad = false; throw PluginError.execution("switch failed") }
+        isPlaying = autoplay
+    }
+    /// The new item shows its first frames.
+    func advance() { currentTime += 1 }
+    func play() { isPlaying = true }
+    func pause() { isPlaying = false }
+    func seek(to seconds: Double) { currentTime = seconds }
+    func stop() { isPlaying = false }
 }
 
 @MainActor

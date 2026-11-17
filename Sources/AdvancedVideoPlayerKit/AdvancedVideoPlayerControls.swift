@@ -85,7 +85,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                     Text(model.title).font(.headline)
                 }
                 Spacer()
-                accessories(interacted)
+                accessories(interacted).disabled(!model.isMediaReady)
             }
             .modifier(FocusSection()).foregroundStyle(Color.white)
             .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
@@ -93,7 +93,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
 
             Spacer().frame(minHeight: AdvancedVideoPlayerLayout.minimumBarSeparation, maxHeight: .infinity)
-            transport.modifier(FocusSection()).foregroundStyle(Color.white)
+            transport.disabled(!model.isMediaReady).modifier(FocusSection()).foregroundStyle(Color.white)
                 .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
@@ -150,9 +150,9 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×").foregroundStyle(.white)
         } content: {
             ForEach([Float(0.25), 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in
-                Button { interacted(); model.setPlaybackRate(rate) } label: {
-                    let label = rate == 1 ? "Normal" : "\(rate.formatted())×"
-                    if rate == model.playbackRate { Label(label, systemImage: "checkmark") } else { Text(label) }
+                PlayerMenuItem(rate == 1 ? "Normal" : "\(rate.formatted())×",
+                               state: rate == model.playbackRate ? .selected : .unselected) {
+                    interacted(); model.setPlaybackRate(rate)
                 }
             }
         }

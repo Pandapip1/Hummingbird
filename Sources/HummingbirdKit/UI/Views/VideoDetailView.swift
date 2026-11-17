@@ -56,10 +56,11 @@ struct VideoDetailView: View {
             }
         }
         .immersiveVideoDetailStyle()
-        .task(id: activeURL) {
-            player.onPlaybackEnded = advanceQueue
-            await load()
-        }
+        // The queue advances from whichever tab is playing, visible or not.
+        .task(id: activeURL) { player.onPlaybackEnded = advanceQueue }
+        // Loading waits until the page is first on screen, so restored
+        // background tabs don't all load their videos at launch.
+        .browserTaskOnceVisible(id: activeURL) { await load() }
         .onDisappear {
             let disappearingURL = activeURL
             Task { @MainActor in

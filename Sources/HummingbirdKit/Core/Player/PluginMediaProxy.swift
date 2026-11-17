@@ -156,7 +156,7 @@ actor PluginMediaProxy {
                         ? (prefetchRuntime, prefetchExecutor)
                         : Self.executor(for: resource.upstream, in: presentation)
                     data = try await fetchSegment(presentation: id, runtime: runtime, executor: executor,
-                                                  upstream: resource.upstream, maximumAttempts: nil)
+                                                  upstream: resource.upstream)
                     OSSignposter.mediaProxy.endInterval("UMPPrefetch", prefetchSignpost, "bytes=\(data.count)")
                 } catch {
                     OSSignposter.mediaProxy.endInterval("UMPPrefetch", prefetchSignpost, "failed")
@@ -180,11 +180,11 @@ actor PluginMediaProxy {
     }
 
     /// Fetches one generated segment through the plugin's executor. Failures
-    /// other than the plugin asking to be reloaded are retried with backoff:
-    /// without a limit for the background download, a few times for a request
-    /// the player is waiting on.
+    /// other than the plugin asking to be reloaded are retried with backoff for
+    /// as long as the presentation is registered: the player waits (buffers)
+    /// rather than getting an error.
     private func fetchSegment(presentation id: String, runtime: PluginRuntime, executor: Int,
-                              upstream: String, maximumAttempts: Int?) async throws -> Data {
+                              upstream: String) async throws -> Data {
         let policy = DownloadRetryPolicy()
         var attempt = 0
         while true {
@@ -193,7 +193,7 @@ actor PluginMediaProxy {
             } catch let error as PluginError {
                 if case .reloadRequired = error { throw error }
                 attempt += 1
-                guard presentations[id] != nil, maximumAttempts.map({ attempt < $0 }) ?? true else { throw error }
+                guard presentations[id] != nil else { throw error }
                 let delay = policy.delay(afterAttempt: attempt)
                 Logger.mediaProxy.notice("segment_retry attempt=\(attempt) delay=\(delay) message=\(error.localizedDescription)")
                 try await Task.sleep(for: .seconds(delay))
@@ -305,7 +305,7 @@ actor PluginMediaProxy {
                 let data: Data
                 do {
                     data = try await fetchSegment(presentation: parts[0], runtime: requestRuntime,
-                                                  executor: requestExecutor, upstream: upstream, maximumAttempts: 6)
+                                                  executor: requestExecutor, upstream: upstream)
                     OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "bytes=\(data.count)")
                 } catch {
                     OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "failed")

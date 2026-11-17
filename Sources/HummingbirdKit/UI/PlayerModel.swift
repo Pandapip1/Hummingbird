@@ -69,9 +69,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var pendingSubtitle: SubtitleSource?
     /// The player gave up on local data and is being reloaded at the same position.
     private(set) var isRecovering = false
-    /// How long a switch waits for the new item's first frames before it counts
-    /// as failed. Nil confirms on load alone (test backends that never play).
-    @ObservationIgnored var playbackConfirmationTimeout: Duration? = .seconds(15)
+    /// Tests only: a load alone confirms a switch (fake backends that never play).
+    @ObservationIgnored var confirmsSwitchOnLoadForTesting = false
+    /// A switch waiting for its new stream to play (its generation), and the
+    /// backend failure that ended the wait, if any.
+    @ObservationIgnored private var confirmingGeneration: Int?
+    @ObservationIgnored private var confirmationFailure: String?
     /// Tests only: turns an option into local playback without a plugin, so
     /// load generations, switching and confirmation can be driven by a fake
     /// backend. Nil in the app.
@@ -182,8 +185,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private func load(details: VideoDetails, runtime: PluginRuntime, library: LibraryStore,
                       sourceURL: String, reloadAttempt: Int, resumeOverride: Double?, autoplay: Bool) async {
         let host = URL(string: sourceURL)?.host ?? "unknown"
-        Logger.player.info("load_started plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .public) attempt=\(reloadAttempt)")
-        let signpost = OSSignposter.player.beginInterval("LoadContent", id: OSSignposter.player.makeSignpostID(), "plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .public)")
+        Logger.player.info("load_started plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .private) attempt=\(reloadAttempt)")
+        let signpost = OSSignposter.player.beginInterval("LoadContent", id: OSSignposter.player.makeSignpostID(), "plugin=\(runtime.id, privacy: .public) host=\(host, privacy: .private)")
         defer { OSSignposter.player.endInterval("LoadContent", signpost, "error=\(self.errorMessage != nil)") }
         teardown()
         loadedURL = sourceURL
@@ -290,25 +293,32 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
 
     struct PlaybackNotConfirmed: Error, LocalizedError {
-        var errorDescription: String? { "The new stream did not start playing, so the previous one was kept. Try again." }
+        let reason: String
+        var errorDescription: String? { "The new stream could not play (\(reason)), so the previous one was kept. Try again." }
     }
 
     /// After a load, waits until the new item is visibly playing: its time
     /// advances while the player plays. A paused load is confirmed by loading.
-    /// Not playing within `playbackConfirmationTimeout` is a failed switch,
-    /// never an accepted one (no optimistic UI).
+    /// There is no deadline: under download-first a slow network means the
+    /// switch is still pending (the spinner stays), not that it failed. Only a
+    /// failure the backend reports ends the wait as a failed switch, and the
+    /// checkmark never moves without confirmation (no optimistic UI).
     private func confirmPlayback(of backend: MediaBackend, autoplay: Bool, generation: Int) async throws {
-        guard autoplay, let timeout = playbackConfirmationTimeout else { return }
+        guard autoplay, !confirmsSwitchOnLoadForTesting else { return }
+        confirmingGeneration = generation
+        confirmationFailure = nil
+        defer { if confirmingGeneration == generation { confirmingGeneration = nil } }
         let start = backend.currentTime
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
+        while true {
             try Task.checkCancellation()
             guard generation == playGeneration else { throw MediaBackendLoadError.superseded }
+            if let failure = confirmationFailure {
+                Logger.player.notice("switch_failed generation=\(generation)")
+                throw PlaybackNotConfirmed(reason: failure)
+            }
             if backend.isPlaying, backend.currentTime > start + 0.05 { return }
             try await Task.sleep(for: .milliseconds(50))
         }
-        Logger.player.notice("playback_unconfirmed generation=\(generation)")
-        throw PlaybackNotConfirmed()
     }
 
     private func refreshAudioSources(for choice: PlaybackOption) {
@@ -691,6 +701,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// timeout during a long outage). Reload the same local media at the
     /// same position instead of showing an error; the download carries on.
     private func playerFailed(_ message: String) {
+        if confirmingGeneration == playGeneration {
+            // The stream being switched to failed: the switch restores the previous one.
+            confirmationFailure = message
+            return
+        }
         guard let playback = currentPlayback, playback.origin == .mediaCache || playback.origin == .generatedMedia else {
             errorMessage = message
             return

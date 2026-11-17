@@ -323,7 +323,8 @@ actor VODSession {
         return try LocalPlayback(video: base.appendingPathComponent(entry), servedBy: .mediaCache, isLive: true)
     }
 
-    /// Fetches a playlist, retrying transient failures a few times.
+    /// Fetches a playlist, retrying with backoff until it arrives or the
+    /// caller is cancelled.
     private static func fetchText(_ url: URL, signer: UpstreamURLSigner,
                                   transport: any MediaTransport) async throws -> (text: String, url: URL) {
         let policy = DownloadRetryPolicy()
@@ -339,7 +340,8 @@ actor VODSession {
                 throw CancellationError()
             } catch {
                 attempt += 1
-                guard attempt < 5 else { throw error }
+                // Never gives up while wanted: a slow or absent network is waiting, not failure.
+                Logger.mediaCache.notice("playlist_retry attempt=\(attempt)")
                 try await Task.sleep(for: .seconds(policy.delay(afterAttempt: attempt)))
             }
         }

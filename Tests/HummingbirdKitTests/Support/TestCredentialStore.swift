@@ -84,11 +84,11 @@ extension XCTestCase {
 
     @MainActor
     func makeTestPlayerModel(backend: (any MediaBackend)? = nil,
-                             playbackConfirmationTimeout: Duration? = nil) -> PlayerModel {
+                             confirmsSwitchOnLoad: Bool = true) -> PlayerModel {
         let model = PlayerModel(stores: makeTestStores(), backend: backend)
         model.localPlaybackForTesting = Self.loopbackPlayback
         // Fake backends rarely play; unless a test opts in, a load confirms a switch.
-        model.playbackConfirmationTimeout = playbackConfirmationTimeout
+        model.confirmsSwitchOnLoadForTesting = confirmsSwitchOnLoad
         return model
     }
 }

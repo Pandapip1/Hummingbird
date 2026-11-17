@@ -300,7 +300,7 @@ final class HostHTTP: NSObject, @unchecked Sendable {
            !(200..<300).contains(http.statusCode) {
             let body = String(decoding: (responseData ?? Data()).prefix(2_048), as: UTF8.self)
                 .replacingOccurrences(of: "\n", with: "\\n")
-            Logger.http.notice("plugin_http_failure method=\(request.httpMethod ?? "", privacy: .public) host=\(http.url?.host ?? "unknown", privacy: .public) status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)")
+            Logger.http.notice("plugin_http_failure method=\(request.httpMethod ?? "", privacy: .public) host=\(http.url?.host ?? "unknown", privacy: .private) status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)")
         }
 
         if traceUMP {

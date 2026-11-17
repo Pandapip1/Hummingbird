@@ -27,7 +27,7 @@ the same API.
 | `appsync.lan` | refused LAN sync requests (ATAppSync) |
 
 **Privacy.** Interpolated strings are private unless marked `.public`. Only
-values we chose (plugin IDs, event names, states, counts) and hosts are public.
+values we chose (plugin IDs, event names, states, counts) are public. Hosts,
 URLs, titles, toasts, plugin output and error descriptions are private, so a
 sysdiagnose or `log collect` from a user's device doesn't contain them. Private
 values show when the debugger is attached, or with a logging profile that

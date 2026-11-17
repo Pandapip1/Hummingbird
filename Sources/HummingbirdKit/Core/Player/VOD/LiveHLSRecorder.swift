@@ -20,8 +20,9 @@ import os
 ///   kept. Low-latency HLS partial segments (`EXT-X-PART`, preload hints) are
 ///   ignored: whole segments only, so the live edge trails upstream's by up
 ///   to one segment.
-/// - Nobody watching (background priority): no new segments are polled for;
-///   segments already announced finish downloading, and the recording stays.
+/// - Nobody watching (background priority): recording continues, using only
+///   bandwidth playback leaves idle, until the stream ends or the cache is
+///   over its limit; the recording stays replayable.
 actor LiveHLSRecorder {
     struct Segment: Codable, Sendable, Equatable {
         var sequence: Int
@@ -78,6 +79,8 @@ actor LiveHLSRecorder {
     private var finishHandler: (@Sendable () async -> Void)?
     private(set) var isFinished = false
     var isStopped: Bool { stopped }
+    private var stoppedForSpace = false
+    private var lastSpaceCheck = ContinuousClock.now
 
     init(role: MediaTrackRole, cache: MediaCache, identity: String, playlistURL: URL, signer: UpstreamURLSigner,
          refresh: (@Sendable () async throws -> (UpstreamURLSigner, URL))?,
@@ -114,11 +117,11 @@ actor LiveHLSRecorder {
         observers.removeAll()
     }
 
-    /// Foreground: follow the live edge. Background: stop polling for new
-    /// segments, finish the ones already announced.
+    /// Foreground while someone watches; background otherwise. Both keep
+    /// recording; background yields the network to playback.
     func setPriority(_ priority: DownloadPriority) {
         self.priority = priority
-        if priority == .foreground, pollTask == nil, !ended, !stopped {
+        if pollTask == nil, !ended, !stopped, !stoppedForSpace {
             pollTask = Task { await self.pollLoop() }
         }
     }
@@ -226,8 +229,17 @@ actor LiveHLSRecorder {
         defer { pollTask = nil }
         var attempt = 0
         var refusals = 0
-        while !Task.isCancelled, !stopped, !ended, priority == .foreground {
+        while !Task.isCancelled, !stopped, !ended, !stoppedForSpace {
             do {
+                if priority == .background, lastSpaceCheck.duration(to: .now) > .seconds(30) {
+                    lastSpaceCheck = .now
+                    if await cache.isOverLimit() {
+                        // The recording so far stays; it just stops growing.
+                        stoppedForSpace = true
+                        Logger.mediaCache.notice("live_recording_stopped reason=space")
+                        return
+                    }
+                }
                 let grew = try await poll()
                 attempt = 0
                 refusals = 0
@@ -317,7 +329,7 @@ actor LiveHLSRecorder {
                 }
                 publish()
                 if running == 0 {
-                    if ended || (priority == .background && pollTask == nil) {
+                    if ended || stoppedForSpace {
                         if nextResource() == nil { break }
                     }
                     try? await Task.sleep(for: .milliseconds(250))

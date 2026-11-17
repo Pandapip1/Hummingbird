@@ -8,7 +8,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
     /// the old stream and shows the error.
     func testSourceSwitchStaysPendingUntilTheNewStreamPlays() async throws {
         let backend = DelayedStartBackend()
-        let model = makeTestPlayerModel(backend: backend, playbackConfirmationTimeout: .seconds(10))
+        let model = makeTestPlayerModel(backend: backend, confirmsSwitchOnLoad: false)
         let first = playbackOption(id: "first", url: "https://example.com/first.m3u8")
         await model.select(first)  // paused: confirmed by loading
         XCTAssertEqual(model.selected, first)
@@ -33,16 +33,21 @@ final class PlayerTrackSelectionTests: XCTestCase {
         XCTAssertNil(model.pendingOption)
         XCTAssertEqual(model.errorMessage, "switch failed")
 
-        // A stream that loads but never plays is a failed switch too: the
-        // previous stream is loaded back and the checkmark never moves.
-        model.playbackConfirmationTimeout = .milliseconds(100)
+        // A slow stream stays pending (no deadline); one the player reports as
+        // failed is a failed switch: the previous stream is loaded back and the
+        // checkmark never moves.
         let loadsBefore = backend.loads
-        let stalled = playbackOption(id: "stalled", url: "https://example.com/stalled.m3u8")
-        await model.select(stalled)
+        let broken = playbackOption(id: "broken", url: "https://example.com/broken.m3u8")
+        let failing = Task { await model.select(broken) }
+        try await waitUntil { backend.loads == loadsBefore + 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(model.pendingOption, broken, "still pending while it has not played")
+        backend.reportFailure("decode error")
+        await failing.value
         XCTAssertEqual(model.selected, second)
         XCTAssertNil(model.pendingOption)
         XCTAssertEqual(backend.loads, loadsBefore + 2, "the new stream, then the previous one again")
-        XCTAssertEqual(model.errorMessage, PlayerModel.PlaybackNotConfirmed().errorDescription)
+        XCTAssertEqual(model.errorMessage, PlayerModel.PlaybackNotConfirmed(reason: "decode error").errorDescription)
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
@@ -223,6 +228,8 @@ private final class DelayedStartBackend: MediaBackend {
     }
     /// The new item shows its first frames.
     func advance() { currentTime += 1 }
+    /// The new item fails, as AVPlayer reports a failed item.
+    func reportFailure(_ message: String) { onFailure?(message) }
     func play() { isPlaying = true }
     func pause() { isPlaying = false }
     func seek(to seconds: Double) { currentTime = seconds }

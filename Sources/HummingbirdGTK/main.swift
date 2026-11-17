@@ -14,6 +14,7 @@ struct HummingbirdGTKApp: App {
         WindowGroup("Hummingbird", for: UUID.self) { profileID in
             GTKProfileRoot(profileID: profileID.wrappedValue)
         }
+        .hummingbirdCommands()
     }
 }
 

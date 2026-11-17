@@ -15,13 +15,16 @@ struct RootView: View {
                             onClose: { app.closeTab($0) },
                             onMove: { app.moveTab($0, to: $1) },
                             overviewPresented: $showingTabOverview,
+                            onReopenClosedTab: app.closedTabs.isEmpty ? nil : { app.reopenClosedTab() },
                             newTabControl: {
                                 NewTabDestinationMenu { route, title in
                                     app.openSection(route, title: title)
                                 }
                             }) { item in
             ZStack {
-                BrowserTabContentView(tab: browserTab(for: item.id))
+                if let tab = browserTab(for: item.id) {
+                    BrowserTabContentView(tab: tab)
+                }
                 if let loginTarget, loginTarget.tabID == item.id {
                     LoginSheet(pluginID: loginTarget.pluginID) { self.loginTarget = nil }
                 }
@@ -77,8 +80,13 @@ struct RootView: View {
         Binding(get: { model.activeTabID }, set: { model.activeTabID = $0 })
     }
 
-    private func browserTab(for id: UUID) -> BrowserTab {
-        model.contentTabs.first { $0.id == id } ?? model.activeTab
+    /// The tab for one of the container's items. The items are the content
+    /// tabs themselves, so there always is one; showing another tab's page
+    /// instead would mount that page twice.
+    private func browserTab(for id: UUID) -> BrowserTab? {
+        let tab = model.contentTabs.first { $0.id == id }
+        assert(tab != nil, "the tab container asked for the page of a tab that is gone")
+        return tab
     }
 }
 
@@ -211,7 +219,8 @@ struct BrowserTabStrip: View {
                 get: { app.activeTabID },
                 set: { app.activeTabID = $0 }
             ),
-            onClose: { app.closeTab($0) }
+            onClose: { app.closeTab($0) },
+            onMove: { app.moveTab($0, to: $1) }
         )
     }
 }
@@ -491,5 +500,14 @@ private struct PairedDeviceLoginSheet: View {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.title2).accessibilityLabel("\(label): \(value)")
         }
+    }
+}
+
+public extension Scene {
+    /// The app's commands for each window: the tab commands (close, new,
+    /// reopen, select and cycle tabs), in the menus where the platform has
+    /// them and as keyboard shortcuts everywhere.
+    func hummingbirdCommands() -> some Scene {
+        browserTabCommands()
     }
 }

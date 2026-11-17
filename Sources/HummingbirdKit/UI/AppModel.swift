@@ -61,8 +61,40 @@ final class AppModel {
         openInNewTab(route, title: title)
     }
 
+    /// A closed tab, for Reopen Closed Tab.
+    struct ClosedTab {
+        let title: String
+        let history: [Route]
+        let historyIndex: Int
+        /// Where it was among the content tabs.
+        let index: Int
+    }
+
+    /// Tabs closed in this window during this launch, the last closed last.
+    /// Tabs that can't outlive the moment, such as a pending sign-in, aren't
+    /// kept, as with the saved session.
+    private(set) var closedTabs: [ClosedTab] = []
+    private static let closedTabLimit = 20
+
+    /// Opens the tab closed last again where it was, with its history.
+    func reopenClosedTab() {
+        guard let closed = closedTabs.popLast() else { return }
+        let tab = BrowserTab.hummingbirdTab(
+            title: closed.title, history: closed.history, historyIndex: closed.historyIndex,
+            didChange: { [weak self] in self?.persistBrowserSession() }
+        )
+        contentTabs.insert(tab, at: min(closed.index, contentTabs.count))
+        activeTabID = tab.id
+    }
+
     func closeTab(_ id: BrowserTab.ID) {
         guard let index = contentTabs.firstIndex(where: { $0.id == id }) else { return }
+        let closing = contentTabs[index]
+        if !closing.history.isEmpty, closing.history.allSatisfy({ PersistedRoute($0) != nil }) {
+            closedTabs.append(ClosedTab(title: closing.title, history: closing.history,
+                                        historyIndex: closing.historyIndex, index: index))
+            closedTabs.removeFirst(max(0, closedTabs.count - Self.closedTabLimit))
+        }
         // Closing a sign-in tab abandons that sign-in.
         for route in contentTabs[index].history {
             if case .oauthAuthorization(let authorizationID) = route {

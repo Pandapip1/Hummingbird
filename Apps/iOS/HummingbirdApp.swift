@@ -16,10 +16,12 @@ struct HummingbirdApp: App {
         WindowGroup(for: UUID.self) { profileID in
             LaunchGate(profileID: profileID.wrappedValue)
         }
+        .hummingbirdCommands()
         #else
         WindowGroup {
             LaunchGate()
         }
+        .hummingbirdCommands()
         #endif
     }
 }

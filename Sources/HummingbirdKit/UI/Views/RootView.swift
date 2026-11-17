@@ -51,6 +51,10 @@ struct RootView: View {
             }
         }
         .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request).sheetSize() }
+        // A grayjay://plugin/ link: Add Source, with the plugin checked and shown.
+        .sheet(item: $app.incomingPluginInstall) { install in
+            AddSourceSheet(initialURL: install.configURL.absoluteString)
+        }
         .permissionPrompts(model.permissions)
         .onChange(of: plugins.pendingDirectLogin) { _, id in
             if let id { beginLogin(id); plugins.pendingDirectLogin = nil }

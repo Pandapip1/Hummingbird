@@ -100,7 +100,10 @@ let
     exec = "hummingbird-gtk %u";
     terminal = false;
     categories = [ "AudioVideo" "Video" ];
-    mimeTypes = [ "x-scheme-handler/com.eightybps.hummingbird" ];
+    # The URL schemes the app opens, from Apps/AppManifest.swift (via
+    # scripts/generate-app), the same list the Apple builds register.
+    mimeTypes = map (scheme: "x-scheme-handler/${scheme}")
+      (builtins.fromJSON (builtins.readFile ../Apps/Linux/url-schemes.json));
   };
 in
 stdenv.mkDerivation {

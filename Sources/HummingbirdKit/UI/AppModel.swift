@@ -351,9 +351,15 @@ final class AppModel {
         }
     }
 
+    /// A plugin offered by a grayjay://plugin/ link the app was opened with,
+    /// for Add Source to show (never installed without the user's go-ahead).
+    var incomingPluginInstall: IncomingPluginInstall?
+
     func handleIncomingURL(_ url: URL) {
         if let request = CredentialPairingRequest(url: url) {
             incomingCredentialPairing = request
+        } else if let link = PluginInstallLink(url) {
+            incomingPluginInstall = IncomingPluginInstall(configURL: link.configURL)
         }
     }
 
@@ -546,4 +552,10 @@ struct OpenedLocalProfile: Sendable {
             peerServiceFailure: peerServiceFailure, changes: changes
         )
     }
+}
+
+/// A plugin a link asked to install, waiting for the user in Add Source.
+struct IncomingPluginInstall: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let configURL: URL
 }

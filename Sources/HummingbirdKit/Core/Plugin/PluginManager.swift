@@ -231,8 +231,12 @@ final class PluginManager {
     /// plugin synced from another instance).
     func prepareInstall(from rawURL: String, origin: PermissionOrigin = .userAction) async throws -> InstallPreview {
         var text = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        // QR codes may wrap the config URL; accept the config URL directly or after a custom-scheme prefix.
-        if let r = text.range(of: "grayjay://plugin/") { text = String(text[r.upperBound...]).removingPercentEncoding ?? String(text[r.upperBound...]) }
+        // QR codes and links may wrap the config URL in a grayjay://plugin/ link,
+        // which must be a well-formed one (PluginInstallLink).
+        if text.lowercased().hasPrefix(PluginInstallLink.scheme + ":") {
+            guard let link = PluginInstallLink(text: text) else { throw InstallError.badURL }
+            text = link.configURL.absoluteString
+        }
         guard let url = URL(string: text), let scheme = url.scheme, ["http", "https"].contains(scheme) else { throw InstallError.badURL }
 
         let configData: Data

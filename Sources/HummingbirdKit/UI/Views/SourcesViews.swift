@@ -184,12 +184,21 @@ private struct PluginRow: View, Equatable {
 struct AddSourceSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
-    @State private var urlText = ""
+    @State private var urlText: String
+    /// Whether the sheet opened with a URL to check straight away (a link).
+    private let checksInitialURL: Bool
     @State private var scanning = false
     @State private var working = false
     @State private var errorText: String?
     @State private var preview: InstallPreview?
     @State private var hasCamera = false
+
+    /// With `initialURL` (from a link), the plugin is checked and shown at
+    /// once; it installs only when the user confirms.
+    init(initialURL: String? = nil) {
+        _urlText = State(initialValue: initialURL ?? "")
+        checksInitialURL = initialURL != nil
+    }
 
     var body: some View {
         NavigationStack {
@@ -254,6 +263,7 @@ struct AddSourceSheet: View {
             }
         }
         .sheetSize()
+        .task { if checksInitialURL, preview == nil { await prepare() } }
     }
 
     private func prepare() async {

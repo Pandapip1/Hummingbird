@@ -134,7 +134,7 @@ private struct PluginRow: View, Equatable {
         // pushing — draw the same affordance explicitly.
         let row = Button { openRoute(.plugin(plugin.id), title: plugin.name) } label: {
             HStack(spacing: 12) {
-                RemoteImage(url: plugin.iconURL).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
+                RemoteImage(url: plugin.iconURL, contentMode: .fill).frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(plugin.name).font(.headline)
                     HStack(spacing: 6) {
@@ -261,7 +261,7 @@ struct PreviewView: View {
         List {
             Section {
                 HStack(spacing: 12) {
-                    RemoteImage(url: preview.iconURL.flatMap(URL.init(string:))).frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 12))
+                    RemoteImage(url: preview.iconURL.flatMap(URL.init(string:)), contentMode: .fill).frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 12))
                     VStack(alignment: .leading) {
                         Text(c.name).font(.headline)
                         Text("v\(c.version) · \(c.author)").font(.caption).foregroundStyle(.secondary)

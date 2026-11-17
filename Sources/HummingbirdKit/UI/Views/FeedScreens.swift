@@ -246,7 +246,7 @@ struct ManageSubscriptionsView: View {
             ForEach(app.library.subscriptions) { sub in
                 Button { openRoute(.channel(sub.channelURL), title: sub.name) } label: {
                     HStack(spacing: 12) {
-                        RemoteImage(url: sub.thumbnail.flatMap(URL.init(string:))).frame(width: 40, height: 40).clipShape(Circle())
+                        RemoteImage(url: sub.thumbnail.flatMap(URL.init(string:)), contentMode: .fill).frame(width: 40, height: 40).clipShape(Circle())
                         VStack(alignment: .leading) {
                             Text(sub.name).font(.headline)
                             Text(app.plugins.plugin(sub.pluginId)?.config.name ?? "Unknown source").font(.caption).foregroundStyle(.secondary)

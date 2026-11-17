@@ -29,6 +29,15 @@ enum AddressInput {
         return url
     }
 
+    /// Whether `text` names its scheme (`https://…`), so it is certainly
+    /// meant as a link. Scheme-less input that merely looks like a host
+    /// ("node.js", "README.md") may just as well be a search.
+    static func hasExplicitScheme(_ text: String) -> Bool {
+        let input = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let separator = input.range(of: "://") else { return false }
+        return isScheme(input[..<separator.lowerBound])
+    }
+
     private static func isWebScheme(_ scheme: String?) -> Bool {
         guard let scheme = scheme?.lowercased() else { return false }
         return scheme == "http" || scheme == "https"

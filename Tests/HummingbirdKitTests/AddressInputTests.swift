@@ -21,6 +21,18 @@ final class AddressInputTests: XCTestCase {
         XCTAssertEqual(AddressInput.url(from: "grayjay://plugin/x")?.absoluteString, "grayjay://plugin/x")
     }
 
+    /// Host-shaped words are tried as links, but only input with a scheme is
+    /// certainly a link; the rest is searched for when no source takes it.
+    func testOnlyExplicitSchemesAreCertainlyLinks() {
+        for text in ["node.js", "vue.js", "README.md", "example.com"] {
+            XCTAssertNotNil(AddressInput.url(from: text), text)
+            XCTAssertFalse(AddressInput.hasExplicitScheme(text), text)
+        }
+        XCTAssertTrue(AddressInput.hasExplicitScheme("https://example.com"))
+        XCTAssertTrue(AddressInput.hasExplicitScheme(" grayjay://plugin/x "))
+        XCTAssertFalse(AddressInput.hasExplicitScheme("what is ://"))
+    }
+
     func testSearchesStaySearches() {
         for text in ["foo bar", "what is a.b", "foo", "3.14", "v1.2", "e.g.", "a.b",
                      "me@example.com", "", "   ", "https://", "-bad-.com", "http://no host"] {

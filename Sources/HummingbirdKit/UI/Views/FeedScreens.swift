@@ -136,7 +136,9 @@ struct SearchView: View {
         app.searchHistory.record(text)
         suggestions = []
         // An address (with or without https://) opens in the source that
-        // recognises it. Hummingbird never opens arbitrary web pages.
+        // recognises it. Hummingbird never opens arbitrary web pages. Input
+        // that only looks like a host ("node.js") and that no source
+        // recognises is searched for instead.
         if let address = AddressInput.url(from: text) {
             let link = address.absoluteString
             let routes = await app.platform.recognizedRoutes(for: link)
@@ -146,11 +148,11 @@ struct SearchView: View {
                 openRoute(route)
             } else if routes.count > 1 {
                 pendingURL = link
-            } else {
+            } else if AddressInput.hasExplicitScheme(text) {
                 // Stays until the field changes, so it can't be missed.
                 notice = "None of your sources recognise that link."
             }
-            return
+            if !routes.isEmpty || AddressInput.hasExplicitScheme(text) { return }
         }
         let f = app.makeFeed()
         feed = f

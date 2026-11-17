@@ -180,6 +180,7 @@ private struct VideoBody: View {
                 if !statsLine.isEmpty {
                     Text(statsLine).font(.footnote).foregroundStyle(.secondary).lineLimit(nil)
                 }
+                DownloadHealthSection(model: player)
 
                 if let author = item.author, !author.url.isEmpty {
                     Button { openRoute(.channel(author.url), title: author.name) } label: {
@@ -669,5 +670,37 @@ struct PlaylistPicker: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         }
         .presentationDetents([.medium])
+    }
+}
+
+/// Download health of the playing video, per track: how fast bytes arrive
+/// against how fast the media plays, how far the download is ahead of the
+/// playhead, and the last upstream problem. Collapsed by default; it shows
+/// why playback pauses (the playhead caught up with a slow or failing
+/// download) while it happens.
+@MainActor
+struct DownloadHealthSection: View {
+    let model: PlayerModel
+
+    var body: some View {
+        let rows = model.downloadHealth
+        if !rows.isEmpty {
+            DisclosureGroup("Download health") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(rows) { row in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.title).font(.footnote.weight(.semibold))
+                            Text(row.summary).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            if let issue = row.lastIssue {
+                                Text(issue).font(.caption).foregroundStyle(row.issueIsRecent ? .orange : .secondary)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                .padding(.top, 4)
+            }
+            .font(.footnote)
+        }
     }
 }

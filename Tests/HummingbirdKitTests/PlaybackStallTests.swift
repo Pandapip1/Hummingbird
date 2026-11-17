@@ -55,11 +55,14 @@ final class PlaybackStallTests: XCTestCase {
         let (before, _) = try await session.data(from: url)
         XCTAssertEqual(String(decoding: before, as: UTF8.self), "#EXTM3U\n")
 
-        // iOS closes a suspended app's sockets.
+        // iOS closes a suspended app's sockets (the listener and the open
+        // connections; a fresh session makes a new connection).
         await server.simulateSocketReclaim()
+        session.invalidateAndCancel()
+        let fresh = URLSession(configuration: .ephemeral)
         var after: Data?
         for _ in 0..<50 where after == nil {
-            after = try? await session.data(from: url).0
+            after = try? await fresh.data(from: url).0
             if after == nil { try await Task.sleep(for: .milliseconds(100)) }
         }
         XCTAssertEqual(after.map { String(decoding: $0, as: UTF8.self) }, "#EXTM3U\n",

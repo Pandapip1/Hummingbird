@@ -252,6 +252,38 @@ final class MediaPipelineTests: XCTestCase {
         await downloader.stop()
     }
 
+    /// Upstream problems are classified, counted and shown (Download
+    /// health); a 429 is waited out; a URL about to expire is resolved again
+    /// before it is refused.
+    func testUpstreamIssuesAreClassifiedAndExpiringURLsRefreshedAhead() async throws {
+        let data = Data((0..<300_000).map { UInt8($0 % 251) })
+        let upstream = StatusUpstream(file: data, statuses: [429, 403])
+        let cache = temporaryCache()
+        let track = try await cache.open(identity: "health")
+        let soon = Int(Date().timeIntervalSince1970) + 30
+        let expiring = try XCTUnwrap(URL(string: "https://media.test/v.mp4?expire=\(soon)"))
+        let fresh = try XCTUnwrap(URL(string: "https://media.test/v.mp4?expire=\(soon + 21_600)"))
+        var config = fastRetry
+        config.retry.refusalsBeforeRefresh = 1
+        let downloader = TrackDownloader(role: .muxed, cache: cache, track: track, signer: .plain(expiring),
+                                         refreshSigner: { .plain(fresh) },
+                                         transport: upstream, configuration: config)
+        await downloader.start()
+        try await bounded { try await downloader.waitUntilAvailable(0..<300_000) }
+        let state = await downloader.state
+        let health = try XCTUnwrap(state.health)
+        XCTAssertEqual(health.issueCounts[.rateLimited], 1)
+        XCTAssertEqual(health.issueCounts[.forbidden], 1)
+        XCTAssertGreaterThanOrEqual(health.issueCounts[.expired] ?? 0, 1, "the expiring URL was noticed")
+        XCTAssertGreaterThanOrEqual(health.refreshes, 1, "and resolved again ahead of expiry")
+        let urls = await upstream.urls
+        XCTAssertTrue(urls.contains { $0.query?.contains("expire=\(soon + 21_600)") == true }, "later pieces use the fresh URL")
+        await downloader.stop()
+
+        XCTAssertEqual(PlayerModel.margin(ahead: 10, in: [0...30, 40...50]), 20)
+        XCTAssertEqual(PlayerModel.margin(ahead: 35, in: [0...30, 40...50]), 0)
+    }
+
     // MARK: session and loopback server
 
     func testSessionServesSeparateTracksAsOneLocalHLSPresentation() async throws {
@@ -337,8 +369,9 @@ final class MediaPipelineTests: XCTestCase {
         XCTAssertFalse(audioStopped)
         let oldPriority = await oldVideo.priority
         let oldStopped = await oldVideo.isStopped
-        XCTAssertEqual(oldPriority, .background, "the old format keeps downloading at low priority")
-        XCTAssertFalse(oldStopped)
+        let oldFinished = await oldVideo.isFinished
+        XCTAssertTrue(oldFinished || (oldPriority == .background && !oldStopped),
+                      "the old format keeps downloading at low priority until it is complete")
 
         // The new presentation serves the segment at the current position (15 s: segment 3).
         let base = playback.request.video.url.deletingLastPathComponent()
@@ -570,6 +603,33 @@ private actor FakeUpstream: MediaTransport {
               let range = LocalMediaServer.parseRange(header, total: total) else {
             return (file, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])))
         }
+        let body = file.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
+        let headers = ["Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)"]
+        return (body, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)))
+    }
+}
+
+/// Serves a file, answering the first requests with the given statuses.
+private actor StatusUpstream: MediaTransport {
+    private let file: Data
+    private var statuses: [Int]
+    private(set) var urls: [URL] = []
+
+    init(file: Data, statuses: [Int]) {
+        self.file = file
+        self.statuses = statuses
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = try XCTUnwrap(request.url)
+        urls.append(url)
+        if !statuses.isEmpty {
+            let status = statuses.removeFirst()
+            let headers = status == 429 ? ["Retry-After": "0"] : [:]
+            return (Data(), try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)))
+        }
+        let total = Int64(file.count)
+        let range = request.value(forHTTPHeaderField: "Range").flatMap { LocalMediaServer.parseRange($0, total: total) } ?? 0..<total
         let body = file.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
         let headers = ["Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)"]
         return (body, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)))

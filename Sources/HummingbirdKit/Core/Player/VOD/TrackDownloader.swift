@@ -110,6 +110,13 @@ actor TrackDownloader {
     private let indexHint: ClosedRange<Int64>?
     private var signer: UpstreamRequestSigner
     private let refreshSigner: (@Sendable () async throws -> UpstreamRequestSigner)?
+    // MARK: upstream health
+    private var health = UpstreamHealth()
+    /// Large pieces in a row that arrived slower than the media plays.
+    private var consecutiveThrottled = 0
+    private var lastThrottleRefresh: ContinuousClock.Instant?
+    /// Wait the server asked for (429 Retry-After).
+    private var retryAfter: Double?
     private var refreshTask: Task<UpstreamRequestSigner, Error>?
     private var consecutiveRefusals = 0
 
@@ -240,8 +247,37 @@ actor TrackDownloader {
             stages: reportsTranscoded
                 ? [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight),
                    .transcode: MediaStageState(condition: .complete, completed: completed)]
-                : [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight)]
+                : [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight)],
+            health: currentHealth
         )
+    }
+
+    private var currentHealth: UpstreamHealth {
+        var health = self.health
+        let duration = (layout.flatMap { layout -> Double? in
+            if case .indexed(let indexed) = layout { return indexed.timeline.duration }
+            return nil
+        }) ?? declaredDuration
+        if let totalBytes, let duration, duration > 0 { health.mediaRate = Double(totalBytes) / duration }
+        return health
+    }
+
+    /// Logs and counts an upstream problem (`upstream_issue`).
+    private func record(_ kind: UpstreamIssueKind, host: String?, detail: String) {
+        health.lastIssue = kind
+        health.lastIssueAt = Date()
+        health.lastIssueDetail = detail
+        health.issueCounts[kind, default: 0] += 1
+        Logger.mediaCache.notice("upstream_issue kind=\(kind.rawValue, privacy: .public) role=\(self.role.rawValue, privacy: .public) host=\(LogRedaction.redact(host ?? ""), privacy: .public) detail=\(detail, privacy: .public)")
+        OSSignposter.mediaCache.emitEvent("UpstreamIssue", "kind=\(kind.rawValue, privacy: .public) role=\(self.role.rawValue, privacy: .public)")
+    }
+
+    /// A URL that says when it expires (`expire=` unix time, as YouTube's do).
+    static func expiry(of url: URL?) -> Date? {
+        guard let url, let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "expire" })?.value,
+              let seconds = TimeInterval(value) else { return nil }
+        return Date(timeIntervalSince1970: seconds)
     }
 
     var knownTotalBytes: Int64? { totalBytes }
@@ -494,6 +530,7 @@ actor TrackDownloader {
                         do {
                             try await refreshedSigner()
                             consecutiveRefusals = 0
+                            Logger.mediaCache.notice("source_refreshed role=\(self.role.rawValue, privacy: .public) reason=\(failure.description, privacy: .public)")
                             continue
                         } catch is CancellationError {
                             throw CancellationError()
@@ -502,7 +539,8 @@ actor TrackDownloader {
                         }
                     }
                 }
-                let delay = configuration.retry.delay(afterAttempt: attempt)
+                var delay = configuration.retry.delay(afterAttempt: attempt)
+                if let wait = retryAfter { delay = max(delay, wait); retryAfter = nil }
                 condition = .waitingForNetwork(retryAt: Date().addingTimeInterval(delay), attempt: attempt,
                                                reason: failure.description)
                 publish()
@@ -512,8 +550,31 @@ actor TrackDownloader {
         }
     }
 
+    /// Tracks the transfer rate. A source that keeps delivering large pieces
+    /// slower than the media plays is throttled: the playhead will catch up.
+    /// Its URL is resolved again (at most every two minutes); a fresh URL is
+    /// usually not paced.
+    private func noteThroughput(_ rate: Double, bytes: Int, host: String?) async {
+        guard bytes >= 256 * 1_024, rate > 0 else { return }
+        health.throughput = health.throughput == 0 ? rate : health.throughput * 0.7 + rate * 0.3
+        guard let mediaRate = currentHealth.mediaRate, mediaRate > 0 else { return }
+        if rate < mediaRate * 1.5 {
+            consecutiveThrottled += 1
+            record(.throttled, host: host, detail: "kbps=\(Int(rate * 8 / 1_000)) media_kbps=\(Int(mediaRate * 8 / 1_000))")
+        } else {
+            consecutiveThrottled = 0
+        }
+        guard consecutiveThrottled >= 4, refreshSigner != nil,
+              lastThrottleRefresh.map({ $0.duration(to: .now) > .seconds(120) }) ?? true else { return }
+        consecutiveThrottled = 0
+        lastThrottleRefresh = .now
+        Logger.mediaCache.notice("source_refreshed role=\(self.role.rawValue, privacy: .public) reason=throttled")
+        try? await refreshedSigner()
+    }
+
     /// One refresh at a time for every piece that hit an expired URL.
     private func refreshedSigner() async throws {
+        health.refreshes += 1
         if let refreshTask {
             signer = try await refreshTask.value
             return
@@ -553,15 +614,27 @@ actor TrackDownloader {
         let started = ContinuousClock.now
         var outcome = "failed"
         defer { signposter.endInterval("VODPiece", signpost, "\(outcome, privacy: .public)") }
-        let request: URLRequest
+        var request: URLRequest
         do {
             request = try await signer.sign(piece)
+            // Resolve the source again before its URL expires, not after a
+            // refused request (which would stall the player meanwhile).
+            if let expiry = Self.expiry(of: request.url), expiry.timeIntervalSinceNow < 90, refreshSigner != nil {
+                record(.expired, host: request.url?.host, detail: "expires in \(Int(expiry.timeIntervalSinceNow)) s; refreshing ahead")
+                try await refreshedSigner()
+                request = try await signer.sign(piece)
+            }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             outcome = "signing"
             throw PieceFailure.signing(String(describing: type(of: error)))
         }
+        // A piece the player is waiting for must not sit on a stuck
+        // connection for the session's 20 s: with no bytes for 6 s it is
+        // abandoned and retried (the timeout is between bytes, not overall).
+        if waiters.values.contains(where: { $0.range.overlaps(piece) }) { request.timeoutInterval = 6 }
+        var transferStarted = ContinuousClock.now
         let data: Data
         let response: URLResponse
         do {
@@ -570,6 +643,7 @@ actor TrackDownloader {
             if requested == .background { backgroundTickets.insert(ticket) }
             let admitted = await scheduler?.admit(requested, ticket: ticket) ?? requested
             backgroundTickets.remove(ticket)
+            transferStarted = .now
             do {
                 (data, response) = try await transport.data(for: request)
                 await scheduler?.finish(admitted)
@@ -581,6 +655,9 @@ actor TrackDownloader {
             throw CancellationError()
         } catch let error as URLError {
             outcome = "network"
+            let reset: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .cannotConnectToHost, .secureConnectionFailed]
+            record(reset.contains(error.code) ? .reset : .network, host: request.url?.host,
+                   detail: "urlerror \(error.code.rawValue) after \(Int(transferStarted.duration(to: .now).components.seconds)) s")
             throw PieceFailure.network("\(error.code.rawValue)")
         } catch is CancellationError {
             throw CancellationError()
@@ -595,12 +672,26 @@ actor TrackDownloader {
             setTotal(piece.lowerBound)
             return
         }
-        guard (200..<300).contains(http.statusCode) else { throw PieceFailure.status(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            let status = http.statusCode
+            let kind: UpstreamIssueKind = switch status {
+            case 403: .forbidden
+            case 401, 404, 410: .expired
+            case 429: .rateLimited
+            case 500...: .server
+            default: .network
+            }
+            if status == 429 { retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? 10 }
+            let expires = Self.expiry(of: request.url).map { " url_expires_in=\(Int($0.timeIntervalSinceNow))" } ?? ""
+            record(kind, host: request.url?.host, detail: "http \(status) bytes=\(piece.count)\(expires)")
+            throw PieceFailure.status(status)
+        }
         let accepted = try accept(data, for: piece, response: http)
         try await store(accepted.data, at: accepted.offset)
-        let elapsed = started.duration(to: .now)
+        let elapsed = transferStarted.duration(to: .now)
         let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         let rate = seconds > 0 ? Double(data.count) / seconds : 0
+        await noteThroughput(rate, bytes: data.count, host: request.url?.host)
         outcome = "ok bytes=\(data.count) kbps=\(Int(rate * 8 / 1_000))"
         if data.count >= 256 * 1_024, rate < 128 * 1_024 {
             Logger.mediaCache.notice("slow_piece role=\(self.role.rawValue, privacy: .public) host=\(LogRedaction.redact(request.url?.host ?? ""), privacy: .public) bytes=\(data.count) seconds=\(seconds)")

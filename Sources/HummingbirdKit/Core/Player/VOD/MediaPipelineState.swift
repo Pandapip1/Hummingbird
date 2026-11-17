@@ -161,6 +161,8 @@ struct MediaTrackPipelineState: Sendable, Equatable {
     var stages: [MediaPipelineStage: MediaStageState] = [:]
     /// Media times of discontinuities (ad breaks, encoder restarts).
     var discontinuities: [Double] = []
+    /// Upstream health of the track's download (nil for local-only tracks).
+    var health: UpstreamHealth?
 
     func stage(_ stage: MediaPipelineStage) -> MediaStageState { stages[stage] ?? MediaStageState() }
 
@@ -214,5 +216,45 @@ struct MediaPipelineSnapshot: Sendable, Equatable {
             guard let range = track.timeRanges(for: stage).first(where: { $0.contains(time) }) else { return 0 }
             return range.upperBound - time
         }.min() ?? 0
+    }
+}
+
+/// What went wrong with an upstream request, as logged (`upstream_issue`)
+/// and shown in the player's Download health.
+enum UpstreamIssueKind: String, Sendable, CaseIterable {
+    /// Bytes arrive, but slower than the track plays: the source paces this
+    /// URL (YouTube does when its throttling parameter was not deciphered).
+    case throttled
+    /// 403: the URL is refused (signature or access).
+    case forbidden
+    /// 404/410 or an expiry time in the past: the URL is no longer valid.
+    case expired
+    /// The connection was reset or timed out mid-request.
+    case reset
+    /// 429: too many requests.
+    case rateLimited = "rate_limited"
+    /// 5xx.
+    case server
+    /// Any other network failure (offline, DNS).
+    case network
+}
+
+/// A track's upstream health: how fast bytes arrive and what went wrong last.
+struct UpstreamHealth: Sendable, Equatable {
+    /// Recent transfer rate (bytes per second, transfer time only).
+    var throughput: Double = 0
+    /// The track's average bitrate (bytes per second), once known.
+    var mediaRate: Double?
+    var lastIssue: UpstreamIssueKind?
+    var lastIssueAt: Date?
+    var lastIssueDetail: String?
+    var issueCounts: [UpstreamIssueKind: Int] = [:]
+    /// Times the source URL was resolved again (expired, refused, throttled, or proactively).
+    var refreshes = 0
+
+    /// Downloading at least this many times faster than the media plays.
+    var speedFactor: Double? {
+        guard let mediaRate, mediaRate > 0, throughput > 0 else { return nil }
+        return throughput / mediaRate
     }
 }

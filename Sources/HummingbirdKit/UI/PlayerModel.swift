@@ -213,11 +213,51 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         pictureInPictureState = engine.pictureInPictureState
     }
 
+    // MARK: download health
+
+    struct DownloadHealthRow: Identifiable, Equatable {
+        var id: String
+        var title: String
+        var summary: String
+        var lastIssue: String?
+        var issueIsRecent: Bool
+    }
+
+    /// Seconds downloaded without a gap from the playhead on, per track.
+    nonisolated static func margin(ahead position: Double, in ranges: [ClosedRange<Double>]) -> Double {
+        guard let current = ranges.first(where: { $0.contains(position) || ($0.lowerBound > position && $0.lowerBound - position < 0.5) }) else { return 0 }
+        return max(0, current.upperBound - position)
+    }
+
+    var downloadHealth: [DownloadHealthRow] {
+        pipeline.tracks.compactMap { track -> DownloadHealthRow? in
+            guard let health = track.health else { return nil }
+            let margin = Self.margin(ahead: playbackTime, in: track.timeRanges(for: .download))
+            var parts: [String] = []
+            parts.append(health.throughput > 0 ? "\(Int(health.throughput * 8 / 1_000)) kbps" : "no transfer yet")
+            if let media = health.mediaRate { parts.append("media \(Int(media * 8 / 1_000)) kbps") }
+            if let factor = health.speedFactor { parts.append(String(format: "%.1f\u{00D7} realtime", factor)) }
+            parts.append(track.isComplete ? "complete" : String(format: "%.0f s ahead", margin))
+            if health.refreshes > 0 { parts.append("\(health.refreshes) refreshes") }
+            let issue = health.lastIssue.map { kind -> String in
+                let age = health.lastIssueAt.map { Int(Date().timeIntervalSince($0)) }.map { " \($0) s ago" } ?? ""
+                return "Last issue: \(kind.rawValue)\(age)\(health.lastIssueDetail.map { " (\($0))" } ?? "")"
+            }
+            let recent = health.lastIssueAt.map { Date().timeIntervalSince($0) < 30 } ?? false
+            return DownloadHealthRow(id: track.role.rawValue, title: track.role.rawValue.capitalized,
+                                     summary: parts.joined(separator: " \u{00B7} "), lastIssue: issue, issueIsRecent: recent)
+        }
+    }
+
     // MARK: real state
 
     /// The engine's state is the truth: a pause the system makes (an
     /// interruption, a route change, a torn-down view) shows as paused.
     private func activityChanged(_ activity: PlaybackActivity) {
+        let margins = pipeline.tracks.map { track in
+            "\(track.role.rawValue)=\(String(format: "%.1f", Self.margin(ahead: playbackTime, in: track.timeRanges(for: .download))))"
+        }.joined(separator: ",")
+        Logger.player.notice("playback_activity state=\(String(describing: activity), privacy: .public) position=\(self.playbackTime) margin=\(margins, privacy: .public)")
         let started = activity.wantsToPlay && !isPlaying
         isPlaying = activity.wantsToPlay
         if started { onStartedPlaying?() }
@@ -637,9 +677,14 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             }
             guard generation == playGeneration, self.backend === backend else { throw MediaBackendLoadError.superseded }
             try await backend.load(playback.request, resumeAt: start, autoplay: autoplay)
-            guard generation == playGeneration, self.backend === backend else {
-                if self.backend !== backend { backend.stop() }
-                else { await restoreAfterCancel(generation, on: backend, resumeAt: resumeAt, autoplay: autoplay) }
+            // Installed in the player: unless the engine was torn down or the
+            // user cancelled this switch, it finishes (it is what plays).
+            guard self.backend === backend else {
+                backend.stop()
+                throw MediaBackendLoadError.superseded
+            }
+            if cancelledSwitchGeneration == generation {
+                await restoreAfterCancel(generation, on: backend, resumeAt: resumeAt, autoplay: autoplay)
                 throw MediaBackendLoadError.superseded
             }
             startup?.mark(.playerLoaded)

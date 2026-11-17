@@ -1,3 +1,4 @@
+import Foundation
 import os
 
 /// Hummingbird's unified logging subsystem. Every logger and signposter in
@@ -57,4 +58,62 @@ extension OSSignposter {
     static let sync = OSSignposter(subsystem: Diagnostics.subsystem, category: "sync")
     /// Main-thread stalls (`RenderStall` intervals, from `MainThreadWatchdog`).
     static let performance = OSSignposter(subsystem: Diagnostics.subsystem, category: "performance")
+}
+
+/// Removes secrets, network addresses, home-directory names and caller-supplied
+/// terms (what the user typed) from free text such as plugin and service error
+/// messages, so it can be logged as public data and still be readable in the
+/// persisted log. The rules are regex literals: a malformed rule fails to
+/// compile instead of silently redacting nothing. It errs towards removing too
+/// much: a credential header's value is dropped to the end of the line.
+enum LogRedaction {
+    static func redact(_ text: String, removing terms: [String] = [], limit: Int = 500) -> String {
+        var s = text
+        for term in expanded(terms) {
+            s = s.replacingOccurrences(of: term, with: "<query>", options: [.caseInsensitive, .diacriticInsensitive])
+        }
+        // Query strings and fragments carry tokens and signatures, with or without a scheme.
+        s.replace(#/(https?:\/\/[^\s?#"'<>]+)[?#][^\s"'<>]*/#) { "\($0.output.1)?<redacted>" }
+        s.replace(#/(?i)\b((?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s?#"'<>]*)?)\?[^\s"'<>]+/#) { "\($0.output.1)?<redacted>" }
+        // Credential headers: the whole value, whatever its scheme or number of cookies.
+        s.replace(#/(?i)\b((?:set-)?cookie|(?:proxy-)?authorization|x-api-key)("?\s*[:=]\s*"?)[^\r\n"]*/#) {
+            "\($0.output.1)\($0.output.2)<redacted>"
+        }
+        s.replace(#/(?i)\b(bearer|basic|oauth)\s+[A-Za-z0-9._~+\/=-]+/#) { "\($0.output.1) <redacted>" }
+        // JSON web tokens.
+        s.replace(#/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/#, with: "<redacted>")
+        // name=value and "name": "value" pairs whose name says they are secret.
+        s.replace(#/(?i)("?[a-z0-9_-]*(?:token|key|secret|password|passwd|auth|session|cookie|signature|integrity|credential)[a-z0-9_-]*"?\s*[:=]\s*"?)[^"&\s,;}]+/#) { "\($0.output.1)<redacted>" }
+        s.replace(#/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/#, with: "<email>")
+        // Home directories name the person.
+        s.replace(#/(\/(?:Users|home))\/[^\/\s"']+/#) { "\($0.output.1)/<user>" }
+        s.replace(#/(?i)\b([a-z]:\\Users)\\[^\\\s"']+/#) { "\($0.output.1)\\<user>" }
+        s.replace(#/\b(?:\d{1,3}\.){3}\d{1,3}\b/#, with: "<ip>")
+        // IPv6: full form (four or more groups, so clock times are left alone), "a::b" and a bare "::1".
+        s.replace(#/(?i)\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b/#, with: "<ip>")
+        s.replace(#/(?i)\b(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,5})?/#, with: "<ip>")
+        s.replace(#/(?i)(^|[\s\[(=,"'\/])::(?:ffff:)?[0-9a-f]{0,4}(?::[0-9a-f]{1,4})*/#) { "\($0.output.1)<ip>" }
+        // Long opaque values (hex IDs, base64 tokens).
+        s.replace(#/[A-Za-z0-9+_-]{32,}={0,2}/#, with: "<redacted>")
+        if s.count > limit { s = String(s.prefix(limit)) + "…" }
+        return s
+    }
+
+    /// Each term as typed, URL-encoded both ways, and its longer words on their own.
+    private static func expanded(_ terms: [String]) -> [String] {
+        var out: [String] = []
+        for term in terms {
+            let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+            // One- and two-letter terms would blank out ordinary words.
+            guard trimmed.count >= 3 else { continue }
+            out.append(trimmed)
+            if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                out.append(encoded)
+                out.append(encoded.replacingOccurrences(of: "%20", with: "+"))
+            }
+            out.append(contentsOf: trimmed.split(whereSeparator: \.isWhitespace).map(String.init).filter { $0.count >= 3 })
+        }
+        // Longest first, so a phrase is replaced before its words.
+        return Array(Set(out)).sorted { $0.count > $1.count }
+    }
 }

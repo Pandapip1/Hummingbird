@@ -10,8 +10,12 @@ struct ChannelView: View {
     @State private var loadState: LoadState = .loading
     @State private var feed: FeedModel?
     @State private var caps = ResultCapabilities()
-    @State private var type: String?
-    @State private var order: String?
+    /// What the feed shows. Changes only once the plugin has delivered it.
+    @State private var selection = ChannelFeedSelection()
+    /// A type or sort the feed is loading; the controls are pending meanwhile.
+    @State private var pending: ChannelFeedSelection?
+    /// Identifies the latest type/sort request; an older one finishing never settles the controls.
+    @State private var requestToken = 0
     @State private var expanded = false
 
     enum LoadState { case loading, failed(String), loaded(PluginRuntime, ChannelInfo) }
@@ -33,38 +37,50 @@ struct ChannelView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header(rt, info)
-                if caps.types.count > 1 || !caps.sorts.isEmpty {
+                let pickerTypes = ChannelFeedPlan.pickerTypes(advertised: caps.types)
+                if pickerTypes.count > 2 || !caps.sorts.isEmpty {
                     HStack {
-                        if caps.types.count > 1 {
-                            Picker("Type", selection: Binding(get: { type ?? caps.types.first ?? "" }, set: { type = $0; Task { await reloadFeed(rt, info) } })) {
-                                ForEach(caps.types, id: \.self) { Text(Self.label(for: $0)).tag($0) }
+                        if pickerTypes.count > 2 {
+                            Picker("Type", selection: Binding(
+                                get: { selection.type },
+                                set: { type in
+                                    var next = selection
+                                    next.type = type
+                                    guard next != selection else { return }
+                                    Task { await apply(next, rt, info) }
+                                }
+                            )) {
+                                ForEach(pickerTypes, id: \.self) { Text(Self.label(for: $0)).tag($0) }
                             }
                             .pickerStyle(.menu)
+                            .disabled(pending != nil)
                         }
                         Spacer()
+                        if pending != nil { ProgressView() }
                         if !caps.sorts.isEmpty {
                             Menu {
                                 ForEach(caps.sorts, id: \.self) { s in
-                                    Button(Self.label(for: s)) { order = s; Task { await reloadFeed(rt, info) } }
+                                    Button {
+                                        var next = selection
+                                        next.order = s
+                                        guard next != selection else { return }
+                                        Task { await apply(next, rt, info) }
+                                    } label: {
+                                        if s == selection.order {
+                                            Label(Self.label(for: s), systemImage: "checkmark")
+                                        } else {
+                                            Text(Self.label(for: s))
+                                        }
+                                    }
                                 }
-                            } label: { Label(order.map(Self.label(for:)) ?? "Sort", systemImage: "arrow.up.arrow.down") }
+                            } label: { Label(selection.order.map(Self.label(for:)) ?? "Sort", systemImage: "arrow.up.arrow.down") }
+                            .disabled(pending != nil)
                         }
                     }
                 }
 
                 if let feed {
-                    ContentPreviewGrid(items: feed.items) { _ in
-                        await feed.loadMore()
-                    }
-                    ForEach(feed.messages, id: \.self) {
-                        Label($0, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    }
-                    if feed.isLoading {
-                        ProgressView().frame(maxWidth: .infinity)
-                    }
-                    LoadMoreButton(feed: feed)
+                    FeedGrid(feed: feed)
                 }
             }
             .padding()
@@ -119,24 +135,72 @@ struct ChannelView: View {
         loadState = .loading
         do {
             let (rt, info) = try await app.platform.channel(url: url)
-            caps = await app.platform.channelCapabilities(rt)
-            type = caps.types.first
-            order = nil
+            var capsFailure: SourceFailure?
+            do { caps = try await app.platform.channelCapabilities(rt) }
+            catch {
+                caps = ResultCapabilities()
+                capsFailure = capabilitiesFailure(rt, error)
+            }
+            selection = ChannelFeedSelection()
             loadState = .loaded(rt, info)
-            await reloadFeed(rt, info)
+            await apply(selection, rt, info)
+            // Without capabilities the feed is the plugin's default and the type and
+            // sort controls are missing; say so, and offer to ask again.
+            if let capsFailure, let feed {
+                feed.record(capsFailure) { await retryCapabilities(rt, info) }
+            }
         } catch { loadState = .failed(error.localizedDescription) }
     }
 
-    private func reloadFeed(_ rt: PluginRuntime, _ info: ChannelInfo) async {
+    private func capabilitiesFailure(_ rt: PluginRuntime, _ error: Error) -> SourceFailure {
+        .record(pluginID: rt.id, sourceKey: "\(rt.id)|capabilities", label: rt.config.name,
+                message: error.localizedDescription, stage: .capabilities)
+    }
+
+    private func retryCapabilities(_ rt: PluginRuntime, _ info: ChannelInfo) async -> SourceFailure? {
+        do {
+            caps = try await app.platform.channelCapabilities(rt)
+        } catch {
+            return capabilitiesFailure(rt, error)
+        }
+        // The default feed may now be several types merged.
+        await apply(ChannelFeedSelection(), rt, info)
+        return nil
+    }
+
+    /// Loads `next`; the controls show it only once it has loaded. On failure they
+    /// keep the previous choice, whose items stay on screen under the failure, and
+    /// that failure's Retry comes back here, so a retried change is applied (or
+    /// not) the same way. Only the latest request settles `pending`.
+    private func apply(_ next: ChannelFeedSelection, _ rt: PluginRuntime, _ info: ChannelInfo) async {
+        requestToken &+= 1
+        let token = requestToken
+        pending = next
+        let outcome = await reloadFeed(rt, info, next)
+        guard token == requestToken else { return }
+        if outcome == .refreshed { selection = next }
+        pending = nil
+    }
+
+    @discardableResult
+    private func reloadFeed(_ rt: PluginRuntime, _ info: ChannelInfo, _ choice: ChannelFeedSelection) async -> FeedReloadOutcome {
         let f = feed ?? app.makeFeed()
         feed = f
-        let source = app.platform.channelSource(runtime: rt, url: info.url.isEmpty ? url : info.url,
-                                                type: type == "MIXED" ? nil : type, order: order)
-        await f.reload(sources: [source])
+        let channelURL = info.url.isEmpty ? url : info.url
+        let types = ChannelFeedPlan.types(advertised: caps.types, selection: choice.type)
+        let sources = types.map { type in
+            app.platform.channelSource(
+                runtime: rt, url: channelURL, type: type, order: choice.order,
+                label: types.count > 1 ? "\(rt.config.name) (\(Self.label(for: type ?? ChannelFeedPlan.all)))" : nil
+            )
+        }
+        return await f.reload(sources: sources, order: ChannelFeedPlan.feedOrder(sourceCount: sources.count, sort: choice.order),
+                              retryAll: { await apply(choice, rt, info) })
     }
 
     static func label(for token: String) -> String {
         switch token {
+        case ChannelFeedPlan.all: return "All"
         case "VIDEOS": return "Videos"
         case "STREAMS": return "Streams"
         case "LIVE": return "Live"
@@ -152,6 +216,42 @@ struct ChannelView: View {
     }
 }
 
+/// The type and sort a channel feed shows.
+struct ChannelFeedSelection: Equatable {
+    var type = ChannelFeedPlan.all
+    var order: String?
+}
+
+/// Which content types make up a channel's feed.
+enum ChannelFeedPlan {
+    /// The picker's "All": the channel's main feed.
+    static let all = ""
+
+    /// Types to load for `selection`; nil asks the plugin for its default feed.
+    /// "All" uses the plugin's mixed feed when it has one. Otherwise it merges the
+    /// types a channel's main feed is expected to hold, videos and streams (live
+    /// only when there are no streams), and falls back to the first advertised
+    /// type when the plugin offers none of those (posts or shorts only).
+    static func types(advertised: [String], selection: String) -> [String?] {
+        if selection != all { return [selection == "MIXED" ? nil : selection] }
+        if advertised.isEmpty || advertised.contains("MIXED") { return [nil] }
+        var main = advertised.filter { $0 == "VIDEOS" || $0 == "STREAMS" }
+        if !advertised.contains("STREAMS"), advertised.contains("LIVE") { main.append("LIVE") }
+        return main.isEmpty ? [advertised[0]] : main
+    }
+
+    /// Picker entries: "All" first, then each advertised type to narrow to.
+    static func pickerTypes(advertised: [String]) -> [String] {
+        [all] + advertised.filter { $0 != "MIXED" }
+    }
+
+    /// Several types merge into one newest-first timeline unless the user picked a
+    /// sort other than chronological, which only the plugin can apply.
+    static func feedOrder(sourceCount: Int, sort: String?) -> FeedOrder {
+        sourceCount > 1 && (sort == nil || sort == "CHRONOLOGICAL") ? .newestFirst : .interleaved
+    }
+}
+
 // MARK: - Remote playlist
 
 @MainActor
@@ -163,12 +263,13 @@ struct PlaylistView: View {
     @State private var feed: FeedModel?
     @State private var error: String?
     @State private var saving = false
+    @State private var saveNote: String?
 
     var body: some View {
         Group {
             if let error { LoadingErrorView(message: error) { Task { await load() } } }
             else if let feed {
-                List {
+                FeedList(feed: feed, leadingIsEmpty: header == nil) {
                     if let header {
                         Section {
                             VStack(alignment: .leading, spacing: 6) {
@@ -178,17 +279,12 @@ struct PlaylistView: View {
                                 Button { Task { await save(feed, header) } } label: {
                                     Label(saving ? "Saving…" : "Save to library", systemImage: "square.and.arrow.down")
                                 }.buttonStyle(.bordered).disabled(saving)
+                                if saving { ProgressView() }
+                                if let saveNote { Text(saveNote).font(.caption).foregroundStyle(.secondary) }
                             }
                         }.hiddenListRowSeparator()
                     }
-                    ForEach(feed.items) { item in
-                        ContentRow(item: item).hiddenListRowSeparator()
-                            .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
-                    }
-                    if feed.isLoading { ProgressView().frame(maxWidth: .infinity) }
-                    LoadMoreButton(feed: feed)
                 }
-                .listStyle(.plain)
             } else { ProgressView() }
         }
         .navigationTitle(title)
@@ -208,12 +304,18 @@ struct PlaylistView: View {
         } catch { self.error = error.localizedDescription }
     }
 
+    /// Saves the whole playlist. If part of it failed to load, nothing is saved:
+    /// the failure is listed above with a retry, and saving can be tried again.
     private func save(_ feed: FeedModel, _ header: ContentItem) async {
         saving = true
-        var rounds = 0
-        while feed.hasMore, rounds < 25 { await feed.loadMore(); rounds += 1 }
-        let videos = feed.items.filter { $0.kind == .video || $0.kind == .nested }.map { SavedVideo($0) }
+        defer { saving = false }
+        let loaded = await feed.loadAll(maxRounds: 25)
+        guard loaded.failures.isEmpty else {
+            saveNote = "Not saved: part of this playlist failed to load. Retry it above, then save again."
+            return
+        }
+        let videos = loaded.items.filter { $0.kind == .video || $0.kind == .nested }.map { SavedVideo($0) }
         app.library.createPlaylist(name: header.name, videos: videos)
-        saving = false
+        saveNote = loaded.isComplete ? "Saved \(videos.count) videos." : "Saved the first \(videos.count) videos; the playlist is longer than can be saved at once."
     }
 }

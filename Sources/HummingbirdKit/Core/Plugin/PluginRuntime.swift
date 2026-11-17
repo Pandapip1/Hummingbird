@@ -16,6 +16,9 @@ final class PluginRuntime: @unchecked Sendable {
     private let queue: DispatchQueue
     /// Asked before each request to a local-network host; nil lets them through.
     private let localNetworkAccess: (@Sendable (URL) async -> Bool)?
+    /// The URL session plugin HTTP goes through; nil uses HostHTTP's own.
+    /// Tests pass a session with a stub protocol so no request reaches the network.
+    private let httpSession: URLSession?
 
     private var context: JSContextHost?
     private let dom = DOMStore()
@@ -73,8 +76,9 @@ final class PluginRuntime: @unchecked Sendable {
     }
 
     init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?, savedState: String? = nil,
-         localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil) {
+         localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil, httpSession: URLSession? = nil) {
         self.localNetworkAccess = localNetworkAccess
+        self.httpSession = httpSession
         let compatibility = PluginCompatibilityPatches.apply(
             pluginID: config.id,
             version: config.version,
@@ -120,7 +124,8 @@ final class PluginRuntime: @unchecked Sendable {
     private func startLocked() throws {
         if started { return }
         contextGeneration &+= 1
-        let host = HostHTTP(config: config, auth: auth, captcha: captcha, localNetworkAccess: localNetworkAccess)
+        let host = HostHTTP(config: config, auth: auth, captcha: captcha, session: httpSession,
+                            localNetworkAccess: localNetworkAccess)
         http = host
         let ctx: JSContextHost
         do {
@@ -411,7 +416,7 @@ final class PluginRuntime: @unchecked Sendable {
     func isolatedClone() -> PluginRuntime {
         let clone = PluginRuntime(config: config, script: originalScript, settings: storedSettings,
                                   auth: auth, captcha: captcha, savedState: savedState,
-                                  localNetworkAccess: localNetworkAccess)
+                                  localNetworkAccess: localNetworkAccess, httpSession: httpSession)
         clone.onLog = onLog
         clone.onToast = onToast
         return clone

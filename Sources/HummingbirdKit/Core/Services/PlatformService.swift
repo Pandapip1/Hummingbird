@@ -1,10 +1,5 @@
 import Foundation
-import Observation
 import os
-
-private func capture<T: Sendable>(_ op: @Sendable () async throws -> T) async -> Result<T, Error> {
-    do { return .success(try await op()) } catch { return .failure(error) }
-}
 
 /// Routes URLs and feed requests to the right plugin runtimes.
 @MainActor
@@ -176,16 +171,22 @@ final class PlatformService {
 
     // MARK: capabilities
 
-    private func capabilities(_ rt: PluginRuntime, method: String) async -> ResultCapabilities {
+    /// A plugin's capabilities. A plugin without the method has none; one whose
+    /// method throws reports that (and nothing is cached, so the next call asks again).
+    private func capabilities(_ rt: PluginRuntime, method: String) async throws -> ResultCapabilities {
         let key = rt.id + "|" + method
         if let c = capabilityCache[key] { return c }
+        try await rt.enable()
         var caps = ResultCapabilities()
-        if rt.has(method), let c = try? await rt.call(method, [], as: ResultCapabilities.self) { caps = c }
+        if rt.has(method) {
+            do { caps = try await rt.call(method, [], as: ResultCapabilities.self) }
+            catch { _ = surface(error, pluginID: rt.id); throw error }
+        }
         capabilityCache[key] = caps
         return caps
     }
-    func channelCapabilities(_ rt: PluginRuntime) async -> ResultCapabilities { await capabilities(rt, method: "getChannelCapabilities") }
-    func searchCapabilities(_ rt: PluginRuntime) async -> ResultCapabilities { await capabilities(rt, method: "getSearchCapabilities") }
+    func channelCapabilities(_ rt: PluginRuntime) async throws -> ResultCapabilities { try await capabilities(rt, method: "getChannelCapabilities") }
+    func searchCapabilities(_ rt: PluginRuntime) async throws -> ResultCapabilities { try await capabilities(rt, method: "getSearchCapabilities") }
 
     // MARK: feeds
 
@@ -204,7 +205,7 @@ final class PlatformService {
         var result: [FeedSource] = []
         for p in plugins.enabledPlugins where p.config.enableInSearch {
             guard let rt = await plugins.runtime(for: p.id) else { continue }
-            result.append(FeedSource(runtime: rt, label: p.config.name) { [self] in
+            result.append(FeedSource(runtime: rt, label: p.config.name, sensitiveTerms: [query]) { [self] in
                 try await withReload(rt) {
                     try await rt.pager("search", [query, type ?? NSNull(), order ?? NSNull(), NSNull()], as: ContentItem.self)
                 }
@@ -213,20 +214,32 @@ final class PlatformService {
         return result
     }
 
-    func channelSource(runtime rt: PluginRuntime, url: String, type: String?, order: String?, filters: [String: [String]]? = nil) -> FeedSource {
-        FeedSource(runtime: rt, label: rt.config.name) { [self] in
+    /// One content type of a channel. `label` names it in failure rows when a
+    /// channel feed merges several types from the same plugin.
+    func channelSource(runtime rt: PluginRuntime, url: String, type: String?, order: String?,
+                       filters: [String: [String]]? = nil, label: String? = nil) -> FeedSource {
+        FeedSource(runtime: rt, label: label ?? rt.config.name, key: "\(rt.id)|\(type ?? "default")") { [self] in
             try await withReload(rt) {
                 try await rt.pager("getChannelContents", [url, type ?? NSNull(), order ?? NSNull(), filters ?? NSNull()], as: ContentItem.self)
             }
         }
     }
 
-    func recommendations(runtime rt: PluginRuntime, details: VideoDetails) async -> PluginPager<ContentItem>? {
-        if details.hasRecommendations, let p = try? await rt.handlePager(details.handle, "getContentRecommendations", [], as: ContentItem.self) { return p }
-        if rt.has("getContentRecommendations") {
-            return try? await rt.pager("getContentRecommendations", [details.item.url, NSNull()], as: ContentItem.self)
+    /// Related content: the details object's own recommendations, falling back to
+    /// the source-level call. Throws when the call that decides the result fails.
+    func recommendations(runtime rt: PluginRuntime, details: VideoDetails) async throws -> PluginPager<ContentItem>? {
+        let hasSourceCall = rt.has("getContentRecommendations")
+        if details.hasRecommendations {
+            do {
+                return try await rt.handlePager(details.handle, "getContentRecommendations", [], as: ContentItem.self)
+            } catch where hasSourceCall {
+                Logger.plugin.notice("recommendations_fallback plugin=\(rt.id, privacy: .public) error=\(LogRedaction.redact(error.localizedDescription), privacy: .public)")
+            }
         }
-        return nil
+        guard hasSourceCall else { return nil }
+        do {
+            return try await rt.pager("getContentRecommendations", [details.item.url, NSNull()], as: ContentItem.self)
+        } catch { _ = surface(error, pluginID: rt.id); throw error }
     }
 
     func comments(runtime rt: PluginRuntime, details: VideoDetails) async throws -> PluginPager<PluginComment>? {
@@ -235,44 +248,71 @@ final class PlatformService {
         return nil
     }
 
-    func searchChannels(query: String) async -> [(PluginRuntime, ContentItem)] {
-        var out: [(PluginRuntime, ContentItem)] = []
-        for p in plugins.enabledPlugins where p.config.enableInSearch {
-            guard let rt = await plugins.runtime(for: p.id), (try? await rt.enable()) != nil, rt.has("searchChannels") else { continue }
-            if let pager = try? await rt.pager("searchChannels", [query], as: ContentItem.self) {
+    struct ChannelSearch {
+        var channels: [(PluginRuntime, ContentItem)] = []
+        var failures: [SourceFailure] = []
+    }
+
+    /// Channel search across sources. A source that fails is reported, never
+    /// skipped silently; `pluginID` limits the search to one source (retry).
+    func searchChannels(query: String, pluginID: String? = nil) async -> ChannelSearch {
+        var out = ChannelSearch()
+        for p in plugins.enabledPlugins where p.config.enableInSearch && (pluginID == nil || p.id == pluginID) {
+            guard let rt = await plugins.runtime(for: p.id) else { continue }
+            do {
+                try await rt.enable()
+                guard rt.has("searchChannels") else { continue }
+                let pager = try await withReload(rt) { try await rt.pager("searchChannels", [query], as: ContentItem.self) }
                 // The API method supplies the semantic type even when an older
                 // plugin omits PlatformChannel's contentType discriminator.
                 // Preserve that explicit intent all the way into tab routing.
-                out.append(contentsOf: pager.initial.map { item in
+                out.channels.append(contentsOf: pager.initial.map { item in
                     var channel = item
                     channel.contentType = 60
                     return (rt, channel)
                 })
+            } catch {
+                out.failures.append(.record(pluginID: p.id, label: p.config.name,
+                                            message: surface(error, pluginID: p.id), stage: .channels,
+                                            sensitiveTerms: [query]))
             }
         }
         return out
     }
 
-    func searchSuggestions(query: String) async -> [String] {
-        var suggestions: [String] = []
+    struct SuggestionSearch {
+        var values: [String] = []
+        var failures: [SourceFailure] = []
+    }
+
+    func searchSuggestions(query: String) async -> SuggestionSearch {
+        var out = SuggestionSearch()
         var seen = Set<String>()
         for plugin in plugins.enabledPlugins where plugin.config.enableInSearch {
-            guard !Task.isCancelled else { return [] }
-            guard let runtime = await plugins.runtime(for: plugin.id),
-                  (try? await runtime.enable()) != nil,
-                  runtime.has("searchSuggestions"),
-                  let values = try? await runtime.call("searchSuggestions", [query], as: [String].self)
-            else { continue }
-            guard !Task.isCancelled else { return [] }
+            guard !Task.isCancelled else { return SuggestionSearch() }
+            guard let runtime = await plugins.runtime(for: plugin.id) else { continue }
+            let values: [String]
+            do {
+                try await runtime.enable()
+                guard runtime.has("searchSuggestions") else { continue }
+                values = try await runtime.call("searchSuggestions", [query], as: [String].self)
+            } catch {
+                guard !Task.isCancelled else { return SuggestionSearch() }
+                out.failures.append(.record(pluginID: plugin.id, label: plugin.config.name,
+                                            message: surface(error, pluginID: plugin.id), stage: .suggestions,
+                                            sensitiveTerms: [query]))
+                continue
+            }
+            guard !Task.isCancelled else { return SuggestionSearch() }
             for value in values {
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
                 let key = trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                if seen.insert(key).inserted { suggestions.append(trimmed) }
-                if suggestions.count == 10 { return suggestions }
+                if seen.insert(key).inserted { out.values.append(trimmed) }
+                if out.values.count == 10 { return out }
             }
         }
-        return suggestions
+        return out
     }
 }
 
@@ -294,112 +334,4 @@ enum Route: Hashable {
     case syncSettings
     /// An atproto sign-in page, shown while that authorization is pending.
     case oauthAuthorization(UUID)
-}
-
-// MARK: - Merged feeds
-
-struct FeedSource: Sendable {
-    let runtime: PluginRuntime
-    let label: String
-    let open: @Sendable () async throws -> PluginPager<ContentItem>
-}
-
-/// Loads pages from several plugins and interleaves them so no single plugin dominates the list.
-@MainActor
-@Observable
-final class FeedModel {
-    private(set) var items: [ContentItem] = []
-    private(set) var isLoading = false
-    private(set) var messages: [String] = []
-    private(set) var hasMore = false
-    private(set) var loadedOnce = false
-
-    @ObservationIgnored private var sources: [FeedSource] = []
-    @ObservationIgnored private var pagers: [(FeedSource, PluginPager<ContentItem>)] = []
-    @ObservationIgnored private var seen = Set<String>()
-    @ObservationIgnored private let report: (Error, PluginRuntime) -> String
-    @ObservationIgnored private let didUpdate: (([ContentItem]) -> Void)?
-
-    init(initialItems: [ContentItem] = [],
-         report: @escaping (Error, PluginRuntime) -> String,
-         didUpdate: (([ContentItem]) -> Void)? = nil) {
-        self.items = initialItems
-        self.seen = Set(initialItems.map(\.id))
-        self.report = report
-        self.didUpdate = didUpdate
-    }
-
-    func reload(sources: [FeedSource]) async {
-        self.sources = sources
-        isLoading = true
-        messages = []
-        pagers = []
-        seen = []
-        var results: [(Int, Result<PluginPager<ContentItem>, Error>)] = []
-        await withTaskGroup(of: (Int, Result<PluginPager<ContentItem>, Error>).self) { group in
-            for (i, s) in sources.enumerated() { group.addTask { (i, await capture { try await s.open() }) } }
-            for await r in group { results.append(r) }
-        }
-        results.sort { $0.0 < $1.0 }
-        var columns: [[ContentItem]] = []
-        var refreshed = false
-        for (i, r) in results {
-            switch r {
-            case .success(let p):
-                refreshed = true
-                pagers.append((sources[i], p))
-                columns.append(p.initial)
-            case .failure(let e):
-                messages.append("\(sources[i].label): \(report(e, sources[i].runtime))")
-            }
-        }
-        if refreshed {
-            items = []
-            seen = []
-            append(interleave(columns))
-            didUpdate?(items)
-        }
-        hasMore = pagers.contains { $0.1.hasMore }
-        isLoading = false
-        loadedOnce = true
-    }
-
-    func loadMore() async {
-        guard !isLoading, hasMore else { return }
-        isLoading = true
-        var results: [(Int, Result<[ContentItem], Error>)] = []
-        let active = pagers
-        await withTaskGroup(of: (Int, Result<[ContentItem], Error>).self) { group in
-            for (i, entry) in active.enumerated() where entry.1.hasMore {
-                group.addTask { (i, await capture { try await entry.1.next() }) }
-            }
-            for await r in group { results.append(r) }
-        }
-        results.sort { $0.0 < $1.0 }
-        var columns: [[ContentItem]] = []
-        for (i, r) in results {
-            switch r {
-            case .success(let page): columns.append(page)
-            case .failure(let e): messages.append("\(active[i].0.label): \(report(e, active[i].0.runtime))")
-            }
-        }
-        append(interleave(columns))
-        didUpdate?(items)
-        hasMore = pagers.contains { $0.1.hasMore }
-        isLoading = false
-    }
-
-    private func append(_ new: [ContentItem]) {
-        for item in new where !item.url.isEmpty && seen.insert(item.id).inserted { items.append(item) }
-    }
-
-    private func interleave(_ columns: [[ContentItem]]) -> [ContentItem] {
-        var out: [ContentItem] = []
-        var i = 0
-        while columns.contains(where: { i < $0.count }) {
-            for col in columns where i < col.count { out.append(col[i]) }
-            i += 1
-        }
-        return out
-    }
 }

@@ -38,6 +38,8 @@ struct SearchView: View {
     @State private var feed: FeedModel?
     @State private var channels: [ContentItem] = []
     @State private var suggestions: [String] = []
+    @State private var suggestionFailures: [SourceFailure] = []
+    @State private var retryingSuggestions = false
     @State private var searchGeneration = 0
     @State private var notice: String?
     @State private var pendingURL: String?
@@ -48,27 +50,14 @@ struct SearchView: View {
             Group {
                 if app.plugins.enabledPlugins.isEmpty { NoSourcesView() }
                 else if let feed, query.trimmingCharacters(in: .whitespacesAndNewlines) == submittedQuery {
-                    List {
+                    FeedList(feed: feed, itemsHeader: channels.isEmpty ? nil : "Videos", leadingIsEmpty: channels.isEmpty) {
                         if !channels.isEmpty {
                             Section("Channels") {
                                 ForEach(channels.prefix(5)) { ContentRow(item: $0) }
                             }
                         }
-                        Section(channels.isEmpty ? "" : "Videos") {
-                            ForEach(feed.items) { item in
-                                ContentRow(item: item).hiddenListRowSeparator()
-                                    .loadsNextPageWhenLast(item.id == feed.items.last?.id) { await feed.loadMore() }
-                            }
-                            ForEach(feed.messages, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange) }
-                            if feed.isLoading { ProgressView().frame(maxWidth: .infinity) }
-                            LoadMoreButton(feed: feed)
-                        }
-                    }
-                    .listStyle(.plain)
-                    .overlay {
-                        if feed.loadedOnce && feed.items.isEmpty && channels.isEmpty && !feed.isLoading {
-                            ContentUnavailableView.search(text: query)
-                        }
+                    } empty: {
+                        ContentUnavailableView.search(text: submittedQuery)
                     }
                 } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     if app.searchHistory.queries.isEmpty {
@@ -92,6 +81,11 @@ struct SearchView: View {
                     }
                 } else {
                     List {
+                        ForEach(suggestionFailures) { failure in
+                            SourceFailureRow(failure: failure, isRetrying: retryingSuggestions) {
+                                Task { await retrySuggestions() }
+                            }
+                        }
                         ForEach(suggestions, id: \.self) { value in
                             Button { runSuggestion(value) } label: {
                                 Label(value, systemImage: "magnifyingglass")
@@ -136,6 +130,7 @@ struct SearchView: View {
         notice = nil
         app.searchHistory.record(text)
         suggestions = []
+        suggestionFailures = []
         if text.contains("://") {
             let routes = await app.platform.recognizedRoutes(for: text)
             guard generation == searchGeneration else { return }
@@ -155,9 +150,21 @@ struct SearchView: View {
         feed = f
         async let found = app.platform.searchChannels(query: text)
         await f.reload(sources: await app.platform.searchSources(query: text, type: nil, order: nil))
-        let foundChannels = await found.map { $0.1 }
+        let channelSearch = await found
         guard generation == searchGeneration else { return }
-        channels = foundChannels
+        channels = channelSearch.channels.map { $0.1 }
+        for failure in channelSearch.failures {
+            f.record(failure) { await retryChannels(query: text, pluginID: failure.pluginID, generation: generation) }
+        }
+    }
+
+    /// Searches one source's channels again; returns its failure if it failed again.
+    private func retryChannels(query text: String, pluginID: String, generation: Int) async -> SourceFailure? {
+        let result = await app.platform.searchChannels(query: text, pluginID: pluginID)
+        guard generation == searchGeneration else { return nil }
+        let known = Set(channels.map(\.id))
+        channels.append(contentsOf: result.channels.map { $0.1 }.filter { !known.contains($0.id) })
+        return result.failures.first
     }
 
     private func runSuggestion(_ value: String) {
@@ -167,13 +174,31 @@ struct SearchView: View {
 
     private func updateSuggestions() async {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text != submittedQuery else { suggestions = []; return }
+        guard !text.isEmpty, text != submittedQuery else {
+            suggestions = []
+            suggestionFailures = []
+            return
+        }
         try? await Task.sleep(nanoseconds: 200_000_000)
         guard !Task.isCancelled else { return }
-        let values = await app.platform.searchSuggestions(query: text)
+        await fetchSuggestions(for: text)
+    }
+
+    private func fetchSuggestions(for text: String) async {
+        let result = await app.platform.searchSuggestions(query: text)
         guard !Task.isCancelled,
               query.trimmingCharacters(in: .whitespacesAndNewlines) == text else { return }
-        suggestions = values
+        suggestions = result.values
+        suggestionFailures = result.failures
+    }
+
+    /// Asks every source again; the failure rows stay pending until it finishes.
+    private func retrySuggestions() async {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !retryingSuggestions, !text.isEmpty else { return }
+        retryingSuggestions = true
+        await fetchSuggestions(for: text)
+        retryingSuggestions = false
     }
 }
 
@@ -193,25 +218,7 @@ struct SubscriptionsView: View {
                     ContentUnavailableView("No subscriptions", systemImage: "rectangle.stack.person.crop",
                                            description: Text("Open a channel and tap Subscribe, or import subscriptions from a source you are signed in to."))
                 } else {
-                    List {
-                        ForEach(feed.visibleItems) { item in
-                            ContentRow(item: item).hiddenListRowSeparator()
-                                .onAppear { if item.id == feed.visibleItems.last?.id, feed.hasMoreToShow { feed.showMore() } }
-                        }
-                        if !feed.failures.isEmpty {
-                            Section("Some channels failed") {
-                                ForEach(feed.failures.sorted(by: { $0.key < $1.key }), id: \.key) { url, msg in
-                                    VStack(alignment: .leading) {
-                                        Text(url).font(.caption.bold()).lineLimit(1)
-                                        Text(msg).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        }
-                        if feed.isRefreshing { ProgressView().frame(maxWidth: .infinity) }
-                    }
-                    .listStyle(.plain)
-                    .refreshable { await feed.refresh() }
+                    SubscriptionFeedList(feed: feed)
                 }
             }
             .navigationTitle("Subscriptions")

@@ -6,7 +6,6 @@ import SwiftOpenUI
 @MainActor
 struct SyncSettingsView: View {
     @Environment(AppModel.self) private var app
-    @Environment(\.isBrowserTabVisible) private var isVisible
     @State private var peers: [AppSyncPeerTrustSummary] = []
     @State private var isLoading = false
     @State private var isScanning = false
@@ -140,11 +139,10 @@ struct SyncSettingsView: View {
                 }
             }
         }
-        .task(id: isVisible) {
+        .browserTaskWhileVisible {
             // Instances come and go and trust changes from other devices;
             // keep the list current while it is on screen, and leave it
             // idle in a background tab (it reloads when shown again).
-            guard isVisible else { return }
             await reload()
             for await _ in app.profileAccount.peerChanges() { await reload() }
         }

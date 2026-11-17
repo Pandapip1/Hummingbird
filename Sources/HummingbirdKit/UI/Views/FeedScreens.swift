@@ -21,7 +21,7 @@ struct HomeView: View {
             .navigationTitle("Home")
             .profileSwitcherToolbarItem()
         }
-        .taskWhenVisible(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
+        .browserTaskOnceVisible(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
     }
 }
 
@@ -31,7 +31,6 @@ struct HomeView: View {
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.openRoute) private var openRoute
-    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     @State private var query = ""
     @State private var submittedQuery = ""
     @State private var feed: FeedModel?
@@ -100,9 +99,11 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .searchEntry(query: $query, hidden: !isBrowserTabToolbarActive)
+            .background(PageInstanceMarker(page: "search"))
+            .browserPageSearchField(text: $query, prompt: "Search or paste a link") {
+                Task { await submit() }
+            }
             .profileSwitcherToolbarItem()
-            .searchSubmission { Task { await submit() } }
             .task(id: query) { await updateSuggestions() }
             .onChange(of: query) { notice = nil }
             .overlay(alignment: .bottom) {
@@ -182,7 +183,6 @@ struct SearchView: View {
 @MainActor
 struct SubscriptionsView: View {
     @Environment(AppModel.self) private var app
-    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
@@ -215,13 +215,6 @@ struct SubscriptionsView: View {
                 }
             }
             .navigationTitle("Subscriptions")
-            .toolbar {
-                FocusNavigationLink(isActive: isBrowserTabToolbarActive) {
-                    ManageSubscriptionsView()
-                } label: {
-                    Image(systemName: "person.2")
-                }
-            }
             .browserPageToolbarItem(id: "subscriptions.manage", placement: .trailing) {
                 Button {
                     browserToolbar?.tab.push(.manageSubscriptions, title: "Manage Subscriptions")
@@ -232,7 +225,7 @@ struct SubscriptionsView: View {
             }
             .profileSwitcherToolbarItem()
         }
-        .taskWhenVisible(id: 0) { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
+        .browserTaskOnceVisible(id: 0) { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
     }
 }
 

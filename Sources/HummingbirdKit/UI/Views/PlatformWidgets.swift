@@ -645,10 +645,6 @@ extension View {
         #endif
     }
 
-    func searchSubmission(_ action: @escaping () -> Void) -> some View {
-        onSubmit(of: .search, action)
-    }
-
     @ViewBuilder
     func urlEntryStyle() -> some View {
         #if os(iOS)
@@ -692,69 +688,6 @@ struct FocusableReadOnlyModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         content.focusableReadOnlyValue()
-    }
-}
-
-/// The page's search field: SwiftOpenUI's `searchable`, which each platform
-/// presents natively in the page's own chrome (never the tab bars). Return
-/// submits through `searchSubmission`.
-private struct SearchEntryModifier: ViewModifier {
-    @Binding var query: String
-    let hidden: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if hidden {
-            content
-        } else {
-            content.searchable(text: $query, prompt: "Search or paste a link")
-        }
-    }
-}
-
-extension View {
-    func searchEntry(query: Binding<String>, hidden: Bool) -> some View {
-        modifier(SearchEntryModifier(query: query, hidden: hidden))
-    }
-}
-
-@MainActor
-struct FocusNavigationLink<Destination: View, Label: View>: ToolbarContent {
-    let isActive: Bool
-    @ViewBuilder let destination: () -> Destination
-    @ViewBuilder let label: () -> Label
-
-    @ToolbarContentBuilder
-    var body: some ToolbarContent {
-        #if os(tvOS)
-        if isActive {
-            ToolbarItem(placement: .primaryAction) {
-                NavigationLink(destination: destination, label: label)
-            }
-        }
-        #else
-        ToolbarItem { EmptyView() }
-        #endif
-    }
-}
-
-@MainActor
-struct FocusPrimaryAction<Label: View>: ToolbarContent {
-    let isActive: Bool
-    let action: () -> Void
-    @ViewBuilder let label: () -> Label
-
-    @ToolbarContentBuilder
-    var body: some ToolbarContent {
-        #if os(tvOS)
-        if isActive {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: action, label: label)
-            }
-        }
-        #else
-        ToolbarItem { EmptyView() }
-        #endif
     }
 }
 
@@ -954,35 +887,23 @@ extension View {
     }
 }
 
-extension View {
-    /// Runs `action` for `id` once this page is on screen, rather than in
-    /// every background tab: tabs stay mounted, so a plain `.task` would load
-    /// all of them at once, for instance when tabs are restored at launch.
-    /// Hiding the page doesn't cancel work already done; it runs again only
-    /// when `id` changes (or if it was cancelled before it finished).
-    func taskWhenVisible<ID: Equatable & Sendable>(
-        id: ID, _ action: @escaping @MainActor () async -> Void
-    ) -> some View {
-        modifier(VisibleTaskModifier(id: id, action: action))
+
+/// Debug builds: an invisible accessibility element naming this instance of
+/// a page, so UI tests can check that switching tabs or opening the tab
+/// overview never rebuilds the page (which would lose its state).
+struct PageInstanceMarker: View {
+    let page: String
+    @State private var instance = UUID().uuidString
+
+    var body: some View {
+        #if DEBUG
+        Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityIdentifier("page-instance.\(page)")
+            .accessibilityLabel(instance)
+        #else
+        EmptyView()
+        #endif
     }
-}
-
-private struct VisibleTaskModifier<ID: Equatable & Sendable>: ViewModifier {
-    @Environment(\.isBrowserTabVisible) private var isVisible
-    let id: ID
-    let action: @MainActor () async -> Void
-    @State private var completedID: ID?
-
-    func body(content: Content) -> some View {
-        content.task(id: VisibleTaskKey(id: id, isVisible: isVisible)) {
-            guard isVisible, completedID != id else { return }
-            await action()
-            if !Task.isCancelled { completedID = id }
-        }
-    }
-}
-
-private struct VisibleTaskKey<ID: Equatable & Sendable>: Equatable, Sendable {
-    let id: ID
-    let isVisible: Bool
 }

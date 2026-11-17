@@ -14,27 +14,11 @@ extension EnvironmentValues {
 @MainActor
 struct PlayerMenu<Label: View, Content: View>: View {
     @Environment(\.playerMenuPresentationChanged) private var presentationChanged
-    @State private var isPresented = false
     @ViewBuilder let label: () -> Label
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        #if os(iOS)
-        Button { isPresented = true } label: { label() }
-            .popover(isPresented: $isPresented) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) { content() }
-                        .buttonStyle(.plain)
-                        .padding()
-                }
-                .onTapGesture { isPresented = false }
-                .presentationCompactAdaptation(.popover)
-            }
-            .onChange(of: isPresented) { _, presented in presentationChanged(presented) }
-            .onDisappear { if isPresented { presentationChanged(false) } }
-        #else
-        Menu(content: content, label: label)
-        #endif
+        PresentationMenu(onPresentationChange: presentationChanged, content: content, label: label)
     }
 }
 

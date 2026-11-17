@@ -1,8 +1,5 @@
 import SwiftOpenUI
 import Foundation
-#if os(tvOS)
-import UIKit
-#endif
 
 public enum AdvancedVideoPlayerLayout {
     public static let controlBarMinimumHeight: CGFloat = 44
@@ -35,9 +32,6 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     @State private var controlsVisible = true
     @State private var menuPresented = false
     @State private var autoHide = ControlsAutoHide()
-    #if os(tvOS)
-    @Namespace private var focusNamespace
-    #endif
 
     public init(
         model: Model,
@@ -54,23 +48,17 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     public var body: some View {
         let showingControls = controlsVisible || !model.isPlaying
         ZStack {
-            Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.modifier(NonFocusable())
+            Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.remoteNonFocusable()
             bars
                 .opacity(showingControls ? 1 : 0)
                 .allowsHitTesting(showingControls)
                 .accessibilityHidden(!showingControls)
                 .environment(\.playerMenuPresentationChanged, menuPresentationChanged)
-            #if os(tvOS)
-            if !showingControls { hiddenFocusTarget }
-            #endif
+            if !showingControls { RemoteRevealTarget { interacted() } }
         }
-        #if os(tvOS)
-        .onMoveCommand { _ in interacted() }
-        #endif
+        .onRemoteMove { interacted() }
         .onContinuousHover { if case .active = $0 { interacted() } }
-        #if os(tvOS)
-        .focusScope(focusNamespace)
-        #endif
+        .remoteFocusScope()
         .task { interacted() }
         .onChange(of: model.isPlaying) { _, playing in
             if playing { interacted() }
@@ -87,13 +75,13 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 Spacer()
                 accessories(interacted).disabled(!model.isMediaReady)
             }
-            .modifier(FocusSection()).foregroundStyle(Color.white)
+            .remoteFocusSection().foregroundStyle(Color.white)
             .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
 
             Spacer().frame(minHeight: AdvancedVideoPlayerLayout.minimumBarSeparation, maxHeight: .infinity)
-            transport.disabled(!model.isMediaReady).modifier(FocusSection()).foregroundStyle(Color.white)
+            transport.disabled(!model.isMediaReady).remoteFocusSection().foregroundStyle(Color.white)
                 .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
@@ -132,9 +120,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         Button { interacted(); model.togglePlayback() } label: {
             Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").accessibilityLabel(model.isPlaying ? "Pause" : "Play")
         }
-        #if os(tvOS)
-        .prefersDefaultFocus(isFullscreen, in: focusNamespace)
-        #endif
+        .remotePrefersDefaultFocus(isFullscreen)
         Button { interacted(); model.skip(by: 10) } label: { Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds") }
     }
 
@@ -170,14 +156,6 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             }
         }
     }
-
-    #if os(tvOS)
-    private var hiddenFocusTarget: some View {
-        Color.clear.contentShape(Rectangle()).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .focusable().focusEffectDisabled().accessibilityLabel("Show playback controls")
-            .onTapGesture { interacted() }.onMoveCommand { _ in interacted() }
-    }
-    #endif
 
     private var timeLabel: String {
         let seconds = max(0, Int(model.playbackTime)); return String(format: "%d:%02d", seconds / 60, seconds % 60)
@@ -226,164 +204,7 @@ public struct AdvancedVideoPlayerSlider: View {
 
     @ViewBuilder
     public var body: some View {
-        #if os(tvOS)
-        TVRemoteSlider(value: value, range: range, onChange: onChange)
-        #else
-        Slider(value: Binding(get: { value }, set: { newValue in onChange(newValue) }), in: range)
-        #endif
-    }
-}
-
-#if os(tvOS)
-/// A focusable slider for the Siri Remote. Select enters adjustment mode,
-/// directional presses seek while selected, and Select again releases focus
-/// movement so the user can navigate to the surrounding player controls.
-@MainActor
-private struct TVRemoteSlider: UIViewRepresentable {
-    let value: Double
-    let range: ClosedRange<Double>
-    let onChange: (Double) -> Void
-
-    func makeUIView(context: Context) -> TVRemoteSliderControl {
-        TVRemoteSliderControl()
-    }
-
-    func updateUIView(_ control: TVRemoteSliderControl, context: Context) {
-        control.update(value: value, range: range, onChange: onChange)
-    }
-}
-
-@MainActor
-private final class TVRemoteSliderControl: UIControl {
-    private let progress = UIProgressView(progressViewStyle: .default)
-    private var value: Double = 0
-    private var range: ClosedRange<Double> = 0...1
-    private var onChange: ((Double) -> Void)?
-    private var adjustmentStartValue: Double?
-    private var isCancellingWithMenu = false
-    private var isAdjusting = false { didSet { refreshAppearance() } }
-
-    override var canBecomeFocused: Bool { true }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isAccessibilityElement = true
-        accessibilityIdentifier = "playback-seek-control"
-        accessibilityLabel = "Playback position"
-        accessibilityTraits = [.adjustable]
-        progress.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(progress)
-        NSLayoutConstraint.activate([
-            progress.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            progress.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            progress.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-        layer.cornerRadius = 12
-        refreshAppearance()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-
-    func update(value: Double, range: ClosedRange<Double>, onChange: @escaping (Double) -> Void) {
-        self.value = value
-        self.range = range
-        self.onChange = onChange
-        let length = range.upperBound - range.lowerBound
-        progress.progress = length > 0 ? Float((value - range.lowerBound) / length) : 0
-        accessibilityValue = "\(time(value)) of \(time(range.upperBound))\(isAdjusting ? ", adjusting" : "")"
-    }
-
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if isAdjusting, presses.contains(where: { $0.type == .menu }) {
-            if let adjustmentStartValue { adjust(to: adjustmentStartValue) }
-            adjustmentStartValue = nil
-            isAdjusting = false
-            isCancellingWithMenu = true
-            return
-        }
-        guard isAdjusting, let type = presses.first?.type else {
-            super.pressesBegan(presses, with: event)
-            return
-        }
-        switch type {
-        case .leftArrow: adjust(by: -step)
-        case .rightArrow: adjust(by: step)
-        default: super.pressesBegan(presses, with: event)
-        }
-    }
-
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if isCancellingWithMenu, presses.contains(where: { $0.type == .menu }) {
-            isCancellingWithMenu = false
-            return
-        }
-        if presses.contains(where: { $0.type == .select }) {
-            if isAdjusting {
-                adjustmentStartValue = nil
-                isAdjusting = false
-            } else {
-                adjustmentStartValue = value
-                isAdjusting = true
-            }
-            return
-        }
-        super.pressesEnded(presses, with: event)
-    }
-
-    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
-        super.didUpdateFocus(in: context, with: coordinator)
-        if !isFocused { isAdjusting = false }
-        coordinator.addCoordinatedAnimations { self.refreshAppearance() }
-    }
-
-    override func accessibilityIncrement() { adjust(by: step) }
-    override func accessibilityDecrement() { adjust(by: -step) }
-
-    private var step: Double { min(30, max(5, (range.upperBound - range.lowerBound) / 100)) }
-
-    private func adjust(by delta: Double) {
-        adjust(to: value + delta)
-    }
-
-    private func adjust(to proposedValue: Double) {
-        let target = min(max(proposedValue, range.lowerBound), range.upperBound)
-        value = target
-        onChange?(target)
-        update(value: target, range: range, onChange: onChange ?? { _ in })
-    }
-
-    private func refreshAppearance() {
-        progress.progressTintColor = isAdjusting ? tintColor : .white
-        backgroundColor = isFocused ? UIColor.white.withAlphaComponent(0.18) : .clear
-        transform = isFocused ? CGAffineTransform(scaleX: 1.03, y: 1.03) : .identity
-        accessibilityValue = "\(time(value)) of \(time(range.upperBound))\(isAdjusting ? ", adjusting" : "")"
-    }
-
-    private func time(_ value: Double) -> String {
-        let seconds = max(0, Int(value))
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
-}
-#endif
-
-private struct FocusSection: ViewModifier {
-    @ViewBuilder func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.focusSection()
-        #else
-        content
-        #endif
-    }
-}
-
-private struct NonFocusable: ViewModifier {
-    @ViewBuilder func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.focusable(false)
-        #else
-        content
-        #endif
+        ScrubSlider(value: value, range: range, onChange: onChange)
     }
 }
 

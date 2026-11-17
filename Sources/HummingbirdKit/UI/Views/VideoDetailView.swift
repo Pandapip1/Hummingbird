@@ -301,7 +301,7 @@ struct PlayerSection: View {
         ZStack {
             Color.black
             if !model.isMediaReady, let poster {
-                RemoteImage(url: poster).frame(width: width, height: height).clipped().opacity(0.6)
+                RemoteImage(url: poster, contentMode: .fill).frame(width: width, height: height).clipped().opacity(0.6)
             }
             if model.hasMedia { PlayerSurface(model: model) }
             if case .loading = pending {

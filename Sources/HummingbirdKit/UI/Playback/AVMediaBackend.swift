@@ -194,9 +194,11 @@ final class AVMediaBackend: MediaBackend {
         pictureInPicture = controller
         pictureInPictureDelegate = delegate
         pictureInPicturePossibleObserver = controller.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] controller, _ in
+            // Read the value here; only the Bool crosses into the main actor.
+            let possible = controller.isPictureInPicturePossible
             MainActor.assumeIsolated {
                 guard let self, self.pictureInPictureState == .possible || self.pictureInPictureState == .unavailable else { return }
-                self.pictureInPictureState = controller.isPictureInPicturePossible ? .possible : .unavailable
+                self.pictureInPictureState = possible ? .possible : .unavailable
             }
         }
         #endif

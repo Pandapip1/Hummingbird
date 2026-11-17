@@ -12,6 +12,9 @@ enum HummingbirdProfileSchema {
     static let watchLater = NSID(rawValue: "com.eightybps.hummingbird.watchLater")!
     static let history = NSID(rawValue: "com.eightybps.hummingbird.history")!
     static let plugin = NSID(rawValue: "com.eightybps.hummingbird.plugin")!
+    /// Playback history only grows; every device keeps the same newest
+    /// records of it in the journal, as many as the library shows.
+    static let retention: [NSID: Int] = [history: LibraryStore.historyLimit]
 
     static func key(for stableIdentity: String) -> RecordKey {
         let digest = SHA256.hash(data: Data(stableIdentity.utf8))
@@ -151,7 +154,7 @@ final class ProfileChangeStore: @unchecked Sendable {
         let created = try AppSyncMutationLog(
             fileURL: storageDirectory.appendingPathComponent(
                 "\(localProfileID.uuidString.lowercased()).json"
-            ), signer: signer
+            ), signer: signer, retention: HummingbirdProfileSchema.retention
         )
         lock.withLock {
             active = created

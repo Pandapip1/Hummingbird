@@ -84,6 +84,8 @@ final class PluginManager {
     @ObservationIgnored private var localEdits: [String: Int] = [:]
     /// Plugins from other devices being installed here, or that failed to.
     private(set) var syncInstalls: [String: SyncInstall] = [:]
+    /// Downloaded replacements waiting for the user to confirm them.
+    @ObservationIgnored private var pendingReplacements: [String: (preview: InstallPreview, synced: SyncedPlugin)] = [:]
     /// Fetches plugin configs and scripts. Tests substitute their own; the
     /// app uses `urlSession`.
     @ObservationIgnored private let fetch: PluginFetch?
@@ -604,6 +606,9 @@ final class PluginManager {
         for change in changes {
             guard let plugin = change.plugin else { continue }
             if let current = self.plugin(plugin.pluginID), current.config.sourceUrl == plugin.sourceURL { continue }
+            // Already downloaded and waiting for the user to choose.
+            if let waiting = syncInstalls[plugin.pluginID], waiting.confirmation != nil,
+               waiting.sourceURL == plugin.sourceURL { continue }
             toInstall.append((change, plugin))
         }
 
@@ -623,19 +628,25 @@ final class PluginManager {
         var changedIDs: [String] = []
         installs = syncInstalls
         for change in changes {
-            // A plugin edited here meanwhile keeps the local edit; its journal
-            // event supersedes this change.
+            // A removal names only a record key: match it to an installed
+            // plugin, or to a row for one that never finished installing.
             let id = change.plugin?.pluginID
                 ?? updated.first { HummingbirdProfileSchema.key(for: $0.id) == change.key }?.id
+                ?? installs.values.first { HummingbirdProfileSchema.key(for: $0.pluginID) == change.key }?.pluginID
+            // A plugin edited here meanwhile keeps the local edit; its journal
+            // event supersedes this change.
             if let id, localEdits[id] != editsAtStart[id] {
                 if installs[id]?.failure == nil { installs[id] = nil }
                 continue
             }
             guard let plugin = change.plugin else {
                 if let id {
-                    updated.removeAll { $0.id == id }
-                    removedIDs.append(id)
+                    if updated.contains(where: { $0.id == id }) {
+                        updated.removeAll { $0.id == id }
+                        removedIDs.append(id)
+                    }
                     installs[id] = nil
+                    pendingReplacements[id] = nil
                 }
                 applied.insert(change.key)
                 continue
@@ -647,14 +658,23 @@ final class PluginManager {
             } else {
                 switch prepared[plugin.pluginID] {
                 case .success(let preview)?:
+                    if let old = updated.first(where: { $0.id == plugin.pluginID }) {
+                        // Replacing this device's copy with one from another
+                        // source (maybe another author) is the user's call.
+                        pendingReplacements[plugin.pluginID] = (preview, plugin)
+                        installs[plugin.pluginID]?.confirmation = SyncInstall.Confirmation(
+                            replacing: old.config.sourceUrl ?? "",
+                            warnings: preview.warnings.map { "\($0.title): \($0.detail)" }
+                        )
+                        continue
+                    }
                     entry = InstalledPlugin(config: preview.config, script: preview.script, iconURL: preview.iconURL)
-                    if let old = updated.first(where: { $0.id == plugin.pluginID }) { entry.installedAt = old.installedAt }
                     installs[plugin.pluginID] = nil
                 case .failure(let error)?:
                     installs[plugin.pluginID]?.failure = error.localizedDescription
                     continue
                 case nil:
-                    installs[plugin.pluginID] = nil
+                    if installs[plugin.pluginID]?.confirmation == nil { installs[plugin.pluginID] = nil }
                     continue
                 }
             }
@@ -671,6 +691,7 @@ final class PluginManager {
         installs = installs.filter { entry in
             !updated.contains { $0.id == entry.key && $0.config.sourceUrl == entry.value.sourceURL }
         }
+        pendingReplacements = pendingReplacements.filter { installs[$0.key]?.confirmation != nil }
         if installs != syncInstalls { syncInstalls = installs }
         guard !removedIDs.isEmpty || !changedIDs.isEmpty else { return applied }
         updated.sort { $0.config.name.localizedCaseInsensitiveCompare($1.config.name) == .orderedAscending }
@@ -682,6 +703,35 @@ final class PluginManager {
             invalidate(id)
         }
         return applied
+    }
+
+    /// Replaces this device's copy of a plugin with the synced one the
+    /// user confirmed, taking its enabled state and settings. The next sync
+    /// finds it installed from the synced source and records it applied.
+    func confirmSyncedReplacement(_ id: String) {
+        guard let pending = pendingReplacements.removeValue(forKey: id) else { return }
+        var entry = InstalledPlugin(config: pending.preview.config, script: pending.preview.script,
+                                    iconURL: pending.preview.iconURL)
+        if let old = plugin(id) { entry.installedAt = old.installedAt }
+        entry.enabled = pending.synced.enabled
+        entry.settings = pending.synced.settings
+        var updated = installed
+        updated.removeAll { $0.id == id }
+        updated.append(entry)
+        updated.sort { $0.config.name.localizedCaseInsensitiveCompare($1.config.name) == .orderedAscending }
+        installed = updated
+        syncInstalls[id] = nil
+        persist()
+        loadCredentialsInBackground(for: id)
+        invalidate(id)
+    }
+
+    /// Keeps this device's copy. It is published as the newer record, so
+    /// the other devices take it and nobody is asked again.
+    func keepLocalPlugin(_ id: String) {
+        pendingReplacements[id] = nil
+        syncInstalls[id] = nil
+        if let current = plugin(id) { recordLocalEdit(current) }
     }
 
     /// Downloads and checks every plugin concurrently, at most
@@ -734,6 +784,16 @@ struct SyncInstall: Equatable, Identifiable, Sendable {
     let pluginID: String
     let sourceURL: String
     var failure: String?
+    /// Set when the download would replace this device's own copy of the
+    /// plugin, from another source: nothing changes until the user picks.
+    var confirmation: Confirmation?
+
+    struct Confirmation: Equatable, Sendable {
+        /// Where this device's copy came from.
+        let replacing: String
+        /// What installing it would warn about (different author, ...).
+        let warnings: [String]
+    }
     var id: String { pluginID }
 
     /// What to call it before its config is known.

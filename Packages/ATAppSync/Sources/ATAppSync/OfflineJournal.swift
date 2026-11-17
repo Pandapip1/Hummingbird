@@ -291,6 +291,10 @@ public struct JournalSnapshot: Codable, Sendable {
     public var lastArrival: UInt64
     /// Identifies this journal's arrival numbering to incremental readers.
     public var epoch: UUID
+    /// Per collection with a retention limit: the newest version dropped to
+    /// keep within it. Anything at or below it is ignored when merged, so a
+    /// peer that still holds a dropped record can't bring it back.
+    public var floors: [String: JournalEventVersion]
 
     public init(clock: HybridLogicalClock, events: [JournalMutation] = [], pending: [JournalMutation] = [],
                 tombstones: [String: JournalEventVersion] = [:],
@@ -304,11 +308,12 @@ public struct JournalSnapshot: Codable, Sendable {
         arrivals = [:]
         lastArrival = 0
         epoch = UUID()
+        floors = [:]
         numberUnnumberedEvents()
     }
 
     enum CodingKeys: String, CodingKey {
-        case clock, events, pending, tombstones, versions, applied, arrivals, lastArrival, epoch
+        case clock, events, pending, tombstones, versions, applied, arrivals, lastArrival, epoch, floors
     }
 
     public init(from decoder: Decoder) throws {
@@ -333,7 +338,9 @@ public struct JournalSnapshot: Codable, Sendable {
         arrivals = try values.decodeIfPresent([String: UInt64].self, forKey: .arrivals) ?? [:]
         lastArrival = try values.decodeIfPresent(UInt64.self, forKey: .lastArrival) ?? 0
         epoch = try values.decodeIfPresent(UUID.self, forKey: .epoch) ?? UUID()
+        floors = try values.decodeIfPresent([String: JournalEventVersion].self, forKey: .floors) ?? [:]
         compact()
+        adoptLegacyVersions()
         numberUnnumberedEvents()
     }
 
@@ -357,6 +364,46 @@ public struct JournalSnapshot: Codable, Sendable {
         events.removeAll { superseded.contains($0.id) }
         pending.removeAll { superseded.contains($0.id) }
         for id in superseded { arrivals[id.uuidString] = nil }
+    }
+
+    /// Journals from before event IDs recorded versions as bare timestamps.
+    /// Where the record's event is still here, its full version replaces
+    /// the bare one, so the record can be matched (and applied) again.
+    private mutating func adoptLegacyVersions() {
+        for event in events {
+            let path = Self.path(event.collection, event.recordKey)
+            guard let version = versions[path], version.eventID == Self.legacyEventID,
+                  version.timestamp == event.timestamp else { continue }
+            versions[path] = event.version
+            if tombstones[path] != nil { tombstones[path] = event.version }
+        }
+    }
+
+    /// Drops the oldest records of each collection over its limit, without
+    /// tombstones, raising that collection's floor. Returns the dropped
+    /// event IDs. Every device applies the same rule to the same versions.
+    mutating func enforce(_ retention: [NSID: Int]) -> Set<UUID> {
+        var dropped = Set<UUID>()
+        for (collection, limit) in retention {
+            let records = events.filter { $0.collection == collection }
+            guard records.count > limit else { continue }
+            let oldest = records.sorted { $0.version > $1.version }.dropFirst(limit)
+            for event in oldest {
+                let path = Self.path(event.collection, event.recordKey)
+                versions[path] = nil
+                tombstones[path] = nil
+                applied[path] = nil
+                arrivals[event.id.uuidString] = nil
+                dropped.insert(event.id)
+            }
+            if let newestDropped = oldest.first?.version {
+                floors[collection.rawValue] = max(floors[collection.rawValue] ?? newestDropped, newestDropped)
+            }
+        }
+        guard !dropped.isEmpty else { return [] }
+        events.removeAll { dropped.contains($0.id) }
+        pending.removeAll { dropped.contains($0.id) }
+        return dropped
     }
 
     private mutating func numberUnnumberedEvents() {
@@ -410,15 +457,23 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let signer: JournalEventSigner?
+    private let retention: [NSID: Int]
 
-    public init(fileURL: URL, deviceID: UUID = UUID(), signer: JournalEventSigner? = nil) throws {
+    /// `retention` caps how many records a collection keeps: beyond it the
+    /// oldest (by version) are dropped without tombstones, the same on
+    /// every device, so a journal of an ever-growing collection (playback
+    /// history) stays bounded.
+    public init(fileURL: URL, deviceID: UUID = UUID(), signer: JournalEventSigner? = nil,
+                retention: [NSID: Int] = [:]) throws {
         self.fileURL = fileURL
         self.signer = signer
+        self.retention = retention
         if let data = try? Data(contentsOf: fileURL) {
             snapshot = try decoder.decode(JournalSnapshot.self, from: data)
         } else {
             snapshot = JournalSnapshot(clock: HybridLogicalClock(deviceID: deviceID))
         }
+        _ = snapshot.enforce(retention)
         knownEventIDs = Set(snapshot.events.map(\.id))
     }
 
@@ -477,9 +532,10 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         guard !appended.isEmpty else { return [] }
         updated.events.removeAll { superseded.contains($0.id) }
         updated.pending.removeAll { superseded.contains($0.id) }
+        let dropped = updated.enforce(retention)
         try persist(updated)
         snapshot = updated
-        knownEventIDs.subtract(superseded)
+        knownEventIDs.subtract(superseded.union(dropped))
         knownEventIDs.formUnion(appended.map(\.id))
         return appended
     }
@@ -496,9 +552,11 @@ public final class OfflineMutationJournal: @unchecked Sendable {
             updated.pending.removeAll { $0.id == superseded }
         }
         updated.applied[JournalSnapshot.path(mutation.collection, mutation.recordKey)] = mutation.version
+        let dropped = updated.enforce(retention)
         try persist(updated)
         snapshot = updated
         if let superseded { knownEventIDs.remove(superseded) }
+        knownEventIDs.subtract(dropped)
         knownEventIDs.insert(mutation.id)
         return mutation
     }
@@ -590,6 +648,8 @@ public final class OfflineMutationJournal: @unchecked Sendable {
             // A losing event is older than a winner the clock has already
             // observed, so only winners move the clock.
             guard updated.versions[path].map({ $0 < mutation.version }) ?? true else { continue }
+            // Older than what retention already dropped: gone for good.
+            if let floor = updated.floors[mutation.collection.rawValue], mutation.version <= floor { continue }
             updated.clock.observe(mutation.timestamp)
             if let old = updated.insertWinner(mutation, pending: needsUpload) {
                 superseded.insert(old)
@@ -601,10 +661,11 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         guard !winners.isEmpty else { return [] }
         updated.events.removeAll { superseded.contains($0.id) }
         updated.pending.removeAll { superseded.contains($0.id) }
+        let dropped = updated.enforce(retention)
         try persist(updated)
         snapshot = updated
-        knownEventIDs = known
-        return winners
+        knownEventIDs = known.subtracting(dropped)
+        return winners.filter { !dropped.contains($0.id) }
     }
 
     public func acknowledge(_ ids: Set<UUID>) throws {

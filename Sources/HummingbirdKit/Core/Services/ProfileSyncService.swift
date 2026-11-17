@@ -88,8 +88,10 @@ final class ProfileSyncService {
 
     /// Runs a sync pass. A call while a pass is running asks for one more
     /// pass after it (changes made meanwhile are not left for the timer)
-    /// and returns when that one has finished.
+    /// and returns when that one has finished. The state is `.syncing` from
+    /// the moment this is called.
     func sync() async {
+        state = .syncing
         if let running {
             passRequested = true
             await running.value
@@ -101,10 +103,19 @@ final class ProfileSyncService {
                 passRequested = false
                 await pass()
             } while passRequested
+            // Cleared here, in the same main-actor step that saw no further
+            // request: a request arriving after this starts a new task.
+            running = nil
         }
         running = passes
         await passes.value
-        running = nil
+    }
+
+    /// Starts a pass from a control: the state turns `.syncing` before this
+    /// returns, so the control disables itself on the tap, not a hop later.
+    func startSync() {
+        state = .syncing
+        Task { await sync() }
     }
 
     /// One pass. The local network and the account's PDS are pulled at the
@@ -281,6 +292,9 @@ final class ProfileSyncService {
             appliedLibrary += remaining.filter { committed.contains($0.mutation.collection) }.map(\.mutation)
             remaining.removeAll { committed.contains($0.mutation.collection) }
         }
+        // Still edited here each time: go again right after this pass rather
+        // than waiting for the timer.
+        if !remaining.isEmpty { passRequested = true }
 
         let installedKeys = await pluginKeys
         let appliedPlugins = records.plugins.filter { installedKeys.contains($0.change.key) }.map(\.mutation)
@@ -298,6 +312,9 @@ final class ProfileSyncService {
         for install in plugins.syncInstalls.values.sorted(by: { $0.displayName < $1.displayName }) {
             if let failure = install.failure {
                 problems.append("\(install.displayName) couldn’t be installed: \(failure) It will be retried.")
+            }
+            if install.confirmation != nil {
+                problems.append("\(install.displayName) differs from your other device’s copy. Choose which to keep in Sources.")
             }
         }
         return problems

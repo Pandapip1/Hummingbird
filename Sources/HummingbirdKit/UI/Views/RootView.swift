@@ -12,19 +12,25 @@ struct RootView: View {
         @Bindable var app = model
         @Bindable var plugins = model.plugins
         BrowserTabContainer(items: browserTabItems, selection: activeTabBinding,
-                            onClose: { app.closeTab($0) }, overviewPresented: $showingTabOverview,
+                            onClose: { app.closeTab($0) },
+                            onMove: { app.moveTab($0, to: $1) },
+                            overviewPresented: $showingTabOverview,
+                            onReopenClosedTab: app.closedTabs.isEmpty ? nil : { app.reopenClosedTab() },
                             newTabControl: {
                                 NewTabDestinationMenu { route, title in
                                     app.openSection(route, title: title)
                                 }
                             }) { item in
             ZStack {
-                BrowserTabContentView(tab: browserTab(for: item.id), showingTabOverview: $showingTabOverview)
+                if let tab = browserTab(for: item.id) {
+                    BrowserTabContentView(tab: tab)
+                }
                 if let loginTarget, loginTarget.tabID == item.id {
                     LoginSheet(pluginID: loginTarget.pluginID) { self.loginTarget = nil }
                 }
             }
         }
+        .browserTabControls { MobileBrowserToolbar(showingTabOverview: $showingTabOverview) }
         .navigationTitle(windowTitle)
         .browserWindowChrome(model: model, overviewPresented: $showingTabOverview)
         .overlay {
@@ -65,15 +71,22 @@ struct RootView: View {
     }
 
     private var browserTabItems: [BrowserTabItem] {
-        model.contentTabs.map { BrowserTabItem(id: $0.id, title: $0.title) }
+        model.contentTabs.map {
+            BrowserTabItem(id: $0.id, title: $0.title, systemImage: Route.systemImage(for: $0.current))
+        }
     }
 
     private var activeTabBinding: Binding<UUID> {
         Binding(get: { model.activeTabID }, set: { model.activeTabID = $0 })
     }
 
-    private func browserTab(for id: UUID) -> BrowserTab {
-        model.contentTabs.first { $0.id == id } ?? model.activeTab
+    /// The tab for one of the container's items. The items are the content
+    /// tabs themselves, so there always is one; showing another tab's page
+    /// instead would mount that page twice.
+    private func browserTab(for id: UUID) -> BrowserTab? {
+        let tab = model.contentTabs.first { $0.id == id }
+        assert(tab != nil, "the tab container asked for the page of a tab that is gone")
+        return tab
     }
 }
 
@@ -122,7 +135,6 @@ struct NewTabDestinationMenu: View {
 struct BrowserTabContentView: View {
     @Environment(AppModel.self) private var app
     let tab: BrowserTab
-    @Binding var showingTabOverview: Bool
 
     var body: some View {
         Group {
@@ -130,24 +142,18 @@ struct BrowserTabContentView: View {
                 RouteContent(
                     route: route,
                     player: app.player(forTab: tab.id),
-                    browserToolbar: BrowserToolbarContext(
-                        tab: tab,
-                        showTabOverview: { showingTabOverview = true }
-                    ),
+                    browserToolbar: BrowserToolbarContext(tab: tab),
                     shouldKeepPlaybackWhenHidden: {
                         tab.current == route && app.contentTabs.contains { $0.id == tab.id }
                     }
                 )
                     .id(tab.historyIndexIdentity)
-                    .profileSwitcherToolbarItem()
-                    .browserTabControls(overviewPresented: $showingTabOverview)
             } else {
                 NavigationStack {
                     ContentUnavailableView("New Tab", systemImage: "plus.square", description: Text("Choose a section from the menu."))
                         .navigationTitle("New Tab")
+                        .profileSwitcherToolbarItem()
                 }
-                .profileSwitcherToolbarItem()
-                .browserTabControls(overviewPresented: $showingTabOverview)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -184,8 +190,10 @@ struct BrowserTabOverviewButton: View {
 
     var body: some View {
         Button(action: action) {
+            // Icon only: `labelsHidden()` hides control labels, not a Label's
+            // title, which the bottom bar then squeezes in beside the icon.
             Label("Tabs", systemImage: "square.on.square")
-                .labelsHidden()
+                .labelStyle(.iconOnly)
         }
         .accessibilityLabel("Tabs")
         .accessibilityValue(tabCountLabel)
@@ -198,7 +206,6 @@ struct BrowserTabOverviewButton: View {
 
 struct BrowserToolbarContext {
     let tab: BrowserTab
-    let showTabOverview: () -> Void
 }
 
 @MainActor
@@ -212,7 +219,8 @@ struct BrowserTabStrip: View {
                 get: { app.activeTabID },
                 set: { app.activeTabID = $0 }
             ),
-            onClose: { app.closeTab($0) }
+            onClose: { app.closeTab($0) },
+            onMove: { app.moveTab($0, to: $1) }
         )
     }
 }
@@ -492,5 +500,14 @@ private struct PairedDeviceLoginSheet: View {
             Text(label).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.title2).accessibilityLabel("\(label): \(value)")
         }
+    }
+}
+
+public extension Scene {
+    /// The app's commands for each window: the tab commands (close, new,
+    /// reopen, select and cycle tabs), in the menus where the platform has
+    /// them and as keyboard shortcuts everywhere.
+    func hummingbirdCommands() -> some Scene {
+        browserTabCommands()
     }
 }

@@ -14,8 +14,14 @@ import os
 /// only values we chose or that identify a service (plugin IDs, event names,
 /// hosts, counts, states) as public. URLs, titles, messages, plugin output and
 /// error descriptions stay private. Secrets are never logged.
+///
+/// A test process logs under `com.eightybps.hummingbird.tests` instead, so
+/// the fake diagnostics, failures and payloads tests produce never appear
+/// among the app's own entries.
 public enum Diagnostics {
-    public static let subsystem = "com.eightybps.hummingbird"
+    public static let subsystem = LiveData.isTestProcess
+        ? "com.eightybps.hummingbird.tests"
+        : "com.eightybps.hummingbird"
 }
 
 extension Logger {

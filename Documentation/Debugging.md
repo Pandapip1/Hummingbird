@@ -8,7 +8,10 @@ crashes and hangs come from MetricKit, and app state is read in lldb.
 
 Every component logs to the subsystem `com.eightybps.hummingbird` with
 `os.Logger`. On Linux, `import os` resolves to SwiftOpenUI's stand-in, which has
-the same API.
+the same API. Test processes log under `com.eightybps.hummingbird.tests`
+instead (see `TestProcess` in ATAppSync), so fake diagnostics and failures from
+tests never appear among the app's own entries; query that subsystem to see
+them.
 
 | Category | What |
 |---|---|
@@ -54,6 +57,9 @@ Stream or read the logs:
 # Live; add --level debug for plugin console output and traces
 log stream --predicate 'subsystem == "com.eightybps.hummingbird"'
 log stream --level debug --predicate 'subsystem == "com.eightybps.hummingbird" AND category == "player"'
+
+# What a test run logged
+log show --last 1h --predicate 'subsystem == "com.eightybps.hummingbird.tests"'
 
 # The last hour, from the store
 log show --last 1h --predicate 'subsystem == "com.eightybps.hummingbird"'
@@ -218,6 +224,20 @@ Swift 6's concurrency runtime already traps when main-actor code runs off the
 main actor. For more checks, set `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` in a
 scheme's environment, which makes blocking the Swift concurrency pool show up
 quickly.
+
+## Isolated data
+
+A debug build launched with `HUMMINGBIRD_DEBUG_DATA_ROOT=<directory>` keeps
+everything (profile, library, caches, preferences) under that directory and
+its credentials in memory, never touching the real profile or keychain. An
+absolute path is used as given; a relative one is inside the app's own
+temporary directory, which also works on devices. Use it for profiling,
+screenshots and anything else that runs the app.
+
+UI tests must launch the app this way: with `IsolatedApp.make()` or
+`IsolatedApp.launch()` (`Tests/UITestSupport`), which give every launch a
+fresh data root. `UITestIsolationTests` fails if a UI test creates an
+`XCUIApplication` itself. Relaunching the same instance keeps its data.
 
 ## Linux (GTK build)
 

@@ -94,9 +94,24 @@ public final class AppDataStores: Sendable {
             if let existing = stores[key] { return existing }
             #if DEBUG
             if let root = ProcessInfo.processInfo.environment[debugDataRootVariable], !root.isEmpty {
-                let created = debugIsolated(root: URL(fileURLWithPath: root, isDirectory: true))
+                // A relative root is inside the app's own temporary directory,
+                // which UI tests use so isolation works on devices too.
+                let rootURL = root.hasPrefix("/")
+                    ? URL(fileURLWithPath: root, isDirectory: true)
+                    : FileManager.default.temporaryDirectory.appendingPathComponent(root, isDirectory: true)
+                let created = debugIsolated(root: rootURL)
                 stores[key] = created
                 return created
+            }
+            #else
+            // Only debug builds can isolate their data. Whoever asked for an
+            // isolated launch (a UI test, a profiling run) must never get the
+            // real data instead, so a release build refuses to start.
+            if ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_DATA_ROOT"] != nil {
+                fatalError("""
+                    HUMMINGBIRD_DEBUG_DATA_ROOT is set, but this is a release build, which only uses the \
+                    real data. Run a debug build to isolate the app's data.
+                    """)
             }
             #endif
             #if os(tvOS)

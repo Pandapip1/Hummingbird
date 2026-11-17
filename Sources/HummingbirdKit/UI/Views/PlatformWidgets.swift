@@ -378,17 +378,11 @@ private struct ProfileSwitcher: View {
     }
 }
 
-private struct ProfileSwitcherToolbarModifier: ViewModifier {
-    @ViewBuilder func body(content: Content) -> some View {
-        content.browserTabToolbarItem(id: "profile.switcher", placement: .leading) {
-            ProfileSwitcher()
-        }
-    }
-}
-
 extension View {
+    /// The profile switcher, in a section page's own toolbar. Apply it inside
+    /// the page's `NavigationStack`.
     func profileSwitcherToolbarItem() -> some View {
-        modifier(ProfileSwitcherToolbarModifier())
+        browserPageToolbarItem(id: "profile.switcher", placement: .leading) { ProfileSwitcher() }
     }
 }
 
@@ -452,53 +446,6 @@ struct DebugSceneSelection<Content: View>: View {
         #else
         content
         #endif
-    }
-}
-
-@MainActor
-struct BrowserTopToolbar: ToolbarContent {
-    let tab: BrowserTab
-    let showTabOverview: () -> Void
-
-    var body: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            BrowserHistoryControls(
-                canGoBack: tab.canGoBack,
-                canGoForward: tab.canGoForward,
-                goBack: { tab.goBack() },
-                goForward: { tab.goForward() }
-            )
-        }
-        #if os(tvOS)
-        ToolbarItem(placement: .primaryAction) { AppSectionMenu() }
-        ToolbarItem(placement: .primaryAction) {
-            BrowserTabOverviewButton(action: showTabOverview)
-        }
-        #endif
-    }
-}
-
-private struct BrowserTopToolbarModifier: ViewModifier {
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
-    let context: BrowserToolbarContext?
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.toolbar {
-            if let context, !isOverviewPreview {
-                BrowserTopToolbar(tab: context.tab, showTabOverview: context.showTabOverview)
-            }
-        }
-        #else
-        content
-        #endif
-    }
-}
-
-extension View {
-    func browserTopToolbar(_ context: BrowserToolbarContext?) -> some View {
-        modifier(BrowserTopToolbarModifier(context: context))
     }
 }
 
@@ -586,6 +533,24 @@ private struct NativeActionMenuButton<Value>: UIViewRepresentable {
 }
 #endif
 
+/// The window toolbar's history controls for the selected tab, on desktop
+/// windows. Touch and TV layouts have them in the tab container's bar.
+@MainActor
+struct BrowserTopToolbar: ToolbarContent {
+    let tab: BrowserTab
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            BrowserHistoryControls(
+                canGoBack: tab.canGoBack,
+                canGoForward: tab.canGoForward,
+                goBack: { tab.goBack() },
+                goForward: { tab.goForward() }
+            )
+        }
+    }
+}
+
 private struct BrowserWindowChromeModifier: ViewModifier {
     let model: AppModel
     @Binding var overviewPresented: Bool
@@ -598,7 +563,7 @@ private struct BrowserWindowChromeModifier: ViewModifier {
         content
             .toolbar {
                 if !overviewPresented {
-                    BrowserTopToolbar(tab: model.activeTab) { overviewPresented = true }
+                    BrowserTopToolbar(tab: model.activeTab)
                 }
             }
             .background {
@@ -611,31 +576,9 @@ private struct BrowserWindowChromeModifier: ViewModifier {
     }
 }
 
-private struct BrowserTabControlsModifier: ViewModifier {
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
-    @Binding var overviewPresented: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        #if os(iOS)
-        content.safeAreaInset(edge: .bottom, spacing: 0) {
-            if !isOverviewPreview {
-                MobileBrowserToolbar(showingTabOverview: $overviewPresented)
-            }
-        }
-        #else
-        content
-        #endif
-    }
-}
-
 extension View {
     func browserWindowChrome(model: AppModel, overviewPresented: Binding<Bool>) -> some View {
         modifier(BrowserWindowChromeModifier(model: model, overviewPresented: overviewPresented))
-    }
-
-    func browserTabControls(overviewPresented: Binding<Bool>) -> some View {
-        modifier(BrowserTabControlsModifier(overviewPresented: overviewPresented))
     }
 }
 
@@ -687,7 +630,7 @@ extension View {
     @ViewBuilder
     func editableCollectionToolbar(id: String) -> some View {
         #if os(iOS)
-        browserTabToolbarItem(id: id, placement: .trailing) { EditButton() }
+        browserPageToolbarItem(id: id, placement: .trailing) { EditButton() }
         #else
         self
         #endif
@@ -699,15 +642,6 @@ extension View {
         self
         #else
         swipeActions { Button(title, role: .destructive, action: action) }
-        #endif
-    }
-
-    @ViewBuilder
-    func searchSubmission(_ action: @escaping () -> Void) -> some View {
-        #if os(tvOS)
-        onSubmit(action)
-        #else
-        onSubmit(of: .search, action)
         #endif
     }
 
@@ -754,102 +688,6 @@ struct FocusableReadOnlyModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         content.focusableReadOnlyValue()
-    }
-}
-
-private struct SearchEntryModifier: ViewModifier {
-    @Binding var query: String
-    let hidden: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if hidden {
-            content
-        } else {
-            #if os(tvOS)
-            content.safeAreaInset(edge: .top, spacing: 0) {
-                TextField("Search or paste a link", text: $query)
-                    .padding(.horizontal, 80)
-                    .padding(.bottom, 12)
-            }
-            #elseif os(iOS)
-            content.searchable(
-                text: $query,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search or paste a link"
-            )
-            #elseif os(macOS) && !BACKEND_GTK
-            content.browserTabToolbarItem(id: "search.field", placement: .principal) {
-                TextField("Search or paste a link", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 260, idealWidth: 420, maxWidth: 560)
-            }
-            #else
-            content.searchable(text: $query, prompt: "Search or paste a link")
-            #endif
-        }
-    }
-}
-
-extension View {
-    func searchEntry(query: Binding<String>, hidden: Bool) -> some View {
-        modifier(SearchEntryModifier(query: query, hidden: hidden))
-    }
-}
-
-@MainActor
-struct FocusBrowserToolbar: ToolbarContent {
-    let browserToolbar: BrowserToolbarContext?
-
-    @ToolbarContentBuilder
-    var body: some ToolbarContent {
-        #if os(tvOS)
-        if let browserToolbar {
-            BrowserTopToolbar(tab: browserToolbar.tab, showTabOverview: browserToolbar.showTabOverview)
-        }
-        #else
-        ToolbarItem { EmptyView() }
-        #endif
-    }
-}
-
-@MainActor
-struct FocusNavigationLink<Destination: View, Label: View>: ToolbarContent {
-    let isActive: Bool
-    @ViewBuilder let destination: () -> Destination
-    @ViewBuilder let label: () -> Label
-
-    @ToolbarContentBuilder
-    var body: some ToolbarContent {
-        #if os(tvOS)
-        if isActive {
-            ToolbarItem(placement: .primaryAction) {
-                NavigationLink(destination: destination, label: label)
-            }
-        }
-        #else
-        ToolbarItem { EmptyView() }
-        #endif
-    }
-}
-
-@MainActor
-struct FocusPrimaryAction<Label: View>: ToolbarContent {
-    let isActive: Bool
-    let action: () -> Void
-    @ViewBuilder let label: () -> Label
-
-    @ToolbarContentBuilder
-    var body: some ToolbarContent {
-        #if os(tvOS)
-        if isActive {
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: action, label: label)
-            }
-        }
-        #else
-        ToolbarItem { EmptyView() }
-        #endif
     }
 }
 
@@ -909,7 +747,7 @@ struct SettingsDetailContainer<Content: View>: View {
 
     var body: some View {
         #if os(macOS) && !BACKEND_GTK
-        ScrollView { content() }.defaultScrollAnchor(.top)
+        ScrollView { content().frame(maxWidth: .infinity) }.defaultScrollAnchor(.top)
         #else
         content()
         #endif
@@ -1045,6 +883,27 @@ extension View {
         self
         #else
         task(id: id, prepare)
+        #endif
+    }
+}
+
+
+/// Debug builds: an invisible accessibility element naming this instance of
+/// a page, so UI tests can check that switching tabs or opening the tab
+/// overview never rebuilds the page (which would lose its state).
+struct PageInstanceMarker: View {
+    let page: String
+    @State private var instance = UUID().uuidString
+
+    var body: some View {
+        #if DEBUG
+        Color.clear
+            .frame(width: 1, height: 1)
+            .accessibilityElement()
+            .accessibilityIdentifier("page-instance.\(page)")
+            .accessibilityLabel(instance)
+        #else
+        EmptyView()
         #endif
     }
 }

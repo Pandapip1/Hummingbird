@@ -3,7 +3,7 @@ import XCTest
 final class PlayerFocusUITests: XCTestCase {
     @MainActor
     func testNewTabMenuOpensFromToolbar() throws {
-        let app = XCUIApplication()
+        let app = IsolatedApp.make()
         app.launch()
 
         let newTab = app.buttons["Open section in new tab"]
@@ -24,7 +24,7 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testFullscreenKeepsFocusAndCanExit() throws {
-        let app = XCUIApplication()
+        let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player"
         app.launch()
 
@@ -57,7 +57,7 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testRemoteSeekControlAdjustsThenReleasesNavigation() throws {
-        let app = XCUIApplication()
+        let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-seek"
         app.launch()
 
@@ -90,7 +90,7 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testPlaybackMenuSurvivesControlsAutoHideDeadline() throws {
-        let app = XCUIApplication()
+        let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-seek"
         app.launch()
 
@@ -117,7 +117,7 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testInstallPreviewCanFocusLastAllowedURL() throws {
-        let app = XCUIApplication()
+        let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "install-preview"
         app.launch()
 
@@ -132,11 +132,13 @@ final class PlayerFocusUITests: XCTestCase {
                       "Every allowed URL must be reachable by moving focus through the preview")
     }
 
+    @MainActor
     private func playerControlHasFocus(in app: XCUIApplication) -> Bool {
         let labels = Set(["Back 10 seconds", "Play", "Forward 10 seconds", "Exit Full Screen", "Speed"])
         return app.buttons.allElementsBoundByIndex.contains { labels.contains($0.label) && $0.hasFocus }
     }
 
+    @MainActor
     private func focusedButton(label: String, in app: XCUIApplication) -> XCUIElement? {
         app.buttons.allElementsBoundByIndex.first { $0.label == label && $0.hasFocus }
     }

@@ -19,9 +19,9 @@ struct HomeView: View {
                 } else { ProgressView() }
             }
             .navigationTitle("Home")
-            .browserTopToolbar(browserToolbar)
+            .profileSwitcherToolbarItem()
         }
-        .task(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
+        .browserTaskOnceVisible(id: app.plugins.enabledPlugins.map(\.id)) { await app.loadHome() }
     }
 }
 
@@ -31,8 +31,6 @@ struct HomeView: View {
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.openRoute) private var openRoute
-    @Environment(\.isBrowserTabOverviewPreview) private var isOverviewPreview
-    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     @State private var query = ""
     @State private var submittedQuery = ""
     @State private var feed: FeedModel?
@@ -95,12 +93,13 @@ struct SearchView: View {
                 }
             }
             .navigationTitle("Search")
-            .searchEntry(query: $query, hidden: isOverviewPreview || !isBrowserTabToolbarActive)
-            .toolbar {
-                FocusBrowserToolbar(browserToolbar: browserToolbar)
+            .background(PageInstanceMarker(page: "search"))
+            .browserPageSearchField(text: $query, prompt: "Search or paste a link") {
+                Task { await submit() }
             }
-            .searchSubmission { Task { await submit() } }
+            .profileSwitcherToolbarItem()
             .task(id: query) { await updateSuggestions() }
+            .onChange(of: query) { notice = nil }
             .overlay(alignment: .bottom) {
                 if let notice { Text(notice).font(.footnote).padding(10).background(.thinMaterial, in: Capsule()).padding() }
             }
@@ -131,20 +130,24 @@ struct SearchView: View {
         app.searchHistory.record(text)
         suggestions = []
         suggestionFailures = []
-        if text.contains("://") {
-            let routes = await app.platform.recognizedRoutes(for: text)
+        // An address (with or without https://) opens in the source that
+        // recognises it. Hummingbird never opens arbitrary web pages. Input
+        // that only looks like a host ("node.js") and that no source
+        // recognises is searched for instead.
+        if let address = AddressInput.url(from: text) {
+            let link = address.absoluteString
+            let routes = await app.platform.recognizedRoutes(for: link)
             guard generation == searchGeneration else { return }
-            Logger.routing.info("manual_url_matches content=\(routes.contains(.content(text))) channel=\(routes.contains(.channel(text))) playlist=\(routes.contains(.playlist(text)))")
+            Logger.routing.info("manual_url_matches content=\(routes.contains(.content(link))) channel=\(routes.contains(.channel(link))) playlist=\(routes.contains(.playlist(link)))")
             if routes.count == 1, let route = routes.first {
                 openRoute(route)
-            } else if routes.isEmpty {
+            } else if routes.count > 1 {
+                pendingURL = link
+            } else if AddressInput.hasExplicitScheme(text) {
+                // Stays until the field changes, so it can't be missed.
                 notice = "None of your sources recognise that link."
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                if generation == searchGeneration { notice = nil }
-            } else {
-                pendingURL = text
             }
-            return
+            if !routes.isEmpty || AddressInput.hasExplicitScheme(text) { return }
         }
         let f = app.makeFeed()
         feed = f
@@ -207,7 +210,6 @@ struct SearchView: View {
 @MainActor
 struct SubscriptionsView: View {
     @Environment(AppModel.self) private var app
-    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     let browserToolbar: BrowserToolbarContext?
 
     var body: some View {
@@ -222,24 +224,17 @@ struct SubscriptionsView: View {
                 }
             }
             .navigationTitle("Subscriptions")
-            .toolbar {
-                FocusBrowserToolbar(browserToolbar: isBrowserTabToolbarActive ? browserToolbar : nil)
-                FocusNavigationLink(isActive: isBrowserTabToolbarActive) {
-                    ManageSubscriptionsView()
+            .browserPageToolbarItem(id: "subscriptions.manage", placement: .trailing) {
+                Button {
+                    browserToolbar?.tab.push(.manageSubscriptions, title: "Manage Subscriptions")
                 } label: {
                     Image(systemName: "person.2")
                 }
+                .accessibilityLabel("Manage subscriptions")
             }
+            .profileSwitcherToolbarItem()
         }
-        .task { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
-        .browserTabToolbarItem(id: "subscriptions.manage", placement: .trailing) {
-            Button {
-                browserToolbar?.tab.push(.manageSubscriptions, title: "Manage Subscriptions")
-            } label: {
-                Image(systemName: "person.2")
-            }
-            .accessibilityLabel("Manage subscriptions")
-        }
+        .browserTaskOnceVisible(id: 0) { if app.subscriptionFeed.lastRefresh == nil && !app.library.subscriptions.isEmpty { await app.subscriptionFeed.refresh() } }
     }
 }
 
@@ -324,7 +319,7 @@ struct LibraryView: View {
             .jsonDocumentImporter(isPresented: $showImporter) { url in
                 Task { await importBackup(from: url) }
             }
-            .browserTopToolbar(browserToolbar)
+            .profileSwitcherToolbarItem()
         }
         .preparesDocumentExport(id: backupRevision) { await prepareBackup() }
     }
@@ -393,11 +388,11 @@ struct PlaybackQueueView: View {
         }
         .listStyle(.plain)
         .navigationTitle("Queue")
-        .browserTabToolbarItem(id: "queue.shuffle", placement: .trailing) {
+        .browserPageToolbarItem(id: "queue.shuffle", placement: .trailing) {
             Button { app.playbackQueue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
                 .disabled(app.playbackQueue.items.count < 2)
         }
-        .browserTabToolbarItem(id: "queue.repeat", placement: .trailing) {
+        .browserPageToolbarItem(id: "queue.repeat", placement: .trailing) {
             Button { app.playbackQueue.cycleRepeatMode() } label: {
                 Image(systemName: app.playbackQueue.repeatMode.systemImage)
             }
@@ -445,7 +440,7 @@ struct HistoryView: View {
         }
         .listStyle(.plain)
         .navigationTitle("History")
-        .browserTabToolbarItem(id: "history.clear", placement: .trailing) {
+        .browserPageToolbarItem(id: "history.clear", placement: .trailing) {
             Button("Clear", role: .destructive) { app.library.clearHistory() }
                 .disabled(app.library.history.isEmpty)
         }

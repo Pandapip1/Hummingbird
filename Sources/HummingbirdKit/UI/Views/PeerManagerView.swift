@@ -129,10 +129,11 @@ struct SyncSettingsView: View {
                 }
             }
         }
-        .task {
-            await reload()
+        .browserTaskWhileVisible {
             // Instances come and go and trust changes from other devices;
-            // keep the list current while it is on screen.
+            // keep the list current while it is on screen, and leave it
+            // idle in a background tab (it reloads when shown again).
+            await reload()
             for await _ in app.profileAccount.peerChanges() { await reload() }
         }
         .alert("Enter Verification Code", isPresented: $enteringCode) {
@@ -267,7 +268,11 @@ struct SyncSettingsView: View {
         errorMessage = nil
         defer { isLoading = false }
         do { peers = try await app.profileAccount.peers() }
-        catch { errorMessage = error.localizedDescription }
+        catch {
+            // Cancelled because the page was hidden: not a failure, and the
+            // list reloads when the page is shown again.
+            if !Task.isCancelled { errorMessage = error.localizedDescription }
+        }
     }
 
     private func verify(_ value: String) async {

@@ -5,15 +5,16 @@ final class RenderStallExerciseUITests: XCTestCase {
 
     @MainActor
     func testRepeatedColdLaunchInteractionPaths() throws {
-        var app = XCUIApplication()
+        let app = IsolatedApp.make()
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
         try installYouTubeIfNeeded(in: app)
 
         for iteration in 0..<12 {
             if iteration > 0 {
+                // A cold launch of the same instance keeps its isolated data
+                // (and the source installed above).
                 app.terminate()
-                app = XCUIApplication()
                 app.launch()
                 XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
             }

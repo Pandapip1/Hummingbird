@@ -29,7 +29,7 @@ struct ChannelView: View {
             }
         }
         .detailNavigationStyle()
-        .task(id: url) { await load() }
+        .browserTaskOnceVisible(id: url) { await load() }
     }
 
     @ViewBuilder
@@ -83,6 +83,7 @@ struct ChannelView: View {
                     FeedGrid(feed: feed)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
         .navigationTitle(info.name)
@@ -289,7 +290,7 @@ struct PlaylistView: View {
         }
         .navigationTitle(title)
         .detailNavigationStyle()
-        .task(id: url) { await load() }
+        .browserTaskOnceVisible(id: url) { await load() }
     }
 
     private func load() async {

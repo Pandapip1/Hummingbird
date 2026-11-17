@@ -6,7 +6,6 @@ import SwiftOpenUI
 @MainActor
 struct SourcesView: View {
     @Environment(AppModel.self) private var app
-    @Environment(\.isBrowserTabToolbarActive) private var isBrowserTabToolbarActive
     let browserToolbar: BrowserToolbarContext?
     @State private var showAdd = false
     @State private var removeTarget: String?
@@ -31,13 +30,11 @@ struct SourcesView: View {
                 }
             }
             .navigationTitle("Sources")
-            .toolbar {
-                FocusBrowserToolbar(browserToolbar: isBrowserTabToolbarActive ? browserToolbar : nil)
-                FocusPrimaryAction(isActive: isBrowserTabToolbarActive, action: { showAdd = true }) {
-                    Image(systemName: "plus")
-                        .accessibilityLabel("Add source")
-                }
+            .browserPageToolbarItem(id: "sources.add", placement: .trailing) {
+                Button { showAdd = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add source")
             }
+            .profileSwitcherToolbarItem()
             .sheet(isPresented: $showAdd) { AddSourceSheet() }
             .confirmationDialog("Remove source?", isPresented: Binding(
                 get: { removeTarget != nil },
@@ -54,10 +51,6 @@ struct SourcesView: View {
                 Text("Its settings and sign-in are deleted. Subscriptions you saved stay in your library.")
             }
             .refreshable { await app.plugins.checkForUpdates(origin: .userAction) }
-        }
-        .browserTabToolbarItem(id: "sources.add", placement: .trailing) {
-            Button { showAdd = true } label: { Image(systemName: "plus") }
-                .accessibilityLabel("Add source")
         }
     }
 
@@ -600,9 +593,7 @@ private struct AppSettingsForm: View {
             }
         }
         .navigationTitle("Settings")
-        .toolbar {
-            FocusBrowserToolbar(browserToolbar: browserToolbar)
-        }
+        .profileSwitcherToolbarItem()
     }
 }
 

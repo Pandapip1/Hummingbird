@@ -68,6 +68,22 @@ final class TabOverviewUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Done"].exists)
     }
 
+    /// The card swipe must not swallow taps: tapping a card still opens it.
+    @MainActor
+    func testTappingACardOpensItsTab() throws {
+        let app = IsolatedApp.launch()
+        for section in ["Library", "Sources"] { openNewTab(named: section, in: app) }
+        openOverview(in: app)
+        let before = titles(in: app)
+        card("Open Library", in: app).tap()
+        let done = app.buttons["Done"]
+        let deadline = Date().addingTimeInterval(5)
+        while done.exists && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+        XCTAssertFalse(done.exists, "tapping a card didn't leave the overview")
+        openOverview(in: app)
+        XCTAssertEqual(titles(in: app).count, before.count, "tapping a card closed or added a tab")
+    }
+
     @MainActor private func openOverview(in app: XCUIApplication) {
         let tabs = app.buttons["Tabs"]
         XCTAssertTrue(tabs.waitForExistence(timeout: 15))

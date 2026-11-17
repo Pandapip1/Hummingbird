@@ -176,7 +176,7 @@ final class PluginManager {
     /// Makes `r` the plugin's running runtime, reporting its toasts and logs.
     private func adopt(_ r: PluginRuntime, for id: String) {
         r.onToast = { [weak self] msg in
-            Logger.plugin.notice("alert plugin=\(id, privacy: .public) message=\(msg.prefix(500))")
+            PluginLog.alert(plugin: id, LogRedaction.text(msg))
             Task { @MainActor in self?.toast = msg }
         }
         r.onLog = { msg in
@@ -184,14 +184,11 @@ final class PluginManager {
             let umpProgress = lower.hasPrefix("ump ") || lower.hasPrefix("ump:") || lower.hasPrefix("ump descriptor ")
                 || lower.hasPrefix("====== ump") || lower.hasPrefix("abr enabled:")
             if umpProgress {
-                // UMP progress lines are kept at info level so they survive in
-                // the log store for diagnosing playback after the fact.
-                Logger.player.info("ump_log plugin=\(id, privacy: .public) \(msg.prefix(500))")
+                PluginLog.umpProgress(plugin: id, LogRedaction.text(msg))
             }
-            // Plugins can log whole HTML and API responses: private, debug level
-            // (streamed but not persisted), and bounded.
-            let bounded = msg.count > 2_000 ? String(msg.prefix(2_000)) + "… [truncated]" : msg
-            Logger.pluginConsole.debug("plugin=\(id, privacy: .public) \(bounded)")
+            // Plugins can log whole HTML and API responses: redacted, debug
+            // level (streamed but not persisted), and bounded.
+            PluginLog.console(plugin: id, LogRedaction.text(msg, limit: 2_000))
         }
         runtimes[id] = r
     }
@@ -779,7 +776,7 @@ final class PluginManager {
             }
             return (plugin.pluginID, .success(preview))
         } catch {
-            Logger.plugin.error("sync_install_failed plugin=\(plugin.pluginID, privacy: .public) error=\(error.localizedDescription)")
+            Logger.plugin.error("sync_install_failed plugin=\(plugin.pluginID, privacy: .public) error=\(LogRedaction.redact(error.localizedDescription), privacy: .public)")
             return (plugin.pluginID, .failure(error))
         }
     }

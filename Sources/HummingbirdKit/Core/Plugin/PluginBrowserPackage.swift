@@ -344,7 +344,7 @@ private final class SubresourceRules {
                     forIdentifier: Self.identifier, encodedContentRuleList: Self.json
                 )
             } catch {
-                Logger.pluginBrowser.error("content_rules_failed message=\(error.localizedDescription)")
+                PluginLog.browserFailure("content_rules_failed", LogRedaction.text(error.localizedDescription))
                 return nil
             }
         }

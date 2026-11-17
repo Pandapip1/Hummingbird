@@ -242,7 +242,10 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         if traceYouTubeAPI {
             let headers = HTTPTrace.headers(request.allHTTPHeaderFields ?? [:])
             let body = request.httpBody.map { String(decoding: $0, as: UTF8.self) } ?? ""
-            Logger.http.debug("youtube_api_request method=\(request.httpMethod ?? "", privacy: .public) url=\(request.url?.absoluteString ?? urlString) headers=\(headers) body=\(body)")
+            PluginLog.httpTrace(LogRedaction.text(
+                "youtube_api_request method=\(request.httpMethod ?? "") url=\(request.url?.absoluteString ?? urlString) headers=\(headers) body=\(body)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         let traceUMP = ["1", "response"].contains(ProcessInfo.processInfo.environment["HUMMINGBIRD_UMP_TRACE"])
@@ -251,7 +254,10 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         let traceUMPRequest = ProcessInfo.processInfo.environment["HUMMINGBIRD_UMP_TRACE"] == "1"
         if traceUMPRequest && traceUMP {
             let headers = HTTPTrace.headers(request.allHTTPHeaderFields ?? [:])
-            Logger.http.debug("ump_request url=\(request.url?.absoluteString ?? urlString) headers=\(headers) bodyBase64=\(request.httpBody?.base64EncodedString() ?? "")")
+            PluginLog.httpTrace(LogRedaction.text(
+                "ump_request url=\(request.url?.absoluteString ?? urlString) headers=\(headers) bodyBytes=\(request.httpBody?.count ?? 0)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         let redirectGuard = RedirectGuard(owner: self, clientId: clientId, applyCookies: applyCookies,
@@ -293,20 +299,29 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         if traceYouTubeAPI {
             let responseHeaders = HTTPTrace.headers(http.allHeaderFields)
             let body = String(decoding: responseData ?? Data(), as: UTF8.self)
-            Logger.http.debug("youtube_api_response url=\(http.url?.absoluteString ?? urlString) status=\(http.statusCode) headers=\(responseHeaders) body=\(body)")
+            PluginLog.httpTrace(LogRedaction.text(
+                "youtube_api_response url=\(http.url?.absoluteString ?? urlString) status=\(http.statusCode) headers=\(responseHeaders) body=\(body)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1",
            !(200..<300).contains(http.statusCode) {
             let body = String(decoding: (responseData ?? Data()).prefix(2_048), as: UTF8.self)
                 .replacingOccurrences(of: "\n", with: "\\n")
-            Logger.http.notice("plugin_http_failure method=\(request.httpMethod ?? "", privacy: .public) host=\(LogRedaction.redact(http.url?.host ?? "unknown"), privacy: .public) status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)")
+            PluginLog.httpFailure(LogRedaction.text(
+                "plugin_http_failure method=\(request.httpMethod ?? "") status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         if traceUMP {
             let responseHeaders = HTTPTrace.headers(http.allHeaderFields)
             let prefix = (responseData ?? Data()).prefix(512).base64EncodedString()
-            Logger.http.debug("ump_response status=\(http.statusCode) bodyBytes=\(responseData?.count ?? 0) url=\(http.url?.absoluteString ?? urlString) headers=\(responseHeaders) bodyPrefixBase64=\(prefix)")
+            PluginLog.httpTrace(LogRedaction.text(
+                "ump_response status=\(http.statusCode) bodyBytes=\(responseData?.count ?? 0) url=\(http.url?.absoluteString ?? urlString) headers=\(responseHeaders) bodyPrefixBase64=\(prefix)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         var rawHeaders: [String: String] = [:]
@@ -512,6 +527,10 @@ private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked 
 /// `HUMMINGBIRD_UMP_TRACE`). Traces are logged as private data, and
 /// credential-bearing header values are dropped even from that.
 enum HTTPTrace {
+    /// Traces are opt-in diagnostics of whole requests, so they keep more
+    /// than an ordinary log line, still redacted.
+    static let limit = 8_000
+
     static func headers(_ fields: [String: String]) -> String {
         fields.sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
             .map { "\($0.key): \(isCredential($0.key) ? "<redacted>" : $0.value)" }

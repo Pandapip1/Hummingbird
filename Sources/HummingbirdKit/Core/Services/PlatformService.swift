@@ -209,6 +209,8 @@ final class PlatformService {
     }
 
     func searchSources(query: String, type: String?, order: String?) async -> [FeedSource] {
+        // Plugins echo the query into their own logs and errors later on.
+        LogRedaction.remember([query])
         var result: [FeedSource] = []
         for p in plugins.enabledPlugins where p.config.enableInSearch {
             guard let rt = await plugins.runtime(for: p.id) else { continue }

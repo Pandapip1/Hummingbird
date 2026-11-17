@@ -244,6 +244,8 @@ struct SyncSettingsView: View {
         } else {
             TextField("Handle or DID", text: $accountIdentifier)
                 .settingsTextEntryStyle()
+                // A handle or DID is an identifier, not prose.
+                .autocorrectionDisabled()
             Button("Sign In with AT Protocol") {
                 Task {
                     await app.profileAccount.signIn(identifier: accountIdentifier)

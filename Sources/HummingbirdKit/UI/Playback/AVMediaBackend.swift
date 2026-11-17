@@ -17,8 +17,48 @@ final class AVMediaBackend: MediaBackend {
     // The view must be able to attach a rendering surface before the first item
     // has finished loading. Replacing the item on a stable player also avoids
     // making view attachment depend on completion of the initial seek.
-    private(set) var player: AVPlayer? = AVPlayer()
+    private(set) var player: AVPlayer? = AVMediaBackend.makePlayer()
     var onTick: (@MainActor (Double) -> Void)?
+    var onActivityChange: (@MainActor (PlaybackActivity) -> Void)?
+    private var reportedActivity: PlaybackActivity = .paused
+    private var sessionObservers: [NSObjectProtocol] = []
+    /// Playing when an audio interruption (a call, Siri) began.
+    private var playingBeforeInterruption = false
+
+    /// Video keeps playing (as audio) when the app goes to the background or
+    /// the device locks; by default AVFoundation pauses it silently.
+    private static func makePlayer() -> AVPlayer {
+        let player = AVPlayer()
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+        return player
+    }
+
+    var activity: PlaybackActivity {
+        guard let player, player.currentItem != nil else { return .paused }
+        switch player.timeControlStatus {
+        case .playing: return .playing
+        case .paused: return .paused
+        case .waitingToPlayAtSpecifiedRate: return .waiting(Self.describe(player.reasonForWaitingToPlay))
+        @unknown default: return .paused
+        }
+    }
+
+    private static func describe(_ reason: AVPlayer.WaitingReason?) -> String {
+        switch reason {
+        case .toMinimizeStalls?, .evaluatingBufferingRate?: "Buffering"
+        case .noItemToPlay?: "Loading"
+        default: "Waiting"
+        }
+    }
+
+    /// Reports the engine's state as it is now (called on every change AVPlayer
+    /// reports, so pauses the system makes reach the UI).
+    private func refreshActivity() {
+        let current = activity
+        guard current != reportedActivity else { return }
+        reportedActivity = current
+        onActivityChange?(current)
+    }
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
@@ -128,11 +168,13 @@ final class AVMediaBackend: MediaBackend {
         try Task.checkCancellation()
         guard canCommitLoad(generation) else { throw MediaBackendLoadError.superseded }
         removeObservers()
-        let p = player ?? AVPlayer()
+        let p = player ?? Self.makePlayer()
+        observeAudioSession()
         p.replaceCurrentItem(with: item)
         player = p
         pictureInPictureLayer.player = p
         observeStatus(of: item)
+        refreshActivity()
         committedLoadGeneration = generation
         committedAsset = item.asset
         mediaSelectionGroups = [:]
@@ -249,7 +291,47 @@ final class AVMediaBackend: MediaBackend {
         player?.replaceCurrentItem(with: nil)
         player = nil
         mediaSelectionGroups = [:]
+        refreshActivity()
     }
+
+    /// Audio interruptions and media-services resets (iOS). AVPlayer pauses
+    /// itself for an interruption; that pause reaches the UI through
+    /// `refreshActivity`, and playback resumes when the system says it may. A
+    /// media-services reset invalidates the player: it is reported as a
+    /// failure so the model reloads from the cache at the same position.
+    private func observeAudioSession() {
+        #if os(iOS) || os(tvOS) || os(visionOS)
+        guard sessionObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
+            let type = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init(rawValue:))
+            let options = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+            MainActor.assumeIsolated { self?.audioInterruption(type, shouldResume: options.contains(.shouldResume)) }
+        })
+        sessionObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                Logger.avPlayer.error("media_services_reset")
+                self?.onFailure?("The system restarted its media services")
+            }
+        })
+        #endif
+    }
+
+    #if os(iOS) || os(tvOS) || os(visionOS)
+    private func audioInterruption(_ type: AVAudioSession.InterruptionType?, shouldResume: Bool) {
+        switch type {
+        case .began?:
+            playingBeforeInterruption = activity.wantsToPlay
+            Logger.avPlayer.notice("audio_interruption_began playing=\(self.playingBeforeInterruption)")
+        case .ended?:
+            Logger.avPlayer.notice("audio_interruption_ended resume=\(shouldResume)")
+            if shouldResume, playingBeforeInterruption { play() }
+            playingBeforeInterruption = false
+        default: break
+        }
+        refreshActivity()
+    }
+    #endif
 
     private func removeObservers() {
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
@@ -264,7 +346,8 @@ final class AVMediaBackend: MediaBackend {
     private func observeStatus(of item: AVPlayerItem) {
         // Where the player waits, and why (e.g. "evaluating buffering rate",
         // "to minimize stalls"): the last step of a slow start or a stall.
-        timeControlObserver = player?.observe(\.timeControlStatus, options: [.new]) { player, _ in
+        timeControlObserver = player?.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in self?.refreshActivity() }
             let status = player.timeControlStatus
             let name = switch status {
             case .paused: "paused"
@@ -500,7 +583,12 @@ struct PlayerSurface: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        controller.player = (model.backend as? AVMediaBackend)?.player
+        // SwiftUI updates this view for any change it observes (every tick,
+        // menus, tabs). Only attach the player when it is not attached and the
+        // full-screen player does not own it: reassigning it to a second
+        // controller is what lets AVKit pause it behind the UI's back.
+        let player = (model.backend as? AVMediaBackend)?.player
+        if !context.coordinator.isFullscreen, controller.player !== player { controller.player = player }
         installPictureInPictureLayer(in: controller)
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
@@ -508,6 +596,10 @@ struct PlayerSurface: UIViewControllerRepresentable {
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
         coordinator.dismissFullscreen(animated: false)
+        // A torn-down AVPlayerViewController pauses its player (tab switches,
+        // overview cards, layout changes rebuild this view). Detach first so
+        // only the user and the model decide when playback stops.
+        controller.player = nil
         coordinator.model?.removeFullscreenPresenter()
     }
 
@@ -517,6 +609,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         weak var inlineController: AVPlayerViewController?
         private var fullscreenController: UIViewController?
         private var overlayController: UIViewController?
+        var isFullscreen: Bool { fullscreenController != nil }
 
         init(model: PlayerModel) { self.model = model }
 

@@ -46,7 +46,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     }
 
     public var body: some View {
-        let showingControls = controlsVisible || !model.isPlaying
+        let showingControls = controlsVisible || !model.isPlaying || model.waitingReason != nil
         ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.remoteNonFocusable()
             bars
@@ -55,6 +55,18 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 .accessibilityHidden(!showingControls)
                 .environment(\.playerMenuPresentationChanged, menuPresentationChanged)
             if !showingControls { RemoteRevealTarget { interacted() } }
+            if let reason = model.waitingReason {
+                // Playback that should advance but does not: say so, and why.
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text(reason).font(.callout)
+                }
+                .foregroundStyle(Color.white)
+                .padding(12)
+                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                .allowsHitTesting(false)
+                .accessibilityElement(children: .combine)
+            }
         }
         .onRemoteMove { interacted() }
         .onContinuousHover { if case .active = $0 { interacted() } }

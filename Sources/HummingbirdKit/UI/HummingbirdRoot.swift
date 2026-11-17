@@ -113,6 +113,7 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
     var playbackTime: Double = 60
     let duration: Double = 600
     var isPlaying = false
+    var waitingReason: String? { nil }
     var playbackRate: Float = 1
     let pictureInPictureState = PictureInPictureState.unsupported
     let isMediaReady = true

@@ -97,6 +97,13 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var playbackTime: Double = 0
     private(set) var duration: Double = 0
     private(set) var isPlaying = false
+    /// Why playback that should advance does not (buffering, stalled,
+    /// reconnecting); nil while it plays or is paused. Derived from what the
+    /// engine reports and from whether its clock really advances.
+    private(set) var waitingReason: String?
+    /// The watchdog saw "playing" without the clock advancing.
+    @ObservationIgnored private var watchdogStalled = false
+    @ObservationIgnored private var watchdog: Task<Void, Never>?
     private(set) var playbackRate: Float = 1
     private(set) var subtitleColorChoice: SubtitleColorChoice
     private(set) var subtitleSizeChoice: SubtitleSizeChoice
@@ -184,11 +191,72 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Routes the backend's events to this model.
     private func attach(_ engine: MediaBackend) {
         engine.onTick = { [weak self] seconds in self?.tick(seconds) }
+        startWatchdog()
         engine.onEnded = { [weak self] in self?.finished() }
         engine.onFailure = { [weak self] message in self?.playerFailed(message) }
+        engine.onActivityChange = { [weak self] activity in self?.activityChanged(activity) }
         engine.onPictureInPictureChange = { [weak self] state in self?.pictureInPictureState = state }
         engine.onRestoreFromPictureInPicture = { [weak self] in self?.onRestoreRequested?() }
         pictureInPictureState = engine.pictureInPictureState
+    }
+
+    // MARK: real state
+
+    /// The engine's state is the truth: a pause the system makes (an
+    /// interruption, a route change, a torn-down view) shows as paused.
+    private func activityChanged(_ activity: PlaybackActivity) {
+        isPlaying = activity.wantsToPlay
+        updateWaitingReason()
+        if watchdog == nil { startWatchdog() }
+    }
+
+    private func updateWaitingReason() {
+        let activity = backend?.activity ?? .paused
+        waitingReason = if isRecovering { "Reconnecting" }
+            else if watchdogStalled, activity.wantsToPlay { "Stalled" }
+            else { activity.waitingReason }
+    }
+
+    /// Watches that playback which should advance does: "playing" with a
+    /// clock that has not moved for 2 s shows as stalled; after 4 s the
+    /// loopback server is checked (iOS reclaims a suspended app's sockets);
+    /// after 6 s the item is reloaded from the cache at the same position.
+    private func startWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            var lastTime = -1.0
+            var since = ContinuousClock.now
+            var checkedServer = false
+            var recovered = false
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, let backend = self.backend else { continue }
+                let activity = backend.activity
+                let time = backend.currentTime
+                if !activity.wantsToPlay || abs(time - lastTime) > 0.01 {
+                    lastTime = time
+                    since = .now
+                    checkedServer = false
+                    recovered = false
+                    if self.watchdogStalled { self.watchdogStalled = false; self.updateWaitingReason() }
+                    continue
+                }
+                let stuck = since.duration(to: .now)
+                if activity == .playing, stuck > .seconds(2), !self.watchdogStalled {
+                    self.watchdogStalled = true
+                    Logger.player.error("playback_not_advancing position=\(time)")
+                    self.updateWaitingReason()
+                }
+                if stuck > .seconds(4), !checkedServer, self.currentPlayback?.origin == .mediaCache {
+                    checkedServer = true
+                    _ = try? await self.mediaServer.ensureListening()
+                }
+                if self.watchdogStalled, stuck > .seconds(6), !recovered, !self.isRecovering {
+                    recovered = true
+                    self.playerFailed("Playback stopped advancing")
+                }
+            }
+        }
     }
 
     // MARK: loading
@@ -764,6 +832,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let attempt = localRecoveryAttempts
         isRecovering = true
         let position = backend?.currentTime ?? playbackTime
+        updateWaitingReason()
         let autoplay = playbackRequested
         let generation = playGeneration
         Logger.player.notice("local_playback_recover attempt=\(attempt) position=\(position)")
@@ -771,9 +840,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             try? await Task.sleep(for: .seconds(min(30, Double(attempt * attempt))))
             guard let self, generation == self.playGeneration, let backend = self.backend else { return }
             do {
+                // The loopback server may have lost its socket (app suspended).
+                if playback.origin == .mediaCache { _ = try? await self.mediaServer.ensureListening() }
                 try await backend.load(playback.request, resumeAt: position > 0 ? position : nil, autoplay: autoplay)
                 backend.setPlaybackRate(self.playbackRate)
                 self.isRecovering = false
+                self.updateWaitingReason()
             } catch {
                 Logger.player.error("local_playback_recover_failed attempt=\(attempt) message=\(error.localizedDescription)")
             }
@@ -941,7 +1013,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
         duration = authoritativeDuration
-        isPlaying = backend?.isPlaying ?? false
+        isPlaying = backend?.activity.wantsToPlay ?? false
         if isPlaying, seconds > playbackTime {
             startup?.firstFrame(at: seconds)
             if seconds - playbackTime < 2 { localRecoveryAttempts = 0 }
@@ -1080,6 +1152,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         dismissFullscreen()
         backend?.stop()
         backend = nil
+        watchdog?.cancel()
+        watchdog = nil
+        watchdogStalled = false
+        waitingReason = nil
         pictureInPictureState = .unsupported
         // Downloads stop with the player; what was downloaded stays cached and
         // resumes the next time this video plays.

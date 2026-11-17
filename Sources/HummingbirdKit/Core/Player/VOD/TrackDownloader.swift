@@ -120,7 +120,15 @@ actor TrackDownloader {
     private var layout: TrackLayout?
     private var declaredDuration: Double?
     private var priorityOffset: Int64 = 0
-    private var waiters: [UUID: (range: Range<Int64>, continuation: CheckedContinuation<Void, Error>)] = [:]
+    private var waiters: [UUID: (range: Range<Int64>, continuation: CheckedContinuation<Void, Error>, sequence: Int)] = [:]
+    private var waiterSequence = 0
+    /// Pieces waiting in the scheduler at background priority; promoted the
+    /// moment the player needs this track, so they cannot hold its fetch
+    /// slots while a foreground track keeps the scheduler busy.
+    private var backgroundTickets = Set<UUID>()
+    /// A track the player is waiting on is fetched at foreground priority,
+    /// whatever its holders say.
+    private var effectivePriority: DownloadPriority { waiters.isEmpty ? priority : .foreground }
     private var layoutWaiters: [UUID: CheckedContinuation<TrackLayout, Error>] = [:]
     private var observers: [UUID: @Sendable (MediaTrackPipelineState) -> Void] = [:]
     private var driver: Task<Void, Never>?
@@ -174,8 +182,16 @@ actor TrackDownloader {
     // MARK: control
 
     /// Foreground while something plays the track; background otherwise (see `DownloadScheduler`).
-    func setPriority(_ priority: DownloadPriority) {
+    func setPriority(_ priority: DownloadPriority) async {
         self.priority = priority
+        if priority == .foreground { await promoteQueuedPieces() }
+    }
+
+    private func promoteQueuedPieces() async {
+        guard !backgroundTickets.isEmpty, let scheduler else { return }
+        let tickets = backgroundTickets
+        backgroundTickets.removeAll()
+        await scheduler.promote(tickets)
     }
 
     func setPaused(_ paused: Bool) {
@@ -254,11 +270,14 @@ actor TrackDownloader {
         if stopped { throw CancellationError() }
         let gaps = completed.gaps(in: range)
         if let first = gaps.first { priorityOffset = first.lowerBound }
+        await promoteQueuedPieces()
         let id = UUID()
+        waiterSequence += 1
+        let sequence = waiterSequence
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if completed.contains(range) { continuation.resume() }
-                else { waiters[id] = (range, continuation) }
+                else { waiters[id] = (range, continuation, sequence) }
             }
         } onCancel: {
             Task { await self.cancelWaiter(id) }
@@ -271,6 +290,18 @@ actor TrackDownloader {
 
     private func cancelWaiter(_ id: UUID) {
         waiters.removeValue(forKey: id)?.continuation.resume(throwing: CancellationError())
+        // A request the player abandoned (seek, closed connection) no longer
+        // steers the download.
+        followNewestWaiter()
+    }
+
+    /// Downloads first where the player most recently asked: that is where it
+    /// is reading now. Older requests still pending are fetched after it.
+    private func followNewestWaiter() {
+        guard let newest = waiters.values.max(by: { $0.sequence < $1.sequence }) else { return }
+        if let gap = completed.gaps(in: newest.range.lowerBound..<(totalBytes ?? .max)).first {
+            priorityOffset = gap.lowerBound
+        }
     }
 
     private func cancelLayoutWaiter(_ id: UUID) {
@@ -534,8 +565,11 @@ actor TrackDownloader {
         let data: Data
         let response: URLResponse
         do {
-            let admitted = priority
-            await scheduler?.admit(admitted)
+            let ticket = UUID()
+            let requested = effectivePriority
+            if requested == .background { backgroundTickets.insert(ticket) }
+            let admitted = await scheduler?.admit(requested, ticket: ticket) ?? requested
+            backgroundTickets.remove(ticket)
             do {
                 (data, response) = try await transport.data(for: request)
                 await scheduler?.finish(admitted)
@@ -625,10 +659,7 @@ actor TrackDownloader {
             waiters[id] = nil
             waiter.continuation.resume()
         }
-        // Keep downloading near the earliest range the player still waits for.
-        if let pending = waiters.values.map(\.range.lowerBound).min() {
-            priorityOffset = completed.gaps(in: pending..<(totalBytes ?? .max)).first?.lowerBound ?? priorityOffset
-        }
+        followNewestWaiter()
     }
 
     private func publish() {

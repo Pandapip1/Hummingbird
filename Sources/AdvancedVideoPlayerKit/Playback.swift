@@ -84,6 +84,23 @@ public enum PictureInPictureState: Sendable, Equatable {
     case stopping
 }
 
+/// What the player is really doing, never what it was asked to do.
+public enum PlaybackActivity: Equatable, Sendable {
+    case paused
+    case playing
+    /// Asked to play but not advancing, with the reason shown to the user
+    /// ("Buffering", "Waiting for the network", "Stalled").
+    case waiting(String)
+
+    /// Playing, or trying to.
+    public var wantsToPlay: Bool { self != .paused }
+
+    public var waitingReason: String? {
+        if case .waiting(let reason) = self { return reason }
+        return nil
+    }
+}
+
 /// Platform playback engine contract. Applications can supply AVFoundation,
 /// GStreamer, VLC, or test implementations without changing player UI.
 @MainActor
@@ -92,6 +109,10 @@ public protocol MediaBackend: AnyObject {
     var duration: Double { get }
     var isPlaying: Bool { get }
     var onTick: (@MainActor (Double) -> Void)? { get set }
+    /// The engine's real state; `onActivityChange` reports every change,
+    /// including pauses the system makes on its own (interruptions, routes).
+    var activity: PlaybackActivity { get }
+    var onActivityChange: (@MainActor (PlaybackActivity) -> Void)? { get set }
     var onEnded: (@MainActor () -> Void)? { get set }
     var onFailure: (@MainActor (String) -> Void)? { get set }
     var tracks: [MediaTrack] { get }
@@ -116,6 +137,8 @@ public protocol MediaBackend: AnyObject {
 
 public extension MediaBackend {
     var duration: Double { 0 }
+    var activity: PlaybackActivity { isPlaying ? .playing : .paused }
+    var onActivityChange: (@MainActor (PlaybackActivity) -> Void)? { get { nil } set {} }
     var tracks: [MediaTrack] { [] }
     func selectTrack(_: MediaTrack?) {}
     func selectedTrack(ofKind _: MediaTrack.Kind) -> MediaTrack? { nil }
@@ -139,6 +162,9 @@ public protocol AdvancedVideoPlayerControlling: AnyObject, Observable {
     var duration: Double { get }
     var isPlaying: Bool { get }
     var playbackRate: Float { get }
+    /// Why playback that should be advancing is not (buffering, stalled,
+    /// recovering); nil while it plays or is paused.
+    var waitingReason: String? { get }
     /// What the seek bar shows: duration, chapters, pipeline lanes, flagged
     /// regions and the live window.
     var scrubberContent: ScrubberContent { get }

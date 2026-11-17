@@ -19,25 +19,42 @@ actor DownloadScheduler {
     private let backgroundLimit: Int
     private var foregroundRunning = 0
     private var backgroundRunning = 0
-    private var backgroundWaiters: [CheckedContinuation<Void, Never>] = []
+    private var backgroundWaiters: [(ticket: UUID, continuation: CheckedContinuation<DownloadPriority, Never>)] = []
+    /// Promotions that arrived before their request reached the queue.
+    private var promotedEarly = Set<UUID>()
 
     init(backgroundLimit: Int = 2) {
         self.backgroundLimit = backgroundLimit
     }
 
-    /// Waits for a slot. Every `admit` is balanced by `finish` with the same priority.
-    func admit(_ priority: DownloadPriority) async {
-        switch priority {
-        case .foreground:
+    /// Waits for a slot and returns the priority it was admitted at: a queued
+    /// background request can be promoted (`promote`) when the player starts
+    /// waiting on its track. Every `admit` is balanced by `finish` with the
+    /// returned priority.
+    @discardableResult
+    func admit(_ priority: DownloadPriority, ticket: UUID = UUID()) async -> DownloadPriority {
+        if priority == .foreground || promotedEarly.remove(ticket) != nil {
             foregroundRunning += 1
-        case .background:
-            if foregroundRunning == 0, backgroundRunning < backgroundLimit {
-                backgroundRunning += 1
-                return
-            }
-            await withCheckedContinuation { backgroundWaiters.append($0) }
-            // `wakeBackground` counted this request before resuming it.
+            return .foreground
         }
+        if foregroundRunning == 0, backgroundRunning < backgroundLimit {
+            backgroundRunning += 1
+            return .background
+        }
+        // `wakeBackground` or `promote` counts this request before resuming it.
+        return await withCheckedContinuation { backgroundWaiters.append((ticket, $0)) }
+    }
+
+    /// Lets queued background requests run now, as foreground.
+    func promote(_ tickets: Set<UUID>) {
+        var remaining = tickets
+        backgroundWaiters.removeAll { waiter in
+            guard remaining.remove(waiter.ticket) != nil else { return false }
+            foregroundRunning += 1
+            waiter.continuation.resume(returning: .foreground)
+            return true
+        }
+        promotedEarly.formUnion(remaining)
     }
 
     func finish(_ priority: DownloadPriority) {
@@ -51,7 +68,7 @@ actor DownloadScheduler {
     private func wakeBackground() {
         while foregroundRunning == 0, backgroundRunning < backgroundLimit, !backgroundWaiters.isEmpty {
             backgroundRunning += 1
-            backgroundWaiters.removeFirst().resume()
+            backgroundWaiters.removeFirst().continuation.resume(returning: .background)
         }
     }
 

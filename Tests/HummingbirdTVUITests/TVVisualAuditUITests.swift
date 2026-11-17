@@ -9,8 +9,11 @@ import XCTest
 final class TVVisualAuditUITests: XCTestCase {
     private var app: XCUIApplication!
 
+    /// Launches the app on its default route. Each test calls this itself:
+    /// XCTest's `setUp` is not main-actor isolated, and an isolated override
+    /// doesn't compile under Swift 6.
     @MainActor
-    override func setUpWithError() throws {
+    private func launchApp() {
         continueAfterFailure = true
         app = XCUIApplication()
         app.launch()
@@ -19,6 +22,7 @@ final class TVVisualAuditUITests: XCTestCase {
 
     @MainActor
     func testAllTopLevelMenusHaveSoundLayout() throws {
+        launchApp()
         try audit("Home")
 
         for route in ["subscriptions", "search", "library", "sources", "settings"] {
@@ -29,6 +33,7 @@ final class TVVisualAuditUITests: XCTestCase {
 
     @MainActor
     func testAllTopLevelMenusHaveNoClippedText() throws {
+        launchApp()
         try app.performAccessibilityAudit(for: [.textClipped])
         for route in ["subscriptions", "search", "library", "sources", "settings"] {
             launch(route)
@@ -74,7 +79,7 @@ final class TVVisualAuditUITests: XCTestCase {
 
     @MainActor
     private func launch(_ route: String) {
-        app.terminate()
+        app?.terminate()
         app = XCUIApplication()
         app.launchEnvironment["HUMMINGBIRD_VISUAL_AUDIT_ROUTE"] = route
         app.launch()

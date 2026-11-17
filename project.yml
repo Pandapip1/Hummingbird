@@ -13,7 +13,10 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
-  Hummingbird:
+  # Not named "Hummingbird": that is the app target's name, and a package
+  # with the same name joins the scheme's build too, which breaks UI tests
+  # (the runner tries to install the package as if it were an app).
+  HummingbirdPackage:
     path: .
   SwiftOpenUI:
     path: Vendor/SwiftOpenUI
@@ -27,7 +30,7 @@ targets:
           - Hummingbird.icon
       - path: Apps/iOS/Hummingbird.icon
     dependencies:
-      - package: Hummingbird
+      - package: HummingbirdPackage
         product: HummingbirdKit
       - package: SwiftOpenUI
         product: SwiftOpenUI

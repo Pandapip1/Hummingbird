@@ -428,22 +428,30 @@ struct SettingRow: View, Equatable {
                 if let d = setting.description, !d.isEmpty { Text(d).font(.caption).foregroundStyle(.secondary) }
             }
         case "boolean", "toggle", "switch":
-            PendingToggle(isOn: stored == "true", apply: { value in
-                try await app.plugins.applySetting(pluginID: pluginID, key: setting.key, value: value ? "true" : "false")
+            PendingToggle(title: setting.name, isOn: stored == "true", apply: { value in
+                try await apply(value ? "true" : "false")
             }) {
                 label
             }
         case "dropdown", "select", "list":
-            Picker(setting.name, selection: Binding(get: { Int(stored ?? "0") ?? 0 }, set: { app.plugins.setSetting(pluginID: pluginID, key: setting.key, value: String($0)) })) {
+            PendingPicker(title: setting.name, selection: Int(stored ?? "0") ?? 0, apply: { index in
+                try await apply(String(index))
+            }) {
                 ForEach(Array((setting.options ?? []).enumerated()), id: \.offset) { i, o in Text(o).tag(i) }
             }
         default:
             VStack(alignment: .leading) {
                 label
-                TextField(setting.name, text: Binding(get: { Self.decodeText(stored) }, set: { app.plugins.setSetting(pluginID: pluginID, key: setting.key, value: Self.encodeText($0)) }))
-                    .settingsTextEntryStyle()
+                PendingTextField(title: setting.name, text: Self.decodeText(stored)) { text in
+                    try await apply(Self.encodeText(text))
+                }
             }
         }
+    }
+
+    /// Takes effect only once the plugin runs with the new value.
+    private func apply(_ value: String) async throws {
+        try await app.plugins.applySetting(pluginID: pluginID, key: setting.key, value: value)
     }
 
     private var label: some View {

@@ -80,9 +80,11 @@ final class AppModel {
         }
     }
 
-    /// Playback belongs to the browser tab, not to its currently mounted view.
-    /// SwiftUI replaces that view when another tab is selected, but the media
-    /// session should continue until this tab navigates elsewhere or is closed.
+    /// Playback belongs to the browser tab, not to whichever view shows it.
+    /// Pages stay mounted while other tabs are selected, but within a tab the
+    /// view is replaced as it navigates, and the tab overview hosts the page
+    /// in its card; the media session continues until this tab navigates
+    /// elsewhere (`shouldKeepPlaybackWhenHidden`) or is closed.
     func player(forTab id: BrowserTab.ID) -> PlayerModel {
         if let player = tabPlayers[id] { return player }
         let player = PlayerModel(stores: stores)

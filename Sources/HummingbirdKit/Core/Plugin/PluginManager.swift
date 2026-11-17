@@ -155,6 +155,12 @@ final class PluginManager {
             await r.stop()
             return existing
         }
+        adopt(r, for: id)
+        return r
+    }
+
+    /// Makes `r` the plugin's running runtime, reporting its toasts and logs.
+    private func adopt(_ r: PluginRuntime, for id: String) {
         r.onToast = { [weak self] msg in
             Logger.plugin.notice("alert plugin=\(id, privacy: .public) message=\(msg.prefix(500))")
             Task { @MainActor in self?.toast = msg }
@@ -174,7 +180,6 @@ final class PluginManager {
             Logger.pluginConsole.debug("plugin=\(id, privacy: .public) \(bounded)")
         }
         runtimes[id] = r
-        return r
     }
 
     func enabledRuntimes(where predicate: (PluginConfig) -> Bool = { _ in true }) async -> [PluginRuntime] {
@@ -321,14 +326,45 @@ final class PluginManager {
         if !applyingRemoteChange { recordPlugin(installed[i]) }
     }
 
-    /// Changes a setting and returns once the plugin runs with it: its
-    /// runtime is rebuilt (a new JavaScript context, away from the main
-    /// actor) with the new value. Throws when the plugin cannot start.
+    /// Changes a setting only once the plugin runs with it. A runtime is
+    /// started with the candidate value away from the main actor; the setting
+    /// is stored and synced, and that runtime adopted, only if it starts.
+    /// Otherwise nothing changes and the error is thrown.
     func applySetting(pluginID: String, key: String, value: String) async throws {
-        setSetting(pluginID: pluginID, key: key, value: value)
-        guard await runtime(for: pluginID) != nil else {
-            throw InstallError.invalid("The source couldn’t restart with the new setting.")
+        guard let current = plugin(pluginID) else { throw InstallError.invalid("The source isn’t installed.") }
+        var candidate = current
+        candidate.settings[key] = value
+        let started = try await Self.startRuntime(
+            candidate, credentials: credentials(for: pluginID),
+            localNetworkCheck: localNetworkAccess?.runtimeCheck(source: current.config.name)
+        )
+        guard let i = installed.firstIndex(where: { $0.id == pluginID }), installed[i] == current else {
+            await started.stop()
+            throw InstallError.invalid("The source changed while the setting was being applied. Try again.")
         }
+        installed[i].settings[key] = value
+        invalidate(pluginID)
+        adopt(started, for: pluginID)
+        persist()
+        if !applyingRemoteChange { recordPlugin(installed[i]) }
+    }
+
+    /// Starts a runtime for `plugin` as it would be with its settings, and
+    /// checks it runs. The JavaScript context is made off the main actor.
+    @concurrent
+    private static func startRuntime(
+        _ plugin: InstalledPlugin, credentials: PluginCredentials,
+        localNetworkCheck: (@Sendable (URL) async -> Bool)?
+    ) async throws -> PluginRuntime {
+        let runtime = PluginRuntime(
+            config: plugin.config, script: plugin.script, settings: plugin.settings,
+            auth: credentials.auth, captcha: credentials.captcha, localNetworkAccess: localNetworkCheck
+        )
+        do { try await runtime.validate() } catch {
+            await runtime.stop()
+            throw error
+        }
+        return runtime
     }
 
     // MARK: credentials

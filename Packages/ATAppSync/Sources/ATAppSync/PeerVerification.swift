@@ -30,12 +30,13 @@ public struct AppSyncPeerVerification: Identifiable, Equatable, Sendable {
 }
 
 public enum AppSyncPeerVerificationFailure: Error, LocalizedError, Sendable {
-    case unreachable, rejectedByPeer, invalidResponse, noSuchVerification
+    case unreachable, rejectedByPeer, peerBusy, invalidResponse, noSuchVerification
 
     public var errorDescription: String? {
         switch self {
         case .unreachable: "The other instance can't be reached on the local network."
         case .rejectedByPeer: "The other instance refused the verification."
+        case .peerBusy: "The other instance is busy with other verifications. Try again in a few minutes."
         case .invalidResponse: "The other instance sent an invalid verification response."
         case .noSuchVerification: "That verification has ended."
         }
@@ -57,15 +58,24 @@ final class AppSyncPeerVerifier: Sendable {
     static let route = "/appsync/v1/verify"
     private static let signatureDomain = "com.eightybps.appsync.peer-verification.v1"
     private static let lifetime: TimeInterval = 600
+    /// Limits on verifications other instances start here, so an instance
+    /// on the network can't flood the user with prompts.
+    private static let maxIncomingInProgress = 3
+    private static let maxStartsPerPeer = 3
+    private static let startWindow: TimeInterval = 600
 
     struct Reply: Sendable {
         let status: Int
         var body = Data()
     }
 
+    /// Derived session secrets, kept as bytes: swift-crypto's key types
+    /// aren't Sendable on every platform, so key objects are rebuilt where
+    /// they're used rather than stored.
     private struct Keys: Sendable {
-        let mac: SymmetricKey
+        let mac: Data
         let emoji: [String]
+        var macKey: SymmetricKey { SymmetricKey(data: mac) }
     }
 
     private struct Session: Sendable {
@@ -73,7 +83,8 @@ final class AppSyncPeerVerifier: Sendable {
         let role: AppSyncPeerVerification.Role
         let peer: AppSyncPeer
         let peerEndpoint: URL
-        let ephemeral: P256.KeyAgreement.PrivateKey
+        /// This side's ephemeral private key, as raw bytes (see `Keys`).
+        let ephemeral: Data
         /// The initiator's commitment, held by the responder until the reveal.
         var commitment: Data?
         var keys: Keys?
@@ -90,6 +101,7 @@ final class AppSyncPeerVerifier: Sendable {
     let changes = AppSyncChangeSignal()
     private let identity: InstanceIdentity
     private let sessions = Mutex<[UUID: Session]>([:])
+    private let recentStarts = Mutex<[AppSyncPeerID: [Date]]>([:])
     private let localRegistration: @Sendable () -> AppSyncInstanceRegistration?
     private let onVerified = Mutex<(@Sendable (AppSyncPeer) throws -> Void)?>(nil)
     private let session: URLSession = {
@@ -135,9 +147,10 @@ final class AppSyncPeerVerifier: Sendable {
         let id = UUID()
         let ephemeral = P256.KeyAgreement.PrivateKey()
         let ownKey = ephemeral.publicKey.rawRepresentation
+        let ephemeralBytes = ephemeral.rawRepresentation
         sessions.withLock {
             $0[id] = Session(id: id, role: .initiator, peer: registration.peer,
-                             peerEndpoint: endpoint, ephemeral: ephemeral)
+                             peerEndpoint: endpoint, ephemeral: ephemeralBytes)
         }
         changes.send()
         do {
@@ -154,7 +167,7 @@ final class AppSyncPeerVerifier: Sendable {
                 throw AppSyncPeerVerificationFailure.invalidResponse
             }
             let keys = try Self.derive(
-                session: id, own: ephemeral, peerKey: peerKey,
+                session: id, own: ephemeralBytes, peerKey: peerKey,
                 initiator: identity.publicIdentity, responder: registration.peer,
                 initiatorKey: ownKey, responderKey: peerKey
             )
@@ -182,7 +195,7 @@ final class AppSyncPeerVerifier: Sendable {
         let message = try Message(
             kind: .confirm, session: id, sender: identity.publicIdentity,
             recipient: session.peer.stableID,
-            mac: Self.mac(session: id, sender: identity.publicIdentity.stableID, key: keys.mac)
+            mac: Self.mac(session: id, sender: identity.publicIdentity.stableID, key: keys.macKey)
         ).signed(by: identity)
         do {
             _ = try await postExpectingNoContent(message, to: session.peerEndpoint)
@@ -237,7 +250,9 @@ final class AppSyncPeerVerifier: Sendable {
               sessions.withLock({ $0[message.session] == nil }) else {
             return Reply(status: 400)
         }
+        guard admitIncoming(from: message.sender) else { return Reply(status: 429) }
         let ephemeral = P256.KeyAgreement.PrivateKey()
+        let ephemeralBytes = ephemeral.rawRepresentation
         guard let accept = try? Message(
             kind: .accept, session: message.session, sender: identity.publicIdentity,
             recipient: message.sender.stableID,
@@ -247,7 +262,7 @@ final class AppSyncPeerVerifier: Sendable {
         }
         sessions.withLock {
             var session = Session(id: message.session, role: .responder, peer: message.sender,
-                                  peerEndpoint: endpoint, ephemeral: ephemeral)
+                                  peerEndpoint: endpoint, ephemeral: ephemeralBytes)
             session.commitment = commitment
             $0[message.session] = session
         }
@@ -265,7 +280,8 @@ final class AppSyncPeerVerifier: Sendable {
                 session: message.session, own: session.ephemeral, peerKey: initiatorKey,
                 initiator: message.sender, responder: identity.publicIdentity,
                 initiatorKey: initiatorKey,
-                responderKey: session.ephemeral.publicKey.rawRepresentation
+                responderKey: (try? P256.KeyAgreement.PrivateKey(rawRepresentation: session.ephemeral))?
+                    .publicKey.rawRepresentation ?? Data()
               ) else {
             update(message.session, from: message.sender) {
                 $0.phase = .cancelled(reason: "The other instance's key didn't match its commitment.")
@@ -283,7 +299,7 @@ final class AppSyncPeerVerifier: Sendable {
               HMAC<SHA256>.isValidAuthenticationCode(
                 mac, authenticating: Self.macInput(session: message.session,
                                                    sender: message.sender.stableID),
-                using: keys.mac
+                using: keys.macKey
               ) else {
             return Reply(status: 400)
         }
@@ -293,6 +309,34 @@ final class AppSyncPeerVerifier: Sendable {
     }
 
     // MARK: Helpers
+
+    /// Whether to accept a verification another instance starts: at most one
+    /// in progress per instance, a few in progress overall, and a few starts
+    /// per instance within `startWindow`.
+    private func admitIncoming(from peer: AppSyncPeer) -> Bool {
+        let inProgress = sessions.withLock { sessions in
+            sessions.values.filter { session in
+                switch session.phase {
+                case .exchangingKeys, .comparing, .waitingForPeer: true
+                case .verified, .cancelled: false
+                }
+            }
+        }
+        if inProgress.contains(where: { $0.peer == peer }) { return false }
+        if inProgress.filter({ $0.role == .responder }).count >= Self.maxIncomingInProgress { return false }
+        let now = Date()
+        return recentStarts.withLock { starts in
+            var times = (starts[peer.stableID] ?? []).filter { now.timeIntervalSince($0) < Self.startWindow }
+            guard times.count < Self.maxStartsPerPeer else {
+                starts[peer.stableID] = times
+                return false
+            }
+            times.append(now)
+            starts[peer.stableID] = times
+            starts = starts.filter { !$0.value.isEmpty }
+            return true
+        }
+    }
 
     private func completeIfConfirmed(_ id: UUID) {
         guard let session = sessions.withLock({ $0[id] }) else { return }
@@ -326,6 +370,7 @@ final class AppSyncPeerVerifier: Sendable {
 
     private func post(_ message: Message, to url: URL) async throws -> Message {
         let (data, status) = try await send(message, to: url)
+        if status == 429 { throw AppSyncPeerVerificationFailure.peerBusy }
         guard status == 200 else { throw AppSyncPeerVerificationFailure.rejectedByPeer }
         guard let reply = try? JSONDecoder().decode(Message.self, from: data),
               (try? reply.verify()) != nil else {
@@ -368,9 +413,10 @@ final class AppSyncPeerVerifier: Sendable {
     }
 
     private static func derive(
-        session: UUID, own: P256.KeyAgreement.PrivateKey, peerKey: Data,
+        session: UUID, own ownBytes: Data, peerKey: Data,
         initiator: AppSyncPeer, responder: AppSyncPeer, initiatorKey: Data, responderKey: Data
     ) throws -> Keys {
+        let own = try P256.KeyAgreement.PrivateKey(rawRepresentation: ownBytes)
         let shared = try own.sharedSecretFromKeyAgreement(
             with: P256.KeyAgreement.PublicKey(rawRepresentation: peerKey)
         )
@@ -393,7 +439,7 @@ final class AppSyncPeerVerifier: Sendable {
         ).withUnsafeBytes { Array($0) }
         // 64 symbols divide 256 evenly, so each byte gives an unbiased 6 bits.
         let emoji = emojiBytes.map { VerificationEmoji.values[Int($0) % VerificationEmoji.values.count] }
-        return Keys(mac: mac, emoji: emoji)
+        return Keys(mac: mac.withUnsafeBytes { Data($0) }, emoji: emoji)
     }
 
     private static func macInput(session: UUID, sender: AppSyncPeerID) -> Data {

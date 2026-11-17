@@ -25,10 +25,6 @@ struct MobileBrowserToolbar: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background {
-            Rectangle()
-                .fill(.regularMaterial)
-                .ignoresSafeArea()
-        }
+        // The tab container draws the bar itself (the system's glass).
     }
 }

@@ -26,3 +26,14 @@ enum IsolatedApp {
         return app
     }
 }
+
+/// The system's own apps, for reference screenshots (the tab overview is
+/// compared with Safari's). They hold none of Hummingbird's data, so they
+/// need no isolation; Hummingbird itself is only ever launched through
+/// `IsolatedApp`.
+enum SystemReferenceApp {
+    @MainActor
+    static func safari() -> XCUIApplication {
+        XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+    }
+}

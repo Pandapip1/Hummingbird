@@ -51,12 +51,28 @@ enum HLSPlaylist {
         var programDateTime: String?
     }
 
+    /// A low-latency HLS partial segment (`EXT-X-PART`).
+    struct Part: Sendable, Equatable {
+        /// Ordinal of the segment it belongs to; `segments.count` for the one
+        /// still being published.
+        var segment: Int
+        var index: Int
+        var uri: URL
+        var byteRange: Range<Int64>?
+        var duration: Double
+        var independent: Bool
+    }
+
     struct Media: Sendable, Equatable {
         var targetDuration: Int
         var mediaSequence: Int
         var isEndless: Bool
         var resources: [Resource]
         var segments: [Segment]
+        /// Low-latency HLS: `EXT-X-PART-INF` target, partial segments, blocking reload.
+        var partTarget: Double?
+        var parts: [Part] = []
+        var canBlockReload = false
 
         var duration: Double { segments.reduce(0) { $0 + $1.duration } }
     }
@@ -108,7 +124,8 @@ enum HLSPlaylist {
 
     static func parseMedia(_ text: String, base: URL) throws -> Media {
         guard text.hasPrefix("#EXTM3U") else { throw Failure.notAPlaylist }
-        var media = Media(targetDuration: 1, mediaSequence: 0, isEndless: true, resources: [], segments: [])
+        var media = Media(targetDuration: 1, mediaSequence: 0, isEndless: true, resources: [], segments: [], partTarget: nil)
+        var partIndex = 0
         var duration: Double?
         var byteRange: (length: Int64, offset: Int64?)?
         var lastRangeEnd: [URL: Int64] = [:]
@@ -126,6 +143,21 @@ enum HLSPlaylist {
                 media.mediaSequence = Int(line.dropFirst("#EXT-X-MEDIA-SEQUENCE:".count)) ?? 0
             } else if line == "#EXT-X-ENDLIST" || line == "#EXT-X-PLAYLIST-TYPE:VOD" {
                 isVOD = true
+            } else if line.hasPrefix("#EXT-X-PART-INF:") {
+                media.partTarget = attribute("PART-TARGET", in: String(line.dropFirst("#EXT-X-PART-INF:".count))).flatMap(Double.init)
+            } else if line.hasPrefix("#EXT-X-SERVER-CONTROL:") {
+                media.canBlockReload = attribute("CAN-BLOCK-RELOAD", in: String(line.dropFirst("#EXT-X-SERVER-CONTROL:".count))) == "YES"
+            } else if line.hasPrefix("#EXT-X-PART:") {
+                let attributes = String(line.dropFirst("#EXT-X-PART:".count))
+                guard let uri = attribute("URI", in: attributes).flatMap({ URL(string: $0, relativeTo: base)?.absoluteURL }),
+                      let partDuration = attribute("DURATION", in: attributes).flatMap(Double.init) else { continue }
+                let range = attribute("BYTERANGE", in: attributes).flatMap(parseByteRange).map { r in
+                    (r.offset ?? 0)..<((r.offset ?? 0) + r.length)
+                }
+                media.parts.append(Part(segment: media.segments.count, index: partIndex, uri: uri, byteRange: range,
+                                        duration: partDuration,
+                                        independent: attribute("INDEPENDENT", in: attributes) == "YES"))
+                partIndex += 1
             } else if line == "#EXT-X-DISCONTINUITY" {
                 discontinuity = true
             } else if line.hasPrefix("#EXT-X-PROGRAM-DATE-TIME:") {
@@ -178,6 +210,7 @@ enum HLSPlaylist {
                 byteRange = nil
                 discontinuity = false
                 programDateTime = nil
+                partIndex = 0
             }
         }
         media.isEndless = !isVOD

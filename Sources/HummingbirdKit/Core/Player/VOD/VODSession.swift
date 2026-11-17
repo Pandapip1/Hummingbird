@@ -19,6 +19,10 @@ struct VODTrackSpec: Sendable {
     var declaredDuration: Double?
     /// The track is the transcode stage's output (re-encoded, complete).
     var isTranscoded = false
+    /// The transport for this track's upstream bytes; nil uses the downloads'
+    /// shared one. Plugin media will pass the plugin's contained content
+    /// session (plugin sandbox).
+    var transport: (any MediaTransport)?
 }
 
 /// What to download for an on-demand HLS presentation.

@@ -126,7 +126,7 @@ actor MediaDownloads {
         let track = try await cache.open(identity: spec.identity)
         let downloader = TrackDownloader(role: spec.role, cache: cache, track: track, signer: spec.signer,
                                          indexHint: spec.indexHint, declaredDuration: spec.declaredDuration,
-                                         refreshSigner: spec.refresh, transport: transport, scheduler: scheduler,
+                                         refreshSigner: spec.refresh, transport: spec.transport ?? transport, scheduler: scheduler,
                                          reportsTranscoded: spec.isTranscoded)
         tracks[spec.identity] = Entry(downloader: downloader, holders: 1)
         let identity = spec.identity

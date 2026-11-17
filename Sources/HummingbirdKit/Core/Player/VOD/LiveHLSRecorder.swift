@@ -80,6 +80,16 @@ actor LiveHLSRecorder {
     private(set) var isFinished = false
     var isStopped: Bool { stopped }
     private var stoppedForSpace = false
+    private(set) var isPaused = false
+
+    func setPaused(_ paused: Bool) {
+        isPaused = paused
+        condition = paused ? .paused : (condition == .paused ? .running : condition)
+        publish()
+    }
+
+    /// Every cache entry this recording uses (to remove it).
+    var cacheIdentities: [String] { resources.keys.map { key($0) } + ["\(identity)|live|manifest"] }
     private var lastSpaceCheck = ContinuousClock.now
 
     init(role: MediaTrackRole, cache: MediaCache, identity: String, playlistURL: URL, signer: UpstreamURLSigner,
@@ -329,7 +339,7 @@ actor LiveHLSRecorder {
                 }
                 publish()
                 if running == 0 {
-                    if ended || stoppedForSpace {
+                    if (ended || stoppedForSpace), !isPaused {
                         if nextResource() == nil { break }
                     }
                     try? await Task.sleep(for: .milliseconds(250))
@@ -349,6 +359,7 @@ actor LiveHLSRecorder {
     /// Maps and keys first; then segments from the one the player wants (or
     /// the live edge) onward; then older ones, newest first.
     private func nextResource() -> String? {
+        guard !isPaused else { return nil }
         let busy = done.union(inFlight)
         if let pending = resources.keys.sorted().first(where: { !$0.hasPrefix("s") && !busy.contains($0) }) { return pending }
         let pending = segments.filter { !busy.contains($0.resource) }

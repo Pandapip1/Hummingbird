@@ -564,7 +564,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let audio = try option.audio.map {
             try trackSpec($0, role: .audio, runtime: runtime, sourceURL: sourceURL, declaredDuration: declared)
         }
-        return try await VODSession.start(video: video, audio: audio, downloads: mediaDownloads, server: mediaServer)
+        return try await VODSession.start(video: video, audio: audio, downloads: mediaDownloads, server: mediaServer,
+                                          info: downloadInfo(live: false))
     }
 
     /// Starts downloading an on-demand HLS presentation into the media cache
@@ -587,8 +588,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             maxHeight: maxHeight, language: Locale.current.language.languageCode?.identifier
         )
         return live
-            ? try await VODSession.start(live: spec, downloads: mediaDownloads, server: mediaServer)
-            : try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer)
+            ? try await VODSession.start(live: spec, downloads: mediaDownloads, server: mediaServer, info: downloadInfo(live: true))
+            : try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer, info: downloadInfo(live: false))
+    }
+
+    /// How the downloads list names this video.
+    private func downloadInfo(live: Bool) -> DownloadInfo? {
+        guard let details, let runtime, let sourceURL = loadedURL else { return nil }
+        return DownloadInfo(id: "\(runtime.id)|\(sourceURL)", title: details.item.name, contentURL: sourceURL,
+                            thumbnail: details.item.thumbnailURL, isLive: live)
     }
 
     /// Signs any URL of an HLS presentation through the source's request

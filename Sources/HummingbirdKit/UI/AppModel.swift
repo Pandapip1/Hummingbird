@@ -16,6 +16,8 @@ final class AppModel {
     let localProfileID: UUID
     let library: LibraryStore
     let platform: PlatformService
+    /// This window's view of every download in the media cache.
+    let downloads: DownloadsModel
     let subscriptionFeed: SubscriptionFeed
     let homeFeed: FeedModel
     let playbackQueue: PlaybackQueue
@@ -145,6 +147,7 @@ final class AppModel {
     /// downloads continue in the background (`MediaDownloads`). Other
     /// windows have their own models and are unaffected.
     func closeWindow() {
+        downloads.stop()
         let players = tabPlayers.values
         tabPlayers.removeAll()
         for player in players { player.teardown() }
@@ -210,6 +213,9 @@ final class AppModel {
         let platform = PlatformService(
             plugins: plugins, storage: storage, detailsCacheStorageName: storagePrefix + "details_cache"
         )
+        let downloadsModel = DownloadsModel(downloads: stores.mediaDownloads)
+        downloadsModel.start()
+        self.downloads = downloadsModel
         self.stores = stores
         self.plugins = plugins
         self.localProfileID = localProfileID

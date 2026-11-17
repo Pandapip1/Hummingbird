@@ -95,6 +95,8 @@ enum MediaStageCondition: Sendable, Equatable {
     /// The upstream URL expired or was refused; the stage is asking the
     /// plugin for fresh playback details.
     case refreshingSource
+    /// Paused by the user (the downloads list).
+    case paused
     case complete
     /// The stage gave up. Only unrecoverable problems (corrupt media the
     /// player cannot use) end here; network failures never do.

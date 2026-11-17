@@ -146,6 +146,14 @@ actor MediaCache {
         return data
     }
 
+    /// Deletes a cached track that is not open (the downloads list's Remove).
+    func remove(identity: String) {
+        let digest = Self.digest(identity)
+        guard openTracks[digest] == nil, let directory = try? root() else { return }
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(digest).media"))
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(digest).json"))
+    }
+
     /// Forgets a track's contents, e.g. when upstream bytes turned out to
     /// belong to a different rendition.
     func reset(_ id: TrackID) throws {

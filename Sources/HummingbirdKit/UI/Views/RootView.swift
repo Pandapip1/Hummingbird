@@ -30,6 +30,8 @@ struct RootView: View {
                 }
             }
         }
+        // An app-level item of the window, placed by the tab container's chrome.
+        .browserWindowItem { DownloadsButton(model: model.downloads) }
         .browserTabControls { MobileBrowserToolbar(showingTabOverview: $showingTabOverview) }
         .navigationTitle(windowTitle)
         .browserWindowChrome(model: model, overviewPresented: $showingTabOverview)

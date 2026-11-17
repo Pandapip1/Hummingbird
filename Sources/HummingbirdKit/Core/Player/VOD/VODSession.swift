@@ -50,6 +50,7 @@ actor VODSession {
     private var heldTracks: [String] = []
     private var heldRenditions: [String] = []
     private var heldRecordings: [String] = []
+    private var info: DownloadInfo?
     private var presentationID: String?
     private var trackStates: [MediaTrackRole: MediaTrackPipelineState] = [:]
     private var order: [MediaTrackRole] = []
@@ -69,8 +70,9 @@ actor VODSession {
     /// Starts (or joins) the download of `video` (and `audio`, when separate)
     /// and returns the session with the playback to load.
     static func start(video: VODTrackSpec, audio: VODTrackSpec?, downloads: MediaDownloads,
-                      server: LocalMediaServer) async throws -> (VODSession, LocalPlayback) {
+                      server: LocalMediaServer, info: DownloadInfo? = nil) async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
+        await session.setInfo(info)
         do {
             return (session, try await session.beginFiles([video, audio].compactMap { $0 }))
         } catch {
@@ -137,9 +139,11 @@ actor VODSession {
     /// Starts (or joins) the download of an on-demand HLS presentation: the
     /// best variant at or under `maxHeight` and its audio rendition.
     static func start(hls spec: HLSPresentationSpec, downloads: MediaDownloads, server: LocalMediaServer,
-                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession))
+                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession),
+                      info: DownloadInfo? = nil)
         async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
+        await session.setInfo(info)
         do {
             return (session, try await session.beginHLS(spec, transport: transport))
         } catch {
@@ -242,9 +246,11 @@ actor VODSession {
     /// under `maxHeight` and its audio rendition, each recorded into the
     /// cache and served as a growing local playlist (see `LiveHLSRecorder`).
     static func start(live spec: HLSPresentationSpec, downloads: MediaDownloads, server: LocalMediaServer,
-                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession))
+                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession),
+                      info: DownloadInfo? = nil)
         async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
+        await session.setInfo(info)
         do {
             return (session, try await session.beginLive(spec, transport: transport))
         } catch {
@@ -349,7 +355,12 @@ actor VODSession {
 
     // MARK: lifetime
 
+    private func setInfo(_ info: DownloadInfo?) { self.info = info }
+
     private func register(_ presentation: LocalMediaServer.Presentation) async throws -> URL {
+        if let info {
+            await downloads.describe(info, tracks: heldTracks, renditions: heldRenditions, recordings: heldRecordings)
+        }
         let (id, base) = try await server.register(presentation)
         presentationID = id
         return base

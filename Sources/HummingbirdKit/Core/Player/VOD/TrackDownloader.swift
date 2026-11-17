@@ -131,6 +131,8 @@ actor TrackDownloader {
     private var finishHandler: (@Sendable () async -> Void)?
     private(set) var isFinished = false
     private var lastSpaceCheck = ContinuousClock.now
+    /// Paused by the user: no new requests start (requests in flight finish).
+    private(set) var isPaused = false
 
     init(role: MediaTrackRole, cache: MediaCache, track: MediaCache.TrackID, signer: UpstreamRequestSigner,
          indexHint: ClosedRange<Int64>? = nil, declaredDuration: Double? = nil,
@@ -170,6 +172,12 @@ actor TrackDownloader {
     /// Foreground while something plays the track; background otherwise (see `DownloadScheduler`).
     func setPriority(_ priority: DownloadPriority) {
         self.priority = priority
+    }
+
+    func setPaused(_ paused: Bool) {
+        isPaused = paused
+        condition = paused ? .paused : (condition == .paused ? .running : condition)
+        publish()
     }
 
     /// Called once when the download ends: complete, failed, or stopped for space.
@@ -385,7 +393,7 @@ actor TrackDownloader {
                 publish()
                 if running == 0 {
                     if let totalBytes, completed.contains(0..<totalBytes) { return }
-                    if totalBytes == nil, nextPiece() == nil { return }
+                    if totalBytes == nil, !isPaused, nextPiece() == nil { return }
                     // Nothing to plan but not complete: wait for a waiter or total to change.
                     try await Task.sleep(for: .milliseconds(100))
                     continue
@@ -398,6 +406,7 @@ actor TrackDownloader {
 
     /// The next missing range, starting at the playhead's priority offset.
     private func nextPiece() -> Range<Int64>? {
+        guard !isPaused else { return nil }
         let busy = completed.union(inFlight)
         let urgent = waiters.values.contains { !completed.contains($0.range) }
         let size = urgent ? configuration.urgentPieceBytes : configuration.pieceBytes

@@ -97,6 +97,7 @@ final class AppModel {
     var activePlayerForDebug: PlayerModel? { tabPlayers[activeTabID] }
 
     /// The window showing this model closed: every tab's player stops now
+    /// (wired to the window/scene-end callback of SwiftOpenUI's lifecycle API)
     /// (no sound keeps playing from a closed window) and is released. Their
     /// downloads continue in the background (`MediaDownloads`). Other
     /// windows have their own models and are unaffected.

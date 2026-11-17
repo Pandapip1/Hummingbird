@@ -674,13 +674,13 @@ public final class InstanceMessagingService: @unchecked Sendable {
     public func trusts(_ peer: AppSyncPeer) -> Bool { trustStore.trusts(peer.stableID) }
 }
 
-private struct LANHTTPResponse {
+struct LANHTTPResponse {
     let status: HTTPResponseStatus
     var body = Data()
     var contentType: String?
 }
 
-private final class InboxAppendHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
+final class InboxAppendHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
     private var head: HTTPRequestHead?
@@ -716,8 +716,13 @@ private final class InboxAppendHTTPHandler: ChannelInboundHandler, @unchecked Se
                 bytes.writeBytes(response.body)
                 context.write(wrapOutboundOut(.body(.byteBuffer(bytes))), promise: nil)
             }
-            context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
-            context.close(promise: nil)
+            // Close only once everything is written. Closing straight after
+            // the flush discards whatever the socket's send buffer couldn't
+            // take yet, cutting large replies (journal snapshots) short.
+            let channel = context.channel
+            context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in
+                channel.close(promise: nil)
+            }
         }
     }
 }

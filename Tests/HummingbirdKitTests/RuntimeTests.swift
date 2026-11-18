@@ -16,13 +16,13 @@ final class RuntimeTests: XCTestCase {
             PluginConfig.self,
             from: Data(#"{"name":"Cache","id":"cache-test","scriptUrl":"x.js","version":1}"#.utf8)
         )
-        let baseline = PluginRuntime(config: config, script: "one", settings: ["mode": "a"], auth: nil, captcha: nil)
-        let identical = PluginRuntime(config: config, script: "one", settings: ["mode": "a"], auth: nil, captcha: nil)
-        let changedScript = PluginRuntime(config: config, script: "two", settings: ["mode": "a"], auth: nil, captcha: nil)
-        let changedSetting = PluginRuntime(config: config, script: "one", settings: ["mode": "b"], auth: nil, captcha: nil)
+        let baseline = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check("one", for: config), settings: ["mode": "a"], auth: nil, captcha: nil)
+        let identical = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check("one", for: config), settings: ["mode": "a"], auth: nil, captcha: nil)
+        let changedScript = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check("two", for: config), settings: ["mode": "a"], auth: nil, captcha: nil)
+        let changedSetting = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check("one", for: config), settings: ["mode": "b"], auth: nil, captcha: nil)
         let changedAuth = PluginRuntime(
-            config: config,
-            script: "one",
+            approval: testLoadApproval(config), config: config,
+            script: try ScriptSignature.check("one", for: config),
             settings: ["mode": "a"],
             auth: SourceAuth(cookieMap: ["example.com": ["SID": "value"]]),
             captcha: nil
@@ -57,7 +57,7 @@ final class RuntimeTests: XCTestCase {
             PluginConfig.self,
             from: Data(#"{"name":"Timer isolation","id":"timer-isolation","scriptUrl":"x.js","version":1}"#.utf8)
         )
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
 
         _ = try await runtime.enable()
@@ -88,7 +88,7 @@ final class RuntimeTests: XCTestCase {
             PluginConfig.self,
             from: Data(#"{"name":"Promise isolation","id":"promise-isolation","scriptUrl":"x.js","version":1}"#.utf8)
         )
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
 
         let oldCall = Task { try await runtime.call("delayed", as: String.self) }
@@ -102,29 +102,6 @@ final class RuntimeTests: XCTestCase {
         } catch is CancellationError {}
     }
 
-    func testUnifiedDiffPreservesCRLF() throws {
-        let diff = "--- old\n+++ new\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+bravo"
-        XCTAssertEqual(try UnifiedDiff.apply(diff, to: "alpha\r\nbeta"), "alpha\r\nbravo")
-    }
-
-    func testUnifiedDiffAppliesMultipleHunks() throws {
-        let diff = """
-        --- old
-        +++ new
-        @@ -1,2 +1,2 @@
-         alpha
-        -beta
-        +bravo
-        @@ -4,1 +4,2 @@
-         delta
-        +echo
-        """
-        XCTAssertEqual(
-            try UnifiedDiff.apply(diff, to: "alpha\nbeta\ngamma\ndelta"),
-            "alpha\nbravo\ngamma\ndelta\necho"
-        )
-    }
-
     func testAsyncFeatureAndBrowserFallbackEvaluation() async throws {
         let config = try JSONDecoder().decode(
             PluginConfig.self,
@@ -134,7 +111,7 @@ final class RuntimeTests: XCTestCase {
         source.features = function() { return bridge.supportedFeatures; };
         source.dynamic = function() { return eval("40 + 2"); };
         """
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
         let features: [String] = try await runtime.call("features")
         XCTAssertTrue(features.contains("Async"))
@@ -156,7 +133,7 @@ final class RuntimeTests: XCTestCase {
             return true;
         };
         """
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
         let warningStore = WarningStore()
         runtime.onLog = { warningStore.append($0) }
@@ -186,7 +163,7 @@ final class RuntimeTests: XCTestCase {
             return { supported: supported, chained: chained === batch, positions: batch.execute() };
         };
         """
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
 
         struct Result: PluginOutput {
@@ -205,8 +182,8 @@ final class RuntimeTests: XCTestCase {
     func testDirectEvalRemainsUnavailableWithoutPermissionOrBrowserFallback() async throws {
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"No eval"}"#.utf8))
         let runtime = PluginRuntime(
-            config: config,
-            script: "source.dynamic = function() { return eval('42'); };",
+            approval: testLoadApproval(config), config: config,
+            script: try ScriptSignature.check("source.dynamic = function() { return eval('42'); };", for: config),
             settings: [:], auth: nil, captcha: nil
         )
         defer { Task { await runtime.stop() } }
@@ -237,7 +214,7 @@ final class RuntimeTests: XCTestCase {
             video: new VideoSourceDescriptor([new Generated({ container: "video/mp4" })]) });
         };
         """
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
         let data = try await runtime.callRaw("getContentDetails", ["https://example.test/video"], kind: "details")
         guard case .video(let details) = try PluginRuntime.decode(ContentDetails.self, from: data),
@@ -266,7 +243,7 @@ final class RuntimeTests: XCTestCase {
         source.getContentDetails = function() { return null; };
         source.rawTypes = function() { return [new GeneratedVideo({}).plugin_type, new GeneratedAudio({}).plugin_type]; };
         """
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
         try await runtime.validate()
         let types: [String] = try await runtime.call("rawTypes")
@@ -304,7 +281,7 @@ final class RuntimeTests: XCTestCase {
     private func runtime(settings: [String: String] = [:]) throws -> PluginRuntime {
         let json = #"{"name":"Demo","id":"demo-id","scriptUrl":"x.js","version":1,"packages":["Http","DOMParser","Utilities"],"allowUrls":["demo.test"],"settings":[{"variable":"flag","name":"Flag","type":"Boolean","default":"true"},{"variable":"greeting","name":"G","type":"Input","default":"\"hello\""}]}"#
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(json.utf8))
-        return PluginRuntime(config: config, script: script, settings: settings, auth: nil, captcha: nil)
+        return PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: settings, auth: nil, captcha: nil)
     }
 
     #if os(Linux)

@@ -17,7 +17,7 @@ them.
 |---|---|
 | `player` | loading content, source selection (`source_inventory`, `source_selected`), plugin reloads, UMP refreshes, local playback recovery, and one `startup_timing` line per video (`selected_ms resolved_ms first_bytes_ms player_loaded_ms first_frame_ms`, from the start of the load) |
 | `avplayer` | AVPlayer item status, `time_control` changes with the reason the player waits, error-log entries, failures to play to the end |
-| `plugin` | alerts (toasts), compatibility patches, unsupported capabilities, call timeouts, failed feed sources (`feed_source_failed`) |
+| `plugin` | alerts (toasts), stored scripts that fail their signature check (`stored_script_rejected`), unsupported capabilities, call timeouts, failed feed sources (`feed_source_failed`) |
 | `plugin.console` | plugins' own `log()` output (debug level, private) |
 | `plugin.browser` | the hidden browser page (content rules) |
 | `http` | opt-in traces (see below) and non-2xx plugin responses when `HUMMINGBIRD_PLUGIN_VERBOSE=1` |

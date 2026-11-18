@@ -68,7 +68,8 @@ final class MaliciousPluginTests: XCTestCase {
         ] as [String: Any])
         let config = try JSONDecoder().decode(PluginConfig.self, from: json)
         let script = try String(contentsOf: Self.directory.appendingPathComponent(file), encoding: .utf8)
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: auth, captcha: nil,
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config,
+                                    script: try ScriptSignature.check(script, for: config), settings: [:], auth: auth, captcha: nil,
                                     approvals: approvals, resolver: resolver, httpSession: Stub.session(), timeouts: timeouts)
         addTeardownBlock { await runtime.stop() }
         return runtime
@@ -391,7 +392,7 @@ final class MaliciousPluginTests: XCTestCase {
         let (impostorURL, impostorFiles) = try publish("victim", at: "https://impostor.example.test/p")
         let stores = makeTestStores()
         let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore,
-                                    fetch: MemoryHost(files: genuineFiles.merging(impostorFiles) { a, _ in a }).fetch)
+                                    policy: makeTestPolicy(), fetch: MemoryHost(files: genuineFiles.merging(impostorFiles) { a, _ in a }).fetch)
         manager.resolver = TestResolver.publicOnly
         manager.commit(try await manager.prepareInstall(from: genuineURL.absoluteString))
         manager.saveAuth(SourceAuth(cookieMap: [".example.test": ["SID": "secret"]]), pluginID: "victim")
@@ -419,7 +420,7 @@ final class MaliciousPluginTests: XCTestCase {
         let (lanURL, lanFiles) = try publish("lan", at: "https://lan.example.test/p", extra: ["allowUrls": ["nas.local:8096"]])
         let stores = makeTestStores()
         let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore,
-                                    fetch: MemoryHost(files: plainFiles.merging(wideFiles) { a, _ in a }.merging(lanFiles) { a, _ in a }).fetch)
+                                    policy: makeTestPolicy(), fetch: MemoryHost(files: plainFiles.merging(wideFiles) { a, _ in a }.merging(lanFiles) { a, _ in a }).fetch)
         manager.resolver = TestResolver(answers: ["nas.local": ["192.168.1.20"]])
         func change(_ id: String, _ url: URL) throws -> PluginSyncChange {
             var installed = InstalledPlugin(config: try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"x"}"#.utf8)), script: "")
@@ -447,7 +448,7 @@ final class MaliciousPluginTests: XCTestCase {
     func testLocalNetworkApprovalsAreExactAndRevocable() async throws {
         let (url, files) = try publish("lan", at: "https://lan.example.test/p", extra: ["allowUrls": ["jellyfin.tailnet.ts.net:8096"]])
         let stores = makeTestStores()
-        let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore, fetch: MemoryHost(files: files).fetch)
+        let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore, policy: makeTestPolicy(), fetch: MemoryHost(files: files).fetch)
         manager.resolver = TestResolver(answers: ["jellyfin.tailnet.ts.net": ["100.101.102.103"]])
         let preview = try await manager.prepareInstall(from: url.absoluteString)
         XCTAssertTrue(preview.warnings.contains { $0.detail.contains("jellyfin.tailnet.ts.net:8096 → 100.101.102.103") })

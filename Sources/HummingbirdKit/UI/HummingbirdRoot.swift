@@ -136,7 +136,12 @@ struct InstallPreviewDebugScene: View {
         {"name":"Preview scroll test","description":"Every allowed host must remain reachable before installation.","author":"Hummingbird","version":1,"id":"preview-scroll-test","allowUrls":\(try! String(data: JSONEncoder().encode(urls), encoding: .utf8)!)}
         """
         let config = try! JSONDecoder().decode(PluginConfig.self, from: Data(json.utf8))
-        return InstallPreview(config: config, script: "", iconURL: nil, warnings: [], existing: nil)
+        // A preview needs the policy's approval; this scene shows an adult's.
+        let source = CuratedSourceDatabase.shared.classification(for: config)
+        guard case .success(let approval) = PolicyRules.install(
+            source, age: .range(lower: 18, upper: nil), supervision: .none, parentApproved: false
+        ) else { preconditionFailure("an adult without parental controls may install any source") }
+        return InstallPreview(config: config, script: "", iconURL: nil, warnings: [], existing: nil, approval: approval)
     }()
 
     var body: some View {

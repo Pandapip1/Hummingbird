@@ -81,7 +81,7 @@ var targets: [Target] = [
         path: "Sources/HummingbirdKit",
         resources: [
             .copy("Core/Plugin/Resources/prelude.js"),
-            .copy("Core/Plugin/Resources/CompatibilityPatches"),
+            .copy("Core/Policy/Resources/CuratedSources.json"),
         ],
         swiftSettings: backendSwiftSettings,
         linkerSettings: [

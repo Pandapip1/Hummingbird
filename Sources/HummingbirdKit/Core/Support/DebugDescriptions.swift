@@ -62,7 +62,6 @@ extension InstalledPlugin: CustomDebugStringConvertible, CustomReflectable {
 extension PluginRuntime: CustomDebugStringConvertible {
     /// Only immutable state: everything else belongs to the runtime's queue.
     var debugDescription: String {
-        let patches = appliedCompatibilityPatches.isEmpty ? "" : ", patches: \(appliedCompatibilityPatches)"
-        return "PluginRuntime(\(config.id) \"\(config.name)\" v\(config.version), signed in: \(isLoggedIn)\(patches))"
+        return "PluginRuntime(\(config.id) \"\(config.name)\" v\(config.version), signed in: \(isLoggedIn))"
     }
 }

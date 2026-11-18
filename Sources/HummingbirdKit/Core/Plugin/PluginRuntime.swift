@@ -19,9 +19,14 @@ import PlatformSupport
 /// `PluginOutput` types, which contain themselves against this plugin's identity and network policy.
 final class PluginRuntime: @unchecked Sendable {
     let config: PluginConfig
-    private let originalScript: String
-    let script: String
+    /// The plugin's script exactly as published: workers evaluate these
+    /// bytes and nothing else, so no code can rewrite a plugin.
+    let checkedScript: CheckedScript
+    var script: String { checkedScript.text }
     let storedSettings: [String: String]
+    /// The source-access policy's permission to run, kept so clones run
+    /// under the same decision.
+    let approval: LoadApproval
     let auth: SourceAuth?
     let captcha: SourceAuth?
     let approvals: [LocalHostApproval]
@@ -41,8 +46,6 @@ final class PluginRuntime: @unchecked Sendable {
         var requestModifier = PluginLimits.requestModifierTimeout
         static let standard = Timeouts()
     }
-    let appliedCompatibilityPatches: [String]
-    let failedCompatibilityPatches: [String]
     let detailsCacheFingerprint: String
 
     private let lock = NSLock()
@@ -78,15 +81,13 @@ final class PluginRuntime: @unchecked Sendable {
     /// host-side capabilities embedded in their playback sources.
     private static func makeDetailsCacheFingerprint(
         config: PluginConfig, script: String, settings: [String: String],
-        applied: [String], failed: [String], auth: SourceAuth?, captcha: SourceAuth?
+        auth: SourceAuth?, captcha: SourceAuth?
     ) -> String {
         var inputs = [
             "host-details-abi:2",
             "plugin:\(config.id):\(config.version)",
             "script:\(script)",
             "settings:\(settings.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&"))",
-            "patches:\(applied.joined(separator: ","))",
-            "patch-failures:\(failed.joined(separator: ","))",
         ]
         if let auth, let data = try? JSONEncoder().encode(auth) {
             inputs.append("auth:\(data.base64EncodedString())")
@@ -103,27 +104,28 @@ final class PluginRuntime: @unchecked Sendable {
             .joined()
     }
 
-    init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?,
+    /// `approval` comes from `SourceAccessPolicy`, the only way to make one,
+    /// so no runtime starts without the policy's decision; its forced
+    /// settings (restricted modes) replace the user's values here. `script`
+    /// comes from `ScriptSignature.check`, the only way to make a
+    /// `CheckedScript`: the published text, its signature verified when the
+    /// plugin is signed.
+    init(approval: LoadApproval, config: PluginConfig, script: CheckedScript, settings: [String: String],
+         auth: SourceAuth?, captcha: SourceAuth?,
          savedState: String? = nil, approvals: [LocalHostApproval] = [], resolver: any HostResolving = SystemHostResolver(),
          localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil, httpSession: URLSession? = nil,
          timeouts: Timeouts = .standard) {
+        precondition(approval.pluginID == config.id, "a load approval is for one plugin")
+        precondition(script.pluginID == config.id, "a checked script is for one plugin")
+        let settings = settings.merging(approval.forcedSettings) { _, forced in forced }
+        self.approval = approval
         self.timeouts = timeouts
         self.localNetworkAccess = localNetworkAccess
         self.httpSession = httpSession
-        let compatibility = PluginCompatibilityPatches.apply(
-            pluginID: config.id,
-            version: config.version,
-            original: script
-        )
         self.config = config
-        self.originalScript = script
-        self.script = compatibility.script
-        self.appliedCompatibilityPatches = compatibility.applied
-        self.failedCompatibilityPatches = compatibility.failed
+        self.checkedScript = script
         self.detailsCacheFingerprint = Self.makeDetailsCacheFingerprint(
-            config: config, script: compatibility.script, settings: settings,
-            applied: compatibility.applied, failed: compatibility.failed,
-            auth: auth, captcha: captcha
+            config: config, script: script.text, settings: settings, auth: auth, captcha: captcha
         )
         self.storedSettings = settings
         self.auth = auth
@@ -132,12 +134,6 @@ final class PluginRuntime: @unchecked Sendable {
         self.approvals = approvals
         self.resolver = resolver
         self.policy = PluginNetworkPolicy(config: config, approvals: approvals, resolver: resolver)
-        if !compatibility.applied.isEmpty {
-            Logger.plugin.info("compatibility_patches plugin=\(pluginLogID(config.id), privacy: .public) version=\(config.version) patches=\(compatibility.applied.joined(separator: ","), privacy: .public)")
-        }
-        if !compatibility.failed.isEmpty {
-            Logger.plugin.error("compatibility_patch_failures plugin=\(pluginLogID(config.id), privacy: .public) version=\(config.version) failures=\(compatibility.failed.joined(separator: ","), privacy: .public)")
-        }
     }
 
     // MARK: shared inputs, read by workers
@@ -372,7 +368,7 @@ final class PluginRuntime: @unchecked Sendable {
     /// Creates a fresh runtime with the same immutable plugin inputs.
     /// Handles and mutable executor state are intentionally not shared.
     func isolatedClone() -> PluginRuntime {
-        let clone = PluginRuntime(config: config, script: originalScript, settings: storedSettings,
+        let clone = PluginRuntime(approval: approval, config: config, script: checkedScript, settings: storedSettings,
                                   auth: auth, captcha: captcha, savedState: currentSavedState,
                                   approvals: approvals, resolver: resolver,
                                   localNetworkAccess: localNetworkAccess, httpSession: httpSession, timeouts: timeouts)

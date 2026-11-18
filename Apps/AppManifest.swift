@@ -83,6 +83,10 @@ let manifest = AppManifest(
     // keychain fallback instead of the shared access group.
     teamEntitlements: [
         "keychain-access-groups": ["$(AppIdentifierPrefix)com.eightybps.hummingbird.shared"],
+        // Age assurance (Documentation/AgeAndParentalControls.md): without it
+        // Declared Age Range throws, and every Apple device would count as
+        // having no age source. The App ID needs the capability.
+        "com.apple.developer.declared-age-range": true,
     ],
     // Xcode-only settings: which platforms the one target builds for, and
     // signing options with no xtool counterpart.

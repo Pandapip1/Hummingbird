@@ -159,7 +159,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         }
         let stores = makeTestStores()
         let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore,
-                                    fetch: host.fetch)
+                                    policy: makeTestPolicy(), fetch: host.fetch)
         let changes = try plugins.map {
             PluginSyncChange(key: HummingbirdProfileSchema.key(for: $0.id),
                              plugin: try XCTUnwrap(SyncedPlugin(host.installed($0))))
@@ -184,7 +184,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         let alpha = host.serve(id: "alpha", name: "Alpha")
         let stores = makeTestStores()
         let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore,
-                                    fetch: host.fetch)
+                                    policy: makeTestPolicy(), fetch: host.fetch)
         let change = PluginSyncChange(key: HummingbirdProfileSchema.key(for: "alpha"),
                                       plugin: try XCTUnwrap(SyncedPlugin(host.installed(alpha))))
         let applying = Task { await manager.applySynced([change]) }
@@ -194,6 +194,40 @@ final class ProfileSyncApplyTests: XCTestCase {
         _ = await applying.value
         XCTAssertNil(manager.syncInstalls["alpha"])
         XCTAssertEqual(manager.installed.map(\.id), ["alpha"])
+    }
+
+    // MARK: source-access policy
+
+    /// A synced plugin this device's policy refuses is shown locked with the
+    /// reason, not as a sync failure, is not recorded as applied, and
+    /// installs by itself once the policy allows it.
+    func testRefusedSyncedPluginIsLockedThenInstallsWhenAllowed() async throws {
+        let host = FakePluginHost()
+        let alpha = host.serve(id: "alpha", name: "Alpha")
+        let stores = makeTestStores()
+        let age = FixedAgeSource(.range(lowerBound: 13, upperBound: 15))
+        let profileAge = ProfileAgeRange(storage: .inMemory(), storageName: "age", profileChanges: nil)
+        let policy = SourceAccessPolicy(
+            ageSource: age, supervisionSource: FixedSupervisionSource(.notSupervised), profileAge: profileAge,
+            approvals: ParentalApprovals(storage: .inMemory(), storageName: "approvals", profileChanges: nil)
+        )
+        let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore,
+                                    policy: policy, fetch: host.fetch)
+        let change = PluginSyncChange(key: HummingbirdProfileSchema.key(for: "alpha"),
+                                      plugin: try XCTUnwrap(SyncedPlugin(host.installed(alpha))))
+
+        let applied = await manager.applySynced([change])
+        XCTAssertTrue(applied.isEmpty, "a refused plugin is not recorded as applied")
+        XCTAssertTrue(manager.installed.isEmpty)
+        XCTAssertEqual(manager.syncInstalls["alpha"]?.locked, .tooYoung(minimumAge: 18))
+        XCTAssertNil(manager.syncInstalls["alpha"]?.failure, "locked, not an error")
+
+        // A platform report of an adult raises the profile's bound; the
+        // refused plugin is tried again and installs.
+        age.answer = .range(lowerBound: 18, upperBound: nil)
+        await manager.retryLockedSources()
+        XCTAssertEqual(manager.installed.map(\.id), ["alpha"])
+        XCTAssertNil(manager.syncInstalls["alpha"])
     }
 
     // MARK: library
@@ -489,7 +523,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         let changes = ProfileChangeStore(mutationLog: log)
         let manager = PluginManager(installed: [try host.installed(mine)], profileChanges: changes,
                                     storage: stores.storage, credentialStore: stores.credentialStore,
-                                    fetch: host.fetch)
+                                    policy: makeTestPolicy(), fetch: host.fetch)
         let change = PluginSyncChange(key: HummingbirdProfileSchema.key(for: "alpha"),
                                       plugin: try XCTUnwrap(SyncedPlugin(host.installed(theirs))))
         _ = await manager.applySynced([change])
@@ -532,7 +566,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         host.failures = [alpha.configURL: .max]
         let stores = makeTestStores()
         let manager = PluginManager(storage: stores.storage, credentialStore: stores.credentialStore,
-                                    fetch: host.fetch)
+                                    policy: makeTestPolicy(), fetch: host.fetch)
         let key = HummingbirdProfileSchema.key(for: "alpha")
         let put = PluginSyncChange(key: key, plugin: try XCTUnwrap(SyncedPlugin(host.installed(alpha))))
         _ = await manager.applySynced([put])
@@ -551,7 +585,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         let theirs = host.serve(id: "alpha", name: "Alpha Fork")
         let stores = makeTestStores()
         let manager = PluginManager(installed: [try host.installed(mine)], storage: stores.storage,
-                                    credentialStore: stores.credentialStore, fetch: host.fetch)
+                                    credentialStore: stores.credentialStore, policy: makeTestPolicy(), fetch: host.fetch)
         let change = PluginSyncChange(key: HummingbirdProfileSchema.key(for: "alpha"),
                                       plugin: try XCTUnwrap(SyncedPlugin(host.installed(theirs, settings: ["a": "b"]))))
 
@@ -675,7 +709,7 @@ private final class SyncDevice {
         snapshot.history = history
         let library = LibraryStore(snapshot: snapshot, profileChanges: changes, storage: stores.storage)
         let plugins = PluginManager(installed: installed, profileChanges: changes, storage: stores.storage,
-                                    credentialStore: stores.credentialStore, fetch: host.fetch)
+                                    credentialStore: stores.credentialStore, policy: makeTestPolicy(), fetch: host.fetch)
         let sync = ProfileSyncService(changes: changes, mutationLog: mutationLog, library: library,
                                       plugins: plugins, peerService: peerService, localNetworkEnabled: true)
         let device = SyncDevice(peerService: peerService, mutationLog: mutationLog, changes: changes,

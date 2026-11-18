@@ -7,6 +7,7 @@ import SwiftOpenUI
 @MainActor
 struct SourcesView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.openRoute) private var openRoute
     let browserToolbar: BrowserToolbarContext?
     @State private var showAdd = false
     @State private var removeTarget: String?
@@ -30,7 +31,15 @@ struct SourcesView: View {
                         .equatable()
                 }
             }
+            // An age bracket can advance by date alone, so check again.
+            .task { await app.plugins.retryLockedSources() }
             .navigationTitle("Sources")
+            .browserPageToolbarItem(id: "sources.discover", placement: .trailing) {
+                Button { openRoute(.discoverSources, title: "Discover Sources") } label: {
+                    Image(systemName: "sparkle.magnifyingglass")
+                }
+                .accessibilityLabel("Discover sources")
+            }
             .browserPageToolbarItem(id: "sources.add", placement: .trailing) {
                 Button { showAdd = true } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Add source")
@@ -68,9 +77,29 @@ private struct SyncInstallRow: View {
     var body: some View {
         if let confirmation = install.confirmation {
             confirm(confirmation)
+        } else if let locked = install.locked {
+            lockedRow(locked)
         } else {
             progress
         }
+    }
+
+    /// Refused by this device's source-access policy (age or parental
+    /// controls): the reason, not an error. It installs by itself once
+    /// allowed; under parental controls a parent can be asked.
+    private func lockedRow(_ denial: PolicyDenial) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "lock.fill").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(install.displayName).font(.headline)
+                Text(denial.errorDescription ?? "Not allowed on this device.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("It installs here by itself once allowed.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(install.displayName), locked on this device. \(denial.errorDescription ?? "")")
     }
 
     /// Another device uses a different copy of a plugin this device has:
@@ -194,6 +223,7 @@ struct AddSourceSheet: View {
     @State private var working = false
     @State private var errorText: String?
     @State private var preview: InstallPreview?
+    @State private var refusal: PolicyRefusal?
     @State private var hasCamera = false
 
     /// With `initialURL` (from a link), the plugin is checked and shown at
@@ -226,7 +256,9 @@ struct AddSourceSheet: View {
                         if working {
                             Section { ProgressView("Checking the plugin…") }
                         }
-                        if let errorText {
+                        if let refusal, !working {
+                            PolicyDenialSection(refusal: refusal)
+                        } else if let errorText {
                             Section {
                                 Text(errorText).foregroundStyle(.red).font(.footnote)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -269,10 +301,13 @@ struct AddSourceSheet: View {
         .task { if checksInitialURL, preview == nil { await prepare() } }
     }
 
+    /// Every install path (typed URL, QR code) goes through `prepareInstall`,
+    /// which asks the source-access policy.
     private func prepare() async {
-        working = true; errorText = nil
+        working = true; errorText = nil; refusal = nil
         defer { working = false }
         do { preview = try await app.plugins.prepareInstall(from: urlText) }
+        catch InstallError.policy(let refused) { refusal = refused }
         catch { errorText = error.localizedDescription }
     }
 
@@ -366,6 +401,11 @@ struct PluginDetailView: View {
 
     private func pluginForm(for p: InstalledPlugin) -> some View {
         Form {
+                if let denial = app.plugins.loadDenials[pluginID] {
+                    PolicyDenialSection(refusal: PolicyRefusal(
+                        denial: denial, pluginID: pluginID, name: p.config.name, sourceURL: p.config.sourceUrl ?? ""
+                    ))
+                }
                 Section {
                     Toggle("Enabled", isOn: Binding(get: { p.enabled }, set: { app.plugins.setEnabled(pluginID, $0) }))
                     LabeledContent("Version", value: "\(p.config.version)")
@@ -508,6 +548,28 @@ struct SettingRow: View, Equatable {
     }
 
     var body: some View {
+        if let forced = app.plugins.forcedSettings[pluginID]?[setting.key] {
+            // Forced by the source-access policy; the stored value is kept
+            // for when the restriction lifts.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    label
+                    Spacer(minLength: 8)
+                    Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                    Text(forced == "false" ? "Off" : forced == "true" ? "On" : forced).foregroundStyle(.secondary)
+                }
+                Text("Set by age or parental controls.").font(.caption).foregroundStyle(.secondary)
+                LockedSettingAskParent(pluginID: pluginID, setting: setting)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("\(setting.name), locked by age or parental controls")
+        } else {
+            editableBody
+        }
+    }
+
+    @ViewBuilder
+    private var editableBody: some View {
         switch setting.kind {
         case "header":
             VStack(alignment: .leading) {
@@ -605,6 +667,15 @@ private struct AppSettingsForm: View {
                 } label: {
                     Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                 }
+            }
+            Section {
+                Button {
+                    openRoute(.parentalControls, title: "Age & Parental Controls")
+                } label: {
+                    Label("Age & Parental Controls", systemImage: "lock.shield")
+                }
+            } footer: {
+                Text("Parental controls come from the system (Screen Time, Parental Controls). Here you can see them, ask a parent, and lower this profile’s age.")
             }
             // Only where the platform has a weaker store the user can opt in to.
             if let store = stores.keychain, store.offersLoginKeychainFallback {

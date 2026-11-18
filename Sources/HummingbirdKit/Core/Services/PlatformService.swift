@@ -341,6 +341,8 @@ enum Route: Hashable {
     case plugin(String)
     case settings
     case syncSettings
+    case parentalControls
+    case discoverSources
     /// An atproto sign-in page, shown while that authorization is pending.
     case oauthAuthorization(UUID)
 }
@@ -357,6 +359,8 @@ extension Route {
         case .sources, .plugin: "puzzlepiece.extension"
         case .settings: "gearshape"
         case .syncSettings: "arrow.triangle.2.circlepath"
+        case .parentalControls: "lock.shield"
+        case .discoverSources: "sparkle.magnifyingglass"
         case .content, .item: "play.rectangle"
         case .channel: "person.crop.square"
         case .playlist: "list.bullet.rectangle"

@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Signs a Grayjay plugin script with Hummingbird's plugin-signing key.
+
+Usage: scripts/sign-plugin SCRIPT.js CONFIG.json
+       [--key FILE.asc] [--public-key FILE.pem]
+
+Grayjay plugin signatures are RSA PKCS#1 v1.5 over SHA-512 of the script
+bytes, base64 encoded in the config's "scriptSignature"; the public key is a
+base64 X.509 SubjectPublicKeyInfo in "scriptPublicKey".
+
+The private key is kept only as a file encrypted to the maintainer's GPG key,
+whose decryption subkey is on an OpenPGP card: plugin-signing-key.pem.asc in
+hummingbird-plugin-signing/ of the main Hummingbird checkout (the one whose
+.git every worktree shares). It is never committed: the repository's
+.git/info/exclude lists it. The public key beside it is committed. It is decrypted into a pipe straight into
+openssl and never written to disk. With the card inserted, gpg may ask for
+its PIN. Without it, decryption is tried without any prompt and fails at
+once.
+
+The signature is checked against the public key before the config is
+changed; nothing is written to temporary files.
+"""
+
+import argparse
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SIGNING_DIRECTORY = "hummingbird-plugin-signing"
+DEFAULT_PUBLIC_KEY = os.path.join(HERE, "..", SIGNING_DIRECTORY, "plugin-signing-key.pub.pem")
+
+
+def default_key() -> str:
+    """The encrypted key in the main checkout, found from any worktree."""
+    try:
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=HERE, capture_output=True, check=True, text=True,
+        ).stdout.strip()
+        main_checkout = os.path.dirname(common)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        main_checkout = os.path.join(HERE, "..")
+    return os.path.join(main_checkout, SIGNING_DIRECTORY, "plugin-signing-key.pem.asc")
+
+
+def card_present() -> bool:
+    """`gpg --card-status` only reads the card; it never asks for a PIN."""
+    try:
+        subprocess.run(["gpg", "--card-status"], capture_output=True, check=True, timeout=10)
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def sign(key_path: str, script_path: str) -> bytes:
+    """gpg decrypts the key into a pipe; openssl reads it from that pipe."""
+    decrypt = ["gpg", "--quiet", "--decrypt", key_path]
+    if not card_present():
+        # No card: never prompt. A card key fails here at once; a key that
+        # needs no card or PIN (the tests' throwaway key) still works.
+        decrypt[1:1] = ["--batch", "--pinentry-mode", "error"]
+    gpg = subprocess.Popen(decrypt, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    openssl = subprocess.run(
+        ["openssl", "dgst", "-sha512", "-binary", "-sign", "/dev/stdin", script_path],
+        stdin=gpg.stdout, capture_output=True,
+    )
+    gpg.stdout.close()
+    gpg_error = gpg.stderr.read().decode(errors="replace")
+    if gpg.wait() != 0:
+        raise SystemExit("sign-plugin: could not decrypt the signing key "
+                         "(is the GPG card inserted?): " + gpg_error.strip())
+    if openssl.returncode != 0:
+        raise SystemExit("sign-plugin: openssl could not sign: " + openssl.stderr.decode(errors="replace"))
+    return openssl.stdout
+
+
+def verify(public_key_path: str, signature: bytes, script_path: str) -> None:
+    result = subprocess.run(
+        ["openssl", "dgst", "-sha512", "-verify", public_key_path, "-signature", "/dev/stdin", script_path],
+        input=signature, capture_output=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit("sign-plugin: the signature does not verify against "
+                         f"{public_key_path}; config left unchanged")
+
+
+def spki_base64(public_key_path: str) -> str:
+    """The PEM's base64 body: the SubjectPublicKeyInfo Grayjay publishes."""
+    with open(public_key_path) as f:
+        pem = f.read()
+    match = re.search(r"-----BEGIN PUBLIC KEY-----(.*?)-----END PUBLIC KEY-----", pem, re.S)
+    if not match:
+        raise SystemExit(f"sign-plugin: {public_key_path} is not a PEM public key")
+    return "".join(match.group(1).split())
+
+
+def update_config(path: str, signature_b64: str, key_b64: str) -> None:
+    """Replaces the two fields in place, keeping the file's formatting."""
+    with open(path, newline="") as f:
+        text = f.read()
+    json.loads(text)
+    for field, value in (("scriptSignature", signature_b64), ("scriptPublicKey", key_b64)):
+        text, count = re.subn(rf'("{field}"\s*:\s*)"[^"]*"', lambda m: f'{m.group(1)}"{value}"', text)
+        if count != 1:
+            raise SystemExit(f'sign-plugin: expected one "{field}" in {path}')
+    json.loads(text)
+    with open(path, "w", newline="") as f:
+        f.write(text)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("script")
+    parser.add_argument("config")
+    parser.add_argument("--key", default=None, help="the GPG-encrypted private key (.pem.asc)")
+    parser.add_argument("--public-key", default=DEFAULT_PUBLIC_KEY, help="the matching public key (PEM)")
+    args = parser.parse_args()
+    key = args.key or default_key()
+    if not os.path.isfile(key):
+        raise SystemExit(f"sign-plugin: no signing key at {key}. It is expected in {SIGNING_DIRECTORY}/ "
+                         "of the main Hummingbird checkout (never committed); pass --key to use another file.")
+
+    signature = sign(key, args.script)
+    verify(args.public_key, signature, args.script)
+    key_b64 = spki_base64(args.public_key)
+    update_config(args.config, base64.b64encode(signature).decode(), key_b64)
+    print(f"sign-plugin: signed {args.script}")
+
+
+if __name__ == "__main__":
+    main()

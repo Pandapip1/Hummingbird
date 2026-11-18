@@ -30,7 +30,7 @@ extension Logger {
     static let player = Logger(subsystem: Diagnostics.subsystem, category: "player")
     /// The AVFoundation playback backend.
     static let avPlayer = Logger(subsystem: Diagnostics.subsystem, category: "avplayer")
-    /// Plugin lifecycle, alerts and compatibility patches.
+    /// Plugin lifecycle and alerts.
     static let plugin = Logger(subsystem: Diagnostics.subsystem, category: "plugin")
     /// The local proxy that serves plugin media to the player.
     static let mediaProxy = Logger(subsystem: Diagnostics.subsystem, category: "media-proxy")
@@ -44,6 +44,9 @@ extension Logger {
     static let permissions = Logger(subsystem: Diagnostics.subsystem, category: "permissions")
     /// MetricKit payloads and main-thread stalls.
     static let performance = Logger(subsystem: Diagnostics.subsystem, category: "performance")
+    /// Age assurance, parental controls and source-access decisions. Never
+    /// logs an age or a birthday bound.
+    static let policy = Logger(subsystem: Diagnostics.subsystem, category: "policy")
 }
 
 extension OSSignposter {

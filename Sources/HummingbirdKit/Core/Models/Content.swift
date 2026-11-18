@@ -25,7 +25,7 @@ extension KeyedDecodingContainer {
 
 // MARK: - Identity, thumbnails, authors
 
-struct PlatformID: Hashable, Sendable, Codable {
+struct PlatformID: Hashable, Sendable, Codable, PluginOutput {
     var platform: String = ""
     var pluginId: String = ""
     var value: String = ""
@@ -42,14 +42,27 @@ struct PlatformID: Hashable, Sendable, Codable {
         value = c.looseString(.value) ?? ""
         claimType = c.looseInt(.claimType) ?? 0
     }
+
+    /// Binds the id to the plugin that produced it: a plugin cannot claim
+    /// another plugin's identity (icon, name, routing).
+    mutating func contain(_ context: PluginOutputContext) {
+        pluginId = context.pluginID
+        platform = context.line(platform, limit: 100)
+        value = context.reference(value)
+    }
 }
 
-struct Thumbnail: Hashable, Sendable, Codable {
+struct Thumbnail: Hashable, Sendable, Codable, PluginOutput {
     var url: String
     var quality: Int = 0
+
+    /// An unusable URL becomes empty; `ContentItem.contain` drops those.
+    mutating func contain(_ context: PluginOutputContext) {
+        url = context.webURL(url) ?? ""
+    }
 }
 
-struct AuthorLink: Hashable, Sendable, Codable {
+struct AuthorLink: Hashable, Sendable, Codable, PluginOutput {
     var id: PlatformID = PlatformID()
     var name: String = ""
     var url: String = ""
@@ -69,6 +82,13 @@ struct AuthorLink: Hashable, Sendable, Codable {
         thumbnail = c.looseString(.thumbnail)
         subscribers = c.looseInt(.subscribers)
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        id.contain(context)
+        name = context.line(name)
+        url = context.reference(url)
+        thumbnail = context.webURL(thumbnail)
+    }
 }
 
 // MARK: - Content items
@@ -78,7 +98,7 @@ enum ContentKind {
 }
 
 /// One entry in a feed, search result list, channel listing or playlist.
-struct ContentItem: Identifiable, Hashable, Sendable, Decodable {
+struct ContentItem: Identifiable, Hashable, Sendable, Decodable, PluginOutput {
     var contentType: Int = 0
     var platformID: PlatformID = PlatformID()
     var name: String = ""
@@ -98,7 +118,11 @@ struct ContentItem: Identifiable, Hashable, Sendable, Decodable {
     var images: [String] = []
     var subscribers: Int?
     var contentUrl: String?
-    var unlockUrl: String?
+    /// Where the user can unlock locked content, outside the app. Only set
+    /// by `contain`, so an uncontained item never opens anything.
+    var unlockURL: NavigableURL?
+    /// The plugin's raw value, until containment checks it.
+    private var unlockURLCandidate: String?
     var lockDescription: String?
     var playbackTime: Int?
     var playbackDate: Int?
@@ -159,10 +183,28 @@ struct ContentItem: Identifiable, Hashable, Sendable, Decodable {
         images = (try? c.decodeIfPresent([String].self, forKey: .images)) ?? []
         subscribers = c.looseInt(.subscribers)
         contentUrl = c.looseString(.contentUrl)
-        unlockUrl = c.looseString(.unlockUrl)
+        unlockURLCandidate = c.looseString(.unlockUrl)
         lockDescription = c.looseString(.lockDescription)
         playbackTime = c.looseInt(.playbackTime)
         playbackDate = c.looseInt(.playbackDate)
+    }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        platformID.contain(context)
+        name = context.line(name)
+        url = context.reference(url)
+        shareUrl = context.navigableURL(shareUrl)?.url.absoluteString
+        author?.contain(context)
+        thumbnails = context.contained(thumbnails, limit: 32).filter { !$0.url.isEmpty }
+        thumbnail = context.webURL(thumbnail)
+        description = context.optionalText(description)
+        images = context.list(images, limit: 64).compactMap { context.webURL($0) }
+        contentUrl = contentUrl.map { context.reference($0) }
+        unlockURL = context.navigableURL(unlockURLCandidate)
+        unlockURLCandidate = nil
+        lockDescription = context.optionalText(lockDescription, limit: 2_000)
+        if let d = duration, d < 0 { duration = nil }
+        if let v = viewCount, v < 0 { viewCount = nil }
     }
 
     private struct ThumbnailSet: Decodable { var sources: [Thumbnail]? }
@@ -177,7 +219,7 @@ struct ContentItem: Identifiable, Hashable, Sendable, Decodable {
 
 // MARK: - Channels
 
-struct ChannelInfo: Sendable, Decodable, Hashable {
+struct ChannelInfo: Sendable, Decodable, Hashable, PluginOutput {
     var idString: String = ""
     var name: String = ""
     var thumbnail: String?
@@ -186,7 +228,9 @@ struct ChannelInfo: Sendable, Decodable, Hashable {
     var description: String?
     var url: String = ""
     var urlAlternatives: [String] = []
-    var links: [String: String] = [:]
+    /// Named external links. Only set by `contain`.
+    var links: [String: NavigableURL] = [:]
+    private var linkCandidates: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey { case id, name, thumbnail, banner, subscribers, description, url, urlAlternatives, links }
 
@@ -200,7 +244,24 @@ struct ChannelInfo: Sendable, Decodable, Hashable {
         description = c.looseString(.description)
         url = c.looseString(.url) ?? ""
         urlAlternatives = (try? c.decodeIfPresent([String].self, forKey: .urlAlternatives)) ?? []
-        links = (try? c.decodeIfPresent([String: String].self, forKey: .links)) ?? [:]
+        linkCandidates = (try? c.decodeIfPresent([String: String].self, forKey: .links)) ?? [:]
+    }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        idString = context.reference(idString)
+        name = context.line(name)
+        thumbnail = context.webURL(thumbnail)
+        banner = context.webURL(banner)
+        description = context.optionalText(description)
+        url = context.reference(url)
+        urlAlternatives = context.list(urlAlternatives, limit: 32).map { context.reference($0) }
+        var contained: [String: NavigableURL] = [:]
+        for (name, link) in linkCandidates.prefix(32) {
+            if let url = context.navigableURL(link) { contained[context.line(name, limit: 100)] = url }
+        }
+        links = contained
+        linkCandidates = [:]
+        if let s = subscribers, s < 0 { subscribers = nil }
     }
 
     init(name: String, url: String, thumbnail: String?) { self.name = name; self.url = url; self.thumbnail = thumbnail }
@@ -208,7 +269,7 @@ struct ChannelInfo: Sendable, Decodable, Hashable {
 
 // MARK: - Ratings, comments
 
-struct Rating: Sendable, Decodable, Hashable {
+struct Rating: Sendable, Decodable, Hashable, PluginOutput {
     var type: Int = 0
     var likes: Int?
     var dislikes: Int?
@@ -222,9 +283,13 @@ struct Rating: Sendable, Decodable, Hashable {
         dislikes = c.looseInt(.dislikes)
         value = (try? c.decodeIfPresent(Double.self, forKey: .value)) ?? nil
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        if let v = value, !v.isFinite { value = nil }
+    }
 }
 
-struct PluginComment: Identifiable, Sendable, Decodable, Hashable {
+struct PluginComment: Identifiable, Sendable, Decodable, Hashable, PluginOutput {
     var handle: Int = 0
     var author: AuthorLink = AuthorLink(name: "", url: "")
     var message: String = ""
@@ -246,11 +311,19 @@ struct PluginComment: Identifiable, Sendable, Decodable, Hashable {
         replyCount = c.looseInt(.replyCount) ?? 0
         contextUrl = c.looseString(.contextUrl) ?? ""
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        author.contain(context)
+        message = context.text(message, limit: 20_000)
+        rating?.contain(context)
+        replyCount = max(0, replyCount)
+        contextUrl = context.reference(contextUrl)
+    }
 }
 
 // MARK: - Search / channel capabilities
 
-struct FilterCapability: Sendable, Decodable, Hashable, Identifiable {
+struct FilterCapability: Sendable, Decodable, Hashable, Identifiable, PluginOutput {
     var key: String
     var name: String
     var value: String
@@ -263,9 +336,15 @@ struct FilterCapability: Sendable, Decodable, Hashable, Identifiable {
         value = c.looseString(.value) ?? ""
         key = c.looseString(.id) ?? name
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        key = context.line(key, limit: 200)
+        name = context.line(name, limit: 200)
+        value = context.line(value, limit: 1_000)
+    }
 }
 
-struct FilterGroup: Sendable, Decodable, Hashable, Identifiable {
+struct FilterGroup: Sendable, Decodable, Hashable, Identifiable, PluginOutput {
     var key: String
     var name: String
     var isMultiSelect: Bool
@@ -280,9 +359,15 @@ struct FilterGroup: Sendable, Decodable, Hashable, Identifiable {
         isMultiSelect = c.looseBool(.isMultiSelect) ?? false
         filters = ((try? c.decodeIfPresent([Lossy<FilterCapability>].self, forKey: .filters)) ?? []).compactMap { $0.value }
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        key = context.line(key, limit: 200)
+        name = context.line(name, limit: 200)
+        filters = context.contained(filters, limit: 100)
+    }
 }
 
-struct ResultCapabilities: Sendable, Decodable, Hashable {
+struct ResultCapabilities: Sendable, Decodable, Hashable, PluginOutput {
     var types: [String] = ["MIXED"]
     var sorts: [String] = []
     var filters: [FilterGroup] = []
@@ -294,5 +379,11 @@ struct ResultCapabilities: Sendable, Decodable, Hashable {
         types = (try? c.decodeIfPresent([String].self, forKey: .types)) ?? ["MIXED"]
         sorts = (try? c.decodeIfPresent([String].self, forKey: .sorts)) ?? []
         filters = ((try? c.decodeIfPresent([Lossy<FilterGroup>].self, forKey: .filters)) ?? []).compactMap { $0.value }
+    }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        types = context.list(types, limit: 20).map { context.line($0, limit: 100) }
+        sorts = context.list(sorts, limit: 50).map { context.line($0, limit: 200) }
+        filters = context.contained(filters, limit: 50)
     }
 }

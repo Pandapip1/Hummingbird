@@ -10,13 +10,9 @@ import AVKit
 #if os(iOS)
 import UIKit
 #endif
-#if canImport(MediaPlayer)
-import MediaPlayer
-#endif
 
 @MainActor
 final class AVMediaBackend: MediaBackend {
-    private static let audioSessionQueue = DispatchQueue(label: "Hummingbird.AudioSession", qos: .userInitiated)
     // The view must be able to attach a rendering surface before the first item
     // has finished loading. Replacing the item on a stable player also avoids
     // making view attachment depend on completion of the initial seek.
@@ -28,19 +24,13 @@ final class AVMediaBackend: MediaBackend {
     /// reports that differs came from outside the app's controls.
     private var commandedRate: Float = 0
     private var interrupted = false
-    /// The backend whose video the system's remote commands control.
-    private static weak var remoteOwner: AVMediaBackend?
-    private var remoteTargets: [Any] = []
     private var reportedActivity: PlaybackActivity = .paused
-    private var sessionObservers: [NSObjectProtocol] = []
+    private var sessionObserver: UUID?
     /// Playing when an audio interruption (a call, Siri) began.
     private var playingBeforeInterruption = false
     /// Stopped for good (its model tore it down): it never plays again, so
     /// a load still in flight cannot start an invisible second player.
     private(set) var isRetired = false
-    #if os(iOS)
-    private var audioSessionActive = false
-    #endif
 
     /// Video keeps playing (as audio) when the app goes to the background or
     /// the device locks; by default AVFoundation pauses it silently.
@@ -358,60 +348,36 @@ final class AVMediaBackend: MediaBackend {
     /// media-services reset invalidates the player: it is reported as a
     /// failure so the model reloads from the cache at the same position.
     private func observeAudioSession() {
-        #if os(iOS) || os(tvOS) || os(visionOS)
-        guard sessionObservers.isEmpty else { return }
-        let center = NotificationCenter.default
-        sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
-            let type = (notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init(rawValue:))
-            let options = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
-            MainActor.assumeIsolated { self?.audioInterruption(type, shouldResume: options.contains(.shouldResume)) }
-        })
-        sessionObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
-            let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt).flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
-            guard reason == .oldDeviceUnavailable else { return }
-            MainActor.assumeIsolated {
-                guard let self, self.commandedRate > 0 else { return }
-                // Headphones unplugged: the player pauses; that is the user's pause.
-                self.commandedRate = 0
-                Logger.avPlayer.notice("output_lost")
-                self.onExternalEvent?(.outputLost)
-            }
-        })
-        sessionObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                Logger.avPlayer.error("media_services_reset")
-                #if os(iOS)
-                self?.audioSessionActive = false
-                #endif
-                self?.onFailure?("The system restarted its media services")
-            }
-        })
-        #endif
+        guard sessionObserver == nil else { return }
+        sessionObserver = SystemMediaSession.observeAudio { [weak self] event in self?.audioEvent(event) }
     }
 
-    #if os(iOS) || os(tvOS) || os(visionOS)
-    private func audioInterruption(_ type: AVAudioSession.InterruptionType?, shouldResume: Bool) {
-        switch type {
-        case .began?:
+    private func audioEvent(_ event: SystemMediaSession.AudioEvent) {
+        switch event {
+        case .interruptionBegan:
             playingBeforeInterruption = activity.wantsToPlay
             interrupted = true
             commandedRate = 0
-            #if os(iOS)
-            audioSessionActive = false // the system deactivated it
-            #endif
             Logger.avPlayer.notice("audio_interruption_began playing=\(self.playingBeforeInterruption)")
             onExternalEvent?(.interruptionBegan)
-        case .ended?:
+        case .interruptionEnded(let shouldResume):
             Logger.avPlayer.notice("audio_interruption_ended resume=\(shouldResume)")
             interrupted = false
             // The app decides (its intent may have changed meanwhile).
             onExternalEvent?(.interruptionEnded(shouldResume: shouldResume))
             playingBeforeInterruption = false
-        default: break
+        case .outputLost:
+            guard commandedRate > 0 else { return }
+            // Headphones unplugged: the player pauses; that is the user's pause.
+            commandedRate = 0
+            Logger.avPlayer.notice("output_lost")
+            onExternalEvent?(.outputLost)
+        case .mediaServicesReset:
+            Logger.avPlayer.error("media_services_reset")
+            onFailure?("The system restarted its media services")
         }
         refreshActivity()
     }
-    #endif
 
     private func removeObservers() {
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
@@ -492,88 +458,41 @@ final class AVMediaBackend: MediaBackend {
     /// the video that played last; each command goes to the app as an
     /// external event, so the app's intent, UI and history follow it.
     private func installRemoteCommands() {
-        #if canImport(MediaPlayer) && !os(visionOS)
-        Self.remoteOwner = self
-        guard remoteTargets.isEmpty else { return }
-        let center = MPRemoteCommandCenter.shared()
-        func route(_ command: MPRemoteCommand, _ event: @escaping (MPRemoteCommandEvent) -> ExternalPlaybackEvent?) {
-            command.isEnabled = true
-            remoteTargets.append(command.addTarget { [weak self] commandEvent in
-                let external = event(commandEvent)
-                return MainActor.assumeIsolated {
-                    guard let self, Self.remoteOwner === self, let external else { return .commandFailed }
-                    self.onExternalEvent?(external)
-                    return .success
-                }
-            })
+        SystemMediaSession.takeRemoteCommands(owner: self) { [weak self] command in
+            guard let self else { return false }
+            let event: ExternalPlaybackEvent = switch command {
+            case .play: .play
+            case .pause: .pause
+            case .togglePlayPause: .togglePlayPause
+            case .seek(let seconds): .seek(to: seconds)
+            case .skip(let seconds): .skip(by: seconds)
+            }
+            self.onExternalEvent?(event)
+            return true
         }
-        route(center.playCommand) { _ in .play }
-        route(center.pauseCommand) { _ in .pause }
-        route(center.togglePlayPauseCommand) { _ in .togglePlayPause }
-        route(center.changePlaybackPositionCommand) { event in
-            (event as? MPChangePlaybackPositionCommandEvent).map { .seek(to: $0.positionTime) }
-        }
-        center.skipForwardCommand.preferredIntervals = [10]
-        center.skipBackwardCommand.preferredIntervals = [10]
-        route(center.skipForwardCommand) { _ in .skip(by: 10) }
-        route(center.skipBackwardCommand) { _ in .skip(by: -10) }
-        #endif
     }
 
     private func removeRemoteCommands() {
-        #if canImport(MediaPlayer) && !os(visionOS)
-        let center = MPRemoteCommandCenter.shared()
-        for target in remoteTargets {
-            for command in [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
-                            center.changePlaybackPositionCommand, center.skipForwardCommand, center.skipBackwardCommand] {
-                command.removeTarget(target)
-            }
-        }
-        remoteTargets.removeAll()
-        if Self.remoteOwner === self { Self.remoteOwner = nil }
-        #endif
+        SystemMediaSession.releaseRemoteCommands(owner: self)
     }
 
     func updateNowPlaying(_ nowPlaying: NowPlaying?) {
-        #if canImport(MediaPlayer) && !os(visionOS)
         if nowPlaying != nil { installRemoteCommands() }
-        guard Self.remoteOwner === self || nowPlaying == nil else { return }
-        let center = MPNowPlayingInfoCenter.default()
-        guard let nowPlaying else {
-            if Self.remoteOwner == nil || Self.remoteOwner === self { center.nowPlayingInfo = nil }
-            return
-        }
-        center.nowPlayingInfo = [
-            MPMediaItemPropertyTitle: nowPlaying.title,
-            MPMediaItemPropertyPlaybackDuration: nowPlaying.duration,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: nowPlaying.position,
-            MPNowPlayingInfoPropertyPlaybackRate: nowPlaying.rate,
-            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
-        ]
-        #if os(macOS)
-        center.playbackState = nowPlaying.rate > 0 ? .playing : .paused
-        #endif
-        #endif
+        guard SystemMediaSession.ownsRemoteCommands(self) else { return }
+        SystemMediaSession.publishNowPlaying(nowPlaying.map {
+            SystemMediaSession.NowPlaying(title: $0.title, duration: $0.duration, position: $0.position, rate: $0.rate)
+        })
     }
 
     /// Keeps playback alive under the platform policies that normally suspend
     /// media or blank the display after user inactivity.
     private func activatePlaybackEnvironment() {
+        // The playback audio session, once (re-applying it is audible).
+        SystemMediaSession.activateForPlayback { [weak self] message in
+            self?.onFailure?("Could not activate background audio: \(message)")
+        }
         #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = true
-        // Re-applying the category to an active session reconfigures audio
-        // and is audible as a stutter; do it only when it is not active.
-        guard !audioSessionActive else { return }
-        audioSessionActive = true
-        Self.audioSessionQueue.async { [weak self] in
-            let session = AVAudioSession.sharedInstance()
-            do {
-                try session.setCategory(.playback, mode: .moviePlayback)
-                try session.setActive(true)
-            } catch {
-                Task { @MainActor in self?.onFailure?("Could not activate background audio: \(error.localizedDescription)") }
-            }
-        }
         #elseif os(macOS)
         guard playbackActivity == nil else { return }
         playbackActivity = ProcessInfo.processInfo.beginActivity(
@@ -584,14 +503,9 @@ final class AVMediaBackend: MediaBackend {
     }
 
     private func deactivatePlaybackEnvironment() {
+        SystemMediaSession.deactivate()
         #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = false
-        audioSessionActive = false
-        // setActive performs a synchronous XPC round-trip and was repeatedly
-        // blocking pause-button handling for 600+ ms on real hardware.
-        Self.audioSessionQueue.async {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
         #elseif os(macOS)
         if let playbackActivity {
             ProcessInfo.processInfo.endActivity(playbackActivity)

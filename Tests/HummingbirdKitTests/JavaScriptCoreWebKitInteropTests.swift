@@ -47,7 +47,8 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
                 title: "Debug sign in",
                 startURL: URL(string: "http://127.0.0.1:8742/login.html"),
                 html: "<html><head><title>Debug authentication rendered</title></head><body><h1>Sign in</h1></body></html>",
-                hostAllowed: { $0 == "127.0.0.1" }
+                hostAllowed: { $0 == "127.0.0.1" },
+                localHostApprovals: loopbackApprovals(port: 8742)
             )
             let session = WebAuthSession(spec: spec) { _ in }
             let widget = widgetFromOpaque(gtkRenderView(
@@ -101,7 +102,8 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
                 // iframe cases exercise header/completion forwarding; the
                 // top-level cases additionally exercise HTTP-only cookies.
                 cookiesToFind: transport.hasPrefix("frame-") ? [] : ["debug_session"],
-                hostAllowed: { $0 == authHost }
+                hostAllowed: { $0 == authHost },
+                localHostApprovals: loopbackApprovals(port: baseURL.port ?? 80)
             )
             var completedAuth: SourceAuth?
             let session = WebAuthSession(spec: spec) { completedAuth = $0 }
@@ -198,7 +200,8 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
                     startURL: baseURL.appendingPathComponent("login.html"),
                     completionURL: baseURL.appendingPathComponent("api/authorization/").absoluteString + "?*",
                     headersToFind: ["Authorization"], cookiesToFind: ["debug_session"],
-                    hostAllowed: { $0 == "127.0.0.1" }
+                    hostAllowed: { $0 == "127.0.0.1" },
+                    localHostApprovals: loopbackApprovals(port: baseURL.port ?? 80)
                 )
                 var captured: SourceAuth?
                 let session = WebAuthSession(spec: spec) { captured = $0 }
@@ -300,7 +303,8 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
             startURL: baseURL.appendingPathComponent("login.html"),
             completionURL: baseURL.appendingPathComponent("login-complete").absoluteString,
             cookiesToFind: ["debug_session"],
-            hostAllowed: { $0 == "127.0.0.1" }
+            hostAllowed: { $0 == "127.0.0.1" },
+            localHostApprovals: loopbackApprovals(port: baseURL.port ?? 80)
         )
         var completedAuth: SourceAuth?
         let session = WebAuthSession(spec: spec) { completedAuth = $0 }
@@ -330,5 +334,12 @@ final class AJavaScriptCoreWebKitInteropTests: XCTestCase {
         XCTAssertEqual(completedAuth?.cookieMap[".127.0.0.1"]?["debug_session"], "authenticated")
         gtk_window_destroy(windowPointer(window))
     }
+}
+
+/// The debug server is on loopback, which a sign-in sheet opens only for a
+/// host the user approved (here, as the test fixture's approval).
+private func loopbackApprovals(port: Int) -> [LocalHostApproval] {
+    let loopback = [IPNetwork(cidr: "127.0.0.0/8"), IPNetwork(cidr: "::1")].compactMap { $0 }
+    return ["127.0.0.1", "localhost"].map { LocalHostApproval(host: $0, port: port, networks: loopback) }
 }
 #endif

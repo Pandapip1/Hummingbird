@@ -54,6 +54,31 @@ final class TabOverviewUITests: XCTestCase {
         XCTAssertEqual(after.count, before.count - 1, "a swipe after a cancelled drag closed nothing: \(after)")
     }
 
+    /// The overview as the system draws its own (Safari's): a grid of the tabs'
+    /// live pages with titles below, a round close button on each card, and a
+    /// bottom bar with +, the tab count and Done. Kept as an attachment
+    /// ("overview") to compare with Safari's.
+    @MainActor
+    func testOverviewLayout() throws {
+        let app = IsolatedApp.launch()
+        for section in ["Library", "Sources", "Settings"] { openNewTab(named: section, in: app) }
+        openOverview(in: app)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "overview"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        let cards = app.buttons.matching(identifier: "browser-tab-overview-card")
+        XCTAssertEqual(cards.count, 4)
+        XCTAssertTrue(app.buttons["Close Library"].exists, "each card has its close button")
+        XCTAssertTrue(app.staticTexts["4 Tabs"].exists, "the bar shows the tab count")
+        let first = cards.element(boundBy: 0).frame, second = cards.element(boundBy: 1).frame
+        XCTAssertEqual(first.width, second.width, accuracy: 1, "cards share one size")
+        XCTAssertEqual(first.minY, second.minY, accuracy: 1, "two cards to a row on a phone")
+        let done = app.buttons["Done"].frame
+        XCTAssertGreaterThan(done.minY, cards.element(boundBy: 3).frame.minY, "the bar is below the cards")
+    }
+
     @MainActor
     func testCardCloseButtonClosesItsTab() throws {
         let app = IsolatedApp.launch()

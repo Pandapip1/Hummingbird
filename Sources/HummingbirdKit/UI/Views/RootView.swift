@@ -53,6 +53,10 @@ struct RootView: View {
             }
         }
         .sheet(item: $plugins.pendingCaptcha) { request in CaptchaSheet(request: request).sheetSize() }
+        // A grayjay://plugin/ link: Add Source, with the plugin checked and shown.
+        .sheet(item: $app.incomingPluginInstall) { install in
+            AddSourceSheet(initialURL: install.configURL.absoluteString)
+        }
         .permissionPrompts(model.permissions)
         .onChange(of: plugins.pendingDirectLogin) { _, id in
             if let id { beginLogin(id); plugins.pendingDirectLogin = nil }
@@ -223,7 +227,9 @@ struct BrowserTabStrip: View {
             ),
             onClose: { app.closeTab($0) },
             onMove: { app.moveTab($0, to: $1) }
-        )
+        ) {
+            NewTabDestinationMenu { route, title in app.openSection(route, title: title) }
+        }
     }
 }
 
@@ -276,8 +282,17 @@ struct ToastBanner: View {
     @Environment(AppModel.self) private var app
     var body: some View {
         if let t = app.plugins.toast {
-            Text(t)
+            // Always labelled with the source that sent it, so a plugin's
+            // message never reads as the app's own.
+            HStack(spacing: 6) {
+                Image(systemName: "puzzlepiece.extension")
+                    .foregroundStyle(.secondary)
+                Text(t.pluginName).bold()
+                Text(t.message)
+            }
                 .font(.footnote)
+                .lineLimit(2)
+                .accessibilityLabel("\(t.pluginName) says: \(t.message)")
                 .padding(.horizontal, 14).padding(.vertical, 8)
                 .background(.ultraThinMaterial, in: Capsule())
                 .padding(.top, 8)
@@ -297,7 +312,7 @@ struct CaptchaSheet: View {
 
     var body: some View {
         if let plugin = app.plugins.plugin(request.pluginID),
-           let spec = WebAuthSpec.captcha(for: plugin.config, url: request.url, body: request.body) {
+           let spec = WebAuthSpec.captcha(for: plugin.config, url: request.url, body: request.body, approvals: plugin.approvals) {
             WebAuthSheet(spec: spec) { result in
                 if let result { app.plugins.saveCaptcha(result, pluginID: request.pluginID) }
                 else { app.plugins.pendingCaptcha = nil }
@@ -326,7 +341,7 @@ struct LoginSheet: View {
         // authentication callback may run later, after an async cookie read.
         let dismissSheet = dismiss
         Group {
-            if let plugin = app.plugins.plugin(pluginID), let spec = WebAuthSpec.login(for: plugin.config) {
+            if let plugin = app.plugins.plugin(pluginID), let spec = WebAuthSpec.login(for: plugin.config, approvals: plugin.approvals) {
                 WebAuthSheet(spec: spec) { result in
                     if let result { app.plugins.saveAuth(result, pluginID: pluginID) }
                     if let onClose { onClose() } else { dismissSheet() }
@@ -409,7 +424,7 @@ private struct PairedDeviceLoginSheet: View {
                     if sending { ProgressView("Sending credentials…") }
                 }
                 .padding()
-            } else if let config, let spec = WebAuthSpec.login(for: config) {
+            } else if let config, let spec = WebAuthSpec.login(for: config, approvals: app.plugins.approvals(for: request.pluginID)) {
                 WebAuthSheet(spec: spec) { auth in
                     guard let auth else { onClose(); return }
                     deliver(auth)

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftOpenUI
 import Crypto
 import os
 
@@ -141,13 +142,7 @@ actor MediaCache {
     /// in the background and resumes after sleep): files are protected until
     /// the first unlock after boot, never `complete`, which makes them
     /// unreadable about ten seconds after the device locks.
-    static var fileAttributes: [FileAttributeKey: Any]? {
-        #if os(iOS) || os(tvOS) || os(visionOS)
-        [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
-        #else
-        nil
-        #endif
-    }
+    static var fileAttributes: [FileAttributeKey: Any]? { FileProtection.readableWhileLocked }
 
     /// The bytes in `range`, or nil when any of them is missing.
     func read(_ id: TrackID, range: Range<Int64>) throws -> Data? {

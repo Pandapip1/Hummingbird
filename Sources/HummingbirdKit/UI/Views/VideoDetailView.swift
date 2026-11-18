@@ -258,12 +258,8 @@ private struct VideoBody: View {
         return p.joined(separator: " · ")
     }
 
-    private func plain(_ s: String) -> String {
-        s.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">").replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&#39;", with: "'")
-    }
+    /// Plugin descriptions may be HTML; they are only ever shown as plain text.
+    private func plain(_ s: String) -> String { PluginText.plain(s) }
 }
 
 // MARK: - Player
@@ -630,10 +626,7 @@ private struct PostBody: View {
     }
 
     private func flatten(_ s: String) -> String {
-        guard post.textType == 1 else { return s }
-        return s.replacingOccurrences(of: "</p>", with: "\n\n").replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&amp;", with: "&")
+        post.textType == 1 ? PluginText.plain(s) : PluginText.text(s)
     }
 }
 

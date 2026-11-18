@@ -102,6 +102,7 @@ struct SyncSettingsView: View {
                             ForEach(peers) { peer in
                                 PeerTrustRow(
                                     peer: peer,
+                                    accountSync: app.profileAccount.syncService?.isAccountConnected ?? false,
                                     compareEmoji: { Task { await compareEmoji(with: peer) } },
                                     scan: { isScanning = true },
                                     enterCode: { enteringCode = true },
@@ -361,6 +362,7 @@ private struct PeerQRCode: View {
 @MainActor
 private struct PeerTrustRow: View {
     let peer: AppSyncPeerTrustSummary
+    let accountSync: Bool
     let compareEmoji: () -> Void
     let scan: () -> Void
     let enterCode: () -> Void
@@ -378,9 +380,17 @@ private struct PeerTrustRow: View {
                 Text("Trusted through \(max(0, path.count - 2)) intermediate instance\(path.count == 3 ? "" : "s"). Sync remains enabled.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if let oneWay {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(oneWay.title, systemImage: "arrow.left.arrow.right.circle")
+                        .font(.caption.bold()).foregroundStyle(.orange)
+                    Text(oneWay.detail).font(.caption).foregroundStyle(.secondary)
+                    Text(oneWay.fix).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             HStack {
                 // Verifying needs the instance's current registration.
-                if peer.isReachable, peer.recommendation != nil || isExplicitlyDistrusted {
+                if peer.isReachable, peer.recommendation != nil || isExplicitlyDistrusted || oneWay != nil {
                     Menu("Verify Directly") {
                         Button("Compare Emoji", action: compareEmoji)
                         Button("Scan Its Code", action: scan)
@@ -391,6 +401,11 @@ private struct PeerTrustRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    /// Set when trust goes only one way, which stops local sync silently.
+    private var oneWay: PeerTrustExplanation? {
+        PeerTrustExplanation(state: peer.state, inbound: peer.inbound, accountSync: accountSync)
     }
 
     private var isExplicitlyDistrusted: Bool {

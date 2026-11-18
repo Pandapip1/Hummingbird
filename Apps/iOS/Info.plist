@@ -38,6 +38,14 @@
 				<string>com.eightybps.hummingbird</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>app.hummingbird.plugin-install</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>grayjay</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>

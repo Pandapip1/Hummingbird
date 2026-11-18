@@ -23,15 +23,15 @@ private final class LocalNetworkDecision: Sendable {
     let allowed = Mutex(false)
 }
 
-private final class HTTPTaskResult: @unchecked Sendable {
-    var data: Data?
-    var response: URLResponse?
-    var failure: Error?
-}
-
 /// Native side of the plugin `http` package. The JS wrapper (prelude.js) batches requests and calls `execute`
-/// with a JSON array; this class performs them (optionally in parallel), enforcing the plugin's allow-list,
-/// applying stored credentials and cookies, and returning a JSON array of response objects.
+/// with a JSON array; this class performs them (optionally in parallel) and returns a JSON array of responses.
+///
+/// Containment (Documentation/PluginSecurity.md): every request and redirect hop is checked by the plugin's
+/// `PluginNetworkPolicy` (http(s) only, allow-list, one resolution, non-public addresses only when the user
+/// approved that exact host:port and address) and, where the platform allows, connects through the plugin's
+/// `PluginEgressProxy`, which connects to exactly the address it checked. The session carries no ambient
+/// credentials: no cookie store, cache, credential storage or client certificates. Batches, bodies, headers,
+/// concurrency and request rate are bounded per plugin.
 final class HostHTTP: NSObject, @unchecked Sendable {
     struct ClientState {
         var withAuth: Bool
@@ -46,46 +46,100 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         "content-type", "date", "content-length", "last-modified", "etag", "cache-control",
         "content-encoding", "content-disposition", "connection", "retry-after",
     ]
+    /// Headers a plugin may not set: they belong to the transport or would
+    /// smuggle a second request or a proxy credential.
+    private static let forbiddenRequestHeaders: Set<String> = [
+        "host", "content-length", "transfer-encoding", "connection", "proxy-authorization", "proxy-connection",
+        "keep-alive", "upgrade", "te", "trailer", "expect",
+    ]
     private static let maximumAutomaticRetryDelay: TimeInterval = 30
     private static let maximumRetryAfter: TimeInterval = 31_536_000
 
     let config: PluginConfig
+    let policy: PluginNetworkPolicy
     private let auth: SourceAuth?
     private let captcha: SourceAuth?
     private var clients: [String: ClientState] = [:]
     private let lock = NSLock()
     private let session: URLSession
+    /// The proxy plugin connections go through; nil when a test injected its own session,
+    /// or on platforms whose URL loading ignores proxies.
+    let proxy: PluginEgressProxy?
+    /// Set when the proxy could not start where it is required: every request then fails.
+    private let startupFailure: String?
     private let now: () -> Date
     private let sleep: (TimeInterval) -> Void
     private var rateLimits: [String: (until: Date, failures: Int)] = [:]
     private var rateLimitGenerations: [String: UInt64] = [:]
     private let localNetworkAccess: (@Sendable (URL) async -> Bool)?
+    private let inFlight = DispatchSemaphore(value: PluginLimits.maximumConcurrentRequests)
+    private var requestBudget = TokenBucket(rate: PluginLimits.requestsPerSecond, burst: PluginLimits.requestBurst)
 
     init(
         config: PluginConfig,
         auth: SourceAuth?,
         captcha: SourceAuth?,
+        policy: PluginNetworkPolicy? = nil,
         session: URLSession? = nil,
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
         localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil
     ) {
         self.config = config
+        let policy = policy ?? PluginNetworkPolicy(config: config, approvals: [])
+        self.policy = policy
         self.auth = auth
         self.captcha = captcha
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.httpShouldSetCookies = false
-        cfg.httpCookieAcceptPolicy = .never
-        cfg.httpCookieStorage = nil
-        cfg.urlCache = nil
-        cfg.timeoutIntervalForRequest = 30
-        self.session = session ?? URLSession(configuration: cfg)
+        if let session {
+            self.session = session
+            proxy = nil
+            startupFailure = nil
+        } else {
+            let cfg = Self.containedConfiguration()
+            var proxy: PluginEgressProxy?
+            var failure: String?
+            if PluginEgressProxy.pinsURLSessionConnections {
+                do {
+                    let started = try PluginEgressProxy.start(policy: policy)
+                    started.apply(to: cfg)
+                    proxy = started
+                } catch {
+                    failure = "The plugin network guard could not start: \(error.localizedDescription)"
+                }
+            }
+            self.proxy = proxy
+            startupFailure = failure
+            self.session = URLSession(configuration: cfg)
+        }
         self.now = now
         self.sleep = sleep
         self.localNetworkAccess = localNetworkAccess
         super.init()
         clients["default-anon"] = makeState(withAuth: false)
         clients["default-auth"] = makeState(withAuth: true)
+    }
+
+    deinit {
+        proxy?.close()
+    }
+
+    /// A session configuration with no ambient credentials or shared state.
+    static func containedConfiguration() -> URLSessionConfiguration {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.httpShouldSetCookies = false
+        cfg.httpCookieAcceptPolicy = .never
+        cfg.httpCookieStorage = nil
+        cfg.urlCache = nil
+        cfg.urlCredentialStorage = nil
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        cfg.timeoutIntervalForRequest = 30
+        cfg.httpMaximumConnectionsPerHost = 6
+        return cfg
+    }
+
+    func close() {
+        session.invalidateAndCancel()
+        proxy?.close()
     }
 
     private func makeState(withAuth: Bool) -> ClientState {
@@ -99,11 +153,14 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         return ClientState(withAuth: withAuth, currentCookies: current)
     }
 
-    /// Whether the plugin may reach `url`, asking the permission gate first
-    /// when it is on the local network. Plugin requests run on the plugin's
-    /// own queue, so waiting here for the gate (on the main actor) is safe.
-    func mayReach(_ url: URL) -> Bool {
-        guard let localNetworkAccess, LocalNetworkAddress.isLocalNetwork(url) else { return true }
+    /// Whether the plugin may reach `url`: the policy (allow-list, resolution,
+    /// approvals), then the system local-network permission gate for an
+    /// approved local destination. Plugin requests run on the plugin's own
+    /// worker, so waiting here for the gate (on the main actor) is safe.
+    func mayReach(_ url: URL) -> Result<AuthorizedRequest, NetworkDenial> {
+        let authorized = policy.authorize(url)
+        guard case .success(let request) = authorized else { return authorized }
+        guard let localNetworkAccess, Self.needsSystemPermission(request.destination.scope) else { return authorized }
         dispatchPrecondition(condition: .notOnQueue(.main))
         let decision = LocalNetworkDecision()
         let semaphore = DispatchSemaphore(value: 0)
@@ -113,17 +170,33 @@ final class HostHTTP: NSObject, @unchecked Sendable {
             semaphore.signal()
         }
         semaphore.wait()
-        return decision.allowed.withLock { $0 }
+        guard decision.allowed.withLock({ $0 }) else {
+            return .failure(.localNotApproved(host: request.destination.host, port: request.destination.port,
+                                              address: request.destination.address.description))
+        }
+        return authorized
+    }
+
+    /// Destinations the operating system's local-network permission covers (not loopback).
+    private static func needsSystemPermission(_ scope: AddressScope) -> Bool {
+        if case .nonPublic(let kind) = scope { return kind != .loopback && kind != .unspecified }
+        return false
     }
 
     // MARK: entry point
 
-    func execute(json: String, parallel: Bool) -> String {
+    /// Runs a batch. `deadline` is the plugin call's: no request outlives it.
+    func execute(json: String, parallel: Bool, deadline: Date = .distantFuture, isCancelled: @escaping @Sendable () -> Bool = { false }) -> String {
         guard let data = json.data(using: .utf8),
               let requests = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return "[]" }
+        guard requests.count <= PluginLimits.maximumBatchRequests else {
+            let error: [String: Any] = ["error": "A batch may hold at most \(PluginLimits.maximumBatchRequests) requests.",
+                                        "errorType": "ScriptImplementationException"]
+            return Self.json(Array(repeating: error, count: requests.count))
+        }
         let batch = HTTPBatchState(requests: requests)
         let runOne: @Sendable (Int) -> Void = { [self, batch] i in
-            batch.store(run(batch.requests[i]), at: i)
+            batch.store(run(batch.requests[i], deadline: deadline, isCancelled: isCancelled), at: i)
         }
         if parallel && requests.count > 1 {
             let group = DispatchGroup()
@@ -135,29 +208,39 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         } else {
             for i in 0..<requests.count { runOne(i) }
         }
-        let out = (try? JSONSerialization.data(withJSONObject: batch.snapshot())) ?? Data("[]".utf8)
+        return Self.json(batch.snapshot())
+    }
+
+    private static func json(_ value: [[String: Any]]) -> String {
+        let out = (try? JSONSerialization.data(withJSONObject: value)) ?? Data("[]".utf8)
         return String(decoding: out, as: UTF8.self)
+    }
+
+    private static func denied(_ denial: NetworkDenial) -> [String: Any] {
+        ["error": denial.localizedDescription, "errorType": "ScriptImplementationException"]
     }
 
     // MARK: one request
 
-    private func run(_ req: [String: Any]) -> [String: Any] {
+    private func run(_ req: [String: Any], deadline: Date, isCancelled: @Sendable () -> Bool) -> [String: Any] {
         if let control = req["control"] as? String {
             handleControl(control, req)
             return ["code": 200]
         }
-        guard let method = req["method"] as? String,
+        if let startupFailure { return ["error": startupFailure] }
+        guard !isCancelled(), Date() < deadline else { return ["error": "The plugin call was cancelled or timed out"] }
+        guard let method = (req["method"] as? String)?.uppercased(),
+              method.range(of: #"^[A-Z]{1,16}$"#, options: .regularExpression) != nil,
               let urlString = req["url"] as? String,
-              let url = URL(string: urlString),
-              let host = url.host?.lowercased() else { return ["error": "Invalid request URL"] }
+              urlString.utf8.count <= PluginLimits.maximumURLLength,
+              let url = URL(string: urlString) else { return ["error": "Invalid request URL"] }
 
-        guard config.allowsHost(host) else {
-            return ["error": "Attempted to access non-whitelisted url: \(urlString). Add the host to allowUrls in the plugin config.",
-                    "errorType": "ScriptImplementationException"]
+        let authorized: AuthorizedRequest
+        switch mayReach(url) {
+        case .success(let request): authorized = request
+        case .failure(let denial): return Self.denied(denial)
         }
-        guard mayReach(url) else {
-            return ["error": LocalNetworkAccessDeclined(host: host).localizedDescription]
-        }
+        let host = authorized.destination.host
 
         let clientId = req["clientId"] as? String ?? "default-anon"
         let useAuth = req["useAuth"] as? Bool ?? false
@@ -166,12 +249,25 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         let allowNewCookies = req["allowNewCookies"] as? Bool ?? true
         let wantsBytes = req["bytes"] as? Bool ?? false
 
-        var request = URLRequest(url: url)
+        var request = authorized.urlRequest
         request.httpMethod = method
-        if let ms = req["timeoutMs"] as? Double, ms > 0 { request.timeoutInterval = ms / 1000 }
+        var timeout: TimeInterval = 30
+        if let ms = req["timeoutMs"] as? Double, ms > 0 { timeout = min(timeout, ms / 1000) }
+        timeout = min(timeout, max(0.5, deadline.timeIntervalSinceNow))
+        request.timeoutInterval = timeout
 
         var headers: [String: String] = [:]
-        if let h = req["headers"] as? [String: Any] { for (k, v) in h { headers[k] = "\(v)" } }
+        if let h = req["headers"] as? [String: Any] {
+            guard h.count <= PluginLimits.maximumHeaderCount else { return ["error": "Too many request headers"] }
+            for (k, v) in h {
+                let value = "\(v)"
+                guard k.range(of: #"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$"#, options: .regularExpression) != nil,
+                      !Self.forbiddenRequestHeaders.contains(k.lowercased()),
+                      value.utf8.count <= PluginLimits.maximumHeaderValueBytes,
+                      !value.unicodeScalars.contains(where: { $0 == "\r" || $0 == "\n" || $0 == "\0" }) else { continue }
+                headers[k] = value
+            }
+        }
         func has(_ name: String) -> Bool { headers.keys.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }
 
         if useAuth, let auth {
@@ -192,33 +288,49 @@ final class HostHTTP: NSObject, @unchecked Sendable {
 
         if let body = req["body"] as? [String: Any] {
             if let text = body["text"] as? String {
+                guard text.utf8.count <= PluginLimits.maximumRequestBodyBytes else { return ["error": "Request body too large"] }
                 request.httpBody = Data(text.utf8)
                 if !has("Content-Type") { request.setValue("text/plain", forHTTPHeaderField: "Content-Type") }
             }
-            else if let b64 = body["b64"] as? String { request.httpBody = Data(base64Encoded: b64) }
+            else if let b64 = body["b64"] as? String {
+                guard b64.utf8.count <= PluginLimits.maximumRequestBodyBytes * 4 / 3 + 4 else { return ["error": "Request body too large"] }
+                request.httpBody = Data(base64Encoded: b64)
+            }
         }
 
         if let remaining = rateLimitRemaining(for: host), remaining > 0 {
-            guard remaining <= Self.maximumAutomaticRetryDelay else {
+            guard remaining <= Self.maximumAutomaticRetryDelay, now().addingTimeInterval(remaining) < deadline else {
                 return rateLimitedResponse(url: urlString, retryAfter: remaining, wantsBytes: wantsBytes)
             }
             sleep(remaining)
         }
 
-        let mayRetry = ["GET", "HEAD", "OPTIONS"].contains(method.uppercased())
+        // The plugin's own request budget: rate, then concurrency, both bounded by the call deadline.
+        let wait = lock.withLock { requestBudget.take() }
+        if wait > 0 {
+            guard Date().addingTimeInterval(wait) < deadline else { return ["error": "The plugin is making too many requests"] }
+            Thread.sleep(forTimeInterval: wait)
+        }
+        guard inFlight.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow)) == .success else {
+            return ["error": "The plugin is making too many concurrent requests"]
+        }
+        defer { inFlight.signal() }
+
+        let mayRetry = ["GET", "HEAD", "OPTIONS"].contains(method)
         var retryCount = 0
         while true {
             let generation = rateLimitGeneration(for: host)
             let result = perform(request, originalURL: url, urlString: urlString, clientId: clientId,
                                  useAuth: useAuth, applyCookies: applyCookies, updateCookies: updateCookies,
-                                 allowNewCookies: allowNewCookies, wantsBytes: wantsBytes)
+                                 allowNewCookies: allowNewCookies, wantsBytes: wantsBytes, destination: authorized.destination)
             guard result["code"] as? Int == 429 else {
                 clearRateLimit(for: host, ifGenerationIs: generation)
                 return result
             }
 
             let delay = recordRateLimit(for: host, headers: result["headers"] as? [String: [String]] ?? [:])
-            guard mayRetry, retryCount == 0, delay <= Self.maximumAutomaticRetryDelay else { return result }
+            guard mayRetry, retryCount == 0, delay <= Self.maximumAutomaticRetryDelay,
+                  now().addingTimeInterval(delay) < deadline else { return result }
             retryCount += 1
             sleep(delay)
         }
@@ -233,7 +345,8 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         applyCookies: Bool,
         updateCookies: Bool,
         allowNewCookies: Bool,
-        wantsBytes: Bool
+        wantsBytes: Bool,
+        destination: CheckedDestination
     ) -> [String: Any] {
 
         let traceYouTubeAPI = ProcessInfo.processInfo.environment["HUMMINGBIRD_HTTP_TRACE"] == "1"
@@ -242,7 +355,10 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         if traceYouTubeAPI {
             let headers = HTTPTrace.headers(request.allHTTPHeaderFields ?? [:])
             let body = request.httpBody.map { String(decoding: $0, as: UTF8.self) } ?? ""
-            Logger.http.debug("youtube_api_request method=\(request.httpMethod ?? "", privacy: .public) url=\(request.url?.absoluteString ?? urlString) headers=\(headers) body=\(body)")
+            PluginLog.httpTrace(LogRedaction.text(
+                "youtube_api_request method=\(request.httpMethod ?? "") url=\(request.url?.absoluteString ?? urlString) headers=\(headers) body=\(body)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         let traceUMP = ["1", "response"].contains(ProcessInfo.processInfo.environment["HUMMINGBIRD_UMP_TRACE"])
@@ -251,37 +367,39 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         let traceUMPRequest = ProcessInfo.processInfo.environment["HUMMINGBIRD_UMP_TRACE"] == "1"
         if traceUMPRequest && traceUMP {
             let headers = HTTPTrace.headers(request.allHTTPHeaderFields ?? [:])
-            Logger.http.debug("ump_request url=\(request.url?.absoluteString ?? urlString) headers=\(headers) bodyBase64=\(request.httpBody?.base64EncodedString() ?? "")")
+            PluginLog.httpTrace(LogRedaction.text(
+                "ump_request url=\(request.url?.absoluteString ?? urlString) headers=\(headers) bodyBytes=\(request.httpBody?.count ?? 0)",
+                limit: HTTPTrace.limit
+            ))
         }
 
-        let redirectGuard = RedirectGuard(owner: self, clientId: clientId, applyCookies: applyCookies,
-                                          updateCookies: updateCookies, allowNewCookies: allowNewCookies, useAuth: useAuth)
-        let semaphore = DispatchSemaphore(value: 0)
-        let taskResult = HTTPTaskResult()
-        let task = session.dataTask(with: request) { d, r, e in
-            taskResult.data = d
-            taskResult.response = r
-            taskResult.failure = e
-            semaphore.signal()
-        }
-        task.delegate = redirectGuard
-        // Plugin HTTP blocks the plugin's queue, so slow upstream calls (and
+        let taskGuard = TaskGuard(owner: self, clientId: clientId, applyCookies: applyCookies,
+                                  updateCookies: updateCookies, allowNewCookies: allowNewCookies, useAuth: useAuth)
+        let task = session.dataTask(with: request)
+        task.delegate = taskGuard
+        // Plugin HTTP blocks the plugin's worker, so slow upstream calls (and
         // throttled media fetched through a plugin) show up here by host.
         let signposter = OSSignposter.plugin
         let signpost = signposter.beginInterval("PluginHTTP", id: signposter.makeSignpostID(),
                                                 "host=\(LogRedaction.redact(request.url?.host ?? ""), privacy: .public) method=\(request.httpMethod ?? "", privacy: .public)")
         task.resume()
-        semaphore.wait()
-        let status = (taskResult.response as? HTTPURLResponse)?.statusCode ?? -1
-        signposter.endInterval("PluginHTTP", signpost, "status=\(status) bytes=\(taskResult.data?.count ?? 0)")
-        withExtendedLifetime(redirectGuard) {}
+        taskGuard.finished.wait()
+        let outcome = taskGuard.outcome()
+        let status = (outcome.response as? HTTPURLResponse)?.statusCode ?? -1
+        signposter.endInterval("PluginHTTP", signpost, "status=\(status) bytes=\(outcome.data.count)")
 
-        if let violation = redirectGuard.violation {
+        if let violation = outcome.violation {
             return ["error": violation, "errorType": "ScriptImplementationException"]
         }
-        let responseData = taskResult.data
-        let response = taskResult.response
-        if let failure = taskResult.failure {
+        let responseData = outcome.data
+        let response = outcome.response
+        if let failure = outcome.failure {
+            // A refused connection fails at the proxy; report why it refused.
+            let failedURL = (failure as? URLError)?.failingURL ?? url
+            if let proxy, let host = failedURL.host(percentEncoded: false) {
+                let port = failedURL.port ?? (failedURL.scheme?.lowercased() == "https" ? 443 : 80)
+                if let denial = proxy.denial(host: host, port: port) { return Self.denied(denial) }
+            }
             if (failure as? URLError)?.code == .timedOut {
                 // Timeouts come back as a 408 response rather than an exception.
                 return ["code": 408, "url": "", "body": NSNull(), "headers": [String: [String]]()]
@@ -292,21 +410,30 @@ final class HostHTTP: NSObject, @unchecked Sendable {
 
         if traceYouTubeAPI {
             let responseHeaders = HTTPTrace.headers(http.allHeaderFields)
-            let body = String(decoding: responseData ?? Data(), as: UTF8.self)
-            Logger.http.debug("youtube_api_response url=\(http.url?.absoluteString ?? urlString) status=\(http.statusCode) headers=\(responseHeaders) body=\(body)")
+            let body = String(decoding: responseData, as: UTF8.self)
+            PluginLog.httpTrace(LogRedaction.text(
+                "youtube_api_response url=\(http.url?.absoluteString ?? urlString) status=\(http.statusCode) headers=\(responseHeaders) body=\(body)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1",
            !(200..<300).contains(http.statusCode) {
-            let body = String(decoding: (responseData ?? Data()).prefix(2_048), as: UTF8.self)
+            let body = String(decoding: responseData.prefix(2_048), as: UTF8.self)
                 .replacingOccurrences(of: "\n", with: "\\n")
-            Logger.http.notice("plugin_http_failure method=\(request.httpMethod ?? "", privacy: .public) host=\(LogRedaction.redact(http.url?.host ?? "unknown"), privacy: .public) status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)")
+            PluginLog.httpFailure(LogRedaction.text(
+                "plugin_http_failure method=\(request.httpMethod ?? "") status=\(http.statusCode) url=\(http.url?.absoluteString ?? urlString) body=\(body)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         if traceUMP {
             let responseHeaders = HTTPTrace.headers(http.allHeaderFields)
-            let prefix = (responseData ?? Data()).prefix(512).base64EncodedString()
-            Logger.http.debug("ump_response status=\(http.statusCode) bodyBytes=\(responseData?.count ?? 0) url=\(http.url?.absoluteString ?? urlString) headers=\(responseHeaders) bodyPrefixBase64=\(prefix)")
+            let prefix = responseData.prefix(512).base64EncodedString()
+            PluginLog.httpTrace(LogRedaction.text(
+                "ump_response status=\(http.statusCode) bodyBytes=\(responseData.count) url=\(http.url?.absoluteString ?? urlString) headers=\(responseHeaders) bodyPrefixBase64=\(prefix)",
+                limit: HTTPTrace.limit
+            ))
         }
 
         var rawHeaders: [String: String] = [:]
@@ -329,9 +456,8 @@ final class HostHTTP: NSObject, @unchecked Sendable {
             "code": http.statusCode,
             "headers": headerMap,
         ]
-        let bytes = responseData ?? Data()
-        if wantsBytes { out["bodyBase64"] = bytes.base64EncodedString() }
-        else { out["body"] = String(data: bytes, encoding: .utf8) ?? String(decoding: bytes, as: UTF8.self) }
+        if wantsBytes { out["bodyBase64"] = responseData.base64EncodedString() }
+        else { out["body"] = String(data: responseData, encoding: .utf8) ?? String(decoding: responseData, as: UTF8.self) }
         return out
     }
 
@@ -406,11 +532,15 @@ final class HostHTTP: NSObject, @unchecked Sendable {
 
     // MARK: client controls
 
+    /// Clients a plugin may create (each holds a cookie jar).
+    static let maximumClients = 64
+
     private func handleControl(_ control: String, _ req: [String: Any]) {
         let id = req["clientId"] as? String ?? ""
         lock.lock(); defer { lock.unlock() }
         switch control {
         case "newClient":
+            guard clients.count < Self.maximumClients || clients[id] != nil else { return }
             clients[id] = makeState(withAuth: req["withAuth"] as? Bool ?? false)
         case "resetAuthCookies":
             if let st = clients[id] { clients[id] = ClientState(withAuth: st.withAuth, currentCookies: makeState(withAuth: st.withAuth).currentCookies, otherCookies: st.otherCookies) }
@@ -434,6 +564,9 @@ final class HostHTTP: NSObject, @unchecked Sendable {
         return pairs.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
     }
 
+    /// Cookies per client jar, so a hostile server cannot grow one without bound.
+    static let maximumCookiesPerClient = 512
+
     fileprivate func ingestCookies(headers: [String: String], url: URL, clientId: String, useAuth: Bool, allowNew: Bool) {
         let cookies = HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
         guard !cookies.isEmpty, let host = url.host?.lowercased() else { return }
@@ -448,16 +581,18 @@ final class HostHTTP: NSObject, @unchecked Sendable {
                 domain = "." + base
             }
             let isDeletion = c.value.isEmpty || (c.expiresDate.map { $0 <= now() } ?? false)
+            let total = st.currentCookies.values.reduce(0) { $0 + $1.count } + st.otherCookies.values.reduce(0) { $0 + $1.count }
+            let roomForNew = total < Self.maximumCookiesPerClient
             if loggedIn || !st.currentCookies.isEmpty {
                 if isDeletion {
                     st.currentCookies[domain]?.removeValue(forKey: c.name)
-                } else if allowNew || st.currentCookies[domain]?[c.name] != nil {
+                } else if (allowNew && roomForNew) || st.currentCookies[domain]?[c.name] != nil {
                     st.currentCookies[domain, default: [:]][c.name] = c.value
                 }
             } else {
                 if isDeletion {
                     st.otherCookies[domain]?.removeValue(forKey: c.name)
-                } else if allowNew || st.otherCookies[domain]?[c.name] != nil {
+                } else if (allowNew && roomForNew) || st.otherCookies[domain]?[c.name] != nil {
                     st.otherCookies[domain, default: [:]][c.name] = c.value
                 }
             }
@@ -466,19 +601,72 @@ final class HostHTTP: NSObject, @unchecked Sendable {
     }
 }
 
-/// Per-request redirect policy: every hop must pass the plugin's allow-list, and cookies are re-evaluated per host.
-private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+/// Per-request delegate: every redirect hop must pass the plugin's policy, cookies are re-evaluated per host,
+/// the body is capped, and no credential the plugin did not supply is ever offered (HTTP auth, client
+/// certificates, proxy credentials).
+private final class TaskGuard: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let owner: HostHTTP
     let clientId: String
     let applyCookies: Bool
     let updateCookies: Bool
     let allowNewCookies: Bool
     let useAuth: Bool
-    var violation: String?
+    let finished = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var data = Data()
+    private var response: URLResponse?
+    private var failure: Error?
+    private var violation: String?
 
     init(owner: HostHTTP, clientId: String, applyCookies: Bool, updateCookies: Bool, allowNewCookies: Bool, useAuth: Bool) {
         self.owner = owner; self.clientId = clientId; self.applyCookies = applyCookies
         self.updateCookies = updateCookies; self.allowNewCookies = allowNewCookies; self.useAuth = useAuth
+    }
+
+    func outcome() -> (data: Data, response: URLResponse?, failure: Error?, violation: String?) {
+        lock.withLock { (data, response, failure, violation) }
+    }
+
+    private func fail(_ message: String) { lock.withLock { if violation == nil { violation = message } } }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if response.expectedContentLength > Int64(PluginLimits.maximumResponseBodyBytes) {
+            fail("The response is larger than plugins may receive (\(PluginLimits.maximumResponseBodyBytes / 1_048_576) MB)")
+            completionHandler(.cancel)
+            return
+        }
+        lock.withLock { self.response = response }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        let over: Bool = lock.withLock {
+            data.append(chunk)
+            return data.count > PluginLimits.maximumResponseBodyBytes
+        }
+        if over {
+            fail("The response is larger than plugins may receive (\(PluginLimits.maximumResponseBodyBytes / 1_048_576) MB)")
+            dataTask.cancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.withLock {
+            failure = error
+            if response == nil { response = task.response }
+        }
+        finished.signal()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        // Server trust is evaluated by the system as usual; nothing else is answered.
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+            completionHandler(.performDefaultHandling, nil)
+        } else {
+            completionHandler(.rejectProtectionSpace, nil)
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -488,20 +676,31 @@ private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked 
             for (k, v) in response.allHeaderFields { if let ks = k as? String { raw[ks] = "\(v)" } }
             owner.ingestCookies(headers: raw, url: from, clientId: clientId, useAuth: useAuth, allowNew: allowNewCookies)
         }
-        guard let host = request.url?.host?.lowercased() else { completionHandler(nil); return }
-        guard owner.config.allowsHost(host) else {
-            violation = "Attempted to access non-whitelisted url: \(request.url?.absoluteString ?? host) (redirect)"
-            completionHandler(nil)
-            return
-        }
-        if let url = request.url, !owner.mayReach(url) {
-            violation = LocalNetworkAccessDeclined(host: host).localizedDescription
-            completionHandler(nil)
-            return
+        guard let url = request.url else { completionHandler(nil); return }
+        // Behind the egress proxy the resolved address is checked when the hop connects, so this
+        // callback stays free of DNS (it would stall the session's other callbacks); without the
+        // proxy, the full check runs here.
+        let hopHost: String
+        if owner.proxy != nil {
+            switch owner.policy.precheck(url: url) {
+            case .success: hopHost = PluginNetworkPolicy.normalizedHost(url.host(percentEncoded: false) ?? "")
+            case .failure(let denial):
+                fail("\(denial.localizedDescription) (redirect)")
+                completionHandler(nil)
+                return
+            }
+        } else {
+            switch owner.mayReach(url) {
+            case .success(let request): hopHost = request.destination.host
+            case .failure(let denial):
+                fail("\(denial.localizedDescription) (redirect)")
+                completionHandler(nil)
+                return
+            }
         }
         var next = request
         if applyCookies {
-            let cookie = owner.cookieHeader(clientId: clientId, host: host)
+            let cookie = owner.cookieHeader(clientId: clientId, host: hopHost)
             next.setValue(cookie.isEmpty ? nil : cookie, forHTTPHeaderField: "Cookie")
         }
         completionHandler(next)
@@ -512,6 +711,10 @@ private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked 
 /// `HUMMINGBIRD_UMP_TRACE`). Traces are logged as private data, and
 /// credential-bearing header values are dropped even from that.
 enum HTTPTrace {
+    /// Traces are opt-in diagnostics of whole requests, so they keep more
+    /// than an ordinary log line, still redacted.
+    static let limit = 8_000
+
     static func headers(_ fields: [String: String]) -> String {
         fields.sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
             .map { "\($0.key): \(isCredential($0.key) ? "<redacted>" : $0.value)" }

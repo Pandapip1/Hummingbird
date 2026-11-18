@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import SwiftOpenUI
 
 // MARK: - Source list
@@ -77,14 +78,16 @@ private struct SyncInstallRow: View {
     private func confirm(_ confirmation: SyncInstall.Confirmation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(install.displayName).font(.headline)
-            Text("Your other device uses this source from \(install.sourceURL); this device’s copy is from \(confirmation.replacing).")
+            Text(confirmation.replacing.isEmpty
+                 ? "Your other device uses this source from \(install.sourceURL). Review it before it installs here."
+                 : "Your other device uses this source from \(install.sourceURL); this device’s copy is from \(confirmation.replacing).")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(confirmation.warnings, id: \.self) { warning in
                 Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             }
             HStack {
-                Button("Use Other Device’s") { app.plugins.confirmSyncedReplacement(install.pluginID) }
-                Button("Keep This Device’s") { app.plugins.keepLocalPlugin(install.pluginID) }
+                Button(confirmation.replacing.isEmpty ? "Install" : "Use Other Device’s") { app.plugins.confirmSyncedReplacement(install.pluginID) }
+                Button(confirmation.replacing.isEmpty ? "Don’t Install" : "Keep This Device’s") { app.plugins.keepLocalPlugin(install.pluginID) }
             }
         }
     }
@@ -184,12 +187,21 @@ private struct PluginRow: View, Equatable {
 struct AddSourceSheet: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
-    @State private var urlText = ""
+    @State private var urlText: String
+    /// Whether the sheet opened with a URL to check straight away (a link).
+    private let checksInitialURL: Bool
     @State private var scanning = false
     @State private var working = false
     @State private var errorText: String?
     @State private var preview: InstallPreview?
     @State private var hasCamera = false
+
+    /// With `initialURL` (from a link), the plugin is checked and shown at
+    /// once; it installs only when the user confirms.
+    init(initialURL: String? = nil) {
+        _urlText = State(initialValue: initialURL ?? "")
+        checksInitialURL = initialURL != nil
+    }
 
     var body: some View {
         NavigationStack {
@@ -254,6 +266,7 @@ struct AddSourceSheet: View {
             }
         }
         .sheetSize()
+        .task { if checksInitialURL, preview == nil { await prepare() } }
     }
 
     private func prepare() async {
@@ -407,6 +420,9 @@ struct PluginDetailView: View {
                 }
                 if !p.config.allowUrls.isEmpty {
                     Section("Can contact") { ForEach(p.config.allowUrls, id: \.self) { Text($0).font(.footnote.monospaced()) } }
+                }
+                if !p.approvals.isEmpty || p.config.allowUrls.contains(where: { !$0.hasPrefix(".") && !$0.hasPrefix("*") && $0.lowercased() != "everywhere" }) {
+                    LocalNetworkApprovalsSection(pluginID: p.id, approvals: p.approvals)
                 }
                 Section {
                     Button("Remove source", role: .destructive) { confirmRemove = true }
@@ -590,11 +606,10 @@ private struct AppSettingsForm: View {
                     Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
-            #if os(macOS) && !BACKEND_GTK
-            if let store = stores.keychain {
+            // Only where the platform has a weaker store the user can opt in to.
+            if let store = stores.keychain, store.offersLoginKeychainFallback {
                 CredentialStorageSettingsSection(store: store)
             }
-            #endif
             Section("Playback") {
                 Picker("Maximum resolution", selection: $maxHeight) {
                     ForEach([360, 480, 720, 1080, 1440, 2160], id: \.self) { Text("\($0)p").tag($0) }
@@ -619,9 +634,9 @@ private struct AppSettingsForm: View {
                     step: 10
                 )
             }
-            #if !os(tvOS)
-            PerformanceReportsSection(store: PerformanceReports.store(for: stores), exportDirectory: stores.cachesDirectory)
-            #endif
+            if SystemPerformanceReports.isAvailable {
+                PerformanceReportsSection(store: PerformanceReports.store(for: stores), exportDirectory: stores.cachesDirectory)
+            }
             Section("About") {
                 Text("Hummingbird plays content from Grayjay-compatible plugins. It is an independent project and is not affiliated with FUTO.")
                     .font(.footnote)
@@ -632,7 +647,6 @@ private struct AppSettingsForm: View {
     }
 }
 
-#if !os(tvOS)
 /// Shares the MetricKit reports kept on this device (crashes, hangs, CPU and
 /// disk-write exceptions, daily metrics), and in debug builds the main-thread
 /// stalls the app recorded, as one JSON file.
@@ -675,8 +689,6 @@ private struct PerformanceReportsSection: View {
         }
     }
 }
-#endif
-
 /// How much the video cache holds, applying a new limit, and clearing what
 /// is not playing. Slow work shows as such: the usage line shows a spinner
 /// while it is measured or while a new limit or a clear is applied, and the
@@ -754,6 +766,84 @@ struct TranscodeToggle: View {
             defaults.set(enabled, forKey: PlaybackPreferenceKey.transcodeDownloads)
             isEnabled = await stage.isEnabled
             applying = false
+
+/// The local-network destinations (LAN, loopback, tailnet) this source may reach on this device, each
+/// bound to exact addresses. Approving shows the address a host resolves to now; a host that later
+/// points somewhere else is refused until approved again. Nothing here syncs to other devices.
+@MainActor
+private struct LocalNetworkApprovalsSection: View {
+    let pluginID: String
+    let approvals: [LocalHostApproval]
+    @Environment(AppModel.self) private var app
+    @State private var requests: [LocalHostRequest]?
+    @State private var checking = false
+    @State private var typedHost = ""
+    @State private var typedAddress = ""
+    @State private var typedError: String?
+
+    var body: some View {
+        Section {
+            ForEach(approvals) { approval in
+                HStack {
+                    Text(approval.summary).font(.footnote.monospaced())
+                    Spacer()
+                    Button("Revoke", role: .destructive) { app.plugins.revokeLocalHost(pluginID: pluginID, approvalID: approval.id) }
+                }
+            }
+            if let requests {
+                ForEach(requests.filter { request in !isApproved(request) }) { request in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(request.summary).font(.footnote.monospaced())
+                        if request.approval != nil {
+                            Button("Approve") { app.plugins.approveLocalHost(request, pluginID: pluginID) }
+                        } else {
+                            Text("Not on this network now.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            Button {
+                Task { await check() }
+            } label: {
+                HStack {
+                    Text("Check local hosts")
+                    if checking { Spacer(); ProgressView() }
+                }
+            }
+            .disabled(checking)
+            TextField("Host:port (as the source names it)", text: $typedHost)
+            TextField("Address or range to allow (e.g. 100.101.102.103/32)", text: $typedAddress)
+            Button("Approve address") { approveTyped() }
+                .disabled(typedHost.isEmpty || typedAddress.isEmpty)
+            if let typedError { Text(typedError).font(.caption).foregroundStyle(.red) }
+        } header: {
+            Text("Local network")
+        } footer: {
+            Text("This source may only reach these local-network addresses. Revoke one to stop it.")
+        }
+    }
+
+    private func isApproved(_ request: LocalHostRequest) -> Bool {
+        approvals.contains { approval in
+            approval.id == request.id && request.resolved.allSatisfy { address in approval.permits(host: request.host, port: request.port, address: address) }
+        }
+    }
+
+    private func check() async {
+        checking = true
+        requests = await app.plugins.localHostRequests(for: pluginID)
+        checking = false
+    }
+
+    private func approveTyped() {
+        let parts = typedHost.split(separator: ":")
+        let host = parts.count == 2 ? String(parts[0]) : typedHost
+        let port = parts.count == 2 ? Int(parts[1]) ?? 443 : 443
+        do {
+            try app.plugins.approveLocalAddress(pluginID: pluginID, host: host, port: port, cidr: typedAddress)
+            typedHost = ""; typedAddress = ""; typedError = nil
+        } catch {
+            typedError = error.localizedDescription
         }
     }
 }

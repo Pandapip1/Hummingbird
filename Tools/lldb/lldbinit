@@ -1,5 +1,7 @@
 # The Hummingbird scheme's LLDB init file (project.yml: customLLDBInit).
 # A scheme's init file takes the place of ~/.lldbinit, so that is sourced
 # first when it exists, then Hummingbird's formatters and `hb` commands.
-script import os; _hb_init = os.path.expanduser("~/.lldbinit"); os.path.exists(_hb_init) and lldb.debugger.HandleCommand("command source -s 1 " + _hb_init)
+# `script` echoes the value of a final bare expression (it printed "False"
+# at every launch without a ~/.lldbinit), so every line ends in an assignment.
+script import os; _hb_init = os.path.expanduser("~/.lldbinit"); _hb_sourced = os.path.exists(_hb_init) and lldb.debugger.HandleCommand("command source -s 1 " + _hb_init)
 command source -C -s 1 hummingbird.lldb

@@ -64,6 +64,7 @@ struct AppManifest: Sendable {
     let icon: String
     let resources: [String]
     let info: [String: PlistValue]
+    let urlSchemes: [(name: String, scheme: String)]
     let sandbox: [SandboxEntitlement]
     let teamEntitlements: [String: PlistValue]
     let xcodeSettings: [(String, String)]
@@ -96,7 +97,15 @@ extension AppManifest {
         info["CFBundleIdentifier"] = bundleID
         info["CFBundleShortVersionString"] = version
         info["CFBundleVersion"] = build
+        info["CFBundleURLTypes"] = urlSchemes.map { ["CFBundleURLName": $0.name, "CFBundleURLSchemes": [$0.scheme]] }
         return try plist(info)
+    }
+
+    /// The schemes for the Linux desktop entry's scheme handlers (nix/package.nix).
+    var linuxURLSchemesPath: String { "Apps/Linux/url-schemes.json" }
+
+    func linuxURLSchemes() throws -> Data {
+        try JSONSerialization.data(withJSONObject: urlSchemes.map(\.scheme), options: [.prettyPrinted]) + Data("\n".utf8)
     }
 
     func xcodeEntitlements() throws -> Data { try plist(teamEntitlements.mapValues(\.object)) }
@@ -300,6 +309,7 @@ do {
         (manifest.xcodeEntitlementsPath, try manifest.xcodeEntitlements()),
         (manifest.xtoolEntitlementsPath, try manifest.xtoolEntitlements()),
         ("xtool.yml", Data(manifest.xtoolYAML().utf8)),
+        (manifest.linuxURLSchemesPath, try manifest.linuxURLSchemes()),
         ("project.yml", Data(newProject.utf8)),
         ("Package.swift", Data(newPackage.utf8)),
     ]

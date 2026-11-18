@@ -232,10 +232,9 @@ final class YouTubeStartupTimingTests: XCTestCase {
             var url = try XCTUnwrap(URL(string: source.url))
             var headers: [String: String] = [:]
             if let modifier = source.requestModifier {
-                let data = try await runtime.callHandle(modifier.handle, "modifyRequest", [source.url, [String: String]()])
-                let modified = try JSONDecoder().decode(OldModifiedRequest.self, from: data)
-                if let next = modified.url.flatMap(URL.init(string:)) { url = next }
-                headers = modified.headers ?? [:]
+                let modified = try await runtime.modifyRequest(handle: modifier.handle, url: url, headers: [:])
+                url = modified.url
+                headers = modified.headers
             }
             let asset = AVURLAsset(url: url, options: headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers])
             let start = ContinuousClock.now
@@ -262,7 +261,6 @@ final class YouTubeStartupTimingTests: XCTestCase {
         await runtime.stop()
     }
 
-    private struct OldModifiedRequest: Decodable { var url: String?; var headers: [String: String]? }
 
     /// Puts the in-process network conditioner (HUMMINGBIRD_NETWORK_PROFILE) between
     /// the media downloads and upstream.

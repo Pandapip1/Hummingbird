@@ -904,10 +904,9 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     /// The one place playback invokes a plugin's request modifier, so how
     /// plugins are called (plugin containment) can change here alone.
-    nonisolated private static func modifyRequest(runtime: PluginRuntime, modifier handle: Int, url: String,
-                                                  headers: [String: String]) async throws -> ModifiedRequest {
-        let data = try await runtime.callHandle(handle, "modifyRequest", [url, headers])
-        return try await PluginRuntime.decodeOffMain(ModifiedRequest.self, from: data)
+    nonisolated private static func modifyRequest(runtime: PluginRuntime, modifier handle: Int, url: URL,
+                                                  headers: [String: String]) async throws -> ContainedRequest {
+        try await runtime.modifyRequest(handle: handle, url: url, headers: headers)
     }
 
     /// Signs any URL of an HLS presentation through the source's request
@@ -918,10 +917,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         return UpstreamURLSigner { url, range in
             var headers: [String: String] = [:]
             if let range { headers["Range"] = "bytes=\(range.lowerBound)-\(range.upperBound - 1)" }
-            let modified = try await modifyRequest(runtime: runtime, modifier: handle, url: url.absoluteString, headers: headers)
-            var request = URLRequest(url: modified.url.flatMap(URL.init(string:)) ?? url)
-            for (name, value) in modified.headers ?? headers { request.setValue(value, forHTTPHeaderField: name) }
-            return request
+            return try await modifyRequest(runtime: runtime, modifier: handle, url: url, headers: headers).urlRequest
         }
     }
 
@@ -967,16 +963,14 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     nonisolated private static func signer(for source: MediaSource, runtime: PluginRuntime) -> UpstreamRequestSigner? {
         guard let url = URL(string: source.url), url.scheme == "https" || url.scheme == "http" else { return nil }
         guard let modifier = source.requestModifier else { return .plain(url) }
-        let original = source.url
         let handle = modifier.handle
         return UpstreamRequestSigner { range in
             let rangeValue = "\(range.lowerBound)-\(range.upperBound - 1)"
-            let modified = try await modifyRequest(runtime: runtime, modifier: handle, url: original,
+            let modified = try await modifyRequest(runtime: runtime, modifier: handle, url: url,
                                                    headers: ["Range": "bytes=" + rangeValue])
-            let target = modified.url.flatMap(URL.init(string:)) ?? url
-            var request = URLRequest(url: target)
-            let headers = modified.headers ?? [:]
-            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+            let target = modified.url
+            var request = modified.urlRequest
+            let headers = modified.headers
             let rangeInHeaders = headers.keys.contains { $0.caseInsensitiveCompare("Range") == .orderedSame }
             let rangeInURL = URLComponents(url: target, resolvingAgainstBaseURL: false)?
                 .queryItems?.contains { $0.name == "range" && $0.value == rangeValue } ?? false
@@ -1060,11 +1054,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
 
     // MARK: resolving sources
-
-    private struct ModifiedRequest: Decodable, Sendable {
-        var url: String?
-        var headers: [String: String]?
-    }
 
     private func resolveGeneratedPair(video: MediaSource, audio: MediaSource,
                                       generation: Int) async throws -> URL {
@@ -1273,7 +1262,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         // Some plugins expose both a convenience loader and the underlying URL.
         // A generated loader can expire independently, so fall back to the URL.
         if (text?.isEmpty ?? true), let u = sub.url, let url = URL(string: u) {
-            text = (try? await URLSession.shared.data(from: url)).flatMap { String(data: $0.0, encoding: .utf8) }
+            // Through the plugin's contained content session: no app cookies, no local network.
+            text = (try? await runtime?.fetchReferenced(url)).flatMap { String(data: $0, encoding: .utf8) }
         }
         var parsed: [SubtitleCue] = []
         if let text {

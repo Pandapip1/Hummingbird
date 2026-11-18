@@ -189,7 +189,8 @@ final class RuntimeTests: XCTestCase {
         let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
 
-        struct Result: Decodable {
+        struct Result: PluginOutput {
+            mutating func contain(_ context: PluginOutputContext) {}
             let supported: Bool
             let chained: Bool
             let positions: [String?]
@@ -333,7 +334,7 @@ final class RuntimeTests: XCTestCase {
     func testEnableReceivesConfigSettingsAndDefaults() async throws {
         let rt = try runtime()
         try await rt.enable()
-        struct E: Decodable { var name: String; var flag: Bool }
+        struct E: PluginOutput { var name: String; var flag: Bool; mutating func contain(_ context: PluginOutputContext) {} }
         let e = try await rt.call("getEnabledWith", as: E.self)
         XCTAssertEqual(e.name, "Demo")
         XCTAssertTrue(e.flag, "declared default \"true\" is parsed to a boolean")

@@ -10,7 +10,9 @@ public enum CredentialStoreStatus: Equatable, Sendable {
     /// The protected store refused this process for a reason other than a
     /// missing entitlement. No fallback is offered for this.
     case unavailable(CredentialVaultError)
-    #if os(macOS)
+    // The remaining cases arise only where the platform offers a weaker store
+    // the user can opt in to (`CredentialStorageMode.optInFallback`: macOS's
+    // login keychain).
     /// The Data Protection Keychain is unavailable and the user opted in to
     /// the much less secure login keychain on this device.
     case loginKeychainFallback(CredentialVaultError)
@@ -21,25 +23,21 @@ public enum CredentialStoreStatus: Equatable, Sendable {
     /// The Data Protection Keychain is unavailable and the user declined the
     /// login keychain, so credentials cannot be stored.
     case fallbackDeclined(CredentialVaultError)
-    #endif
 }
 
 /// Why `KeychainCredentialStore` refused a credential operation.
 public enum CredentialStoreAccessError: LocalizedError, Equatable, Sendable {
     case protectedStoreUnavailable(CredentialVaultError)
-    #if os(macOS)
     case fallbackConsentRequired(CredentialVaultError)
     case fallbackDeclined(CredentialVaultError)
     /// A migrated item did not read back from the Data Protection Keychain,
     /// so its login-keychain copy was kept.
     case migrationNotPersisted(account: String)
-    #endif
 
     public var errorDescription: String? {
         switch self {
         case .protectedStoreUnavailable(let error):
             "Hummingbird can’t use the protected keychain: \(error.localizedDescription)"
-        #if os(macOS)
         case .fallbackConsentRequired(let error):
             "Hummingbird can’t store credentials in the protected data-protection keychain "
                 + "(\(error.localizedDescription)). This usually means this copy of Hummingbird isn’t "
@@ -53,12 +51,10 @@ public enum CredentialStoreAccessError: LocalizedError, Equatable, Sendable {
         case .migrationNotPersisted:
             "A credential moved to the protected keychain could not be read back, so its "
                 + "login-keychain copy was kept."
-        #endif
         }
     }
 }
 
-#if os(macOS)
 /// The user's answer to the login-keychain fallback question on this device.
 public enum LoginKeychainFallbackConsent: String, Sendable {
     case undecided, accepted, declined
@@ -92,12 +88,13 @@ public struct UserDefaultsLoginKeychainFallbackConsentStore: LoginKeychainFallba
         }
     }
 }
-#endif
 
 /// App-facing adapter around SwiftOpenUI's platform credential vault.
 ///
-/// The Data Protection Keychain is always preferred. On macOS, when it refuses
-/// this process for a missing entitlement (ad-hoc signed builds), the store
+/// The Data Protection Keychain is always preferred. Where the platform offers
+/// a weaker store to opt in to (`CredentialStorageMode.optInFallback`, the
+/// macOS login keychain) and the Data Protection Keychain refuses this
+/// process for a missing entitlement (ad-hoc signed builds), the store
 /// does not fall back on its own: it reports `fallbackConsentRequired` and
 /// throws until the app has asked the user, and uses the login keychain only
 /// after they accept. When the Data Protection Keychain becomes available
@@ -134,40 +131,32 @@ public final class KeychainCredentialStore: CredentialStore {
     private let preferred: PlatformCredentialVault
     /// Where the open profile is recorded, to find the item an unlock reads.
     private let preferences: PreferencesDomain
-    #if os(macOS)
-    private let fallback: PlatformCredentialVault
+    /// The opt-in weaker store, where the platform has one.
+    private let fallback: PlatformCredentialVault?
     private let consentStore: any LoginKeychainFallbackConsentStore
     /// The probe writes a marker item, so it runs once per store; `shared`
     /// gives each service one store per process.
     private let preferredAvailability = Mutex<CredentialVaultAvailability?>(nil)
-    #endif
 
     /// In a test process the system keychain is reachable only when the run
     /// opted in with `HUMMINGBIRD_SYSTEM_KEYCHAIN_TESTS=1`, and then only
     /// under a per-test service namespace (`tests.<unique>`); anything else
     /// stops the process (see `LiveData`). Tests otherwise pass a fake backend.
-    #if os(macOS)
     public init(serviceNamespace: String? = nil, backend: any KeychainItemBackend = SystemKeychainBackend(),
                 consentStore: (any LoginKeychainFallbackConsentStore)? = nil,
                 preferences: PreferencesDomain) {
         let service = Self.service(namespace: serviceNamespace)
         if backend is SystemKeychainBackend { LiveData.requireTestKeychainAccess(serviceNamespace: serviceNamespace) }
         preferred = PlatformCredentialVault(service: service, backend: backend)
-        fallback = PlatformCredentialVault(service: service, mode: .legacyLoginKeychain, backend: backend)
+        fallback = CredentialStorageMode.optInFallback.map {
+            PlatformCredentialVault(service: service, mode: $0, backend: backend)
+        }
         self.preferences = preferences
         self.consentStore = consentStore
             ?? UserDefaultsLoginKeychainFallbackConsentStore(
                 key: "\(service).loginKeychainFallback", preferences: preferences
             )
     }
-    #else
-    public init(serviceNamespace: String? = nil, backend: any KeychainItemBackend = SystemKeychainBackend(),
-                preferences: PreferencesDomain) {
-        if backend is SystemKeychainBackend { LiveData.requireTestKeychainAccess(serviceNamespace: serviceNamespace) }
-        preferred = PlatformCredentialVault(service: Self.service(namespace: serviceNamespace), backend: backend)
-        self.preferences = preferences
-    }
-    #endif
 
     private static func service(namespace: String?) -> String {
         "app.hummingbird\(namespace.map { ".\($0)" } ?? "").credentials.v3"
@@ -176,7 +165,9 @@ public final class KeychainCredentialStore: CredentialStore {
     public var credentialVaultID: String { preferred.service }
 
     public var status: CredentialStoreStatus {
-        #if os(macOS)
+        // Without a weaker alternative (the iOS family, Linux's Secret
+        // Service) there is no decision to make, so nothing is probed.
+        guard fallback != nil else { return .dataProtection }
         switch probedAvailability() {
         case .available, .locked:
             return .dataProtection
@@ -189,11 +180,6 @@ public final class KeychainCredentialStore: CredentialStore {
             case .undecided: return .fallbackConsentRequired(error)
             }
         }
-        #else
-        // Linux's Secret Service and the iOS-family keychains have no weaker
-        // alternative to offer, so there is nothing to probe for.
-        return .dataProtection
-        #endif
     }
 
     public func requiresExplicitUnlock() -> Bool {
@@ -241,11 +227,12 @@ public final class KeychainCredentialStore: CredentialStore {
         switch status {
         case .dataProtection: return preferred
         case .unavailable(let error): throw CredentialStoreAccessError.protectedStoreUnavailable(error)
-        #if os(macOS)
-        case .loginKeychainFallback: return fallback
+        case .loginKeychainFallback(let error):
+            // Only reported where there is a fallback (see `status`).
+            guard let fallback else { throw CredentialStoreAccessError.protectedStoreUnavailable(error) }
+            return fallback
         case .fallbackConsentRequired(let error): throw CredentialStoreAccessError.fallbackConsentRequired(error)
         case .fallbackDeclined(let error): throw CredentialStoreAccessError.fallbackDeclined(error)
-        #endif
         }
     }
 
@@ -259,7 +246,11 @@ public final class KeychainCredentialStore: CredentialStore {
         return "com.eightybps.appsync.profile.\(id.uuidString.lowercased()).instance-identity.v1"
     }
 
-    #if os(macOS)
+    /// Whether this platform has a weaker store the user may opt in to when
+    /// the Data Protection Keychain refuses the process, and so whether to
+    /// offer the settings below.
+    public var offersLoginKeychainFallback: Bool { fallback != nil }
+
     public var loginKeychainFallbackConsent: LoginKeychainFallbackConsent { consentStore.consent() }
 
     /// Records the user's answer to the opt-in prompt.
@@ -274,6 +265,7 @@ public final class KeychainCredentialStore: CredentialStore {
     public func revokeLoginKeychainFallback() throws {
         consentStore.setConsent(.declined)
         forgetSecrets()
+        guard let fallback else { return }
         for account in try fallback.accounts() {
             try fallback.delete(account: account)
         }
@@ -282,13 +274,13 @@ public final class KeychainCredentialStore: CredentialStore {
     /// Accounts Hummingbird keeps in the login keychain. Reads attributes
     /// only, so it never shows a keychain access prompt.
     public func loginKeychainItemAccounts() throws -> [String] {
-        try fallback.accounts()
+        try fallback?.accounts() ?? []
     }
 
     /// Login-keychain items to offer for migration: present only once the
     /// Data Protection Keychain works and the fallback was in use.
     public func migrationCandidates() throws -> [String] {
-        guard status == .dataProtection, consentStore.consent() == .accepted else { return [] }
+        guard status == .dataProtection, consentStore.consent() == .accepted, let fallback else { return [] }
         return try fallback.accounts()
     }
 
@@ -308,6 +300,7 @@ public final class KeychainCredentialStore: CredentialStore {
              .fallbackConsentRequired(let error), .fallbackDeclined(let error):
             throw CredentialStoreAccessError.protectedStoreUnavailable(error)
         }
+        guard let fallback else { return 0 }
         let accounts = try fallback.accounts()
         for account in accounts {
             if try preferred.load(account: account) == nil, let secret = try fallback.load(account: account) {
@@ -329,5 +322,4 @@ public final class KeychainCredentialStore: CredentialStore {
         preferredAvailability.withLock { $0 = probed }
         return probed
     }
-    #endif
 }

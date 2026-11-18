@@ -14,19 +14,30 @@ final class DOMStore {
     private var nodes: [Int: Element] = [:]
     private var next = 1
 
+    /// Nodes handed to the script so far are bounded (`PluginLimits.maximumDOMNodes`): past it, lookups
+    /// return nothing rather than let a script make the host hold an unbounded tree of handles.
     private func put(_ e: Element) -> Int {
+        guard nodes.count < PluginLimits.maximumDOMNodes else { return 0 }
         let id = next
         next += 1
         nodes[id] = e
         return id
     }
-    private func ref(_ e: Element?) -> Any { e.map { ["__node": put($0)] } ?? NSNull() }
-    private func refs(_ list: [Element]) -> Any { list.map { ["__node": put($0)] } }
+    private func ref(_ e: Element?) -> Any {
+        guard let e else { return NSNull() }
+        let id = put(e)
+        return id == 0 ? NSNull() : ["__node": id]
+    }
+    private func refs(_ list: [Element]) -> Any { list.prefix(PluginLimits.maximumListLength * 10).compactMap { e -> [String: Int]? in
+        let id = put(e)
+        return id == 0 ? nil : ["__node": id]
+    } }
     private func refs(_ list: Elements?) -> Any { refs(list?.array() ?? []) }
 
     func parse(_ html: String) -> String {
-        guard let doc = try? SwiftSoup.parse(html) else { return "" }
-        return String(put(doc))
+        guard html.utf8.count <= PluginLimits.maximumDOMInputBytes, let doc = try? SwiftSoup.parse(html) else { return "" }
+        let id = put(doc)
+        return id == 0 ? "" : String(id)
     }
 
     func release(_ handle: Int) { nodes[handle] = nil }
@@ -94,6 +105,7 @@ final class DOMStore {
 /// Assumption: `md5`/`sha256` return byte arrays and the `...String` variants return lowercase hex.
 enum UtilityPackage {
     static func call(_ name: String, _ a: String) -> String {
+        guard a.utf8.count <= PluginLimits.maximumUtilityInputBytes else { return "" }
         switch name {
         case "toBase64": return Data(bytes(a)).base64EncodedString()
         case "fromBase64": return intArray(Array(Data(base64Encoded: a) ?? Data()))

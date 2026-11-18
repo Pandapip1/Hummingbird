@@ -182,7 +182,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
         XCTAssertFalse(payload.header.name.isEmpty)
         XCTAssertFalse(payload.contents.results.compactMap(\.value).isEmpty)
         if payload.contents.hasMore {
-            let next = try PluginRuntime.decode(
+            let next = try PluginRuntime.decodeEnvelope(
                 PagerPayload<ContentItem>.self,
                 from: try await runtime.nextPageRaw(handle: payload.contents.pager)
             )
@@ -210,7 +210,8 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             func get(_ id: String) -> String? { values.withLock { $0[id] } }
         }
         let results = Results()
-        let browser = PluginBrowserPackage { id, value in results.set(id, value) }
+        let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"YouTube","allowUrls":["everywhere"]}"#.utf8))
+        let browser = PluginBrowserPackage(policy: PluginNetworkPolicy(config: config, approvals: []), proxy: nil) { id, value in results.set(id, value) }
         defer { browser.close() }
         // Same calls, URL and timeout as the plugin's BotGuardBrowserGenerator.
         let loaded = await Task.detached {
@@ -446,7 +447,8 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
     }
 }
 
-private struct CompatibilityChapter: Decodable {
+private struct CompatibilityChapter: PluginOutput {
+    mutating func contain(_ context: PluginOutputContext) {}
     var name: String
     var timeStart: Double
     var timeEnd: Double

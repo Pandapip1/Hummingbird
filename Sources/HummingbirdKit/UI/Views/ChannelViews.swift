@@ -124,7 +124,7 @@ struct ChannelView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
                         ForEach(info.links.sorted(by: { $0.key < $1.key }), id: \.key) { name, link in
-                            if let u = URL(string: link) { Link(name, destination: u).font(.caption).buttonStyle(.bordered) }
+                            ExternalURLLink(destination: link) { Text(name) }.font(.caption).buttonStyle(.bordered)
                         }
                     }.padding(.horizontal)
                 }

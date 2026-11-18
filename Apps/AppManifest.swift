@@ -11,6 +11,7 @@
 //                                            it still builds <name>.app
 //   xtool.yml                                xtool's app definition
 //   Package.swift                            the package product xtool builds (marked region)
+//   Apps/Linux/url-schemes.json             the URL schemes, for the Linux desktop entry
 //
 // Edit this file, then run scripts/generate-app. The pre-commit hook and
 // AppManifestTests fail while any generated file is out of date.
@@ -33,10 +34,6 @@ let manifest = AppManifest(
         "LSApplicationCategoryType": "public.app-category.video",
         // Expanded by team-signed (Xcode) builds only; see teamEntitlements.
         "ATProtoKeychainAccessGroup": "$(AppIdentifierPrefix)com.eightybps.hummingbird.shared",
-        "CFBundleURLTypes": [
-            ["CFBundleURLName": "app.hummingbird.credential-login", "CFBundleURLSchemes": ["hummingbird"]],
-            ["CFBundleURLName": "com.eightybps.hummingbird.oauth", "CFBundleURLSchemes": ["com.eightybps.hummingbird"]],
-        ],
         "UILaunchScreen": [:],
         "UIBackgroundModes": ["audio"],
         "UISupportedInterfaceOrientations": [
@@ -56,6 +53,16 @@ let manifest = AppManifest(
         // (CryptoKit, Security, URLSession); see Web/DEPLOYMENT.md and
         // EncryptionExportTests.
         "ITSAppUsesNonExemptEncryption": false,
+    ],
+    // The URL schemes the app opens, registered on every platform from here
+    // (Info.plist on Apple platforms; the desktop entry's scheme handlers on
+    // Linux, from Apps/Linux/url-schemes.json).
+    urlSchemes: [
+        (name: "app.hummingbird.credential-login", scheme: "hummingbird"),
+        (name: "com.eightybps.hummingbird.oauth", scheme: "com.eightybps.hummingbird"),
+        // Plugin install links (grayjay://plugin/<config URL>): Add Source,
+        // never a silent install.
+        (name: "app.hummingbird.plugin-install", scheme: "grayjay"),
     ],
     // macOS sandbox entitlements, in both builds. Xcode applies them per
     // platform through its build settings (they mean nothing on iOS, where a

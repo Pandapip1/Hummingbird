@@ -134,25 +134,43 @@ public struct AppSyncPeerTrustSuggestion: Equatable, Sendable {
     }
 }
 
+/// Whether a peer trusts this instance, as far as its own signed facts
+/// that reached this instance say. Trust is directed: this instance can
+/// trust a peer that does not trust it back, and the other way round.
+public enum AppSyncInboundTrust: Equatable, Sendable {
+    /// Its latest fact about this instance is trust.
+    case trustsThisInstance
+    /// Its latest fact about this instance is distrust.
+    case distrustsThisInstance
+    /// No fact from it about this instance has arrived.
+    case unknown
+}
+
 public struct AppSyncPeerTrustSummary: Equatable, Sendable, Identifiable {
     public let peer: AppSyncPeer
+    /// Whether the peer trusts this instance.
+    public let inbound: AppSyncInboundTrust
     /// The instance's signed registration while it can be reached, on the
     /// local network or through the account. `nil` for a peer known only from
     /// trust facts, which is not reachable right now.
     public let registration: AppSyncInstanceRegistration?
     public let state: AppSyncPeerTrustState
 
-    public init(registration: AppSyncInstanceRegistration, state: AppSyncPeerTrustState) {
+    public init(registration: AppSyncInstanceRegistration, state: AppSyncPeerTrustState,
+                inbound: AppSyncInboundTrust = .unknown) {
         self.peer = registration.peer
         self.registration = registration
         self.state = state
+        self.inbound = inbound
     }
 
     /// A peer with a known trust relationship but no current registration.
-    public init(unreachable peer: AppSyncPeer, state: AppSyncPeerTrustState) {
+    public init(unreachable peer: AppSyncPeer, state: AppSyncPeerTrustState,
+                inbound: AppSyncInboundTrust = .unknown) {
         self.peer = peer
         self.registration = nil
         self.state = state
+        self.inbound = inbound
     }
 
     public var id: AppSyncPeerID { peer.stableID }
@@ -242,7 +260,8 @@ public final class AppSyncTrustStore: @unchecked Sendable {
                       (try? registration.verify()) != nil,
                       registration.stablePeerID != observer.stableID else { return nil }
                 let state = stateUnlocked(of: registration.stablePeerID)
-                return .init(registration: registration, state: state)
+                return .init(registration: registration, state: state,
+                             inbound: inboundUnlocked(from: registration.stablePeerID))
             }
             .sorted { $0.id < $1.id }
         }
@@ -267,12 +286,30 @@ public final class AppSyncTrustStore: @unchecked Sendable {
             return known.compactMap { id, peer -> AppSyncPeerTrustSummary? in
                 guard id != observer.stableID, !reachableIDs.contains(id) else { return nil }
                 let state = stateUnlocked(of: id)
-                guard state != .unknown else { return nil }
-                return .init(unreachable: peer, state: state)
+                let inbound = inboundUnlocked(from: id)
+                guard state != .unknown || inbound != .unknown else { return nil }
+                return .init(unreachable: peer, state: state, inbound: inbound)
             }
             .sorted { $0.id < $1.id }
         }
         return reachable + unreachable
+    }
+
+    /// Whether `peer` trusts this instance.
+    public func inbound(from peer: AppSyncPeerID) -> AppSyncInboundTrust {
+        lock.withLock { inboundUnlocked(from: peer) }
+    }
+
+    private func inboundUnlocked(from peer: AppSyncPeerID) -> AppSyncInboundTrust {
+        let latest = factsByID.values
+            .filter { $0.issuer.stableID == peer && $0.subject.stableID == observer.stableID }
+            .filter { (try? $0.verify()) != nil }
+            .max { $0.version < $1.version }
+        switch latest?.kind {
+        case .trust?: return .trustsThisInstance
+        case .distrust?: return .distrustsThisInstance
+        case nil: return .unknown
+        }
     }
 
     private func stateUnlocked(of peer: AppSyncPeerID) -> AppSyncPeerTrustState {

@@ -21,8 +21,7 @@ enum PluginLimits {
 
     // MARK: concurrency
 
-    /// JavaScript contexts per plugin that serve calls in parallel.
-    static let maximumWorkers = 3
+
     /// Pending timers per context.
     static let maximumTimers = 256
 

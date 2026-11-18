@@ -1,5 +1,6 @@
 #if canImport(BackendGTK4) && BACKEND_GTK_WEBKIT
 import XCTest
+import PluginEngine
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking

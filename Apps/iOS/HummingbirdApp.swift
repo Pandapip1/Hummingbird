@@ -7,6 +7,12 @@ import AVKit
 
 @main
 struct HummingbirdApp: App {
+    init() {
+        // How runaway plugin scripts are stopped: the strongest this build and platform allow
+        // (DirectDistribution.swift, PluginExecutionLimits). Cheap: no process starts until a plugin runs.
+        PluginExecutionSetup.install()
+    }
+
     // Nothing runs before the first frame: the splash is drawn first, then
     // the stores, credential checks and MetricKit start away from the main
     // thread (`LaunchGate`).

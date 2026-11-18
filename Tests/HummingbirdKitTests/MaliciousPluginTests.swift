@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
+import PluginEngine
 @testable import HummingbirdKit
 
 /// Hostile plugins (Tests/malicious-plugins/*.js) attempt each attack in Documentation/PluginSecurity.md;
@@ -58,11 +59,12 @@ final class MaliciousPluginTests: XCTestCase {
         }
     }
 
-    private static let fast = PluginRuntime.Timeouts(call: 1, enable: 5, requestModifier: 1)
+    static let fast = PluginRuntime.Timeouts(call: 1, enable: 5, requestModifier: 1)
 
-    private func hostile(_ file: String, id: String = "hostile", allow: [String] = ["allowed.test"],
+    func hostile(_ file: String, id: String = "hostile", allow: [String] = ["allowed.test"],
                          approvals: [LocalHostApproval] = [], resolver: TestResolver = .publicOnly,
-                         auth: SourceAuth? = nil, timeouts: PluginRuntime.Timeouts = fast) throws -> PluginRuntime {
+                         auth: SourceAuth? = nil, timeouts: PluginRuntime.Timeouts = fast,
+                 engine: (any JSEngine)? = nil) throws -> PluginRuntime {
         let json = try JSONSerialization.data(withJSONObject: [
             "name": "Hostile \(id)", "id": id, "version": 1, "scriptUrl": "x.js", "allowUrls": allow, "packages": ["Http"],
         ] as [String: Any])
@@ -70,7 +72,7 @@ final class MaliciousPluginTests: XCTestCase {
         let script = try String(contentsOf: Self.directory.appendingPathComponent(file), encoding: .utf8)
         let runtime = PluginRuntime(approval: testLoadApproval(config), config: config,
                                     script: try ScriptSignature.check(script, for: config), settings: [:], auth: auth, captcha: nil,
-                                    approvals: approvals, resolver: resolver, httpSession: Stub.session(), timeouts: timeouts)
+                                    approvals: approvals, resolver: resolver, httpSession: Stub.session(), timeouts: timeouts, engine: engine)
         addTeardownBlock { await runtime.stop() }
         return runtime
     }
@@ -122,7 +124,7 @@ final class MaliciousPluginTests: XCTestCase {
         }
         XCTAssertTrue(rt.isSuspended)
         // The loops end; the plugin recovers by itself.
-        try await Task.sleep(for: .milliseconds(1_800))
+        try await Task.sleep(for: .milliseconds(2_600))
         XCTAssertFalse(rt.isSuspended)
         let quick = try await rt.call("quick", as: Int.self)
         XCTAssertEqual(quick, 42)
@@ -169,24 +171,32 @@ final class MaliciousPluginTests: XCTestCase {
         XCTAssertLessThanOrEqual(lines.withLock { $0 }, PluginLimits.logLinesPerSecond * 3)
     }
 
-    func testContextsShareOnlyExplicitState() async throws {
+    func testEveryCallRunsInAFreshContextNoOtherCallTouches() async throws {
         let rt = try hostile("availability.js", timeouts: .init(call: 5, enable: 5, requestModifier: 1))
-        _ = try await rt.enable()
-        // Keep the first context busy so the next call is served by a second, fresh one.
-        async let busy: String = rt.call("spin", [600])
-        try await Task.sleep(for: .milliseconds(100))
-        let set = try await rt.call("setMarker", ["planted"], as: String.self)
-        XCTAssertEqual(set, "planted")
-        _ = try await busy
-        // Globals planted in one context are not visible in the other.
-        async let busyAgain: String = rt.call("spin", [600])
-        try await Task.sleep(for: .milliseconds(100))
-        let markers = Set([try await rt.call("getMarker", as: String.self)])
-        _ = try await busyAgain
-        XCTAssertTrue(markers.isSubset(of: ["planted", "unset"]))
+        // One call stashes data on globalThis; the next call, sequential or concurrent, never sees it.
+        let planted = try await rt.call("setMarker", ["stolen-secret"], as: String.self)
+        XCTAssertEqual(planted, "stolen-secret")
+        let afterwards = try await rt.call("getMarker", as: String.self)
+        XCTAssertEqual(afterwards, "unset", "a call never sees what an earlier call left in its context")
+        async let busy: String = rt.call("spin", [400])
+        async let concurrentSet: String = rt.call("setMarker", ["concurrent"])
+        async let concurrentGet: String = rt.call("getMarker")
+        let (_, _, seen) = try await (busy, concurrentSet, concurrentGet)
+        XCTAssertEqual(seen, "unset", "concurrent calls cannot see each other")
         let other = try hostile("availability.js", id: "other")
         let otherMarker = try await other.call("getMarker", as: String.self)
         XCTAssertEqual(otherMarker, "unset", "plugins never share a context")
+    }
+
+    func testOnlyACallsOwnContinuationsReachItsContext() async throws {
+        let rt = try hostile("integrity.js")
+        // A pager keeps its own context for its next pages, and nobody else's call lands there.
+        let pager = try await rt.pager("getHome", as: ContentItem.self)
+        let first = try await rt.pager("getHome", as: ContentItem.self)
+        XCTAssertNotEqual(PluginWorker.serial(ofHandle: pager.handleForTesting), PluginWorker.serial(ofHandle: first.handleForTesting),
+                          "two calls never share a context")
+        _ = try await pager.next()
+        XCTAssertEqual(rt.liveContextCountForTesting, 2)
     }
 
     // MARK: confidentiality

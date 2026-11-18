@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Checks that an App Store build carries no reference to JavaScriptCore's non-public script time
+# limit (Apps/iOS/DirectDistribution.swift), and that a direct build does (so the check can fail).
+# Builds the app twice, with HUMMINGBIRD_DISTRIBUTION=appstore and =direct, and inspects every
+# Mach-O file in each Hummingbird.app with nm.
+#
+# Usage: scripts/check-app-store-symbols [xcodebuild destination] [derived data path]
+#   default destination: generic/platform=macOS
+set -euo pipefail
+
+repository="$(cd "$(dirname "$0")/.." && pwd)"
+destination="${1:-generic/platform=macOS}"
+derived="${2:-$repository/.build/app-store-symbols}"
+symbols='_JSContextGroupSetExecutionTimeLimit|_JSContextGroupClearExecutionTimeLimit'
+
+references() {
+  local app="$1" found=0
+  while IFS= read -r -d '' file; do
+    if /usr/bin/file -b "$file" | grep -q Mach-O \
+        && /usr/bin/nm -m "$file" 2>/dev/null | grep -Eq "$symbols"; then
+      echo "  ${file#"$app"/}" >&2
+      found=1
+    fi
+  done < <(find "$app" -type f -print0)
+  return $((1 - found))
+}
+
+for distribution in appstore direct; do
+  echo "==> Building ($distribution, $destination)" >&2
+  env -u DEVELOPER_DIR -u SDKROOT -u TOOLCHAINS PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    /usr/bin/xcodebuild build -project "$repository/Hummingbird.xcodeproj" -scheme Hummingbird \
+      -destination "$destination" -derivedDataPath "$derived/$distribution" -jobs 2 \
+      CODE_SIGNING_ALLOWED=NO HUMMINGBIRD_DISTRIBUTION="$distribution" >"$derived.$distribution.log" 2>&1 \
+    || { echo "error: the $distribution build failed (see $derived.$distribution.log)" >&2; exit 1; }
+  app="$(find "$derived/$distribution/Build/Products" -name Hummingbird.app -maxdepth 2 | head -1)"
+  [[ -n "$app" ]] || { echo "error: no Hummingbird.app in $derived/$distribution" >&2; exit 1; }
+  if [[ "$distribution" == appstore ]]; then
+    if references "$app"; then
+      echo "error: the App Store build references JavaScriptCore's non-public time limit (above)" >&2
+      exit 1
+    fi
+    echo "ok: the App Store build has no reference to it" >&2
+  else
+    if ! references "$app"; then
+      echo "error: the direct build does not reference the time limit; this check would not catch a leak" >&2
+      exit 1
+    fi
+    echo "ok: the direct build uses it (above)" >&2
+  fi
+done

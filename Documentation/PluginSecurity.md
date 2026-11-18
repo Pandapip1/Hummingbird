@@ -79,7 +79,7 @@ Tests are in `Tests/HummingbirdKitTests/`. Hostile end-to-end plugins are in `Ma
 
 | Threat | Mitigation | Where | Tests |
 |---|---|---|---|
-| A call blocks the plugin or the app | **Worker pool (task 34).** Each plugin is up to `PluginLimits.maximumWorkers` (3) isolated JS contexts, each with its own serial queue. A new call goes to an idle worker, or a new one, so calls run in parallel. Nothing ever runs on the main actor. | `PluginRuntime`, `PluginWorker` | `PluginRuntimeIsolationTests`, `MaliciousPluginTests` (parallel calls while one hangs) |
+| A call blocks the plugin or the app, or calls share state | **One fresh context per call (task 34).** Every top-level call gets a JS context of its own, with its own serial queue: prelude, plugin script and `enable` with the host-held config, settings and saved state, then the call. No other call ever uses it. Only that call's continuations (its pagers, details, modifiers, trackers, promises; routed by the serial in their handles) reach it later, and it ends with its last handle (`releaseHandle`, pager release), after `sessionIdleLifetime` idle, or past `maximumRetainedSessions` (least recently used). Saved state is taken after each call and handed to the next (explicit, host-held). Calls run in parallel; nothing runs on the main actor. | `PluginRuntime` (`freshWorker`, `finish`, `retain`), `PluginWorker` | `PluginRuntimeIsolationTests`, `MaliciousPluginTests` (globals planted by one call are never seen by another; concurrent calls) |
 | State leaks between contexts | Workers share only explicitly passed state: config, settings, saved state, reload data, and the plugin's `HostHTTP` (its cookie jars plus auth/captcha). JS globals are per context. | `PluginRuntime.sharedHTTP`, `PluginWorker.startLocked` | `MaliciousPluginTests` |
 | Handles reach the wrong context | Handles are `serial << 32 \| local` (`__jb.setHandleBase`). Follow-up calls are routed to the worker that made the handle. A handle from a retired worker fails with "session has ended". | `PluginWorker.handleShift`, `PluginRuntime.worker(forHandle:)` | `RuntimeTests` |
 | Infinite loop or slow call | Every call has a deadline: `callTimeout` 60 s, plus `enableTimeout` 90 s on a fresh context; request modifiers get 10 s. On a miss the caller gets `PluginError.timeout` at once. A worker that missed while *running* is **abandoned**: removed from the pool, and its host calls fail fast from then on (`http` errors, `sleep` returns, timers and browser calls ignored). Its context closes when the script returns. Timeouts are injectable for tests (`PluginRuntime.Timeouts`). | `PluginWorker.perform`, `PluginRuntime.abandon` | `MaliciousPluginTests` |
@@ -128,26 +128,28 @@ Tests are in `Tests/HummingbirdKitTests/`. Hostile end-to-end plugins are in `Ma
 | Unattributed toast | `PluginManager.toast` is `PluginToast?`, which requires a plugin name. |
 | Applying a modifier's raw output | `ContainedRequest` is the only modifier result. The old private decoding in `PlayerModel` is gone. |
 
-## 7. Process isolation
+## 7. Stopping runaway scripts: process isolation and the engine time limit
 
-**Not implemented.** This is a design.
+One API, `PluginExecutionLimits` (Sources/PluginEngine), gives every build the strongest enforcement it has:
 
-- `JSEngine` / `JSContextHost` is already the seam: one entry point (`__hostCall(name,a,b) -> String`) and string-in/string-out evaluation.
-- An out-of-process engine implements `JSContextHost` as an IPC client:
-  - **macOS:** an XPC service in the app bundle, inheriting the sandbox but with no network entitlement.
-  - **Linux:** a helper subprocess over a socketpair.
-- Each host call becomes a message answered by the app's `PluginWorker.handleHostCall`. All network still goes through the app's `HostHTTP` and egress proxy, which is already a process-independent chokepoint (a loopback CONNECT proxy).
-- On a deadline miss or memory threshold, the host kills the helper. This is a true CPU and memory kill, and a crash in one plugin cannot take the app down.
-- Callers don't change, because `PluginRuntime`/`PluginWorker` only see `JSContextHost`. The abstraction belongs in SwiftOpenUI or HummingbirdKit behind one API, with an in-process fallback.
-- **iOS, iPadOS, tvOS and visionOS cannot spawn processes,** so they stay in-process with the mitigations above.
-- **Why not yet:** it needs an XPC target in `project.yml`, signing and entitlements, a helper executable for the Linux package, and a message protocol. That was outside this change's scope.
+| Build / platform | Enforcement | How |
+|---|---|---|
+| macOS app (Xcode build) | `.processTermination` | Each plugin's contexts run in its own instance of the `PluginHost` XPC service (Apps/PluginHostXPC: app sandbox, no other entitlement, so no network and no user files; `_MultipleInstances`, one process per plugin). At a deadline the app kills that process (`xpc_connection_get_pid` + SIGKILL). |
+| Linux (GTK) | `.processTermination` | The app re-runs its own binary with `--plugin-host` before any GTK/WebKit/app state exists; the child closes every inherited descriptor, sets no-new-privs and a seccomp filter that refuses sockets, exec, ptrace and file creation/writing/renaming/removal (EPERM). Killed with SIGKILL. **Not run on Linux yet** (no Linux build here). |
+| Direct-distribution builds, in-process (iOS/tvOS/visionOS sideloads, xtool) | `.engineTimeLimit` | JavaScriptCore's `JSContextGroupSetExecutionTimeLimit` stops the script at the call's deadline with an uncatchable termination; its context returns. Not public API: compiled only without `APP_STORE`. |
+| App Store iOS / tvOS / visionOS | `.abandonment` | No process isolation (no process spawning) and no non-public API: a stuck context is abandoned (host calls fail fast) and keeps one thread busy until the script returns; bounded by `maximumHungWorkers` and `maximumUnresponsiveRestarts`. |
+
+- **Protocol.** Host processes speak length-prefixed JSON frames (`PluginHostMessage`, `PluginHostChannel`): create/evaluate/close a context, and `hostCall`/`hostReply`. The host process holds JavaScript contexts and nothing else; every capability (HTTP through `HostHTTP` and the egress proxy, DOM, logs, timers, the browser package) stays in the app and is reached only by answered `hostCall` messages. The evaluating worker thread in the app answers its context's host calls, so they run exactly where an in-process context's would. Each hosted context lives on its own thread in the host, owning it outright.
+- **Kill semantics.** Killing a plugin's host ends every context of that plugin (their calls fail and can be retried); the next call starts a new process. Nothing keeps running, so killed loops never pile up into a suspended plugin.
+- **App Store gating.** `Apps/AppManifest.swift` declares the distributions; the generated app target sets `SWIFT_ACTIVE_COMPILATION_CONDITIONS` from `HUMMINGBIRD_DISTRIBUTION` (`direct` by default; `appstore` adds `APP_STORE`). The time limit lives in a header-only C module (`CJSCExecutionLimit`, static inline functions) that only `Apps/iOS/DirectDistribution.swift` imports, under `#if !APP_STORE`: an App Store build has no reference to the symbol at all. `scripts/check-app-store-symbols` builds both distributions and checks every Mach-O file in the app with `nm`.
+- Tests: `PluginProcessIsolationTests.swift` (host round trip, runaway killed at the deadline without suspending the plugin, containment unchanged in a host process, the engine time limit in-process, enforcement reporting).
 
 ## 8. Residual risks
 
 | Risk | macOS | iOS/iPadOS | tvOS | visionOS | Linux GTK |
 |---|---|---|---|---|---|
-| **Pure CPU loop.** It cannot be interrupted in-process: public JavaScriptCore has no interrupt, and `JSContextGroupSetExecutionTimeLimit` is **private API** (an App Store review risk), so it is unused. **Owner decision.** The loop keeps one thread busy until it returns. This is bounded per plugin by `maximumHungWorkers` × (`maximumUnresponsiveRestarts` + 1). A loop that swallows host-call failures (`try{}catch{}`) never ends. | yes (fixable with XPC) | yes | yes | yes | yes (fixable with a subprocess) |
-| **Memory bomb.** There is no per-context heap cap. `new Array(1e9)` can cause jetsam or a crash of the whole app. Process isolation fixes this. | yes | yes | yes | yes | yes |
+| **Pure CPU loop.** Stopped by killing the plugin's host process (macOS, Linux) or by JavaScriptCore's time limit (direct builds). App Store iOS/tvOS/visionOS builds can do neither: the loop keeps one thread busy until it returns, bounded per plugin by `maximumHungWorkers` × (`maximumUnresponsiveRestarts` + 1). | no (killed) | App Store: yes; direct: no | App Store: yes; direct: no | App Store: yes; direct: no | no (killed) |
+| **Memory bomb.** No per-context heap cap. In a host process (macOS, Linux) it takes down only that plugin's process; in-process (iOS, tvOS, visionOS) it can cause jetsam of the whole app. | plugin only | yes | yes | yes | plugin only |
 | **DNS TOCTOU in plugin HTTP.** swift-corelibs `URLSession` ignores proxy settings, so on Linux the check happens before the connection only. The DNS answer can change in between, and a name answering with both public and unapproved private addresses is refused outright, but a fast-flipping answer can still differ between check and connect. | — | — | — | — | yes |
 | **Web views unproxied.** The GTK WebKit shim has no proxy or content-rule API, and the plugin browser uses WKWebView, so on GTK neither pinning nor content rules exist. | — | — | n/a (no WebKit) | — | yes |
 | **Sign-in and captcha sheets not proxied.** Their navigation is domain-restricted, but a public sign-in host resolving to a private address isn't caught. | yes | yes | n/a | yes | yes |

@@ -40,6 +40,8 @@ var products: [Product] = [
     .library(name: "HummingbirdKit", targets: ["HummingbirdKit"]),
     .library(name: "DynamicTabbingKit", targets: ["DynamicTabbingKit"]),
     .library(name: "AdvancedVideoPlayerKit", targets: ["AdvancedVideoPlayerKit"]),
+    .library(name: "PluginEngine", targets: ["PluginEngine"]),
+    .executable(name: "hummingbird-plugin-host", targets: ["HummingbirdPluginHost"]),
 ]
 var targets: [Target] = [
     .target(
@@ -54,10 +56,28 @@ var targets: [Target] = [
         swiftSettings: backendSwiftSettings
     ),
     sqliteTarget,
+    // The plugin JavaScript engine and the plugin host process it can run in (process isolation:
+    // Documentation/PluginSecurity.md). Foundation and JavaScriptCore only, so the host process
+    // carries nothing else of the app.
+    .target(
+        name: "PluginEngine",
+        dependencies: [
+            "CPluginHostSandbox",
+            .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
+        ],
+        path: "Sources/PluginEngine"
+    ),
+    .target(name: "CPluginHostSandbox", path: "Sources/CPluginHostSandbox"),
+    .executableTarget(
+        name: "HummingbirdPluginHost",
+        dependencies: ["PluginEngine"],
+        path: "Sources/HummingbirdPluginHost"
+    ),
     .target(
         name: "HummingbirdKit",
         dependencies: [
             "DynamicTabbingKit",
+            "PluginEngine",
             "AdvancedVideoPlayerKit",
             "CSQLite",
             .product(name: "ATProtoKit", package: "ATProtoKit"),
@@ -101,6 +121,7 @@ var targets: [Target] = [
         dependencies: [
             "HummingbirdKit",
             "HummingbirdTestBootstrap",
+            "PluginEngine",
             .product(name: "ATProtoKit", package: "ATProtoKit"),
             .product(name: "ATAppSync", package: "ATAppSync"),
             .product(name: "CredentialStorage", package: "SwiftOpenUI"),
@@ -134,9 +155,21 @@ targets.append(
 )
 #endif
 
+#if !os(Linux)
+// JavaScriptCore's script time limit, for builds outside the App Store only: only code compiled
+// without APP_STORE imports it (Apps/iOS/DirectDistribution.swift). Header-only, so a build that
+// does not call it carries no reference (scripts/check-app-store-symbols).
+products.append(.library(name: "CJSCExecutionLimit", targets: ["CJSCExecutionLimit"]))
+targets.append(.target(name: "CJSCExecutionLimit", path: "Sources/CJSCExecutionLimit"))
+if let tests = targets.firstIndex(where: { $0.name == "HummingbirdKitTests" }) {
+    targets[tests].dependencies.append("CJSCExecutionLimit")
+}
+#endif
+
 if gtkBackendEnabled {
 products.append(.executable(name: "Hummingbird-gtk", targets: ["HummingbirdGTK"]))
 var gtkExecutableDependencies: [Target.Dependency] = [
+    "PluginEngine",
     "HummingbirdKit",
     .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
     .product(name: "BackendGTK4", package: "SwiftOpenUI"),
@@ -183,6 +216,8 @@ package.targets.append(
         name: "HummingbirdApp",
         dependencies: [
             "HummingbirdKit",
+            "PluginEngine",
+            "CJSCExecutionLimit",
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
         ],
         path: "Apps/iOS",

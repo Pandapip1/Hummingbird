@@ -38,6 +38,13 @@ targets:
         product: HummingbirdKit
       - package: SwiftOpenUI
         product: SwiftOpenUI
+      - package: HummingbirdPackage
+        product: PluginEngine
+      - package: HummingbirdPackage
+        product: CJSCExecutionLimit
+      - target: PluginHostXPC
+        platformFilters: [macOS]
+        embed: true
     settings:
       base:
         PRODUCT_NAME: Hummingbird
@@ -60,7 +67,37 @@ targets:
         SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
         ENABLE_HARDENED_RUNTIME: YES
         REGISTER_APP_GROUPS: YES
+        HUMMINGBIRD_DISTRIBUTION: direct
+        HUMMINGBIRD_DISTRIBUTION_CONDITIONS_appstore: "APP_STORE"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) $(HUMMINGBIRD_DISTRIBUTION_CONDITIONS_$(HUMMINGBIRD_DISTRIBUTION))"
   # END GENERATED app target.
+  # The macOS plugin host (Documentation/PluginSecurity.md, process isolation): an XPC service with
+  # a sandbox of its own and no entitlement beyond it, one instance per plugin (Info.plist), which
+  # the app kills when a plugin overruns its deadline. Embedded in the Mac app only (AppManifest).
+  PluginHostXPC:
+    type: xpc-service
+    platform: macOS
+    sources:
+      - path: Apps/PluginHostXPC
+        excludes:
+          - Info.plist
+          - PluginHost.entitlements
+    dependencies:
+      - package: HummingbirdPackage
+        product: PluginEngine
+    settings:
+      base:
+        PRODUCT_NAME: PluginHost
+        PRODUCT_BUNDLE_IDENTIFIER: com.eightybps.hummingbird.PluginHost
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: Apps/PluginHostXPC/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: Apps/PluginHostXPC/PluginHost.entitlements
+        DEVELOPMENT_TEAM: NMM6M6QVAT
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
   HummingbirdTVUITests:
     type: bundle.ui-testing
     platform: tvOS

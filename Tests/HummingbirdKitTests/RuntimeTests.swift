@@ -1,4 +1,5 @@
 import XCTest
+import PluginEngine
 @testable import HummingbirdKit
 
 /// Runs a small plugin inside a real JavaScriptCore host context (no network involved).

@@ -1141,7 +1141,14 @@
     releaseHandles: function () { handles = {}; },
     // Each context of a plugin numbers its handles from its own base, so the host can route a handle
     // back to the context that made it (PluginWorker.handleShift).
-    setHandleBase: function (base) { nextHandle = Number(base) + 1; nextPromise = 1; }
+    setHandleBase: function (base) { nextHandle = Number(base) + 1; nextPromise = 1; },
+    // What keeps this context alive after its call: retained handles and unsettled promises.
+    liveCount: function () {
+      var n = Object.keys(handles).length;
+      Object.keys(pendingPromises).forEach(function (k) { if (!pendingPromises[k].done) n++; });
+      return n;
+    },
+    releaseHandle: function (id) { delete handles[id]; return global.__jb.liveCount(); }
   };
 
 })(typeof globalThis !== "undefined" ? globalThis : this);

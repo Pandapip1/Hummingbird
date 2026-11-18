@@ -1,4 +1,5 @@
 import Foundation
+import PluginEngine
 import XCTest
 @testable import HummingbirdKit
 

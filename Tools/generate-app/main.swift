@@ -68,6 +68,14 @@ struct AppManifest: Sendable {
     let sandbox: [SandboxEntitlement]
     let teamEntitlements: [String: PlistValue]
     let xcodeSettings: [(String, String)]
+    /// Further products of this package the app links (beyond HummingbirdKit).
+    var packageProducts: [String] = []
+    /// Xcode targets embedded in the app on one platform only (an XPC service on macOS).
+    var embeddedTargets: [(target: String, platform: String)] = []
+    /// How the app is distributed, and the Swift compilation conditions each implies. The build
+    /// setting HUMMINGBIRD_DISTRIBUTION picks one (default: the first); builds for the App Store
+    /// set it to "appstore" so APP_STORE is defined and non-public API is compiled out.
+    var distributions: [(name: String, conditions: [String])] = [("direct", [])]
 }
 
 // MARK: - Outputs
@@ -153,6 +161,14 @@ extension AppManifest {
         ]
         settings += sandbox.map { ($0.xcodeSetting, "YES") }
         settings += xcodeSettings
+        // The distribution picks the Swift compilation conditions (APP_STORE for the App Store).
+        settings.append(("HUMMINGBIRD_DISTRIBUTION", distributions.first?.name ?? "direct"))
+        for distribution in distributions where !distribution.conditions.isEmpty {
+            settings.append(("HUMMINGBIRD_DISTRIBUTION_CONDITIONS_\(distribution.name)", "\"\(distribution.conditions.joined(separator: " "))\""))
+        }
+        settings.append(("SWIFT_ACTIVE_COMPILATION_CONDITIONS", "\"$(inherited) $(HUMMINGBIRD_DISTRIBUTION_CONDITIONS_$(HUMMINGBIRD_DISTRIBUTION))\""))
+        let extraDependencies = packageProducts.map { "      - package: HummingbirdPackage\n        product: \($0)" }
+            + embeddedTargets.map { "      - target: \($0.target)\n        platformFilters: [\($0.platform)]\n        embed: true" }
         return """
           # BEGIN \(marker).
           \(xcodeTarget):
@@ -169,6 +185,7 @@ extension AppManifest {
                 product: HummingbirdKit
               - package: SwiftOpenUI
                 product: SwiftOpenUI
+        \(extraDependencies.joined(separator: "\n"))
             settings:
               base:
         \(settings.map { "        \($0.0): \($0.1)" }.joined(separator: "\n"))
@@ -190,7 +207,7 @@ extension AppManifest {
             .target(
                 name: "\(name)App",
                 dependencies: [
-                    "HummingbirdKit",
+                    "HummingbirdKit",\(packageProducts.map { "\n            \"\($0)\"," }.joined())
                     .product(name: "SwiftOpenUI", package: "SwiftOpenUI"),
                 ],
                 path: "\(sources)",

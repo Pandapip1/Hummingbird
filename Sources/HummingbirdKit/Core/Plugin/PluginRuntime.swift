@@ -293,7 +293,7 @@ final class PluginRuntime: @unchecked Sendable {
             worker.lastUsed = Date()
             let now = Date()
             var out = workers.filter { $0.inFlight == 0 && $0 !== worker && now.timeIntervalSince($0.lastUsed) > Self.sessionIdleLifetime }
-            let idle = workers.filter { $0.inFlight == 0 && !out.contains(where: { o in o === $0 }) }
+            let idle = workers.filter { w in w.inFlight == 0 && !out.contains(where: { $0 === w }) }
                 .sorted { $0.lastUsed < $1.lastUsed }
             let excess = idle.count - Self.maximumRetainedSessions
             if excess > 0 { out += idle.filter { $0 !== worker }.prefix(excess) }
@@ -1139,6 +1139,7 @@ final class PluginWorker: @unchecked Sendable {
     private func eval(_ code: String, name: String) throws {
         guard let ctx = context else { throw PluginError.execution("Runtime is not running") }
         do { _ = try limited(ctx).evaluate(code, name: name.replacingOccurrences(of: " ", with: "_")) }
+        catch let e as JSEngineError where e.message == JSEngineError.terminatedAtDeadline { throw DeadlineMissed(whileRunning: false) }
         catch let e as JSEngineError { throw PluginError.compilation("\(e.message) (\(name):\(e.line ?? "?"))") }
     }
 
@@ -1146,6 +1147,7 @@ final class PluginWorker: @unchecked Sendable {
     func evalResult(_ code: String) throws -> String? {
         guard let ctx = context else { throw PluginError.execution("Runtime is not running") }
         do { return try limited(ctx).evaluate(code, name: "host") }
+        catch let e as JSEngineError where e.message == JSEngineError.terminatedAtDeadline { throw DeadlineMissed(whileRunning: false) }
         catch let e as JSEngineError { throw PluginError.execution(e.message) }
     }
 

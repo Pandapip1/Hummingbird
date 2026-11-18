@@ -5,6 +5,9 @@ import PluginEngine
 #if canImport(WebKit) && !os(tvOS)
 import WebKit
 #endif
+#if canImport(JavaScriptCore)
+import JavaScriptCore
+#endif
 @testable import HummingbirdKit
 
 /// Measures what one fresh JavaScript realm per plugin call costs, three ways:
@@ -51,7 +54,12 @@ final class PluginCallCostBenchmarks: XCTestCase {
             guard let path = ProcessInfo.processInfo.environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DIR"]
                     ?? ProcessInfo.processInfo.environment["SIMCTL_CHILD_HUMMINGBIRD_YOUTUBE_PLUGIN_DIR"] else { return nil }
             let root = URL(fileURLWithPath: path)
-            let config = try JSONDecoder().decode(PluginConfig.self, from: Data(contentsOf: root.appendingPathComponent("YoutubeConfig.json")))
+            // A working checkout's script need not match its published signature; signature
+            // checks are not what is measured here.
+            var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("YoutubeConfig.json"))) as? [String: Any])
+            fields["scriptSignature"] = nil
+            fields["scriptPublicKey"] = nil
+            let config = try JSONDecoder().decode(PluginConfig.self, from: JSONSerialization.data(withJSONObject: fields))
             let script = try String(contentsOf: root.appendingPathComponent("YoutubeScript.js"), encoding: .utf8)
             return Plugin(label: "youtube", config: config, script: script, query: "lofi music", settings: [:])
         }
@@ -100,7 +108,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
         return ["n": s.n, "p50_ms": round(s.p50 * 10) / 10, "p95_ms": round(s.p95 * 10) / 10, "mean_ms": round(s.mean * 10) / 10]
     }
 
-    static func time<T>(_ body: () async throws -> T) async rethrows -> (T, Double) {
+    static func time<T>(isolation: isolated (any Actor)? = #isolation, _ body: () async throws -> T) async rethrows -> (T, Double) {
         let start = Date()
         let value = try await body()
         return (value, Date().timeIntervalSince(start))
@@ -127,8 +135,9 @@ final class PluginCallCostBenchmarks: XCTestCase {
         var startups: [PluginRuntime.StartupTimings] = []
         var hostCalls: [String: Int] = [:]
         let (made, _) = try engine()
-        let rt = PluginRuntime(config: plugin.config, script: plugin.script, settings: plugin.settings, auth: nil, captcha: nil,
-                               engine: made)
+        let rt = PluginRuntime(approval: testLoadApproval(plugin.config), config: plugin.config,
+                               script: try ScriptSignature.check(plugin.script, for: plugin.config),
+                               settings: plugin.settings, auth: nil, captcha: nil, engine: made)
         defer { Task { await rt.stop() } }
         let before = Self.footprintMB()
         var keep: [PluginPager<ContentItem>] = []
@@ -196,6 +205,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
 
     // MARK: host-call round trips
 
+    @MainActor
     func testHostCallRoundTrip() async throws {
         let calls = 2_000
         let script = "var t = 0; for (var i = 0; i < \(calls); i++) { t += __hostCall('ping', 'a', 'b').length; } t"
@@ -228,6 +238,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
     // MARK: (b) WebKit: one hidden page per plugin, a fresh content world per call
 
     #if canImport(WebKit) && !os(tvOS)
+    @MainActor
     func testWebKitFreshRealmPerCall() async throws {
         let prelude = try PluginWorker.loadPrelude()
         for plugin in try plugins {
@@ -326,6 +337,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
     /// Whether a hung realm can be stopped: start an endless loop in a content world, then try to
     /// recover by discarding the page and making a new one. Reports whether the old WebContent
     /// process keeps burning CPU.
+    @MainActor
     func testWebKitHungRealmRecovery() async throws {
         let before = Set(WebContentProcesses.pids())
         let host = try await WebRealmHost.make { _, _, _ in "" }
@@ -348,6 +360,121 @@ final class PluginCallCostBenchmarks: XCTestCase {
             "old_webcontent_cpu_seconds_during_2s_after_discard": cpuLater - cpuAtHang,
         ])
         replacement.close()
+    }
+
+    /// Whether WebKit realms keep containment: content worlds of one page share its DOM, storage
+    /// and cookies, and a page reaches the network directly (not through the egress proxy) unless
+    /// content rules refuse it. Probes both, with and without `blockAllButBridge`; the "network"
+    /// is a loopback server here, so nothing leaves the machine.
+    @MainActor
+    func testWebKitRealmContainment() async throws {
+        let server = try LoopbackHTTPServer()
+        defer { server.stop() }
+        let ruleStore = FileManager.default.temporaryDirectory.appendingPathComponent("hb-rules-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: ruleStore) }
+        let probe = "http://127.0.0.1:\(server.port)/probe"
+        var record: [String: Any] = ["kind": "webkit_containment"]
+        for rules in [nil, ruleStore] {
+            let host = try await WebRealmHost.make(ruleStore: rules) { _, _, _ in "" }
+            let first = WKContentWorld.world(name: UUID().uuidString), second = WKContentWorld.world(name: UUID().uuidString)
+            _ = try? await host.evaluate("""
+                document.documentElement.setAttribute('data-secret', 'A');
+                try { localStorage.setItem('secret', 'A'); } catch (e) {}
+                try { sessionStorage.setItem('secret', 'A'); } catch (e) {}
+                try { document.cookie = 'secret=A'; } catch (e) {}
+                globalThis.secret = 'A'; 0
+                """, in: first)
+            let seen = try await host.evaluate("""
+                JSON.stringify({
+                  dom: document.documentElement.getAttribute('data-secret'),
+                  localStorage: (function () { try { return localStorage.getItem('secret'); } catch (e) { return 'unavailable'; } })(),
+                  sessionStorage: (function () { try { return sessionStorage.getItem('secret'); } catch (e) { return 'unavailable'; } })(),
+                  cookie: document.cookie, global: typeof globalThis.secret
+                })
+                """, in: second) as? String ?? ""
+            let before = server.requests.count
+            _ = try? await host.evaluate("fetch('\(probe)?fetch').then(function () {}, function () {}); new Image().src = '\(probe)?image'; 0", in: second)
+            try await Task.sleep(for: .milliseconds(800))
+            record[rules == nil ? "default_configuration" : "block_all_but_bridge_rules"] = [
+                "seen_by_another_world": seen, "direct_requests_reaching_loopback": server.requests.count - before,
+            ]
+            host.close()
+        }
+        report(record)
+    }
+
+    /// The cost of a fresh page per call (the only WebKit arrangement where calls share no DOM or
+    /// storage): page creation and load, then the plugin's setup.
+    @MainActor
+    func testWebKitFreshPagePerCall() async throws {
+        let prelude = try PluginWorker.loadPrelude()
+        for plugin in try plugins {
+            let config = String(decoding: try JSONEncoder().encode(plugin.config), as: UTF8.self)
+            var page: [Double] = [], setup: [Double] = []
+            for _ in 0..<Self.iterations {
+                let (host, pageTime) = try await Self.time { try await WebRealmHost.make { _, _, _ in "" } }
+                let world = WKContentWorld.page
+                let (_, setupTime) = try await Self.time {
+                    try await host.evaluate(WebRealmHost.bridge, in: world)
+                    try await host.evaluate(prelude + "\n;0", in: world)
+                    try await host.evaluate("bridge.buildPlatform = 'ios'; __jb.setHandleBase(4294967296); plugin.config = \(config); plugin.settings = parseSettings('{}'); 0", in: world)
+                    try await host.evaluate(plugin.script + "\n;0", in: world)
+                }
+                page.append(pageTime)
+                setup.append(setupTime)
+                host.close()
+            }
+            report(["kind": "webkit_fresh_page", "plugin": plugin.label, "page_create_load": stats(page),
+                    "prelude_and_script": stats(setup), "webcontent_footprint_mb": WebContentProcesses.footprints()])
+        }
+    }
+    #endif
+
+    #if canImport(JavaScriptCore)
+    /// Script caching for fresh contexts. JavaScriptCore has no public bytecode cache (JSScript is
+    /// not public API), but each virtual machine keeps an in-memory code cache keyed by source: a
+    /// fresh JSContext (its own global object, nothing of the last call's) in a virtual machine that
+    /// already ran the plugin skips parsing and bytecode generation. Compares a fresh virtual
+    /// machine per call (today) with a fresh context in a reused one, and checks that nothing a
+    /// call leaves on its global is visible to the next.
+    func testScriptCachingInAReusedVirtualMachine() async throws {
+        let prelude = try PluginWorker.loadPrelude()
+        for plugin in try plugins {
+            let config = String(decoding: try JSONEncoder().encode(plugin.config), as: UTF8.self)
+            let setup = "bridge.buildPlatform = 'ios'; __jb.setHandleBase(4294967296); plugin.config = \(config); plugin.settings = parseSettings('{}'); 0"
+            var leaks = 0
+            func startup(in machine: JSVirtualMachine?) throws -> (context: Double, prelude: Double, script: Double) {
+                let began = Date()
+                let context: JSContext = machine.map { JSContext(virtualMachine: $0) } ?? JSContext()
+                let host: @convention(block) (String, String, String) -> String = { _, _, _ in "" }
+                context.setObject(host, forKeyedSubscript: "__hostCall" as NSString)
+                let made = Date()
+                context.evaluateScript(prelude)
+                context.evaluateScript(setup)
+                let preludeDone = Date()
+                context.evaluateScript(plugin.script)
+                let scriptDone = Date()
+                if let exception = context.exception { throw JSEngineError(message: exception.toString() ?? "script error") }
+                if context.evaluateScript("typeof globalThis.__benchMarker")?.toString() != "undefined" { leaks += 1 }
+                context.evaluateScript("globalThis.__benchMarker = 'left by an earlier call'")
+                return (made.timeIntervalSince(began), preludeDone.timeIntervalSince(made), scriptDone.timeIntervalSince(preludeDone))
+            }
+            let before = Self.footprintMB()
+            let fresh = try (0..<Self.iterations).map { _ in try startup(in: nil) }
+            let machine = JSVirtualMachine()
+            _ = try startup(in: machine)  // the first call fills the cache
+            let cached = try (0..<Self.iterations).map { _ in try startup(in: machine) }
+            report([
+                "kind": "script_caching", "plugin": plugin.label, "script_bytes": plugin.script.utf8.count,
+                "fresh_vm_context": stats(fresh.map(\.context)), "fresh_vm_prelude": stats(fresh.map(\.prelude)),
+                "fresh_vm_script": stats(fresh.map(\.script)),
+                "reused_vm_context": stats(cached.map(\.context)), "reused_vm_prelude": stats(cached.map(\.prelude)),
+                "reused_vm_script": stats(cached.map(\.script)),
+                "globals_seen_by_a_later_context": leaks,
+                "app_footprint_mb": ["before": before ?? -1, "after": Self.footprintMB() ?? -1],
+            ])
+            XCTAssertEqual(leaks, 0, "a fresh context never sees an earlier context's globals")
+        }
     }
     #endif
 }
@@ -385,11 +512,24 @@ final class WebRealmHost: NSObject, WKURLSchemeHandler {
         self.hostCall = hostCall
     }
 
-    static func make(_ hostCall: @escaping HostCall) async throws -> WebRealmHost {
+    /// Content rules that refuse every load except the host bridge, so a realm's only way out is
+    /// `__hostCall` (and so the app's egress proxy).
+    static let blockAllButBridge = """
+        [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},
+         {"trigger":{"url-filter":"^hbhost:"},"action":{"type":"ignore-previous-rules"}}]
+        """
+
+    /// `ruleStore`: where to compile `blockAllButBridge` (a temporary directory: never the
+    /// default store); nil applies no content rules.
+    static func make(ruleStore: URL? = nil, _ hostCall: @escaping HostCall) async throws -> WebRealmHost {
         let host = WebRealmHost(hostCall: hostCall)
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.setURLSchemeHandler(host, forURLScheme: "hbhost")
+        if let ruleStore, let store = WKContentRuleListStore(url: ruleStore) {
+            let rules = try await store.compileContentRuleList(forIdentifier: "block-all-but-bridge", encodedContentRuleList: blockAllButBridge)
+            if let rules { configuration.userContentController.add(rules) }
+        }
         let webView = WKWebView(frame: .zero, configuration: configuration)
         host.webView = webView
         webView.loadHTMLString("<!doctype html><html><body></body></html>", baseURL: URL(string: "hbhost://plugin/"))
@@ -442,7 +582,7 @@ enum WebContentProcesses {
         let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
         return pids.prefix(Int(max(0, count))).filter { pid in
             var name = [CChar](repeating: 0, count: 256)
-            return proc_name(pid, &name, 256) > 0 && String(cString: name).contains("WebContent")
+            return proc_name(pid, &name, 256) > 0 && String(decoding: name.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self).contains("WebContent")
         }
         #else
         return []

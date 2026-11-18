@@ -21,7 +21,6 @@ enum PluginLimits {
 
     // MARK: concurrency
 
-
     /// Pending timers per context.
     static let maximumTimers = 256
 

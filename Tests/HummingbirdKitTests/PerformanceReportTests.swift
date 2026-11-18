@@ -26,13 +26,15 @@ final class PerformanceReportTests: XCTestCase {
         XCTAssertEqual(store.reports().map(\.lastPathComponent), ["crash-4-3.json"])
     }
 
-    func testExportBundlesEveryReport() throws {
+    func testExportBundlesEveryReport() async throws {
         let stores = makeTestStores()
         let store = PerformanceReportStore(cachesDirectory: stores.cachesDirectory)
-        XCTAssertNil(try store.exportBundle(to: makeTestDirectory()))
+        let nothing = try await store.exportBundle(to: makeTestDirectory())
+        XCTAssertNil(nothing)
         try store.write(Data("{\"hangDiagnostics\":[]}".utf8), kind: "hang", begin: Date(timeIntervalSince1970: 1), end: Date(timeIntervalSince1970: 2))
         try store.write(Data("{\"crashDiagnostics\":[]}".utf8), kind: "crash", begin: Date(timeIntervalSince1970: 3), end: Date(timeIntervalSince1970: 4))
-        let url = try XCTUnwrap(try store.exportBundle(to: makeTestDirectory()))
+        let exported = try await store.exportBundle(to: makeTestDirectory())
+        let url = try XCTUnwrap(exported)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let reports = try XCTUnwrap(object["reports"] as? [[String: Any]])
         XCTAssertEqual(reports.compactMap { $0["file"] as? String }, ["crash-4-3.json", "hang-2-1.json"])
@@ -48,7 +50,8 @@ final class PerformanceReportTests: XCTestCase {
         log.append(.init(date: now.addingTimeInterval(-2), milliseconds: 400, context: [:]))
         log.append(.init(date: now.addingTimeInterval(-1), milliseconds: 500, context: [:]))
         await log.flush()
-        XCTAssertEqual(log.records().map(\.milliseconds), [400, 500])
+        let records = await log.records()
+        XCTAssertEqual(records.map(\.milliseconds), [400, 500])
         XCTAssertTrue(log.fileURL.path.hasPrefix(stores.cachesDirectory.path))
     }
 
@@ -57,7 +60,8 @@ final class PerformanceReportTests: XCTestCase {
         let store = PerformanceReportStore(cachesDirectory: stores.cachesDirectory)
         store.stallLog.append(.init(date: Date(), milliseconds: 1_234, context: ["route": "library"]))
         await store.stallLog.flush()
-        let url = try XCTUnwrap(try store.exportBundle(to: makeTestDirectory()))
+        let exported = try await store.exportBundle(to: makeTestDirectory())
+        let url = try XCTUnwrap(exported)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let stalls = try XCTUnwrap(object["stalls"] as? [[String: Any]])
         XCTAssertEqual(stalls.first?["milliseconds"] as? Int, 1_234)

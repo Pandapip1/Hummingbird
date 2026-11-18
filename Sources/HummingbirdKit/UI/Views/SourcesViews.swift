@@ -677,11 +677,14 @@ private struct PerformanceReportsSection: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
-        .task {
+        // Every time the page comes on screen, not once: tabs stay mounted, so
+        // a count and export made when Settings was first shown missed every
+        // stall and report recorded since.
+        .browserTaskWhileVisible {
             let store = store
             let destination = exportDirectory.appendingPathComponent("Export", isDirectory: true)
             let result = await Task.detached(priority: .utility) {
-                (store.reports().count, store.stallLog.records().count, try? store.exportBundle(to: destination))
+                (store.reports().count, await store.stallLog.records().count, try? await store.exportBundle(to: destination))
             }.value
             reportCount = result.0
             stallCount = result.1

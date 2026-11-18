@@ -18,6 +18,10 @@ struct InstalledPlugin: Codable, Identifiable, Hashable, Sendable {
     /// not to switch to. Synced records naming it are taken as resolved, so
     /// the user isn't asked again. Never synced.
     var declinedSyncSource: String?
+    /// Local-network destinations (LAN, loopback, tailnet) the user approved for this plugin on this
+    /// device, each bound to exact addresses. Never synced: another device's network is not this one's.
+    var localHostApprovals: [LocalHostApproval]?
+    var approvals: [LocalHostApproval] { localHostApprovals ?? [] }
     var id: String { config.id }
 }
 
@@ -28,6 +32,9 @@ struct InstallPreview: Identifiable, Sendable {
     var iconURL: String?
     var warnings: [(title: String, detail: String)]
     var existing: InstalledPlugin?
+    /// Local-network destinations the config names, as they resolve now. Installing approves the ones
+    /// shown with addresses; the others can be approved later in the source's settings.
+    var localHosts: [LocalHostRequest] = []
 }
 
 enum InstallError: LocalizedError {
@@ -54,8 +61,8 @@ enum InstallError: LocalizedError {
 @Observable
 final class PluginManager {
     private(set) var installed: [InstalledPlugin] = []
-    /// Latest plugin toast, shown briefly by the UI.
-    var toast: String?
+    /// Latest plugin toast, shown briefly by the UI, always attributed to its plugin.
+    var toast: PluginToast?
     /// Set when a plugin demands a captcha; the UI presents the captcha sheet.
     var pendingCaptcha: CaptchaRequest?
     /// Set when a plugin needs the user to log in.
@@ -78,6 +85,11 @@ final class PluginManager {
     @ObservationIgnored private var storedCredentials: [String: PluginCredentials] = [:]
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
     @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
+    /// Fresh runtimes given to plugins that stopped responding, this session.
+    @ObservationIgnored private var unresponsiveRestarts: [String: Int] = [:]
+    static let maximumUnresponsiveRestarts = 3
+    /// Plugins from other devices the user chose not to install here (this session).
+    @ObservationIgnored private var declinedSyncInstalls: Set<String> = []
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
     @ObservationIgnored private let storage: Storage
     @ObservationIgnored private let credentialStore: any CredentialStore
@@ -96,6 +108,8 @@ final class PluginManager {
     /// Puts downloads and plugin requests to local-network hosts behind the
     /// permission gate. Nil (tests, previews) lets them through.
     @ObservationIgnored var localNetworkAccess: PluginLocalNetworkAccess?
+    /// Resolves the hosts plugin configs name (install previews, approvals). Tests substitute their own.
+    @ObservationIgnored var resolver: any HostResolving = SystemHostResolver()
     @ObservationIgnored private let urlSession: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 30
@@ -141,7 +155,14 @@ final class PluginManager {
 
     /// The running runtime for a plugin, created on first use.
     func runtime(for id: String) async -> PluginRuntime? {
-        if let r = runtimes[id] { return r }
+        if let r = runtimes[id] {
+            // A plugin that stopped responding gets a fresh runtime when asked again, a few times per
+            // session; after that it stays failed until the user turns it off and on.
+            guard r.isSuspended, unresponsiveRestarts[id, default: 0] < Self.maximumUnresponsiveRestarts else { return r }
+            unresponsiveRestarts[id, default: 0] += 1
+            invalidate(id)
+            return await runtime(for: id)
+        }
         guard let p = plugin(id) else { return nil }
         let preparation: Task<PluginRuntime, Never>
         if let existing = runtimePreparation[id] {
@@ -149,10 +170,11 @@ final class PluginManager {
         } else {
             let stored = credentials(for: id)
             let localNetworkCheck = localNetworkAccess?.runtimeCheck(source: p.config.name)
+            let resolver = resolver
             let created = Task.detached(priority: .userInitiated) {
                 PluginRuntime(
                     config: p.config, script: p.script, settings: p.settings,
-                    auth: stored.auth, captcha: stored.captcha,
+                    auth: stored.auth, captcha: stored.captcha, approvals: p.approvals, resolver: resolver,
                     localNetworkAccess: localNetworkCheck
                 )
             }
@@ -176,8 +198,13 @@ final class PluginManager {
     /// Makes `r` the plugin's running runtime, reporting its toasts and logs.
     private func adopt(_ r: PluginRuntime, for id: String) {
         r.onToast = { [weak self] msg in
+            // A flood of toasts is dropped, not queued: it must not bury the UI.
+            guard PluginToastLimiter.shared.allow(pluginID: id) else { return }
             PluginLog.alert(plugin: id, LogRedaction.text(msg))
-            Task { @MainActor in self?.toast = msg }
+            Task { @MainActor in
+                guard let self else { return }
+                self.toast = PluginToast(pluginName: self.plugin(id)?.config.name ?? id, message: msg)
+            }
         }
         r.onLog = { msg in
             let lower = msg.lowercased()
@@ -247,29 +274,59 @@ final class PluginManager {
         guard let scriptURL = config.resolve(config.scriptUrl, base: base) else { throw InstallError.invalidConfig("scriptUrl is missing") }
         let scriptData: Data
         do { scriptData = try await download(scriptURL, origin: origin, source: config.name) } catch { throw InstallError.download(error.localizedDescription) }
-        let (script, signatureValid) = try await Self.checkScript(
-            scriptData, config: config,
+        let (script, signatureValid, localHosts) = try await Self.checkScript(
+            scriptData, config: config, resolver: resolver,
             localNetworkCheck: localNetworkAccess?.runtimeCheck(source: config.name)
         )
 
         var warnings = config.warnings(signatureValid: signatureValid)
         let existing = plugin(config.id)
-        if let existing, let old = existing.config.scriptPublicKey, !old.isEmpty, old != (config.scriptPublicKey ?? "") {
-            warnings.insert(("Different author", "This plugin is signed with a different key than the version you have installed."), at: 0)
+        if let existing, !Self.sameSigner(existing.config, config) {
+            warnings.insert(("Different author",
+                             "This plugin is signed differently from (or comes from a different place than) the version you have installed. Its sign-in, settings and local-network approvals will not carry over."), at: 0)
+        }
+        for request in localHosts {
+            warnings.append(("Local network access",
+                             "This source connects to your local network: \(request.summary)."
+                                + (request.approval == nil ? " You can approve it later in the source’s settings." : "")))
         }
         return InstallPreview(config: config, script: script,
                               iconURL: config.resolve(config.iconUrl, base: base)?.absoluteString,
-                              warnings: warnings, existing: existing)
+                              warnings: warnings, existing: existing, localHosts: localHosts)
+    }
+
+    /// Whether a plugin arriving through sync must wait for the user before it installs: when it asks
+    /// for more than ordinary access or names local-network hosts. An unsigned plugin that asks for
+    /// nothing more installs as it did on the other device, and runs contained like any plugin.
+    static func needsConfirmationWhenSynced(_ preview: InstallPreview) -> Bool {
+        preview.warnings.contains { $0.title != "Missing signature" } || !preview.localHosts.isEmpty
+    }
+
+    /// Plugin IDs name credentials, settings and log lines: a plain, bounded set of characters only.
+    nonisolated static func isValidPluginID(_ id: String) -> Bool {
+        id.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"#, options: .regularExpression) != nil
+    }
+
+    /// Whether `new` is the same plugin publisher as `old`: the same signing key, or, for unsigned
+    /// plugins, the same source. Anything else must not inherit the old plugin's sign-in, settings or
+    /// local-network approvals, so a config that claims another plugin's ID cannot take them over.
+    static func sameSigner(_ old: PluginConfig, _ new: PluginConfig) -> Bool {
+        let oldKey = old.scriptPublicKey ?? "", newKey = new.scriptPublicKey ?? ""
+        if !oldKey.isEmpty || !newKey.isEmpty { return oldKey == newKey }
+        return (old.sourceUrl ?? "") == (new.sourceUrl ?? "") && !(old.sourceUrl ?? "").isEmpty
     }
 
     /// Decodes a downloaded script, checks its signature and does a dry run, so
     /// unsupported packages or missing entry points are reported before
     /// installing. Scripts run to megabytes, and a dry run starts a JavaScript
-    /// context, so none of this happens on the main actor.
+    /// context, so none of this happens on the main actor. The dry run is as
+    /// contained as any plugin run (it has no sign-in and no approvals).
     @concurrent
     private static func checkScript(
-        _ scriptData: Data, config: PluginConfig, localNetworkCheck: (@Sendable (URL) async -> Bool)?
-    ) async throws -> (script: String, signatureValid: Bool?) {
+        _ scriptData: Data, config: PluginConfig, resolver: any HostResolving,
+        localNetworkCheck: (@Sendable (URL) async -> Bool)?
+    ) async throws -> (script: String, signatureValid: Bool?, localHosts: [LocalHostRequest]) {
+        guard isValidPluginID(config.id) else { throw InstallError.invalidConfig("The plugin ID is not valid") }
         guard let script = String(data: scriptData, encoding: .utf8),
               script.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) else {
             throw InstallError.emptyScript
@@ -279,28 +336,97 @@ final class PluginManager {
             signatureValid = ScriptSignature.verify(script: script, signatureBase64: sig, publicKeyBase64: key)
             if signatureValid == false { throw InstallError.invalidSignature }
         }
-        let probe = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil,
+        let probe = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil, resolver: resolver,
                                   localNetworkAccess: localNetworkCheck)
         do { try await probe.validate() } catch { await probe.stop(); throw InstallError.invalid(error.localizedDescription) }
         await probe.stop()
-        return (script, signatureValid)
+        let localHosts = PluginNetworkPolicy(config: config, approvals: [], resolver: resolver).localHostRequests()
+        return (script, signatureValid, localHosts)
     }
 
-    /// Stores a previewed plugin. Reinstalling keeps the user's settings and credentials.
+    /// Stores a previewed plugin. Installing approves the local-network destinations the preview showed
+    /// with their addresses. Reinstalling from the same publisher (`sameSigner`) keeps the user's
+    /// settings, sign-in and approvals the config still names; from anyone else, none of them.
     func commit(_ preview: InstallPreview) {
         var entry = InstalledPlugin(config: preview.config, script: preview.script, iconURL: preview.iconURL)
+        var approvals = preview.localHosts.compactMap(\.approval)
         if let old = preview.existing {
-            entry.settings = old.settings
+            if Self.sameSigner(old.config, preview.config) {
+                entry.settings = old.settings
+                let declared = Set(preview.localHosts.map(\.id))
+                approvals += old.approvals.filter { kept in declared.contains(kept.id) && !approvals.contains { $0.id == kept.id } }
+            } else {
+                forget(old.id)
+            }
             entry.enabled = old.enabled
             entry.installedAt = old.installedAt
             installed.removeAll { $0.id == old.id }
         }
+        entry.localHostApprovals = approvals.isEmpty ? nil : approvals
         installed.append(entry)
         installed.sort { $0.config.name.localizedCaseInsensitiveCompare($1.config.name) == .orderedAscending }
         loadCredentialsInBackground(for: entry.id)
         invalidate(entry.id)
         persist()
         recordLocalEdit(entry)
+    }
+
+    // MARK: local-network approvals
+
+    /// The local-network destinations the user approved for a plugin.
+    func approvals(for id: String) -> [LocalHostApproval] { plugin(id)?.approvals ?? [] }
+
+    /// What the plugin's config names on the local network, resolved now (off the main actor).
+    func localHostRequests(for id: String) async -> [LocalHostRequest] {
+        guard let config = plugin(id)?.config else { return [] }
+        let resolver = resolver
+        return await Task.detached(priority: .userInitiated) {
+            PluginNetworkPolicy(config: config, approvals: [], resolver: resolver).localHostRequests()
+        }.value
+    }
+
+    /// Approves a destination as it resolved when shown to the user.
+    func approveLocalHost(_ request: LocalHostRequest, pluginID: String) {
+        guard let approval = request.approval else { return }
+        setApproval(approval, pluginID: pluginID)
+    }
+
+    /// Approves an address or CIDR the user typed for a declared host (a tailnet node's 100.x.y.z/32, say).
+    func approveLocalAddress(pluginID: String, host: String, port: Int, cidr: String) throws {
+        guard let network = IPNetwork(cidr: cidr) else { throw InstallError.invalid("“\(cidr)” is not an address or address range.") }
+        if case .metadata = network.address.scope { throw InstallError.invalid("That address can never be approved.") }
+        // Only local addresses, and never a sweeping range: at most a /16 (IPv4) or /48 (IPv6).
+        guard case .nonPublic = network.address.scope, network.prefixLength >= (network.address.isIPv4 ? 16 : 48) else {
+            throw InstallError.invalid("Approve a single local address or a small local range (at most /16 for IPv4, /48 for IPv6).")
+        }
+        guard let plugin = plugin(pluginID),
+              PluginNetworkPolicy(config: plugin.config, approvals: []).entries.contains(where: {
+                  if case .exact(let h) = $0.kind { return h == PluginNetworkPolicy.normalizedHost(host) } else { return false }
+              }) else {
+            throw InstallError.invalid("This source does not name \(host) in its allowed hosts.")
+        }
+        var approval = plugin.approvals.first { $0.host == PluginNetworkPolicy.normalizedHost(host) && $0.port == port }
+            ?? LocalHostApproval(host: host, port: port, networks: [])
+        if !approval.networks.contains(network) { approval.networks.append(network) }
+        approval.approvedAt = Date()
+        setApproval(approval, pluginID: pluginID)
+    }
+
+    func revokeLocalHost(pluginID: String, approvalID: String) {
+        guard let i = installed.firstIndex(where: { $0.id == pluginID }) else { return }
+        let remaining = installed[i].approvals.filter { $0.id != approvalID }
+        installed[i].localHostApprovals = remaining.isEmpty ? nil : remaining
+        invalidate(pluginID)
+        persist()
+    }
+
+    private func setApproval(_ approval: LocalHostApproval, pluginID: String) {
+        guard let i = installed.firstIndex(where: { $0.id == pluginID }) else { return }
+        var list = installed[i].approvals.filter { $0.id != approval.id }
+        list.append(approval)
+        installed[i].localHostApprovals = list
+        invalidate(pluginID)
+        persist()
     }
 
     func remove(_ id: String) {
@@ -326,6 +452,7 @@ final class PluginManager {
     func setEnabled(_ id: String, _ on: Bool) {
         guard let i = installed.firstIndex(where: { $0.id == id }) else { return }
         installed[i].enabled = on
+        if on { unresponsiveRestarts[id] = nil }
         if !on { invalidate(id) }
         persist()
         recordLocalEdit(installed[i])
@@ -377,7 +504,8 @@ final class PluginManager {
     ) async throws -> PluginRuntime {
         let runtime = PluginRuntime(
             config: plugin.config, script: plugin.script, settings: plugin.settings,
-            auth: credentials.auth, captcha: credentials.captcha, localNetworkAccess: localNetworkCheck
+            auth: credentials.auth, captcha: credentials.captcha, approvals: plugin.approvals,
+            localNetworkAccess: localNetworkCheck
         )
         do { try await runtime.validate() } catch {
             await runtime.stop()
@@ -612,6 +740,7 @@ final class PluginManager {
             guard let plugin = change.plugin else { continue }
             if let current = self.plugin(plugin.pluginID), current.config.sourceUrl == plugin.sourceURL { continue }
             if self.plugin(plugin.pluginID)?.declinedSyncSource == plugin.sourceURL { continue }
+            if declinedSyncInstalls.contains("\(plugin.pluginID)|\(plugin.sourceURL)") { continue }
             // Already downloaded and waiting for the user to choose.
             if let waiting = syncInstalls[plugin.pluginID], waiting.confirmation != nil,
                waiting.sourceURL == plugin.sourceURL { continue }
@@ -680,6 +809,17 @@ final class PluginManager {
                         )
                         continue
                     }
+                    if Self.needsConfirmationWhenSynced(preview) {
+                        // A new plugin from another device that asks for more than ordinary
+                        // access (eval, every host, all headers) or names this device's local network waits
+                        // for the user here: a synced record (perhaps from a compromised device) never grants that silently.
+                        pendingReplacements[plugin.pluginID] = (preview, plugin)
+                        installs[plugin.pluginID]?.confirmation = SyncInstall.Confirmation(
+                            replacing: "",
+                            warnings: preview.warnings.map { "\($0.title): \($0.detail)" }
+                        )
+                        continue
+                    }
                     entry = InstalledPlugin(config: preview.config, script: preview.script, iconURL: preview.iconURL)
                     installs[plugin.pluginID] = nil
                 case .failure(let error)?:
@@ -725,6 +865,12 @@ final class PluginManager {
         var entry = InstalledPlugin(config: pending.preview.config, script: pending.preview.script,
                                     iconURL: pending.preview.iconURL)
         if let old = plugin(id) { entry.installedAt = old.installedAt }
+        if let old = plugin(id), !Self.sameSigner(old.config, pending.preview.config) {
+            // Another publisher's copy never inherits this one's sign-in.
+            forget(id)
+        }
+        let approvals = pending.preview.localHosts.compactMap(\.approval)
+        entry.localHostApprovals = approvals.isEmpty ? nil : approvals
         entry.enabled = pending.synced.enabled
         entry.settings = pending.synced.settings
         var updated = installed
@@ -743,6 +889,7 @@ final class PluginManager {
     /// again. Nothing is published: the other devices keep theirs.
     func keepLocalPlugin(_ id: String) {
         let declined = pendingReplacements.removeValue(forKey: id)?.synced.sourceURL ?? syncInstalls[id]?.sourceURL
+        if let declined, plugin(id) == nil { declinedSyncInstalls.insert("\(id)|\(declined)") }
         syncInstalls[id] = nil
         guard let declined, let index = installed.firstIndex(where: { $0.id == id }) else { return }
         installed[index].declinedSyncSource = declined

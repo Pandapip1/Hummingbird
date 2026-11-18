@@ -92,7 +92,7 @@ final class PlatformService {
             Logger.routing.notice("details_timing plugin=\(rt.id, privacy: .public) route_ms=\(Self.milliseconds(started.duration(to: routed))) details_ms=\(Self.milliseconds(routed.duration(to: .now)))")
             detailsCacheWasUsed = true
             if data.count <= Self.maximumCachedDetailBytes {
-                detailsCache[url] = CachedDetails(payload: data, runtimeFingerprint: rt.detailsCacheFingerprint)
+                detailsCache[url] = CachedDetails(payload: data.data, runtimeFingerprint: rt.detailsCacheFingerprint)
             }
             detailsCache = Self.trimmedDetailsCache(detailsCache)
             scheduleDetailsCacheSave()
@@ -134,7 +134,7 @@ final class PlatformService {
             scheduleDetailsCacheSave()
             return nil
         }
-        guard var details = try? await PluginRuntime.decodeOffMain(ContentDetails.self, from: entry.payload) else { return nil }
+        guard var details = try? await PluginRuntime.decodeOffMain(ContentDetails.self, from: PluginResult(data: entry.payload, context: rt.outputContext)) else { return nil }
         if case .video(var video) = details {
             video.handle = 0
             video.hasComments = false
@@ -304,7 +304,7 @@ final class PlatformService {
             do {
                 try await runtime.enable()
                 guard runtime.has("searchSuggestions") else { continue }
-                values = try await runtime.call("searchSuggestions", [query], as: [String].self)
+                values = try await runtime.call("searchSuggestions", [query], as: [PluginLine].self).map(\.text)
             } catch {
                 guard !Task.isCancelled else { return SuggestionSearch() }
                 out.failures.append(.record(pluginID: plugin.id, label: plugin.config.name,

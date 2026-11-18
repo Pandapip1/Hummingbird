@@ -113,6 +113,7 @@ final class FeedFailureTests: XCTestCase {
     }
     source.getChannelContents = function (url, type, order, filters) {
         calls.push(String(type) + ':' + String(order));
+        log('call:' + String(type) + ':' + String(order));
         if (type === 'FAIL') throw new ScriptException('channel tab failed');
         return new TypePager(type, order, 0);
     };
@@ -169,7 +170,8 @@ final class FeedFailureTests: XCTestCase {
         }
         let twitch = PluginRuntime(
             config: try config("twitch-fixture", name: "Twitch", allow: ["gql.twitch.tv"], packages: ["Http"]),
-            script: twitchShapedScript, settings: [:], auth: nil, captcha: nil, httpSession: session
+            script: twitchShapedScript, settings: [:], auth: nil, captcha: nil, resolver: TestResolver.publicOnly,
+            httpSession: session
         )
         let other = PluginRuntime(config: try config("other-fixture", name: "Other"), script: otherSourceScript,
                                   settings: [:], auth: nil, captcha: nil)
@@ -247,11 +249,15 @@ final class FeedFailureTests: XCTestCase {
     @MainActor
     func testSortReachesEveryMergedSource() async throws {
         let rt = try channelRuntime()
+        // Concurrent calls run in separate contexts that share no globals, so the host log observes them.
+        final class Observed: Sendable { let calls = Mutex<[String]>([]) }
+        let observed = Observed()
+        rt.onLog = { line in if line.hasPrefix("call:") { observed.calls.withLock { $0.append(String(line.dropFirst(5))) } } }
         let feed = makeFeed()
         await feed.reload(sources: [channelSource(rt, type: "VIDEOS", order: "Popular"),
                                     channelSource(rt, type: "STREAMS", order: "Popular")],
                           order: ChannelFeedPlan.feedOrder(sourceCount: 2, sort: "Popular"))
-        let calls = try await rt.call("getCalls", [], as: [String].self)
+        let calls = observed.calls.withLock { $0 }
         XCTAssertEqual(Set(calls), ["VIDEOS:Popular", "STREAMS:Popular"])
         let content = await feed.loadAll(maxRounds: 0)
         XCTAssertTrue(content.items.allSatisfy { $0.name.contains("/Popular/") })

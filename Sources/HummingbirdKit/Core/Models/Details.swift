@@ -8,7 +8,7 @@ struct RequestModifierRef: Sendable, Decodable, Hashable {
 }
 
 /// A playable stream description. `pluginType` is the plugin's source class name, e.g. "VideoUrlSource", "HLSSource".
-struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
+struct MediaSource: Sendable, Decodable, Hashable, Identifiable, PluginOutput {
     var pluginType: String = ""
     var name: String = ""
     var url: String = ""
@@ -69,9 +69,25 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable {
         guard let start, let end, start >= 0, end >= start else { return nil }
         return Int64(start)...Int64(end)
     }
+
+    /// Stream URLs stay http(s) only; where they may be fetched from is the
+    /// plugin network policy's decision when they are fetched.
+    mutating func contain(_ context: PluginOutputContext) {
+        pluginType = context.line(pluginType, limit: 100)
+        name = context.line(name)
+        url = context.mediaURL(url) ?? ""
+        container = context.line(container, limit: 200)
+        codec = context.line(codec, limit: 200)
+        language = context.line(language, limit: 100)
+        width = max(0, width)
+        height = max(0, height)
+        bitrate = max(0, bitrate)
+        duration = max(0, duration)
+        formatID = context.optionalLine(formatID, limit: 100)
+    }
 }
 
-struct SubtitleSource: Sendable, Decodable, Hashable, Identifiable {
+struct SubtitleSource: Sendable, Decodable, Hashable, Identifiable, PluginOutput {
     var name: String = ""
     var language: String?
     var url: String?
@@ -88,11 +104,18 @@ struct SubtitleSource: Sendable, Decodable, Hashable, Identifiable {
         format = c.looseString(.format)
         getSubtitlesHandle = c.looseInt(.getSubtitlesHandle)
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        name = context.line(name, limit: 200)
+        language = context.optionalLine(language, limit: 100)
+        url = context.mediaURL(url)
+        format = context.optionalLine(format, limit: 100)
+    }
 }
 
 // MARK: - Details
 
-struct VideoDetails: Sendable, Decodable {
+struct VideoDetails: Sendable, Decodable, PluginOutput {
     var item: ContentItem
     var description: String = ""
     var isUnmuxed: Bool = false
@@ -138,9 +161,21 @@ struct VideoDetails: Sendable, Decodable {
         hasTracker = c.looseBool(.has_getPlaybackTracker) ?? false
         hasRecommendations = c.looseBool(.has_getContentRecommendations) ?? false
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        item.contain(context)
+        description = context.text(description)
+        videoSources = context.contained(videoSources, limit: 200)
+        audioSources = context.contained(audioSources, limit: 200)
+        hls?.contain(context)
+        dash?.contain(context)
+        live?.contain(context)
+        rating?.contain(context)
+        subtitles = context.contained(subtitles, limit: 200)
+    }
 }
 
-struct PostDetails: Sendable, Decodable {
+struct PostDetails: Sendable, Decodable, PluginOutput {
     var item: ContentItem
     var content: String = ""
     /// 0 raw text, 1 HTML, 2 markup
@@ -155,10 +190,16 @@ struct PostDetails: Sendable, Decodable {
         textType = c.looseInt(.textType) ?? 0
         rating = try? c.decodeIfPresent(Rating.self, forKey: .rating)
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        item.contain(context)
+        content = context.text(content)
+        rating?.contain(context)
+    }
 }
 
 /// The result of resolving a content URL.
-enum ContentDetails: Sendable, Decodable {
+enum ContentDetails: Sendable, Decodable, PluginOutput {
     case video(VideoDetails)
     case post(PostDetails)
     case other(ContentItem)
@@ -179,9 +220,17 @@ enum ContentDetails: Sendable, Decodable {
         case .other(let i): return i
         }
     }
+
+    mutating func contain(_ context: PluginOutputContext) {
+        switch self {
+        case .video(var v): v.contain(context); self = .video(v)
+        case .post(var p): p.contain(context); self = .post(p)
+        case .other(var i): i.contain(context); self = .other(i)
+        }
+    }
 }
 
-struct PlaylistDetailsPayload: Sendable, Decodable {
+struct PlaylistDetailsPayload: Sendable, Decodable, PluginOutput {
     var header: ContentItem
     var contents: PagerPayload<ContentItem>
 
@@ -191,5 +240,10 @@ struct PlaylistDetailsPayload: Sendable, Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         contents = (try? c.decode(PagerPayload<ContentItem>.self, forKey: .contents))
             ?? PagerPayload(pager: 0, results: [], hasMore: false, nextRequest: nil)
+    }
+
+    /// The header only: `contents` is contained by the `PluginPager` it becomes.
+    mutating func contain(_ context: PluginOutputContext) {
+        header.contain(context)
     }
 }

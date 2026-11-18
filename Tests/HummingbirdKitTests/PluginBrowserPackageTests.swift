@@ -15,9 +15,15 @@ final class PluginBrowserPackageTests: XCTestCase {
         func get(_ id: String) -> String? { values.withLock { $0[id] } }
     }
 
+    /// A plugin that may reach nothing: these pages are `data:` documents.
+    private static func policy() throws -> PluginNetworkPolicy {
+        let config = try JSONDecoder().decode(PluginConfig.self, from: Data(#"{"name":"Browser test","allowUrls":[]}"#.utf8))
+        return PluginNetworkPolicy(config: config, approvals: [])
+    }
+
     func testIdlePageIsTornDownAndReloadedForTheNextScript() async throws {
         let results = Results()
-        let browser = PluginBrowserPackage(idleTimeout: .milliseconds(500)) { results.set($0, $1) }
+        let browser = PluginBrowserPackage(policy: try Self.policy(), proxy: nil, idleTimeout: .milliseconds(500)) { results.set($0, $1) }
         defer { browser.close() }
         let page = "<!doctype html><script>window.pageState = 'ready';</script>"
         let url = "data:text/html;charset=utf-8," + (page.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")
@@ -50,7 +56,7 @@ final class PluginBrowserPackageTests: XCTestCase {
     }
 
     func testInitializeForgetsThePreviousPage() async throws {
-        let browser = PluginBrowserPackage { _, _ in }
+        let browser = PluginBrowserPackage(policy: try Self.policy(), proxy: nil) { _, _ in }
         defer { browser.close() }
         _ = await Task.detached {
             _ = browser.call("initialize", payload: "")

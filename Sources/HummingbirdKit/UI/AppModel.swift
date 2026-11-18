@@ -171,6 +171,11 @@ final class AppModel {
         for player in players { player.teardown() }
     }
 
+    /// Before the app goes to the background: every player records where it is.
+    func recordPlaybackProgress() {
+        for player in tabPlayers.values { player.recordProgressNow() }
+    }
+
     /// The app is back in front: each tab's player continues as the user left
     /// it (see `PlayerModel.applicationBecameActive`).
     func applicationBecameActive() {

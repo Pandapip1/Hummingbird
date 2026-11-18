@@ -604,6 +604,17 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         publishNowPlaying()
     }
 
+    /// Records the position now (unthrottled): after a seek, a stream switch,
+    /// and before the app goes to the background, so a crash right after
+    /// never restores an older position. Ticks record at most every 5 s.
+    func recordProgressNow(at position: Double? = nil) {
+        guard let details, let library else { return }
+        let seconds = position ?? backend?.currentTime ?? playbackTime
+        guard seconds.isFinite, seconds > 1, !didFinishCurrentItem else { return }
+        library.recordProgress(SavedVideo(details.item), seconds: seconds)
+        lastHistoryWrite = Date()
+    }
+
     /// The user wants it paused. A pause is where progress is worth syncing;
     /// ticks only update the library (see LibraryStore.recordProgress).
     func pauseByUser() {
@@ -675,6 +686,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let target = min(max(0, seconds), duration > 0 ? duration : .greatestFiniteMagnitude)
         if duration <= 0 || target < duration - 0.5 { didFinishCurrentItem = false }
         playbackTime = target
+        recordProgressNow(at: target)
         pendingSeekTask?.cancel()
         if coalescing {
             pendingSeekTask = Task { @MainActor [weak self, weak backend] in
@@ -807,6 +819,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             embeddedSubtitleChoice = nil
             selected = option
             if generation == playGeneration { errorMessage = nil }
+            recordProgressNow()
             playbackTime = backend.currentTime
             self.duration = authoritativeDuration
             isPlaying = backend.isPlaying

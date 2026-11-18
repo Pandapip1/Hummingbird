@@ -399,6 +399,7 @@ private struct ApplicationLifecycleModifier: ViewModifier {
         return content.onLifecycle { event in
             switch event {
             case .phase(.background):
+                model.recordPlaybackProgress()
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
                 let stores = model.stores

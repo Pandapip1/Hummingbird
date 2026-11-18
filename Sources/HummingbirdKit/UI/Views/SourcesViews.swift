@@ -766,6 +766,9 @@ struct TranscodeToggle: View {
             defaults.set(enabled, forKey: PlaybackPreferenceKey.transcodeDownloads)
             isEnabled = await stage.isEnabled
             applying = false
+        }
+    }
+}
 
 /// The local-network destinations (LAN, loopback, tailnet) this source may reach on this device, each
 /// bound to exact addresses. Approving shows the address a host resolves to now; a host that later

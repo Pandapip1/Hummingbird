@@ -13,17 +13,44 @@ enum HLSPlaylist {
         var attributes: String
     }
 
+    /// An `EXT-X-MEDIA` rendition: audio, subtitles or closed captions, with
+    /// the accessibility attributes the platform player selects and labels by.
     struct Rendition: Sendable, Equatable {
         var groupID: String
         var name: String
         var language: String?
         var isDefault: Bool
         var uri: URL?
+        /// `AUTOSELECT=YES`: the player may choose it per the viewer's settings.
+        var autoselect = false
+        /// `FORCED=YES` (subtitles shown even with subtitles off: signs, foreign dialogue).
+        var forced = false
+        /// `CHARACTERISTICS`, verbatim (UTIs such as `public.accessibility.describes-video`).
+        var characteristics: String?
+        /// `INSTREAM-ID` of closed captions carried in the video (CC1…, SERVICE1…).
+        var instreamID: String?
+
+        /// An audio description of the video.
+        var describesVideo: Bool { characteristics?.contains("public.accessibility.describes-video") ?? false }
+
+        /// The rendition's attributes after TYPE and GROUP-ID, with `uri` in place of its URI.
+        func attributes(uri: String?) -> String {
+            var out = "NAME=\"\(name.isEmpty ? (language ?? "Track") : name)\""
+            if let language { out += ",LANGUAGE=\"\(language)\"" }
+            out += ",DEFAULT=\(isDefault ? "YES" : "NO"),AUTOSELECT=\(autoselect || isDefault || forced ? "YES" : "NO")"
+            if forced { out += ",FORCED=YES" }
+            if let characteristics, !characteristics.isEmpty { out += ",CHARACTERISTICS=\"\(characteristics)\"" }
+            if let instreamID { out += ",INSTREAM-ID=\"\(instreamID)\"" }
+            if let uri { out += ",URI=\"\(uri)\"" }
+            return out
+        }
     }
 
     struct Master: Sendable, Equatable {
         var variants: [Variant]
         var audio: [Rendition]
+        var subtitles: [Rendition] = []
+        var closedCaptions: [Rendition] = []
     }
 
     /// One fetchable object of a media playlist: the initialization map, a
@@ -96,6 +123,8 @@ enum HLSPlaylist {
         guard text.hasPrefix("#EXTM3U") else { throw Failure.notAPlaylist }
         var variants: [Variant] = []
         var audio: [Rendition] = []
+        var subtitles: [Rendition] = []
+        var closedCaptions: [Rendition] = []
         var pending: String?
         for raw in text.components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
@@ -103,11 +132,23 @@ enum HLSPlaylist {
                 pending = String(line.dropFirst("#EXT-X-STREAM-INF:".count))
             } else if line.hasPrefix("#EXT-X-MEDIA:") {
                 let attributes = String(line.dropFirst("#EXT-X-MEDIA:".count))
-                guard attribute("TYPE", in: attributes) == "AUDIO", let group = attribute("GROUP-ID", in: attributes) else { continue }
-                audio.append(Rendition(groupID: group, name: attribute("NAME", in: attributes) ?? "",
-                                       language: attribute("LANGUAGE", in: attributes),
-                                       isDefault: attribute("DEFAULT", in: attributes) == "YES",
-                                       uri: attribute("URI", in: attributes).flatMap { URL(string: $0, relativeTo: base)?.absoluteURL }))
+                guard let group = attribute("GROUP-ID", in: attributes) else { continue }
+                let rendition = Rendition(
+                    groupID: group, name: attribute("NAME", in: attributes) ?? "",
+                    language: attribute("LANGUAGE", in: attributes),
+                    isDefault: attribute("DEFAULT", in: attributes) == "YES",
+                    uri: attribute("URI", in: attributes).flatMap { URL(string: $0, relativeTo: base)?.absoluteURL },
+                    autoselect: attribute("AUTOSELECT", in: attributes) == "YES",
+                    forced: attribute("FORCED", in: attributes) == "YES",
+                    characteristics: attribute("CHARACTERISTICS", in: attributes),
+                    instreamID: attribute("INSTREAM-ID", in: attributes)
+                )
+                switch attribute("TYPE", in: attributes) {
+                case "AUDIO": audio.append(rendition)
+                case "SUBTITLES": subtitles.append(rendition)
+                case "CLOSED-CAPTIONS": closedCaptions.append(rendition)
+                default: continue
+                }
             } else if let attributes = pending, !line.isEmpty, !line.hasPrefix("#") {
                 pending = nil
                 guard let uri = URL(string: line, relativeTo: base)?.absoluteURL else { continue }
@@ -119,7 +160,7 @@ enum HLSPlaylist {
             }
         }
         guard !variants.isEmpty else { throw Failure.notAPlaylist }
-        return Master(variants: variants, audio: audio)
+        return Master(variants: variants, audio: audio, subtitles: subtitles, closedCaptions: closedCaptions)
     }
 
     static func parseMedia(_ text: String, base: URL) throws -> Media {
@@ -245,15 +286,35 @@ enum HLSPlaylist {
         return out + "#EXT-X-ENDLIST\n"
     }
 
-    static func localMaster(variant: Variant, videoPlaylist: String, audio: Rendition?, audioPlaylist: String?) -> String {
+    /// The local master: one variant, its audio rendition, and the subtitle
+    /// (each with its local playlist) and closed-caption renditions, each with
+    /// its LANGUAGE, AUTOSELECT, FORCED and CHARACTERISTICS so the platform
+    /// player offers, styles and selects them per the viewer's settings.
+    static func localMaster(variant: Variant, videoPlaylist: String, audio: Rendition?, audioPlaylist: String?,
+                            subtitles: [(Rendition, String)] = [], closedCaptions: [Rendition] = []) -> String {
         var out = "#EXTM3U\n#EXT-X-VERSION:7\n"
         var attributes = "BANDWIDTH=\(max(1, variant.bandwidth))"
         if !variant.codecs.isEmpty { attributes += ",CODECS=\"\(variant.codecs)\"" }
         if variant.width > 0, variant.height > 0 { attributes += ",RESOLUTION=\(variant.width)x\(variant.height)" }
         if let audio, let audioPlaylist {
-            let language = audio.language.map { ",LANGUAGE=\"\($0)\"" } ?? ""
-            out += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"\(audio.name.isEmpty ? "Audio" : audio.name)\"\(language),DEFAULT=YES,AUTOSELECT=YES,URI=\"\(audioPlaylist)\"\n"
+            var main = audio
+            main.isDefault = true
+            main.autoselect = true
+            if main.name.isEmpty { main.name = "Audio" }
+            out += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",\(main.attributes(uri: audioPlaylist))\n"
             attributes += ",AUDIO=\"audio\""
+        }
+        if let group = subtitles.first?.0.groupID {
+            for (rendition, playlist) in subtitles {
+                out += "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"\(group)\",\(rendition.attributes(uri: playlist))\n"
+            }
+            attributes += ",SUBTITLES=\"\(group)\""
+        }
+        if let group = closedCaptions.first?.groupID {
+            for rendition in closedCaptions where rendition.instreamID != nil {
+                out += "#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID=\"\(group)\",\(rendition.attributes(uri: nil))\n"
+            }
+            attributes += ",CLOSED-CAPTIONS=\"\(group)\""
         }
         return out + "#EXT-X-STREAM-INF:\(attributes)\n\(videoPlaylist)\n"
     }

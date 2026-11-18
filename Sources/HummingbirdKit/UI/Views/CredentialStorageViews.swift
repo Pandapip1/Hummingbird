@@ -79,7 +79,7 @@ struct LoginKeychainFallbackConsentView: View {
             HStack {
                 Spacer()
                 Button(LoginKeychainFallbackText.decline, role: .cancel, action: onDecline)
-                    .keyboardShortcut(.cancelAction)
+                    .keyboardShortcutWhereAvailable(.cancelAction)
                 Button(LoginKeychainFallbackText.allow, action: onAllow)
             }
         }
@@ -123,7 +123,7 @@ public struct CredentialStorageDecisionView: View {
                          + "keychain right now: \(message)")
                     HStack {
                         Spacer()
-                        Button("Continue", action: onResolved).keyboardShortcut(.defaultAction)
+                        Button("Continue", action: onResolved).keyboardShortcutWhereAvailable(.defaultAction)
                     }
                 }
                 if let failure {

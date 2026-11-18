@@ -27,11 +27,18 @@ final class ProfileSyncService {
     @ObservationIgnored private var localNetworkEnabled: Bool
     @ObservationIgnored private var running: Task<Void, Never>?
     @ObservationIgnored private var passRequested = false
+    /// Whether the next pass was asked for by someone (not only the timer).
+    @ObservationIgnored private var requestedPass = false
+    /// True while non-urgent work should wait (Low Power Mode and the like):
+    /// timer-driven passes then skip the local-network pull, which reads
+    /// every trusted device's changes.
+    @ObservationIgnored private let defersBulkWork: @Sendable () -> Bool
 
     init(changes: ProfileChangeStore, mutationLog: AppSyncMutationLog,
          library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
-         localNetworkEnabled: Bool = false) {
+         localNetworkEnabled: Bool = false, defersBulkWork: @escaping @Sendable () -> Bool = { false }) {
+        self.defersBulkWork = defersBulkWork
         lanSync = peerService.map {
             AppSyncLANClient(
                 messaging: $0, journal: mutationLog, appID: HummingbirdProfileSchema.appID
@@ -90,8 +97,13 @@ final class ProfileSyncService {
     /// pass after it (changes made meanwhile are not left for the timer)
     /// and returns when that one has finished. The state is `.syncing` from
     /// the moment this is called.
-    func sync() async {
+    /// Why a pass runs: the periodic timer, or anything else (a control, a
+    /// local edit, sign-in), which never waits for energy saving.
+    enum Trigger { case scheduled, requested }
+
+    func sync(_ trigger: Trigger = .requested) async {
         state = .syncing
+        if trigger == .requested { requestedPass = true }
         if let running {
             passRequested = true
             await running.value
@@ -101,7 +113,9 @@ final class ProfileSyncService {
             guard let self else { return }
             repeat {
                 passRequested = false
-                await pass()
+                let requested = requestedPass
+                requestedPass = false
+                await pass(requested: requested)
             } while passRequested
             // Cleared here, in the same main-actor step that saw no further
             // request: a request arriving after this starts a new task.
@@ -123,13 +137,16 @@ final class ProfileSyncService {
     /// the journal holds that this device hasn't applied is applied in one
     /// batch. Merging is order independent, so the result doesn't depend
     /// on which transport (or peer) answered first.
-    private func pass() async {
+    private func pass(requested: Bool) async {
         state = .syncing
         let signposter = OSSignposter.sync
         let pass = signposter.beginInterval("SyncPass", id: signposter.makeSignpostID())
         defer { signposter.endInterval("SyncPass", pass, "\(String(describing: self.state), privacy: .private(mask: .hash))") }
 
-        async let lanOutcome = pullLocalNetwork()
+        // The timer's pull waits while energy is being saved; one anyone
+        // asked for (or a local edit) doesn't.
+        let skipLocalNetwork = !requested && defersBulkWork()
+        async let lanOutcome = skipLocalNetwork ? nil : pullLocalNetwork()
         async let accountOutcome = syncAccount()
         let transports = [await lanOutcome, await accountOutcome].compactMap { $0 }
 

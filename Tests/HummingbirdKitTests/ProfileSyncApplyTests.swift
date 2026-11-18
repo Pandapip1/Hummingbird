@@ -147,6 +147,22 @@ final class ProfileSyncApplyTests: XCTestCase {
         XCTAssertTrue(phone.mutationLog.unappliedWinners().isEmpty)
     }
 
+    /// While energy is being saved, the timer's passes skip the local-network
+    /// pull; a pass anyone asks for still pulls.
+    func testScheduledPassesSkipTheLocalNetworkPullWhileSavingEnergy() async throws {
+        let host = FakePluginHost()
+        let mac = try await SyncDevice.make(self, name: "mac", host: host)
+        let phone = try await SyncDevice.make(self, name: "phone", host: host, defersBulkWork: { true })
+        try await SyncDevice.pair(mac, phone)
+        mac.library.createPlaylist(name: "From the Mac")
+        await mac.changes.flush()
+
+        await phone.sync.sync(.scheduled)
+        XCTAssertTrue(phone.library.playlists.isEmpty)
+        await phone.sync.sync()
+        XCTAssertEqual(phone.library.playlists.map(\.name), ["From the Mac"])
+    }
+
     // MARK: plugin installs
 
     /// Synced plugins install concurrently: N slow installs take about one
@@ -661,7 +677,8 @@ private final class SyncDevice {
     }
 
     static func make(_ test: XCTestCase, name: String, host: FakePluginHost,
-                     plugins installed: [InstalledPlugin] = [], history: [HistoryEntry] = []) async throws -> SyncDevice {
+                     plugins installed: [InstalledPlugin] = [], history: [HistoryEntry] = [],
+                     defersBulkWork: @escaping @Sendable () -> Bool = { false }) async throws -> SyncDevice {
         let stores = test.makeTestStores()
         let directory = test.makeTestDirectory("HummingbirdSync-\(name)")
         let peerService = try AppSyncPeerService(
@@ -677,7 +694,8 @@ private final class SyncDevice {
         let plugins = PluginManager(installed: installed, profileChanges: changes, storage: stores.storage,
                                     credentialStore: stores.credentialStore, fetch: host.fetch)
         let sync = ProfileSyncService(changes: changes, mutationLog: mutationLog, library: library,
-                                      plugins: plugins, peerService: peerService, localNetworkEnabled: true)
+                                      plugins: plugins, peerService: peerService, localNetworkEnabled: true,
+                                      defersBulkWork: defersBulkWork)
         let device = SyncDevice(peerService: peerService, mutationLog: mutationLog, changes: changes,
                                 library: library, plugins: plugins, sync: sync)
         device.advertisement = try await peerService.startLANServer(appIDs: [HummingbirdProfileSchema.appID])

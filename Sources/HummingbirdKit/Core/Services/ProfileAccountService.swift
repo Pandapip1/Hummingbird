@@ -69,6 +69,7 @@ final class ProfileAccountService {
          changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
          localNetworkEnabled: Bool = false,
+         defersBulkWork: @escaping @Sendable () -> Bool = { false },
          oauthPresenter: any ATProtoOAuthPresenter,
          authenticator: ATProtoOAuthAuthenticator? = nil) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
@@ -88,7 +89,7 @@ final class ProfileAccountService {
                 changes: changes, mutationLog: mutationLog,
                 library: library, plugins: plugins,
                 peerService: peerService, peerServiceFailure: peerServiceFailure,
-                localNetworkEnabled: localNetworkEnabled
+                localNetworkEnabled: localNetworkEnabled, defersBulkWork: defersBulkWork
             )
             syncService?.bootstrapCurrentProfile()
             changes.setMutationHandler { [weak self] in
@@ -96,7 +97,7 @@ final class ProfileAccountService {
             }
             retryTask = Task { [weak self] in
                 while !Task.isCancelled {
-                    await self?.sync()
+                    await self?.sync(.scheduled)
                     try? await Task.sleep(for: .seconds(30))
                 }
             }
@@ -172,7 +173,7 @@ final class ProfileAccountService {
         reply?.resume(returning: proceed)
     }
 
-    func sync() async { await syncService?.sync() }
+    func sync(_ trigger: ProfileSyncService.Trigger = .requested) async { await syncService?.sync(trigger) }
 
     func setLocalNetworkEnabled(_ enabled: Bool) {
         localNetworkEnabled = enabled

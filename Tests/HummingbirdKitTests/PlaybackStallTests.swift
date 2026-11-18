@@ -138,7 +138,9 @@ final class PlaybackStallTests: XCTestCase {
         backend.external(.interruptionBegan)
         XCTAssertFalse(model.isPlaying)
         XCTAssertTrue(model.isInterrupted)
+        backend.calls.removeAll()
         model.applicationBecameActive()
+        XCTAssertEqual(backend.calls, [], "returning to the app during a call does not resume")
         backend.calls.removeAll()
         // Hung up, the system says it may resume: it resumes.
         backend.external(.interruptionEnded(shouldResume: true))

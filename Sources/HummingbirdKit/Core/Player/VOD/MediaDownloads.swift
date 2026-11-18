@@ -256,6 +256,19 @@ actor MediaDownloads {
         await applyPausing()
     }
 
+    private var policy: BackgroundWorkPolicy?
+
+    /// Follows the shared policy. Each change re-reads its current answer, so
+    /// changes that arrive out of order cannot leave a stale one in place.
+    func follow(_ policy: BackgroundWorkPolicy) {
+        self.policy = policy
+        policy.observe { [weak self] _ in Task { await self?.applyEnergyPolicy() } }
+    }
+
+    private func applyEnergyPolicy() async {
+        await setSavesEnergy(policy?.defersNonUrgentWork ?? false)
+    }
+
     /// Downloads this video although energy is being saved.
     func downloadWhileSavingEnergy(_ id: String) async {
         guard var group = groups[id] else { return }

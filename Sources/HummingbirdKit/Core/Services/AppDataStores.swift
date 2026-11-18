@@ -70,7 +70,7 @@ public final class AppDataStores: Sendable {
                                      policy: policy)
         // Downloads nobody watches pause while energy is saved.
         let downloads = mediaDownloads
-        policy.observe { defers in Task { await downloads.setSavesEnergy(defers) } }
+        Task { await downloads.follow(policy) }
     }
 
     var defaults: UserDefaults { preferences.defaults }

@@ -14,11 +14,11 @@ final class DownloadsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeDownloads(file: Data, failures: Int = 0) -> (MediaDownloads, MediaCache) {
+    private func makeDownloads(file: Data, failures: Int = 0, delay: Duration = .milliseconds(20)) -> (MediaDownloads, MediaCache) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-downloads-\(UUID().uuidString)")
         directories.append(directory)
         let cache = MediaCache(directory: directory)
-        return (MediaDownloads(cache: cache, transport: SlowUpstream(file: file)), cache)
+        return (MediaDownloads(cache: cache, transport: SlowUpstream(file: file, delay: delay)), cache)
     }
 
     private func spec(_ identity: String) throws -> VODTrackSpec {
@@ -144,7 +144,7 @@ extension DownloadsTests {
     /// follows the platform's conditions.
     func testSavingEnergyPausesUnwatchedDownloadsWithoutLosingBytes() async throws {
         let data = Data((0..<20_000_000).map { UInt8($0 % 251) })
-        let (downloads, _) = makeDownloads(file: data)
+        let (downloads, _) = makeDownloads(file: data, delay: .milliseconds(400))
         let background = try await downloads.hold(try spec("closed"))
         await downloads.describe(info, tracks: ["closed"])
         await downloads.release(track: "closed")  // its player closed
@@ -155,9 +155,9 @@ extension DownloadsTests {
         try await Task.sleep(for: .milliseconds(300))
 
         let policy = BackgroundWorkPolicy()
-        policy.observe { defers in Task { await downloads.setSavesEnergy(defers) } }
+        await downloads.follow(policy)
         policy.update(defersNonUrgentWork: true)
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(for: .milliseconds(200))
         let pausedBackground = await background.isPaused
         let pausedPlaying = await playing.isPaused
         XCTAssertTrue(pausedBackground, "a closed video's download waits")
@@ -193,10 +193,14 @@ extension DownloadsTests {
 /// the test acts on it.
 private actor SlowUpstream: MediaTransport {
     private let file: Data
-    init(file: Data) { self.file = file }
+    private let delay: Duration
+    init(file: Data, delay: Duration = .milliseconds(20)) {
+        self.file = file
+        self.delay = delay
+    }
 
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await Task.sleep(for: .milliseconds(20))
+        try await Task.sleep(for: delay)
         let url = try XCTUnwrap(request.url)
         let total = Int64(file.count)
         guard let header = request.value(forHTTPHeaderField: "Range"),

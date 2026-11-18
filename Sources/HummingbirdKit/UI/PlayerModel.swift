@@ -115,7 +115,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             _ = try? await server.ensureListening()
             await downloads.retryNow()
         }
-        guard playbackRequested, let backend, backend.activity == .paused, !isRecovering,
+        guard playbackRequested, let backend, backend.activity == .paused, !isRecovering, !isInterrupted,
               pictureInPictureState != .active, !didFinishCurrentItem else { return }
         Logger.player.notice("resume_after_foreground position=\(backend.currentTime)")
         playByUser()

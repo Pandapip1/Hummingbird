@@ -1087,6 +1087,14 @@ func jsLiteral(_ json: Data) -> String {
 /// Media bytes a plugin pointed playback at (segments, playlists, progressive
 /// ranges), fetched through that plugin's contained content session
 /// (`PluginRuntime.contentSession()`), never an app-wide session.
+///
+/// Plugin media moves to `BackgroundTransferSession` only where that keeps
+/// the containment, and it never does today: on iOS, iPadOS, tvOS and
+/// visionOS background transfers are carried by the system outside this
+/// process, where the in-process egress proxy that pins every connection
+/// cannot be used; on macOS and GTK the contained session itself keeps
+/// running while the app is in the background. So plugin downloads pause
+/// while a mobile app is suspended and continue at once when it returns.
 struct PluginContentTransport: MediaTransport {
     let runtime: PluginRuntime
 

@@ -279,7 +279,11 @@ actor LiveHLSRecorder {
 
     func contentType(of id: String) -> String {
         if id.hasPrefix("k") { return "application/octet-stream" }
-        return resources[id]?.url.pathExtension.lowercased() == "ts" ? "video/mp2t" : "video/mp4"
+        switch resources[id]?.url.pathExtension.lowercased() {
+        case "ts": return "video/mp2t"
+        case "vtt", "webvtt": return "text/vtt"
+        default: return role == .subtitles ? "text/vtt" : "video/mp4"
+        }
     }
 
     var state: MediaTrackPipelineState {

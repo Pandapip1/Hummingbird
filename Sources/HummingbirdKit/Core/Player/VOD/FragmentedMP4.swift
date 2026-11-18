@@ -155,6 +155,10 @@ enum CachedHLS {
         var bandwidth: Int
         var width: Int
         var height: Int
+
+        var entry: MasterEntry {
+            MasterEntry(playlistName: playlistName, codec: codec, bandwidth: bandwidth, width: width, height: height)
+        }
     }
 
     static func mediaPlaylist(_ track: Track) -> String {
@@ -174,6 +178,20 @@ enum CachedHLS {
     /// audio rendition (named, with its language and characteristics, by
     /// `audioRendition`), plus subtitle renditions with their playlists.
     static func masterPlaylist(video: Track, audio: Track?, audioRendition: HLSPlaylist.Rendition? = nil,
+                               subtitles: [(HLSPlaylist.Rendition, String)] = []) -> String {
+        masterPlaylist(video: video.entry, audio: audio?.entry, audioRendition: audioRendition, subtitles: subtitles)
+    }
+
+    /// What a master playlist says about one track's media playlist.
+    struct MasterEntry: Sendable {
+        var playlistName: String
+        var codec: String
+        var bandwidth: Int
+        var width: Int
+        var height: Int
+    }
+
+    static func masterPlaylist(video: MasterEntry, audio: MasterEntry?, audioRendition: HLSPlaylist.Rendition? = nil,
                                subtitles: [(HLSPlaylist.Rendition, String)] = []) -> String {
         var master = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n"
         if let audio {

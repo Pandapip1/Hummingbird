@@ -56,8 +56,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.remoteNonFocusable()
             bars
-                .opacity(showingControls ? 1 : 0)
-                .allowsHitTesting(showingControls)
+                .autoHiddenControls(!showingControls)
                 // Hidden by the timer, the controls stay reachable by name and focus
                 // (VoiceOver, Voice Control, Switch Control, keyboards).
                 .environment(\.playerMenuPresentationChanged, menuPresentationChanged)

@@ -39,6 +39,9 @@ actor LocalMediaServer {
         /// Live renditions by path prefix: `<prefix>.m3u8` is their growing
         /// playlist, `<prefix>/<id>` their recorded resources.
         var live: [String: LiveHLSRecorder] = [:]
+        /// Progressive files served as fragmented MP4, by path prefix:
+        /// `<prefix>/init.mp4` and `<prefix>/<n>.m4s` (see `ProgressiveMP4`).
+        var remuxed: [String: RemuxedTrack] = [:]
     }
 
     private typealias Connection = NIOAsyncChannel<HTTPServerRequestPart, HTTPServerResponsePart>
@@ -73,6 +76,7 @@ actor LocalMediaServer {
         case file(ServedFile)
         case object(ServedObject)
         case text(ServedText)
+        case remuxed(RemuxedTrack, String)
         case livePlaylist(LiveHLSRecorder, String)
         case liveObject(LiveHLSRecorder, String)
         case notFound
@@ -86,6 +90,9 @@ actor LocalMediaServer {
         if let file = presentation.files[name] { return .file(file) }
         if let object = presentation.objects[name] { return .object(object) }
         if let text = presentation.texts[name] { return .text(text) }
+        for (prefix, track) in presentation.remuxed where name.hasPrefix("\(prefix)/") {
+            return .remuxed(track, String(name.dropFirst(prefix.count + 1)))
+        }
         for (prefix, recorder) in presentation.live {
             if name == "\(prefix).m3u8" { return .livePlaylist(recorder, prefix) }
             if name.hasPrefix("\(prefix)/") { return .liveObject(recorder, String(name.dropFirst(prefix.count + 1))) }
@@ -264,6 +271,12 @@ actor LocalMediaServer {
                            request: request, outbound: outbound)
         case .file(let file):
             try await sendFile(file, request: request, outbound: outbound)
+        case .remuxed(let track, let name):
+            guard let data = try await track.resource(name) else {
+                try await send(status: .notFound, contentType: "text/plain", body: Data(), request: request, outbound: outbound)
+                return
+            }
+            try await send(status: .ok, contentType: "video/mp4", body: data, request: request, outbound: outbound)
         case .text(let served):
             // A text that cannot be made (the plugin failed) is missing, not broken:
             // the player leaves that subtitle unavailable and plays on.

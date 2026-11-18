@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import SwiftOpenUI
 
 // MARK: - Source list
@@ -605,11 +606,10 @@ private struct AppSettingsForm: View {
                     Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
-            #if os(macOS) && !BACKEND_GTK
-            if let store = stores.keychain {
+            // Only where the platform has a weaker store the user can opt in to.
+            if let store = stores.keychain, store.offersLoginKeychainFallback {
                 CredentialStorageSettingsSection(store: store)
             }
-            #endif
             Section("Playback") {
                 Picker("Maximum resolution", selection: $maxHeight) {
                     ForEach([360, 480, 720, 1080, 1440, 2160], id: \.self) { Text("\($0)p").tag($0) }
@@ -634,9 +634,9 @@ private struct AppSettingsForm: View {
                     step: 10
                 )
             }
-            #if !os(tvOS)
-            PerformanceReportsSection(store: PerformanceReports.store(for: stores), exportDirectory: stores.cachesDirectory)
-            #endif
+            if SystemPerformanceReports.isAvailable {
+                PerformanceReportsSection(store: PerformanceReports.store(for: stores), exportDirectory: stores.cachesDirectory)
+            }
             Section("About") {
                 Text("Hummingbird plays content from Grayjay-compatible plugins. It is an independent project and is not affiliated with FUTO.")
                     .font(.footnote)
@@ -647,7 +647,6 @@ private struct AppSettingsForm: View {
     }
 }
 
-#if !os(tvOS)
 /// Shares the MetricKit reports kept on this device (crashes, hangs, CPU and
 /// disk-write exceptions, daily metrics), and in debug builds the main-thread
 /// stalls the app recorded, as one JSON file.
@@ -690,7 +689,6 @@ private struct PerformanceReportsSection: View {
         }
     }
 }
-#endif
 
 /// The local-network destinations (LAN, loopback, tailnet) this source may reach on this device, each
 /// bound to exact addresses. Approving shows the address a host resolves to now; a host that later

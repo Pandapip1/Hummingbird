@@ -1,7 +1,5 @@
 import Foundation
-#if os(tvOS) && canImport(UIKit)
-import UIKit
-#endif
+import SwiftOpenUI
 
 /// App state and actions for the debugger, replacing the old HTTP debug
 /// server's probes and actions. Tools/lldb/hummingbird.lldb wraps these as
@@ -17,7 +15,7 @@ public enum HummingbirdDebug {
     }
 
     private static var models: [WeakModel] = []
-    /// The player of a standalone debug scene (tvOS), when one is showing.
+    /// The player of a standalone debug scene (`HUMMINGBIRD_DEBUG_SCENE=player`), when one is showing.
     static weak var standalonePlayer: PlayerModel?
     /// Set by the root view: its tab overview is view state.
     static var toggleTabOverviewAction: (@MainActor () -> Void)?
@@ -48,9 +46,9 @@ public enum HummingbirdDebug {
         } else {
             lines.append("no player in the active tab")
         }
-        #if os(tvOS) && canImport(UIKit)
-        lines.append("focused: \(focusedItemDescription())")
-        #endif
+        if let focused = FocusDiagnostics.focusedItemDescription() {
+            lines.append("focused: \(focused)")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -80,18 +78,6 @@ public enum HummingbirdDebug {
         guard !reports.isEmpty else { return "no reports in \(store.directory.path)" }
         return reports.map(\.path).joined(separator: "\n")
     }
-
-    #if os(tvOS) && canImport(UIKit)
-    static func focusedItemDescription() -> String {
-        guard let window = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) else { return "none (no key window)" }
-        guard let item = window.windowScene?.focusSystem?.focusedItem else { return "none" }
-        let label = (item as? UIView)?.accessibilityLabel ?? ""
-        return "\(type(of: item)) \(label)".trimmingCharacters(in: .whitespaces)
-    }
-    #endif
 }
 
 extension AppModel: @MainActor CustomDebugStringConvertible {

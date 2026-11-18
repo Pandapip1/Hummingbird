@@ -1,28 +1,39 @@
-#if os(macOS) && canImport(SwiftUI) && !BACKEND_GTK
+#if os(macOS)
 import AppKit
+import SwiftUI
 import XCTest
-@testable import HummingbirdKit
+@testable import BrowserTabs
 
-final class MacTabBarAccessoryTests: XCTestCase {
+/// The macOS tab strip is one titlebar accessory per window, however many
+/// views ask for it, sized to the window and removed while hidden.
+final class WindowTabStripAccessoryTests: XCTestCase {
     @MainActor
-    func testManagerInstallsOneAccessoryAndRetainsItUntilLastOwnerDetaches() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+    private func makeWindow(width: CGFloat, height: CGFloat) -> NSWindow {
+        NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.titled, .resizable],
             backing: .buffered,
             defer: false
         )
-        let manager = WindowTabBarAccessoryManager(window: window, app: makeTestAppModel())
+    }
+
+    @MainActor
+    private var strip: AnyView { AnyView(Text("Tabs")) }
+
+    @MainActor
+    func testManagerInstallsOneAccessoryAndRetainsItUntilLastOwnerDetaches() {
+        let window = makeWindow(width: 900, height: 600)
+        let manager = WindowTabStripAccessoryManager(window: window, content: strip)
         let first = UUID()
         let second = UUID()
 
-        manager.attach(owner: first, app: makeTestAppModel())
-        manager.attach(owner: second, app: makeTestAppModel())
+        manager.attach(owner: first, content: strip)
+        manager.attach(owner: second, content: strip)
 
         XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
         XCTAssertEqual(window.titlebarAccessoryViewControllers[0].layoutAttribute, .bottom)
         XCTAssertEqual(window.titlebarAccessoryViewControllers[0].view.frame.height,
-                       WindowTabBarAccessoryManager.height)
+                       WindowTabStripAccessoryManager.height)
 
         manager.detach(owner: first)
         XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
@@ -33,15 +44,10 @@ final class MacTabBarAccessoryTests: XCTestCase {
 
     @MainActor
     func testReconcileUpdatesAccessoryWidthWithoutDuplicatingIt() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
-            styleMask: [.titled, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        let manager = WindowTabBarAccessoryManager(window: window, app: makeTestAppModel())
+        let window = makeWindow(width: 700, height: 500)
+        let manager = WindowTabStripAccessoryManager(window: window, content: strip)
         let owner = UUID()
-        manager.attach(owner: owner, app: makeTestAppModel())
+        manager.attach(owner: owner, content: strip)
         let original = window.titlebarAccessoryViewControllers[0]
 
         window.setContentSize(NSSize(width: 1_000, height: 700))
@@ -56,23 +62,17 @@ final class MacTabBarAccessoryTests: XCTestCase {
 
     @MainActor
     func testHiddenOwnerRemovesAccessoryAndShowingItRestoresAccessory() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
-            styleMask: [.titled, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        let app = makeTestAppModel()
-        let manager = WindowTabBarAccessoryManager(window: window, app: app)
+        let window = makeWindow(width: 700, height: 500)
+        let manager = WindowTabStripAccessoryManager(window: window, content: strip)
         let owner = UUID()
 
-        manager.attach(owner: owner, app: app)
+        manager.attach(owner: owner, content: strip)
         XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
 
-        manager.attach(owner: owner, app: app, isHidden: true)
+        manager.attach(owner: owner, content: strip, isHidden: true)
         XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
 
-        manager.attach(owner: owner, app: app, isHidden: false)
+        manager.attach(owner: owner, content: strip, isHidden: false)
         XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
         manager.detach(owner: owner)
     }

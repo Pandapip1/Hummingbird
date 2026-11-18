@@ -1,6 +1,7 @@
 import ATAppSync
 import CredentialStorage
 import Foundation
+import PlatformSupport
 import Synchronization
 
 /// Every place Hummingbird keeps state that outlives the process. Each
@@ -130,14 +131,12 @@ public final class AppDataStores: Sendable {
                     """)
             }
             #endif
-            #if os(tvOS)
-            // tvOS does not provide durable application-managed local storage.
-            // Its Caches directory is the supported local home for downloaded data
-            // and, unlike Application Support on tvOS, is present in the app container.
-            let dataBase = LiveData.cachesDirectory()
-            #else
-            let dataBase = LiveData.applicationSupportDirectory()
-            #endif
+            // Where the platform keeps lasting data (tvOS has only Caches; see
+            // `ApplicationStorage.durableDataLocation`).
+            let dataBase = switch ApplicationStorage.durableDataLocation {
+            case .applicationSupport: LiveData.applicationSupportDirectory()
+            case .caches: LiveData.cachesDirectory()
+            }
             let created = AppDataStores(
                 dataDirectory: dataBase.appendingPathComponent("Hummingbird", isDirectory: true),
                 cachesDirectory: LiveData.cachesDirectory().appendingPathComponent("Hummingbird", isDirectory: true),

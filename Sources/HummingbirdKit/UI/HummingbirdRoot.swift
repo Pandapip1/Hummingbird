@@ -66,18 +66,20 @@ public struct HummingbirdRoot: View {
     }
 }
 
-#if canImport(SwiftUI) && !BACKEND_GTK && os(tvOS)
+// Debug scenes (`HUMMINGBIRD_DEBUG_SCENE`, see `DebugSceneSelection`): one piece of
+// UI on its own, on every platform. The player uses the platform's own
+// media backend.
 @MainActor
-struct TVPlayerDebugScene: View {
+struct PlayerDebugScene: View {
     @State private var player: PlayerModel
 
     init(stores: AppDataStores) {
-        _player = State(wrappedValue: PlayerModel(stores: stores, backend: AVMediaBackend()))
+        _player = State(wrappedValue: PlayerModel(stores: stores))
     }
 
     var body: some View {
         ZStack {
-            Color(white: 0.12).ignoresSafeArea()
+            Color(red: 0.12, green: 0.12, blue: 0.12).ignoresSafeArea()
             ZStack {
                 Color.black
                 PlayerSurface(model: player)
@@ -93,8 +95,8 @@ struct TVPlayerDebugScene: View {
 }
 
 @MainActor
-struct TVSeekDebugScene: View {
-    @State private var player = TVSeekDebugModel()
+struct SeekDebugScene: View {
+    @State private var player = SeekDebugModel()
 
     var body: some View {
         ZStack {
@@ -108,7 +110,7 @@ struct TVSeekDebugScene: View {
 
 @MainActor
 @Observable
-private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
+private final class SeekDebugModel: AdvancedVideoPlayerControlling {
     let title = "Seek control test"
     var playbackTime: Double = 60
     let duration: Double = 600
@@ -127,7 +129,7 @@ private final class TVSeekDebugModel: AdvancedVideoPlayerControlling {
 }
 
 @MainActor
-struct TVInstallPreviewDebugScene: View {
+struct InstallPreviewDebugScene: View {
     private let preview: InstallPreview = {
         let urls = (0..<30).map { "https://audit-\($0).example.com/path" }
         let json = """
@@ -148,4 +150,3 @@ struct TVInstallPreviewDebugScene: View {
         }
     }
 }
-#endif

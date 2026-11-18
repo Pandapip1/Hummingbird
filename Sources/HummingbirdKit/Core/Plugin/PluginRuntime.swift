@@ -2,6 +2,7 @@ import Foundation
 import os
 import Crypto
 import Synchronization
+import PlatformSupport
 
 /// Hosts one plugin as a small pool of isolated JavaScript contexts (`PluginWorker`), so calls run in
 /// parallel and one stuck call cannot hold up the others.
@@ -884,14 +885,13 @@ final class PluginWorker: @unchecked Sendable {
         pendingTimers = 0
     }
 
+    /// What Grayjay plugins see as `bridge.buildPlatform`.
     private static var buildPlatform: String {
-#if os(macOS) || os(Linux) || os(Windows)
-        "desktop"
-#elseif os(Android)
-        "android"
-#else
-        "ios"
-#endif
+        switch HostPlatform.family {
+        case .desktop: "desktop"
+        case .android: "android"
+        case .appleMobile: "ios"
+        }
     }
 
     // MARK: host calls (queue only)

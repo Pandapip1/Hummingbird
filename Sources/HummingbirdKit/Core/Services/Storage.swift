@@ -1,5 +1,6 @@
 import CSQLite
 import Foundation
+import PlatformSupport
 
 /// App persistence backed by one SQLite database (`storage.sqlite3`) in a
 /// data directory. Existing JSON stores are imported lazily, so upgrades
@@ -100,11 +101,7 @@ final class StorageBackend: @unchecked Sendable {
     }
 
     private func saveLegacy(_ data: Data, to url: URL) {
-        #if os(iOS)
-        try? data.write(to: url, options: [.atomic, .completeFileProtection])
-        #else
-        try? data.write(to: url, options: [.atomic])
-        #endif
+        try? FileProtection.writeProtected(data, to: url)
     }
 }
 
@@ -116,11 +113,7 @@ final class StorageDatabase: @unchecked Sendable {
 
     convenience init(url: URL) {
         self.init(path: url.path)
-        #if os(iOS)
-        for path in [url.path, url.path + "-wal", url.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
-            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: path)
-        }
-        #endif
+        FileProtection.protectExistingFiles(atPaths: [url.path, url.path + "-wal", url.path + "-shm"])
     }
 
     /// `":memory:"` opens a private in-memory database.

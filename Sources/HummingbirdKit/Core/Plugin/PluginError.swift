@@ -14,6 +14,8 @@ enum PluginError: LocalizedError {
     case compilation(String)
     case notInstalled
     case notSupported(String)
+    /// The plugin stopped responding and is suspended until the user retries (`PluginLimits.maximumHungWorkers`).
+    case unresponsive(String)
 
     var errorDescription: String? {
         switch self {
@@ -22,7 +24,7 @@ enum PluginError: LocalizedError {
         case .unavailable(let m): return m.isEmpty ? "This content is unavailable" : m
         case .ageRestricted(let m): return m.isEmpty ? "This content is age restricted" : m
         case .timeout(let m): return m.isEmpty ? "The plugin timed out" : m
-        case .critical(let m), .implementation(let m), .execution(let m), .compilation(let m), .notSupported(let m): return m
+        case .critical(let m), .implementation(let m), .execution(let m), .compilation(let m), .notSupported(let m), .unresponsive(let m): return m
         case .reloadRequired(let m, _): return m
         case .notInstalled: return "No plugin handles this"
         }
@@ -50,5 +52,22 @@ enum PluginError: LocalizedError {
         case "ScriptCompilationException": self = .compilation(m)
         default: self = .execution(m)
         }
+    }
+}
+
+extension PluginError.Payload {
+    /// The error a plugin threw, cut to sizes the UI can show. Messages, URLs
+    /// and reload data are plugin-controlled text.
+    var bounded: PluginError.Payload {
+        func clip(_ s: String?, _ limit: Int) -> String? {
+            s.map { String($0.unicodeScalars.filter { $0.value >= 0x20 || $0 == "\n" }.prefix(limit).map(Character.init)) }
+        }
+        var copy = self
+        copy.type = clip(type, 64)
+        copy.msg = clip(msg, 2_000)
+        copy.url = clip(url, PluginLimits.maximumURLLength)
+        copy.body = clip(body, PluginLimits.maximumTextLength)
+        copy.reloadData = clip(reloadData, PluginLimits.maximumTextLength)
+        return copy
     }
 }

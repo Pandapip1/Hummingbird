@@ -1,8 +1,160 @@
 import Foundation
+import Crypto
+
+/// What the hidden plugin page may load and send back. Pure functions of the
+/// plugin's `PluginNetworkPolicy`, so they are testable without WebKit. The
+/// page's connections also go through the plugin's `PluginEgressProxy`, which
+/// checks the resolved address of every connection; these rules stop what
+/// can be stopped before a connection is attempted.
+enum PluginBrowserPolicy {
+    /// One script the plugin runs in, or injects into, the page.
+    static let maximumScriptBytes = 4 * 1024 * 1024
+    /// On-load scripts a plugin may register.
+    static let maximumScripts = 64
+    /// A value the page hands back to the plugin.
+    static let maximumCallbackBytes = 16 * 1024 * 1024
+    static let maximumCallbackIDBytes = 256
+
+    /// Whether the page may navigate (any frame) to `url`: http(s) to an
+    /// allow-listed host, where a non-public address literal or a local name
+    /// also needs the user's approval for that exact host and port; and
+    /// `about:blank`/`about:srcdoc` and `data:` documents, which load nothing
+    /// from the network themselves. Everything else (file:, custom schemes,
+    /// blob: frames, ...) is refused.
+    static func allowsNavigation(to url: URL?, policy: PluginNetworkPolicy) -> Bool {
+        guard let url, let scheme = url.scheme?.lowercased() else { return false }
+        switch scheme {
+        case "about":
+            let target = url.absoluteString.lowercased()
+            return target == "about:blank" || target == "about:srcdoc"
+        case "data":
+            return true
+        case "http", "https":
+            guard let rawHost = url.host(percentEncoded: false), !rawHost.isEmpty else { return false }
+            let host = PluginNetworkPolicy.normalizedHost(rawHost)
+            let port = url.port ?? (scheme == "https" ? 443 : 80)
+            guard policy.allowListed(host: host, port: port) else { return false }
+            if let literal = IPAddress(literal: host) {
+                switch literal.scope {
+                case .public: return true
+                case .metadata: return false
+                case .nonPublic: return policy.approvals.contains { $0.permits(host: host, port: port, address: literal) }
+                }
+            }
+            if AddressClassifier.isLocalName(host) {
+                return policy.approvals.contains { $0.host == host && $0.port == port }
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The WebKit content rules for the page, as JSON. Without "everywhere"
+    /// every subresource is blocked except those on allow-listed hosts.
+    /// Either way, address literals in non-public ranges and local names are
+    /// blocked unless the user approved that exact host and port, and so is
+    /// everything that only affects how the page looks or sounds.
+    static func contentRules(for policy: PluginNetworkPolicy) -> String {
+        var rules: [[String: Any]] = []
+        func block(_ filter: String, types: [String]? = nil) {
+            var trigger: [String: Any] = ["url-filter": filter]
+            if let types { trigger["resource-type"] = types }
+            rules.append(["trigger": trigger, "action": ["type": "block"]])
+        }
+        func allow(_ filter: String) {
+            rules.append(["trigger": ["url-filter": filter], "action": ["type": "ignore-previous-rules"]])
+        }
+        func hostPattern(_ host: String) -> String {
+            guard let literal = IPAddress(literal: host), !literal.isIPv4 else { return regexEscape(host) }
+            return #"\["# + regexEscape(host) + #"\]"#
+        }
+        let everywhere = policy.entries.contains { $0.kind == .everywhere }
+        if !everywhere {
+            block(".*")
+            // Documents and workers the page makes itself load nothing from the network.
+            allow("^data:")
+            allow("^blob:")
+            allow("^about:")
+            for entry in policy.entries {
+                let target: (host: String, subdomains: Bool)
+                switch entry.kind {
+                case .everywhere: continue
+                case .exact(let h): target = (h, false)
+                case .domain(let d): target = (d, true)
+                }
+                let prefix = target.subdomains ? #"([^/@]*\.)?"# : ""
+                let port = entry.port.map { ":\($0)" } ?? "(:[0-9]+)?"
+                for scheme in ["https?", "wss?"] {
+                    allow("^\(scheme)://\(prefix)\(hostPattern(target.host))\(port)/")
+                }
+            }
+        }
+        // Non-public address literals and local names, whatever the allow-list
+        // says. Each range names the first two octets (a few cover a little
+        // more than the reserved /24, which only over-blocks literal IPs).
+        let authority = "^[a-z]+://([^/@]*@)?"
+        let ranges = [
+            #"127\.[0-9]+\."#, #"10\.[0-9]+\."#, #"0\.[0-9]+\."#, #"192\.168\."#, #"192\.0\."#,
+            #"172\.1[6-9]\."#, #"172\.2[0-9]\."#, #"172\.3[01]\."#, #"169\.254\."#,
+            #"100\.6[4-9]\."#, #"100\.[7-9][0-9]\."#, #"100\.1[01][0-9]\."#, #"100\.12[0-7]\."#,
+            #"198\.1[89]\."#, #"198\.51\."#, #"203\.0\."#, #"22[4-9]\.[0-9]+\."#, #"2[3-5][0-9]\.[0-9]+\."#,
+        ]
+        for range in ranges { block(authority + range + #"[0-9]+\.[0-9]+[:/]"#) }
+        block(authority + #"\["#)
+        block(authority + "localhost[:/]")
+        block(authority + #"[^/:@]*\.localhost[:/]"#)
+        block(authority + #"[^/:@]*\.local[:/]"#)
+        block(authority + #"[^/:@]*\.home\.arpa[:/]"#)
+        block(authority + #"[^/:@]*\.internal[:/]"#)
+        // What the user approved by exact host and port (the proxy still
+        // checks the address each connection resolves to).
+        for approval in policy.approvals where policy.allowListed(host: approval.host, port: approval.port) {
+            for scheme in ["https?", "wss?"] {
+                allow("^\(scheme)://\(hostPattern(approval.host)):\(approval.port)/")
+                if approval.port == 80 || approval.port == 443 { allow("^\(scheme)://\(hostPattern(approval.host))/") }
+            }
+        }
+        // Cosmetic: nothing on this page is ever seen or heard.
+        block(".*", types: ["image", "media", "font", "style-sheet", "svg-document"])
+        let data = (try? JSONSerialization.data(withJSONObject: rules, options: [.sortedKeys])) ?? Data("[]".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// A stable identifier for a compiled rule list.
+    static func ruleListIdentifier(for json: String) -> String {
+        let digest = SHA256.hash(data: Data(json.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+        return "app.hummingbird.plugin-browser.rules.v2.\(digest)"
+    }
+
+    /// Escapes text for WebKit's content-rule regular expression subset.
+    static func regexEscape(_ text: String) -> String {
+        var out = ""
+        for c in text {
+            if #".[]()*+?^$\|{}"#.contains(c) { out.append("\\") }
+            out.append(c)
+        }
+        return out
+    }
+
+    /// Whether a plugin script (on-load or run) is small enough to accept.
+    static func acceptsScript(_ script: String) -> Bool { script.utf8.count <= maximumScriptBytes }
+
+    /// A page-supplied callback: nil when its id is unusable, an empty value
+    /// when the value is too large to hand the plugin.
+    static func boundedCallback(id: String, value: String) -> (id: String, value: String)? {
+        guard !id.isEmpty, id.utf8.count <= maximumCallbackIDBytes else { return nil }
+        guard value.utf8.count <= maximumCallbackBytes else { return (id, "") }
+        return (id, value)
+    }
+}
 
 #if canImport(WebKit) && !os(tvOS) && !os(watchOS)
 import WebKit
 import os
+#if canImport(Network)
+import Network
+#endif
 
 /// Grayjay's optional `Browser` package: a hidden page that plugins use as a
 /// script host. YouTube loads youtube.com here and calls BotGuard's minter in
@@ -14,6 +166,13 @@ import os
 /// persisted, and the page is torn down after a period without plugin calls.
 /// The next call transparently reloads it from the URL and scripts the plugin
 /// supplied, so plugins observe one long-lived browser as in Grayjay.
+///
+/// Containment: the page has its own non-persistent store whose connections
+/// go through the plugin's `PluginEgressProxy` (every connection's resolved
+/// address is checked, and the connection goes to exactly that address);
+/// frames may only navigate where `PluginBrowserPolicy` allows; subresources
+/// are limited by per-plugin content rules; it can open no windows and start
+/// no downloads; scripts and callback values are size-bounded.
 final class PluginBrowserPackage: Sendable {
     static let isSupported = true
     static let defaultIdleTimeout: Duration = .seconds(120)
@@ -29,16 +188,24 @@ final class PluginBrowserPackage: Sendable {
 
     private let controller: BrowserController
 
-    init(idleTimeout: Duration = PluginBrowserPackage.defaultIdleTimeout,
+    /// `proxy` is the plugin's egress proxy; every connection the page makes
+    /// goes through it. Nil only where the platform cannot route WebKit
+    /// through a proxy, in which case navigation and content rules are the
+    /// only network bounds (see Documentation/PluginSecurity.md).
+    init(policy: PluginNetworkPolicy, proxy: PluginEgressProxy?,
+         idleTimeout: Duration = PluginBrowserPackage.defaultIdleTimeout,
          callback: @escaping @Sendable (String, String) -> Void) {
-        controller = BrowserController(idleTimeout: idleTimeout, callback: callback)
+        controller = BrowserController(policy: policy, proxy: proxy, idleTimeout: idleTimeout, callback: callback)
     }
 
     func call(_ operation: String, payload: String) -> String {
+        // A run payload is a script plus a short id.
+        guard payload.utf8.count <= PluginBrowserPolicy.maximumScriptBytes + 1_024 else { return "" }
         switch operation {
         case "initialize":
             onMain { $0.reset() }
         case "addScriptOnLoad":
+            guard PluginBrowserPolicy.acceptsScript(payload) else { return "" }
             onMain { $0.addScript(payload) }
         case "load":
             guard let url = URL(string: payload) else { return "" }
@@ -83,6 +250,8 @@ final class PluginBrowserPackage: Sendable {
 /// Owns the page and the plugin's description of it. Confined to the main actor.
 @MainActor
 private final class BrowserController {
+    private let policy: PluginNetworkPolicy
+    private let proxy: PluginEgressProxy?
     private let idleTimeout: Duration
     private let callback: @Sendable (String, String) -> Void
     private var scripts: [String] = []
@@ -90,7 +259,10 @@ private final class BrowserController {
     private var session: BrowserSession?
     private var idleTask: Task<Void, Never>?
 
-    nonisolated init(idleTimeout: Duration, callback: @escaping @Sendable (String, String) -> Void) {
+    nonisolated init(policy: PluginNetworkPolicy, proxy: PluginEgressProxy?, idleTimeout: Duration,
+                     callback: @escaping @Sendable (String, String) -> Void) {
+        self.policy = policy
+        self.proxy = proxy
         self.idleTimeout = idleTimeout
         self.callback = callback
     }
@@ -103,10 +275,20 @@ private final class BrowserController {
 
     var hasSession: Bool { session != nil }
 
-    func addScript(_ script: String) { scripts.append(script) }
+    func addScript(_ script: String) {
+        guard scripts.count < PluginBrowserPolicy.maximumScripts else { return }
+        scripts.append(script)
+    }
 
+    /// Loads `url` if the plugin may navigate there; otherwise the previous
+    /// page is discarded and nothing loads (`waitTillLoaded` then reports false).
     func load(_ url: URL) {
         closeSession()
+        guard PluginBrowserPolicy.allowsNavigation(to: url, policy: policy) else {
+            self.url = nil
+            PluginLog.browserFailure("navigation_refused", LogRedaction.text("load \(url.absoluteString)"))
+            return
+        }
         self.url = url
         session = makeSession(url)
     }
@@ -128,7 +310,7 @@ private final class BrowserController {
     }
 
     private func makeSession(_ url: URL) -> BrowserSession {
-        let session = BrowserSession(scripts: scripts, callback: callback) { [weak self] in
+        let session = BrowserSession(scripts: scripts, policy: policy, proxy: proxy, callback: callback) { [weak self] in
             self?.scheduleIdleTeardown()
         }
         session.load(url)
@@ -167,7 +349,8 @@ private final class BrowserController {
 }
 
 @MainActor
-private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+private final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    private let policy: PluginNetworkPolicy
     private let callback: @Sendable (String, String) -> Void
     private let activity: @MainActor () -> Void
     private let loaded = DispatchSemaphore(value: 0)
@@ -190,13 +373,23 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     }
     static let maximumLoadWait: TimeInterval = 60
 
-    init(scripts: [String], callback: @escaping @Sendable (String, String) -> Void,
+    init(scripts: [String], policy: PluginNetworkPolicy, proxy: PluginEgressProxy?,
+         callback: @escaping @Sendable (String, String) -> Void,
          activity: @escaping @MainActor () -> Void) {
+        self.policy = policy
         self.callback = callback
         self.activity = activity
         let configuration = WKWebViewConfiguration()
         // Each page starts empty and nothing it stores outlives it.
-        configuration.websiteDataStore = .nonPersistent()
+        let store = WKWebsiteDataStore.nonPersistent()
+        // Every connection the page makes goes through the plugin's egress
+        // proxy, which checks the address it resolves to and connects there
+        // only; there is no fallback to a direct connection.
+        #if canImport(Network)
+        if let proxy { store.proxyConfigurations = [proxy.proxyConfiguration] }
+        #endif
+        configuration.websiteDataStore = store
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         // The page is never placed in a window, so WebKit treats it as
         // inactive and by default suspends it: timers stall and script-heavy
         // documents never finish loading. Its scripts must keep running while
@@ -222,13 +415,21 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
         super.init()
         controller.add(self, name: "hummingbirdBrowser")
         webView.navigationDelegate = self
+        webView.uiDelegate = self
     }
 
+    /// Loads only once the plugin's content rules are in place; if they
+    /// cannot be compiled the page does not load at all.
     func load(_ url: URL) {
+        let json = PluginBrowserPolicy.contentRules(for: policy)
         Task { [weak self] in
-            let rules = await SubresourceRules.shared.list()
+            let rules = await ContentRules.shared.list(json: json)
             guard let self, self.webView.navigationDelegate != nil else { return }
-            if let rules { self.webView.configuration.userContentController.add(rules) }
+            guard let rules else {
+                self.signalLoaded()
+                return
+            }
+            self.webView.configuration.userContentController.add(rules)
             self.loadSignpost = OSSignposter.plugin.beginInterval(
                 "BrowserPageLoad", id: OSSignposter.plugin.makeSignpostID(), "host=\(LogRedaction.redact(url.host ?? "unknown"), privacy: .public)"
             )
@@ -282,7 +483,8 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
                     let json = String(data: data, encoding: .utf8) { result = json }
             else { result = error?.localizedDescription ?? "" }
             self.endScriptSignpost(callbackID, outcome: error == nil ? "ok" : "threw")
-            self.callback(callbackID, result)
+            guard let bounded = PluginBrowserPolicy.boundedCallback(id: callbackID, value: result) else { return }
+            self.callback(bounded.id, bounded.value)
         }
     }
 
@@ -298,13 +500,38 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { signalLoaded() }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { signalLoaded() }
 
+    /// Every frame's navigations, including redirects: only where the plugin
+    /// may go, and never a download.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        let allowed = !navigationAction.shouldPerformDownload
+            && PluginBrowserPolicy.allowsNavigation(to: navigationAction.request.url, policy: policy)
+        if !allowed {
+            PluginLog.browserFailure("navigation_refused", LogRedaction.text(navigationAction.request.url?.absoluteString ?? ""))
+        }
+        decisionHandler(allowed ? .allow : .cancel)
+    }
+
+    /// A response the page cannot display would become a download.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
+        decisionHandler(navigationResponse.canShowMIMEType ? .allow : .cancel)
+    }
+
+    /// The page can open no windows.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        nil
+    }
+
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let id = body["id"] as? String else { return }
-        pendingCallbacks.remove(id)
-        endScriptSignpost(id, outcome: "callback")
+        guard let body = message.body as? [String: Any], let id = body["id"] as? String,
+              let bounded = PluginBrowserPolicy.boundedCallback(id: id, value: body["value"] as? String ?? "") else { return }
+        pendingCallbacks.remove(bounded.id)
+        endScriptSignpost(bounded.id, outcome: "callback")
         activity()
-        callback(id, body["value"] as? String ?? "")
+        callback(bounded.id, bounded.value)
     }
 
     private func endScriptSignpost(_ id: String, outcome: StaticString) {
@@ -323,39 +550,37 @@ private final class BrowserSession: NSObject, WKNavigationDelegate, WKScriptMess
     }
 }
 
-/// Blocks subresources that only affect how the page looks or sounds. Plugin
-/// scripts, and the requests they make, are left untouched.
+/// Compiles each plugin's content rules (`PluginBrowserPolicy.contentRules`)
+/// once per distinct rule set.
 @MainActor
-private final class SubresourceRules {
-    static let shared = SubresourceRules()
-    static let identifier = "app.hummingbird.plugin-browser.subresources.v1"
-    static let json = """
-        [{"trigger":{"url-filter":".*","resource-type":["image","media","font","style-sheet","svg-document"]},\
-        "action":{"type":"block"}}]
-        """
-    private var compiled: Task<WKContentRuleList?, Never>?
+private final class ContentRules {
+    static let shared = ContentRules()
+    private var compiled: [String: Task<WKContentRuleList?, Never>] = [:]
 
-    func list() async -> WKContentRuleList? {
-        if let compiled { return await compiled.value }
+    func list(json: String) async -> WKContentRuleList? {
+        let identifier = PluginBrowserPolicy.ruleListIdentifier(for: json)
+        if let compiled = compiled[identifier] { return await compiled.value }
         let task = Task<WKContentRuleList?, Never> {
             guard let store = WKContentRuleListStore.default() else { return nil }
             do {
                 return try await store.compileContentRuleList(
-                    forIdentifier: Self.identifier, encodedContentRuleList: Self.json
+                    forIdentifier: identifier, encodedContentRuleList: json
                 )
             } catch {
                 PluginLog.browserFailure("content_rules_failed", LogRedaction.text(error.localizedDescription))
                 return nil
             }
         }
-        compiled = task
+        compiled[identifier] = task
         return await task.value
     }
 }
 #else
 final class PluginBrowserPackage: Sendable {
     static let isSupported = false
-    init(callback: @escaping @Sendable (String, String) -> Void) {}
+    init(policy: PluginNetworkPolicy, proxy: PluginEgressProxy?,
+         idleTimeout: Duration = .seconds(120),
+         callback: @escaping @Sendable (String, String) -> Void) {}
     func call(_ operation: String, payload: String) -> String { "" }
     func close() {}
 }

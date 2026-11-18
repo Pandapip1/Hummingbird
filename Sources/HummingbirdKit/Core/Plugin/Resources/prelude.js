@@ -1138,7 +1138,10 @@
         global.__browserCallback(String(id), String(value));
       }
     },
-    releaseHandles: function () { handles = {}; }
+    releaseHandles: function () { handles = {}; },
+    // Each context of a plugin numbers its handles from its own base, so the host can route a handle
+    // back to the context that made it (PluginWorker.handleShift).
+    setHandleBase: function (base) { nextHandle = Number(base) + 1; nextPromise = 1; }
   };
 
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -34,14 +34,15 @@ struct CenteredStatusContainer<Content: View>: View {
 
 @MainActor
 struct ExternalURLLink<Label: View>: View {
-    let destination: URL
+    /// Only a contained or app-owned URL can be opened outside the app.
+    let destination: NavigableURL
     @ViewBuilder let label: () -> Label
 
     var body: some View {
         #if canImport(SwiftUI) && !BACKEND_GTK
-        Link(destination: destination, label: label)
+        Link(destination: destination.url, label: label)
         #else
-        Button { SystemServices.openURL(destination) } label: { label() }
+        Button { SystemServices.openURL(destination.url) } label: { label() }
         #endif
     }
 }

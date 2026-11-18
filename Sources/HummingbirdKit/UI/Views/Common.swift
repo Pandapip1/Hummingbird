@@ -56,7 +56,7 @@ struct ContentRow: View {
         Group {
             switch item.kind {
             case .locked:
-                if let u = item.unlockUrl.flatMap(URL.init(string:)) { ExternalURLLink(destination: u) { card } } else { card }
+                if let u = item.unlockURL { ExternalURLLink(destination: u) { card } } else { card }
             case .channel:
                 Button {
                     Logger.routing.info("content_row_open kind=channel")

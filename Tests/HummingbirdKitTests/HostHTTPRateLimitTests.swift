@@ -90,6 +90,7 @@ final class HostHTTPRateLimitTests: XCTestCase {
             config: config,
             auth: nil,
             captcha: nil,
+            policy: PluginNetworkPolicy(config: config, approvals: [], resolver: TestResolver.publicOnly),
             session: URLSession(configuration: configuration),
             now: clock.now,
             sleep: clock.sleep
@@ -265,6 +266,11 @@ final class HostHTTPRateLimitTests: XCTestCase {
         configuration.protocolClasses = [StubProtocol.self]
         return HostHTTP(
             config: try JSONDecoder().decode(PluginConfig.self, from: data), auth: nil, captcha: nil,
+            policy: PluginNetworkPolicy(
+                config: try JSONDecoder().decode(PluginConfig.self, from: data),
+                approvals: [LocalHostApproval(host: "192.168.1.20", port: 80, networks: [IPNetwork(cidr: "192.168.1.20")!])],
+                resolver: TestResolver.publicOnly
+            ),
             session: URLSession(configuration: configuration),
             localNetworkAccess: { url in
                 asked.withValue { $0.append(url) }
@@ -279,7 +285,7 @@ final class HostHTTPRateLimitTests: XCTestCase {
         let output = runOffMain(try makeLANHost(allowed: false, asked: asked), url: "http://192.168.1.20/items")
         XCTAssertEqual(asked.read().map(\.host), ["192.168.1.20"])
         XCTAssertEqual(StubProtocol.requestCount, 0)
-        XCTAssertTrue(output.contains("isn’t allowed on this device"), output)
+        XCTAssertTrue(output.contains("is on your local network"), output)
     }
 
     func testAllowedLocalNetworkRequestProceedsAndPublicHostsAreNotAsked() throws {

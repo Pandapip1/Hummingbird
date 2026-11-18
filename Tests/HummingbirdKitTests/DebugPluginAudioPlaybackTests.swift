@@ -32,7 +32,8 @@ final class DebugPluginAudioPlaybackTests: XCTestCase {
         defer { ProcessTermination.terminateAndWait(server) }
 
         let (config, script) = try DebugPluginFixture.loadPlugin()
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil,
+                                    approvals: [loopbackApproval(port: 8742)])
         try await runtime.enable()
         defer { Task { await runtime.stop() } }
 

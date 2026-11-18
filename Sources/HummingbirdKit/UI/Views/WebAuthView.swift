@@ -88,7 +88,10 @@ final class WebAuthSession {
             source: Self.captureScript.replacingOccurrences(of: "__CAPTURE_CHANNEL__", with: UUID().uuidString),
             injectionTime: .atDocumentStart, forMainFrameOnly: false
         ))
-        page = SwiftOpenUI.WebPage(configuration: configuration)
+        // Every frame stays within the sheet's own hosts. With no UI
+        // delegate, WebKit opens no popups or new windows either.
+        page = SwiftOpenUI.WebPage(configuration: configuration,
+                                   navigationDecider: WebAuthNavigationDecider(spec: spec))
         page.customUserAgent = spec.userAgent
         if let html = spec.html {
             page.load(html: html, baseURL: spec.startURL ?? URL(string: "about:blank")!)
@@ -169,7 +172,7 @@ final class WebAuthSession {
 
         for cookie in await dataStore.httpCookieStore.allCookies() {
             let host = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
-            guard spec.hostAllowed(host.lowercased()) else { continue }
+            guard spec.mayExportCredentials(for: host) else { continue }
             if spec.cookiesExclOthers && !spec.cookiesToFind.contains(cookie.name) { continue }
             let domain = cookie.domain.hasPrefix(".") ? cookie.domain : "." + cookie.domain
             cookies[domain.lowercased(), default: [:]][cookie.name] = cookie.value
@@ -178,7 +181,7 @@ final class WebAuthSession {
     }
 
     private func recordHeaders(_ requestHeaders: [String: String], url: URL) {
-        guard let host = url.host?.lowercased() else { return }
+        guard let host = url.host?.lowercased(), spec.mayExportCredentials(for: host) else { return }
         if let allowed = spec.allowedDomains, !allowed.isEmpty,
            !allowed.contains(where: { domainMatches(host: host, domain: $0.lowercased()) }) { return }
         for (rawName, value) in requestHeaders {
@@ -210,6 +213,17 @@ final class WebAuthSession {
         let foundCookieNames = Set(cookies.values.flatMap(\.keys))
         for name in spec.cookiesToFind where !foundCookieNames.contains(name) { return false }
         return true
+    }
+
+    /// Applies `WebAuthSpec.allowsNavigation` to every navigation, redirects included.
+    @MainActor
+    private final class WebAuthNavigationDecider: SwiftOpenUI.WebPage.NavigationDeciding {
+        let spec: WebAuthSpec
+        init(spec: WebAuthSpec) { self.spec = spec }
+
+        func decidePolicy(for action: SwiftOpenUI.WebPage.NavigationAction) -> SwiftOpenUI.WebPage.NavigationActionPolicy {
+            spec.allowsNavigation(to: action.request.url) ? .allow : .cancel
+        }
     }
 
     private static let captureScript = #"""

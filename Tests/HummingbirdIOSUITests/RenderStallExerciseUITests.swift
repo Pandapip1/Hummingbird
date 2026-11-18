@@ -3,8 +3,17 @@ import XCTest
 final class RenderStallExerciseUITests: XCTestCase {
     private let pluginURL = "https://plugins.grayjay.app/Youtube/YoutubeConfig.json"
 
+    /// Installs the real YouTube plugin and browses live content, so it needs
+    /// the network and YouTube being reachable: opt-in, like the other live
+    /// tests, so an outage can't block merges. Run it with
+    ///     TEST_RUNNER_HUMMINGBIRD_UI_NETWORK_TESTS=1 xcodebuild test … \
+    ///       -only-testing:HummingbirdIOSUITests/RenderStallExerciseUITests
     @MainActor
     func testRepeatedColdLaunchInteractionPaths() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["HUMMINGBIRD_UI_NETWORK_TESTS"] == "1",
+            "live-network UI test; set TEST_RUNNER_HUMMINGBIRD_UI_NETWORK_TESTS=1"
+        )
         let app = IsolatedApp.make()
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
@@ -35,7 +44,7 @@ final class RenderStallExerciseUITests: XCTestCase {
         openNewTab(named: "Sources", in: app)
         if app.staticTexts["YouTube"].waitForExistence(timeout: 2) { return }
 
-        let add = app.buttons["Add"]
+        let add = app.buttons["Add source"]
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         add.tap()
 

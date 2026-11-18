@@ -20,8 +20,8 @@ struct VODTrackSpec: Sendable {
     /// The track is the transcode stage's output (re-encoded, complete).
     var isTranscoded = false
     /// The transport for this track's upstream bytes; nil uses the downloads'
-    /// shared one. Plugin media will pass the plugin's contained content
-    /// session (plugin sandbox).
+    /// shared one. Plugin media passes `PluginContentTransport` (the plugin's
+    /// contained content session).
     var transport: (any MediaTransport)?
 }
 

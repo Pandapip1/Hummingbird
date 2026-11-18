@@ -1083,3 +1083,17 @@ func jsLiteral(_ json: Data) -> String {
         .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
         .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
 }
+
+/// Media bytes a plugin pointed playback at (segments, playlists, progressive
+/// ranges), fetched through that plugin's contained content session
+/// (`PluginRuntime.contentSession()`), never an app-wide session.
+struct PluginContentTransport: MediaTransport {
+    let runtime: PluginRuntime
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let runtime = runtime
+        // contentSession() may bind the egress proxy's socket: never on the caller's actor.
+        let session = await Task.detached(priority: .userInitiated) { runtime.contentSession() }.value
+        return try await session.data(for: request)
+    }
+}

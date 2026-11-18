@@ -892,8 +892,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             maxHeight: maxHeight, language: Locale.current.language.languageCode?.identifier
         )
         return live
-            ? try await VODSession.start(live: spec, downloads: mediaDownloads, server: mediaServer, info: downloadInfo(live: true))
-            : try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer, info: downloadInfo(live: false))
+            ? try await VODSession.start(live: spec, downloads: mediaDownloads, server: mediaServer,
+                                         transport: PluginContentTransport(runtime: runtime), info: downloadInfo(live: true))
+            : try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer,
+                                         transport: PluginContentTransport(runtime: runtime), info: downloadInfo(live: false))
     }
 
     /// How the downloads list names this video.
@@ -954,7 +956,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             },
             indexHint: source.indexRange, container: source.container, codec: source.codec,
             bandwidth: source.bitrate, width: source.width, height: source.height,
-            declaredDuration: source.duration > 0 ? Double(source.duration) : declaredDuration
+            declaredDuration: source.duration > 0 ? Double(source.duration) : declaredDuration,
+            transport: PluginContentTransport(runtime: runtime)
         )
     }
 

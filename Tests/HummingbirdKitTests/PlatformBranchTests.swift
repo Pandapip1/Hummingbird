@@ -28,7 +28,7 @@ final class PlatformBranchTests: XCTestCase {
             2, "Grayjay's Browser package is a hidden WKWebView; needs a SwiftOpenUI headless-page API that WebKitGTK also implements"
         ),
         // Playback backends: owned by the playback work, moving separately.
-        "UI/Playback/AVMediaBackend.swift": (23, "AVFoundation playback backend (UIKit/AppKit player views); moving to SwiftOpenUI"),
+        "UI/Playback/AVMediaBackend.swift": (22, "AVFoundation playback backend (UIKit/AppKit player views); moving to SwiftOpenUI"),
         "UI/Playback/GTKMediaBackend.swift": (1, "GStreamer playback backend; moving to SwiftOpenUI with AVMediaBackend"),
     ]
 

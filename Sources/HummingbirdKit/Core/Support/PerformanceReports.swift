@@ -72,11 +72,15 @@ public struct PerformanceReportStore: Sendable {
     public let directory: URL
     public let maximumFiles: Int
     public let maximumBytes: Int
+    /// Payloads older than this are dropped, whatever the other limits allow.
+    public let maximumAge: TimeInterval
 
-    public init(cachesDirectory: URL, maximumFiles: Int = 30, maximumBytes: Int = 8 * 1024 * 1024) {
+    public init(cachesDirectory: URL, maximumFiles: Int = 30, maximumBytes: Int = 8 * 1024 * 1024,
+                maximumAge: TimeInterval = 30 * 24 * 60 * 60) {
         directory = cachesDirectory.appendingPathComponent("MetricKit", isDirectory: true)
         self.maximumFiles = maximumFiles
         self.maximumBytes = maximumBytes
+        self.maximumAge = maximumAge
     }
 
     /// Stores one payload as `<kind>-<end>-<begin>.json`, then drops the
@@ -138,11 +142,27 @@ public struct PerformanceReportStore: Sendable {
         return url
     }
 
-    private func prune() throws {
+    /// Deletes every stored payload, the recorded stalls and the export built
+    /// in `exportDirectory`. Runs off the caller's actor; afterwards the
+    /// export reports nothing.
+    @concurrent
+    public func clear(exportDirectory: URL) async throws {
+        for url in reports() { try FileManager.default.removeItem(at: url) }
+        await stallLog.clear()
+        if FileManager.default.fileExists(atPath: exportDirectory.path) {
+            try FileManager.default.removeItem(at: exportDirectory)
+        }
+    }
+
+    /// Drops payloads beyond the file count, the byte budget (newest kept
+    /// first) or older than `maximumAge`.
+    func prune(now: Date = Date()) throws {
+        let cutoff = now.addingTimeInterval(-maximumAge)
         var total = 0
         for (index, url) in reports().enumerated() {
             total += (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if index >= maximumFiles || total > maximumBytes {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
+            if index >= maximumFiles || total > maximumBytes || modified < cutoff {
                 try FileManager.default.removeItem(at: url)
             }
         }
@@ -180,6 +200,16 @@ public struct StallLog: Sendable {
             var records = load()
             records.append(record)
             store(records)
+        }
+    }
+
+    /// Deletes every recorded stall, after the writes queued so far.
+    public func clear() async {
+        await withCheckedContinuation { continuation in
+            Self.writer.async {
+                try? FileManager.default.removeItem(at: fileURL)
+                continuation.resume()
+            }
         }
     }
 

@@ -657,6 +657,9 @@ private struct PerformanceReportsSection: View {
     @State private var exportURL: URL?
     @State private var reportCount = 0
     @State private var stallCount = 0
+    @State private var confirmingClear = false
+    @State private var clearing = false
+    @State private var clearFailure: String?
 
     var body: some View {
         Section("Diagnostics") {
@@ -664,10 +667,21 @@ private struct PerformanceReportsSection: View {
                 ShareContentAction(item: exportURL) {
                     Label("Export performance reports (\(reportCount))", systemImage: "square.and.arrow.up")
                 }
+                .disabled(clearing)
                 if stallCount > 0 {
                     Text("Includes \(stallCount) recorded main-thread stall\(stallCount == 1 ? "" : "s").")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+                // Nothing is shown deleted until it is: the button waits,
+                // disabled with a spinner, and the counts then show what is left.
+                HStack(spacing: 8) {
+                    Button("Clear performance reports", role: .destructive) { confirmingClear = true }
+                        .disabled(clearing)
+                    if clearing { ProgressView() }
+                }
+                if let clearFailure {
+                    Text(clearFailure).font(.footnote).foregroundStyle(.red)
                 }
             } else {
                 Text("No crash, hang or stall reports yet.")
@@ -677,18 +691,44 @@ private struct PerformanceReportsSection: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+        .confirmationDialog("Clear performance reports?", isPresented: $confirmingClear, titleVisibility: .visible) {
+            Button("Clear", role: .destructive) { startClearing() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deletes the crash, hang and stall reports kept on this device. This can't be undone.")
+        }
         // Every time the page comes on screen, not once: tabs stay mounted, so
         // a count and export made when Settings was first shown missed every
         // stall and report recorded since.
-        .browserTaskWhileVisible {
-            let store = store
-            let destination = exportDirectory.appendingPathComponent("Export", isDirectory: true)
-            let result = await Task.detached(priority: .utility) {
-                (store.reports().count, await store.stallLog.records().count, try? await store.exportBundle(to: destination))
-            }.value
-            reportCount = result.0
-            stallCount = result.1
-            exportURL = result.2 ?? nil
+        .browserTaskWhileVisible { await refresh() }
+    }
+
+    private var destination: URL { exportDirectory.appendingPathComponent("Export", isDirectory: true) }
+
+    private func refresh() async {
+        let store = store
+        let destination = destination
+        let result = await Task.detached(priority: .utility) {
+            (store.reports().count, await store.stallLog.records().count, try? await store.exportBundle(to: destination))
+        }.value
+        reportCount = result.0
+        stallCount = result.1
+        exportURL = result.2 ?? nil
+    }
+
+    /// Deletes everything off the main thread; the section then shows what
+    /// is actually left (normally nothing), or the error.
+    private func startClearing() {
+        guard !clearing else { return }
+        clearing = true
+        clearFailure = nil
+        let store = store
+        let destination = destination
+        Task {
+            do { try await store.clear(exportDirectory: destination) }
+            catch { clearFailure = "Couldn't clear the reports: \(error.localizedDescription)" }
+            await refresh()
+            clearing = false
         }
     }
 }

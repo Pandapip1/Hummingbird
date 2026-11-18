@@ -63,6 +63,15 @@ final class DownloadsModel {
         await perform(item.id) { await self.downloads.setPaused(paused, download: item.id) }
     }
 
+    /// Downloads this video although energy is being saved. Pending until the
+    /// download has actually resumed.
+    func downloadAnyway(_ item: DownloadSnapshot) async {
+        await perform(item.id) { await self.downloads.downloadWhileSavingEnergy(item.id) }
+    }
+
+    /// Some downloads wait for Low Power Mode to end.
+    var isSavingEnergy: Bool { items.contains { $0.state == .pausedSavingEnergy } }
+
     func stopDownload(_ item: DownloadSnapshot) async {
         await perform(item.id) { await self.downloads.stop(download: item.id) }
     }
@@ -107,13 +116,14 @@ struct DownloadsButton: View {
                     if model.isDownloading {
                         ProgressRing(fraction: model.overallFraction, lineWidth: 2).frame(width: 22, height: 22)
                     }
-                    Image(systemName: "arrow.down")
+                    Image(systemName: model.isSavingEnergy && !model.isDownloading ? "leaf" : "arrow.down")
                         .font(.system(size: model.isDownloading ? 10 : 14, weight: .semibold))
                 }
                 .frame(width: 24, height: 24)
             }
             .accessibilityLabel(model.isDownloading
-                ? "Downloads, \(Int(model.overallFraction * 100)) percent" : "Downloads")
+                ? "Downloads, \(Int(model.overallFraction * 100)) percent"
+                : model.isSavingEnergy ? "Downloads, paused for Low Power Mode" : "Downloads")
             .popover(isPresented: $showingList) {
                 DownloadsList(model: model) { showingList = false }
             }
@@ -206,6 +216,9 @@ private struct DownloadRow: View {
                     Button { Task { await model.setPaused(false, item) } } label: {
                         Image(systemName: "play.circle").accessibilityLabel("Resume")
                     }
+                case .pausedSavingEnergy:
+                    Button("Download anyway") { Task { await model.downloadAnyway(item) } }
+                        .font(.caption)
                 case .complete, .stopped:
                     Button { Task { await model.remove(item) } } label: {
                         Image(systemName: "trash").accessibilityLabel("Remove download")
@@ -225,9 +238,11 @@ private struct DownloadRow: View {
         switch item.state {
         case .downloading:
             let speed = item.bytesPerSecond > 0 ? " · \(Fmt.bytes(Int64(item.bytesPerSecond)))/s" : ""
-            return (item.info.isLive ? "Recording live" : "\(Int(item.fraction * 100))%") + (item.bytes > 0 ? " · \(size)" : "") + speed
+            let recording = item.isRecording && model.isSavingEnergy ? " · keeps recording in Low Power Mode (pausing would lose the stream)" : ""
+            return (item.info.isLive ? "Recording live" : "\(Int(item.fraction * 100))%") + (item.bytes > 0 ? " · \(size)" : "") + speed + recording
         case .waitingForNetwork: return "Waiting for the network"
         case .paused: return "Paused · \(Int(item.fraction * 100))%"
+        case .pausedSavingEnergy: return "Paused — Low Power Mode · \(Int(item.fraction * 100))%"
         case .complete: return item.bytes > 0 ? "Downloaded · \(size)" : "Downloaded"
         case .stopped: return "Stopped · \(Int(item.fraction * 100))%"
         }
@@ -250,4 +265,16 @@ extension TranscodeEncoder {
         conditionsAllow: { await MediaTranscoder.conditionsAllowBackgroundWork },
         transcode: { source, destination in try await MediaTranscoder.transcodeToHEVC(source: source, destination: destination) }
     )
+}
+
+extension BackgroundWorkPolicy {
+    /// Follows the platform's power conditions (SwiftOpenUI `PowerState`):
+    /// Low Power Mode, a power-saver profile or a serious thermal state defer
+    /// non-urgent work. Safe to call from every window: it subscribes once.
+    func followPlatformPowerState() {
+        guard claimFollowing() else { return }
+        PowerState.observe { [weak self] conditions in
+            self?.update(defersNonUrgentWork: conditions.savesEnergy)
+        }
+    }
 }

@@ -38,6 +38,8 @@ public final class AppDataStores: Sendable {
     let mediaDownloads: MediaDownloads
     /// Optional transcoding of finished downloads (Quality setting).
     let transcoding: TranscodeStage
+    /// Whether work that can wait should wait (saving energy, hot device).
+    let backgroundWork: BackgroundWorkPolicy
 
     public convenience init(dataDirectory: URL, cachesDirectory: URL, preferences: PreferencesDomain,
                             credentialStore: any CredentialStore) {
@@ -61,8 +63,14 @@ public final class AppDataStores: Sendable {
                                 limitBytes: MediaCache.bytes(gigabytes: limitGigabytes ?? MediaCache.defaultLimitGigabytes),
                                 sharing: [generatedCache])
         mediaDownloads = MediaDownloads(cache: mediaCache)
+        let policy = BackgroundWorkPolicy()
+        backgroundWork = policy
         transcoding = TranscodeStage(cache: mediaCache,
-                                     scratch: cachesDirectory.appendingPathComponent("Transcode", isDirectory: true))
+                                     scratch: cachesDirectory.appendingPathComponent("Transcode", isDirectory: true),
+                                     policy: policy)
+        // Downloads nobody watches pause while energy is saved.
+        let downloads = mediaDownloads
+        policy.observe { defers in Task { await downloads.setSavesEnergy(defers) } }
     }
 
     var defaults: UserDefaults { preferences.defaults }

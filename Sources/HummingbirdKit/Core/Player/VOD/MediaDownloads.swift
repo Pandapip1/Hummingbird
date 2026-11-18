@@ -127,6 +127,7 @@ actor MediaDownloads {
             entry.holders += 1
             tracks[spec.identity] = entry
             await entry.downloader.setPriority(.foreground)
+            await applyPausing()
             return entry.downloader
         }
         let track = try await cache.open(identity: spec.identity)
@@ -168,6 +169,7 @@ actor MediaDownloads {
             tracks[identity] = nil
         } else {
             await entry.downloader.setPriority(.background)
+            await applyPausing()
         }
     }
 
@@ -181,6 +183,7 @@ actor MediaDownloads {
             renditions[identity] = nil
         } else {
             await entry.downloader.setPriority(.background)
+            await applyPausing()
         }
     }
 
@@ -228,6 +231,8 @@ actor MediaDownloads {
         var recordings: [String] = []
         var paused = false
         var stopped = false
+        /// "Download anyway" while saving energy.
+        var downloadsWhileSavingEnergy = false
         var finishedAt: Date?
         var lastBytes: Int64 = 0
         var lastSample = ContinuousClock.now
@@ -235,6 +240,52 @@ actor MediaDownloads {
     }
 
     private var groups: [String: Group] = [:]
+
+    // MARK: saving energy
+
+    /// Low Power Mode, a power-saver profile or a hot device (BackgroundWorkPolicy).
+    private(set) var savesEnergy = false
+
+    /// While saving energy, downloads nobody is watching pause where they are
+    /// (no bytes are lost; they continue from there when it ends). What a
+    /// window plays keeps downloading at full speed, and live recordings keep
+    /// recording: pausing would lose the stream.
+    func setSavesEnergy(_ saves: Bool) async {
+        guard saves != savesEnergy else { return }
+        savesEnergy = saves
+        await applyPausing()
+    }
+
+    /// Downloads this video although energy is being saved.
+    func downloadWhileSavingEnergy(_ id: String) async {
+        guard var group = groups[id] else { return }
+        group.downloadsWhileSavingEnergy = true
+        groups[id] = group
+        await applyPausing()
+    }
+
+    private func energyPauses(_ identity: String, holders: Int) -> Bool {
+        guard savesEnergy, holders <= 0 else { return false }
+        let owners = groups.values.filter { $0.tracks.contains(identity) || $0.renditions.contains(identity) }
+        return !owners.contains { $0.downloadsWhileSavingEnergy }
+    }
+
+    private func userPaused(_ identity: String) -> Bool {
+        groups.values.contains { $0.paused && ($0.tracks.contains(identity) || $0.renditions.contains(identity) || $0.recordings.contains(identity)) }
+    }
+
+    /// Applies the user's pauses and the energy policy to every download.
+    private func applyPausing() async {
+        for (identity, entry) in tracks {
+            await entry.downloader.setPaused(userPaused(identity) || energyPauses(identity, holders: entry.holders))
+        }
+        for (identity, entry) in renditions {
+            await entry.downloader.setPaused(userPaused(identity) || energyPauses(identity, holders: entry.holders))
+        }
+        for (identity, entry) in recordings {
+            await entry.downloader.setPaused(userPaused(identity))
+        }
+    }
     private var groupOrder: [String] = []
 
     /// Names the downloads a session holds, for the downloads list.
@@ -296,13 +347,15 @@ actor MediaDownloads {
                 group.stopped ? .stopped
                 : complete || (!running && group.finishedAt != nil) ? .complete
                 : group.paused ? .paused
+                : savesEnergy && !playing && group.recordings.isEmpty && !group.downloadsWhileSavingEnergy ? .pausedSavingEnergy
                 : waiting ? .waitingForNetwork
                 : running ? .downloading
                 : .stopped
             groups[id] = group
             out.append(DownloadSnapshot(id: id, info: group.info, fraction: fraction, bytes: bytes,
                                         bytesPerSecond: state == .downloading ? group.bytesPerSecond : 0,
-                                        state: state, isPlaying: playing, finishedAt: group.finishedAt))
+                                        state: state, isPlaying: playing, finishedAt: group.finishedAt,
+                                        isRecording: !group.recordings.isEmpty))
         }
         return out
     }
@@ -312,9 +365,7 @@ actor MediaDownloads {
         guard var group = groups[id] else { return }
         group.paused = paused
         groups[id] = group
-        for identity in group.tracks { await tracks[identity]?.downloader.setPaused(paused) }
-        for identity in group.renditions { await renditions[identity]?.downloader.setPaused(paused) }
-        for identity in group.recordings { await recordings[identity]?.downloader.setPaused(paused) }
+        await applyPausing()
     }
 
     /// Stops a video's downloads; what was downloaded stays cached. A video
@@ -406,6 +457,8 @@ struct DownloadInfo: Sendable, Hashable {
 struct DownloadSnapshot: Sendable, Identifiable, Equatable {
     enum State: Sendable, Equatable {
         case downloading, waitingForNetwork, paused, complete, stopped
+        /// Paused while energy is saved (Low Power Mode); continues when it ends.
+        case pausedSavingEnergy
     }
     var id: String
     var info: DownloadInfo
@@ -418,4 +471,6 @@ struct DownloadSnapshot: Sendable, Identifiable, Equatable {
     /// Some window is playing it.
     var isPlaying: Bool
     var finishedAt: Date?
+    /// A live recording: it keeps recording while energy is saved.
+    var isRecording = false
 }

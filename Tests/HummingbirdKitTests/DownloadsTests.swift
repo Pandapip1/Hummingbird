@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import SwiftOpenUI
 @testable import HummingbirdKit
 
 /// The downloads list: one row per video across its tracks, real pause and
@@ -133,6 +134,58 @@ final class DownloadsTests: XCTestCase {
         XCTAssertFalse(model.pending.contains(item.id))
         XCTAssertEqual(model.items.first?.state, .paused)
         await downloads.stopAll()
+    }
+}
+
+extension DownloadsTests {
+    /// Saving energy (Low Power Mode, power-saver, hot device): downloads
+    /// nobody watches pause where they are and continue from there; what is
+    /// playing keeps downloading; "Download anyway" overrides; the policy
+    /// follows the platform's conditions.
+    func testSavingEnergyPausesUnwatchedDownloadsWithoutLosingBytes() async throws {
+        let data = Data((0..<20_000_000).map { UInt8($0 % 251) })
+        let (downloads, _) = makeDownloads(file: data)
+        let background = try await downloads.hold(try spec("closed"))
+        await downloads.describe(info, tracks: ["closed"])
+        await downloads.release(track: "closed")  // its player closed
+        let playing = try await downloads.hold(try spec("playing"))
+        let watched = DownloadInfo(id: "plugin|https://video.test/2", title: "Watched", contentURL: "https://video.test/2",
+                                   thumbnail: nil, isLive: false)
+        await downloads.describe(watched, tracks: ["playing"])
+        try await Task.sleep(for: .milliseconds(300))
+
+        let policy = BackgroundWorkPolicy()
+        policy.observe { defers in Task { await downloads.setSavesEnergy(defers) } }
+        policy.update(defersNonUrgentWork: true)
+        try await Task.sleep(for: .milliseconds(100))
+        let pausedBackground = await background.isPaused
+        let pausedPlaying = await playing.isPaused
+        XCTAssertTrue(pausedBackground, "a closed video's download waits")
+        XCTAssertFalse(pausedPlaying, "what is playing keeps downloading")
+        var rows = await downloads.snapshot()
+        XCTAssertEqual(rows.first { $0.id == info.id }?.state, .pausedSavingEnergy)
+        let kept = await background.state.stage(.download).completed.byteCount
+        try await Task.sleep(for: .milliseconds(300))
+        let after = await background.state.stage(.download).completed.byteCount
+        XCTAssertGreaterThanOrEqual(after, kept, "nothing downloaded is lost")
+
+        // Download anyway.
+        await downloads.downloadWhileSavingEnergy(info.id)
+        let overridden = await background.isPaused
+        XCTAssertFalse(overridden)
+        rows = await downloads.snapshot()
+        XCTAssertNotEqual(rows.first { $0.id == info.id }?.state, .pausedSavingEnergy)
+
+        // It ends: everything continues.
+        policy.update(defersNonUrgentWork: false)
+        try await Task.sleep(for: .milliseconds(100))
+        let resumed = await background.isPaused
+        XCTAssertFalse(resumed)
+        await downloads.stopAll()
+
+        XCTAssertTrue(PowerConditions(lowPower: false, thermal: .critical).savesEnergy, "a critical thermal state saves energy too")
+        XCTAssertTrue(PowerConditions(lowPower: true).savesEnergy)
+        XCTAssertFalse(PowerConditions(lowPower: false, thermal: .fair).savesEnergy)
     }
 }
 

@@ -249,6 +249,8 @@ final class AppModel {
             await transcoding.useEncoder(TranscodeEncoder.platform)
             await transcoding.setEnabled(transcodeEnabled)
         }
+        // The platform's power conditions drive the shared background-work policy.
+        stores.backgroundWork.followPlatformPowerState()
         self.downloads = downloadsModel
         self.stores = stores
         self.plugins = plugins

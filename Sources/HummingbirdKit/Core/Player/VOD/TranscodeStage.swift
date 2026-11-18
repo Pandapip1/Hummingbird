@@ -40,7 +40,11 @@ actor TranscodeStage {
     /// Tracks whose re-encoding did not save space (kept as they are).
     private var notWorthIt = Set<String>()
 
-    init(cache: MediaCache, scratch: URL, encoder: TranscodeEncoder = .unavailable) {
+    /// Transcoding is work that can wait: it pauses while energy is saved.
+    private let policy: BackgroundWorkPolicy?
+
+    init(cache: MediaCache, scratch: URL, encoder: TranscodeEncoder = .unavailable, policy: BackgroundWorkPolicy? = nil) {
+        self.policy = policy
         self.cache = cache
         self.scratch = scratch
         self.encoder = encoder
@@ -72,7 +76,7 @@ actor TranscodeStage {
     /// Returns whether it did work.
     @discardableResult
     func runOnce() async -> Bool {
-        guard isEnabled, encoder.isAvailable(), await encoder.conditionsAllow() else { return false }
+        guard isEnabled, policy?.defersNonUrgentWork != true, encoder.isAvailable(), await encoder.conditionsAllow() else { return false }
         let candidates = await cache.completeClosedTracks()
             .filter { Self.isVideoOriginal($0.identity) && !notWorthIt.contains($0.identity) }
         for candidate in candidates {

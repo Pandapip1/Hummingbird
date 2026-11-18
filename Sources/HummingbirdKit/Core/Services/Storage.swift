@@ -1,6 +1,7 @@
+import ATAppSync
 import CSQLite
 import Foundation
-import PlatformSupport
+import os
 
 /// App persistence backed by one SQLite database (`storage.sqlite3`) in a
 /// data directory. Existing JSON stores are imported lazily, so upgrades
@@ -8,21 +9,45 @@ import PlatformSupport
 ///
 /// Writes are encoded and committed in submission order on a background
 /// queue, so the main actor never waits for JSON or SQLite.
+///
+/// The database and legacy files are protected `complete`: unreadable while
+/// the device is locked. A write that can't reach them then (or that fails)
+/// goes to ATAppSync's `PendingWriteQueue` (`pending-writes.queue`, kept open,
+/// `completeUnlessOpen`), never nowhere; reads see queued values first; the
+/// queue is applied, in order and once, at launch and when protected data
+/// becomes available again.
 final class Storage: Sendable {
     private let backend: StorageBackend
     private let writer = DispatchQueue(label: "app.hummingbird.storage", qos: .utility)
+    /// Writes waiting for protected data; also where crash-safe progress is
+    /// kept (`ProgressRecovery`). Nil for an in-memory database.
+    let pendingWrites: PendingWriteQueue?
 
-    init(directory: URL) {
-        backend = StorageBackend(directory: directory)
+    init(directory: URL, protectedData: any ProtectedDataAvailability) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let queue = PendingWriteQueue(fileURL: directory.appendingPathComponent("pending-writes.queue"),
+                                      availability: protectedData)
+        pendingWrites = queue
+        backend = StorageBackend(directory: directory, queue: queue, protectedData: protectedData)
+        // Whatever a locked device or a killed process left queued lands now,
+        // and again whenever the device unlocks.
+        let backend = backend
+        let writer = writer
+        writer.async { backend.applyPendingWrites() }
+        protectedData.observeProtectedDataAvailability { available in
+            guard available else { return }
+            writer.async { backend.applyPendingWrites() }
+        }
     }
 
     private init(backend: StorageBackend) {
         self.backend = backend
+        pendingWrites = nil
     }
 
     /// A private in-memory database with no files at all, for tests.
     static func inMemory() -> Storage {
-        Storage(backend: StorageBackend(directory: nil))
+        Storage(backend: StorageBackend(directory: nil, queue: nil, protectedData: UnprotectedDataAvailability()))
     }
 
     func load<T: Decodable>(_ type: T.Type, name: String) -> T? {
@@ -31,6 +56,16 @@ final class Storage: Sendable {
 
     func save<T: Encodable & Sendable>(_ value: T, name: String) {
         writer.async { [backend] in backend.save(value, name: name) }
+    }
+
+    /// Applies queued writes now, if protected data is available.
+    func applyPendingWrites() async {
+        await withCheckedContinuation { continuation in
+            writer.async { [backend] in
+                backend.applyPendingWrites()
+                continuation.resume()
+            }
+        }
     }
 
     /// Waits for every write submitted so far.
@@ -53,12 +88,18 @@ final class StorageBackend: @unchecked Sendable {
     /// Nil for an in-memory database, which has no legacy files.
     private let directory: URL?
     private let database: StorageDatabase
+    private let queue: PendingWriteQueue?
+    private let protectedData: any ProtectedDataAvailability
+    private static let queuePrefix = "storage/"
 
-    init(directory: URL?) {
+    init(directory: URL?, queue: PendingWriteQueue?, protectedData: any ProtectedDataAvailability) {
         self.directory = directory
+        self.queue = queue
+        self.protectedData = protectedData
         if let directory {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"))
+            database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"),
+                                       protectedData: protectedData)
         } else {
             database = StorageDatabase(path: ":memory:")
         }
@@ -67,6 +108,11 @@ final class StorageBackend: @unchecked Sendable {
     func load<T: Decodable>(_ type: T.Type, name: String) -> T? {
         lock.lock()
         defer { lock.unlock() }
+        // A queued write is newer than anything stored, and is all there is
+        // to read while the device is locked.
+        if let queued = queue?.latest(key: Self.queuePrefix + name) {
+            return try? JSONDecoder().decode(T.self, from: queued.payload)
+        }
         guard let directory else {
             return database.load(name: name).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
         }
@@ -90,18 +136,55 @@ final class StorageBackend: @unchecked Sendable {
             database.save(data, name: name)
             return
         }
+        // Locked: the database can't be opened for writing; queue instead.
+        guard protectedData.isProtectedDataAvailable else {
+            enqueue(data, name: name, reason: "protected_data_unavailable")
+            return
+        }
         let legacyURL = directory.appendingPathComponent(name + ".json")
         if database.save(data, name: name) {
             do { try FileManager.default.removeItem(at: legacyURL) }
             catch where (error as NSError).code == NSFileNoSuchFileError { }
-            catch { saveLegacy(data, to: legacyURL) }
-        } else {
-            saveLegacy(data, to: legacyURL)
+            catch { if !saveLegacy(data, to: legacyURL) { enqueue(data, name: name, reason: "legacy_cleanup_failed") } }
+        } else if !saveLegacy(data, to: legacyURL) {
+            enqueue(data, name: name, reason: "database_and_legacy_write_failed")
         }
     }
 
-    private func saveLegacy(_ data: Data, to url: URL) {
-        try? FileProtection.writeProtected(data, to: url)
+    /// Writes queued values into the database, oldest first; each leaves the
+    /// queue once it is stored.
+    func applyPendingWrites() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let queue else { return }
+        let landed = queue.apply(keyPrefix: Self.queuePrefix) { write in
+            guard let payload = write.payload else { return true }
+            return database.save(payload, name: String(write.key.dropFirst(Self.queuePrefix.count)))
+        }
+        if landed > 0 { Logger.performance.notice("storage_pending_applied count=\(landed)") }
+    }
+
+    private func enqueue(_ data: Data, name: String, reason: StaticString) {
+        guard let queue else {
+            Logger.performance.error("storage_write_lost name=\(name, privacy: .public) reason=\(String(describing: reason), privacy: .public)")
+            return
+        }
+        do {
+            try queue.append(key: Self.queuePrefix + name, payload: data)
+            Logger.performance.notice("storage_write_queued name=\(name, privacy: .public) reason=\(String(describing: reason), privacy: .public)")
+        } catch {
+            Logger.performance.error("storage_write_lost name=\(name, privacy: .public) reason=\(String(describing: reason), privacy: .public) error=\(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func saveLegacy(_ data: Data, to url: URL) -> Bool {
+        do {
+            try data.write(to: url, options: [.atomic])
+            try protectedData.setProtection(.complete, for: url)
+            return true
+        } catch {
+            return false
+        }
     }
 }
 
@@ -111,9 +194,13 @@ final class StorageDatabase: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: OpaquePointer?
 
-    convenience init(url: URL) {
+    /// Protected `complete`: unreadable while the device is locked.
+    convenience init(url: URL, protectedData: any ProtectedDataAvailability) {
         self.init(path: url.path)
-        FileProtection.protectExistingFiles(atPaths: [url.path, url.path + "-wal", url.path + "-shm"])
+        for path in [url.path, url.path + "-wal", url.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
+            do { try protectedData.setProtection(.complete, for: URL(fileURLWithPath: path)) }
+            catch { Logger.performance.error("storage_protection_failed error=\(String(describing: error), privacy: .public)") }
+        }
     }
 
     /// `":memory:"` opens a private in-memory database.

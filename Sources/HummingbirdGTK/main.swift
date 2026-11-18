@@ -30,15 +30,16 @@ private struct GTKProfileRoot: View {
 }
 
 /// The user's real data. This entry point is the only place that opens it.
+@MainActor
 private func liveStores() -> AppDataStores {
     #if canImport(Security)
     // This standalone backend-development executable is not the provisioned
     // native app bundle. Give it its own Keychain service so macOS never tries
     // to authorize every native-app legacy item against a different executable
     // identity. It remains a real Keychain store, not a plaintext debug store.
-    AppDataStores.live(credentialServiceNamespace: "gtk")
+    AppDataStores.live(credentialServiceNamespace: "gtk", protectedData: SystemProtectedData())
     #else
-    AppDataStores.live()
+    AppDataStores.live(protectedData: SystemProtectedData())
     #endif
 }
 

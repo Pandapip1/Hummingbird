@@ -61,8 +61,8 @@ private struct LaunchGate: View {
     }
 
     @concurrent
-    private static func open() async -> Opened {
-        let stores = AppDataStores.live()
+    private static func open(protectedData: SystemProtectedData) async -> Opened {
+        let stores = AppDataStores.live(protectedData: protectedData)
         #if os(macOS)
         // Probes the credential store before anything is written to it.
         let decision = stores.keychain.flatMap(CredentialStorageDecision.pending(for:))
@@ -125,7 +125,7 @@ private struct LaunchGate: View {
             .onAppear { DispatchQueue.main.async { LaunchTiming.mark(.splashVisible) } }
             .task(id: "\(stores != nil):\(awaitingStorageDecision):\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
                 guard let stores else {
-                    let opened = await Self.open()
+                    let opened = await Self.open(protectedData: SystemProtectedData())
                     #if os(macOS)
                     storageDecision = opened.storageDecision
                     #endif

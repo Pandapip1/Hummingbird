@@ -1,3 +1,4 @@
+import ATAppSync
 import XCTest
 @testable import HummingbirdKit
 
@@ -154,14 +155,14 @@ final class ModelAndLogicTests: XCTestCase {
         let url = directory.appendingPathComponent("storage.sqlite3")
 
         do {
-            let database = StorageDatabase(url: url)
+            let database = StorageDatabase(url: url, protectedData: UnprotectedDataAvailability())
             XCTAssertNil(database.load(name: "history"))
             XCTAssertTrue(database.save(Data("first".utf8), name: "history"))
             XCTAssertEqual(database.load(name: "history"), Data("first".utf8))
             XCTAssertTrue(database.save(Data("second".utf8), name: "history"))
         }
 
-        let reopened = StorageDatabase(url: url)
+        let reopened = StorageDatabase(url: url, protectedData: UnprotectedDataAvailability())
         XCTAssertEqual(reopened.load(name: "history"), Data("second".utf8))
     }
 
@@ -173,12 +174,12 @@ final class ModelAndLogicTests: XCTestCase {
         let legacyURL = directory.appendingPathComponent("history.json")
         try JSONEncoder().encode(["legacy", "value"]).write(to: legacyURL)
 
-        let backend = StorageBackend(directory: directory)
+        let backend = StorageBackend(directory: directory, queue: nil, protectedData: UnprotectedDataAvailability())
         let imported: [String]? = backend.load([String].self, name: "history")
         XCTAssertEqual(imported, ["legacy", "value"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
 
-        let database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"))
+        let database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"), protectedData: UnprotectedDataAvailability())
         let stored = database.load(name: "history").flatMap { try? JSONDecoder().decode([String].self, from: $0) }
         XCTAssertEqual(stored, imported)
     }
@@ -195,7 +196,7 @@ final class ModelAndLogicTests: XCTestCase {
             withIntermediateDirectories: false
         )
 
-        let backend = StorageBackend(directory: directory)
+        let backend = StorageBackend(directory: directory, queue: nil, protectedData: UnprotectedDataAvailability())
         backend.save(["newest"], name: "history")
         let loaded: [String]? = backend.load([String].self, name: "history")
         XCTAssertEqual(loaded, ["newest"])

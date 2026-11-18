@@ -38,10 +38,14 @@ public final class AppDataStores: Sendable {
     /// Every VOD download; they outlive the players that started them.
     let mediaDownloads: MediaDownloads
 
+    /// `protectedData` is the platform's data-protection state (the app
+    /// passes `SystemProtectedData`): stores protected until unlock queue
+    /// their writes while the device is locked.
     public convenience init(dataDirectory: URL, cachesDirectory: URL, preferences: PreferencesDomain,
-                            credentialStore: any CredentialStore) {
+                            credentialStore: any CredentialStore, protectedData: any ProtectedDataAvailability) {
         self.init(dataDirectory: dataDirectory, cachesDirectory: cachesDirectory, preferences: preferences,
-                  credentialStore: credentialStore, storage: Storage(directory: dataDirectory))
+                  credentialStore: credentialStore,
+                  storage: Storage(directory: dataDirectory, protectedData: protectedData))
     }
 
     /// `storage` replaces `storage.sqlite3` in `dataDirectory`; tests pass an
@@ -104,7 +108,8 @@ public final class AppDataStores: Sendable {
     /// `credentialServiceNamespace` separates the keychain items of a build
     /// that is not the provisioned app (the GTK development executable).
     /// In a test process this stops the process: tests make their own stores.
-    public static func live(credentialServiceNamespace: String? = nil) -> AppDataStores {
+    public static func live(credentialServiceNamespace: String? = nil,
+                            protectedData: any ProtectedDataAvailability) -> AppDataStores {
         LiveData.require("AppDataStores.live (the user's real data)")
         return liveStores.withLock { stores in
             let key = credentialServiceNamespace ?? ""
@@ -116,7 +121,7 @@ public final class AppDataStores: Sendable {
                 let rootURL = root.hasPrefix("/")
                     ? URL(fileURLWithPath: root, isDirectory: true)
                     : FileManager.default.temporaryDirectory.appendingPathComponent(root, isDirectory: true)
-                let created = debugIsolated(root: rootURL)
+                let created = debugIsolated(root: rootURL, protectedData: protectedData)
                 stores[key] = created
                 return created
             }
@@ -143,7 +148,8 @@ public final class AppDataStores: Sendable {
                 preferences: .standard,
                 credentialStore: KeychainCredentialStore.shared(
                     serviceNamespace: credentialServiceNamespace, preferences: .standard
-                )
+                ),
+                protectedData: protectedData
             )
             stores[key] = created
             return created
@@ -157,12 +163,13 @@ public final class AppDataStores: Sendable {
     /// a build never touches the real profile, library or keychain.
     public static let debugDataRootVariable = "HUMMINGBIRD_DEBUG_DATA_ROOT"
 
-    private static func debugIsolated(root: URL) -> AppDataStores {
+    private static func debugIsolated(root: URL, protectedData: any ProtectedDataAvailability) -> AppDataStores {
         AppDataStores(
             dataDirectory: root.appendingPathComponent("Application Support", isDirectory: true),
             cachesDirectory: root.appendingPathComponent("Caches", isDirectory: true),
             preferences: .suite(root.appendingPathComponent("preferences", isDirectory: false).path),
-            credentialStore: EphemeralCredentialStore()
+            credentialStore: EphemeralCredentialStore(),
+            protectedData: protectedData
         )
     }
     #endif

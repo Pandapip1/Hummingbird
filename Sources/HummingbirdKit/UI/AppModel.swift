@@ -205,7 +205,8 @@ final class AppModel {
         )
         let library = LibraryStore(
             snapshot: persistence.library, profileChanges: profileChanges,
-            storage: storage, storagePrefix: storagePrefix
+            storage: storage, storagePrefix: storagePrefix,
+            recovery: stores.storage.pendingWrites.map { ProgressRecovery(queue: $0, profile: localProfileID) }
         )
         let platform = PlatformService(
             plugins: plugins, storage: storage, detailsCacheStorageName: storagePrefix + "details_cache"
@@ -308,6 +309,8 @@ final class AppModel {
         // network here: the gate explains it before the system can prompt.
         let localNetworkSync = self.localNetworkSync
         Task { await localNetworkSync.applyStoredSetting() }
+        // Progress a crash kept out of the history comes back now, once.
+        Task { [library] in await library.recoverInterruptedProgress() }
         HummingbirdDebug.register(self)
         #if DEBUG
         MainThreadWatchdog.shared.start(log: PerformanceReports.store(for: stores).stallLog) { [weak self] in

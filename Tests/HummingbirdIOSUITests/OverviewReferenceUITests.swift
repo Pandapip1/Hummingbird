@@ -6,15 +6,13 @@ import XCTest
 /// "hummingbird-…".
 final class OverviewReferenceUITests: XCTestCase {
     override func tearDown() {
-        XCUIDevice.shared.appearance = .light
         XCUIDevice.shared.orientation = .portrait
         super.tearDown()
     }
 
     @MainActor
     func testSafariTabOverview() throws {
-        for (appearance, orientation) in Self.variants {
-            XCUIDevice.shared.appearance = appearance
+        for orientation in Self.orientations {
             XCUIDevice.shared.orientation = orientation
             let safari = SystemReferenceApp.safari()
             safari.launch()
@@ -34,15 +32,14 @@ final class OverviewReferenceUITests: XCTestCase {
                 RunLoop.current.run(until: Date().addingTimeInterval(1))
             }
             RunLoop.current.run(until: Date().addingTimeInterval(2))
-            attach(safari, "safari-\(Self.name(appearance, orientation))")
+            attach(safari, "safari-\(Self.name(orientation))")
             safari.terminate()
         }
     }
 
     @MainActor
     func testHummingbirdTabOverview() throws {
-        for (appearance, orientation) in Self.variants {
-            XCUIDevice.shared.appearance = appearance
+        for orientation in Self.orientations {
             XCUIDevice.shared.orientation = orientation
             let app = IsolatedApp.launch()
             for section in ["Library", "Settings"] {
@@ -58,22 +55,27 @@ final class OverviewReferenceUITests: XCTestCase {
             tabs.tap()
             XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 10))
             RunLoop.current.run(until: Date().addingTimeInterval(2))
-            attach(app, "hummingbird-\(Self.name(appearance, orientation))")
+            attach(app, "hummingbird-\(Self.name(orientation))")
             app.terminate()
         }
     }
 
-    private static let variants: [(XCUIDevice.Appearance, UIDeviceOrientation)] = [
-        (.light, .portrait), (.dark, .portrait), (.light, .landscapeLeft), (.dark, .landscapeLeft),
-    ]
+    private static let orientations: [UIDeviceOrientation] = [.portrait, .landscapeLeft]
 
-    private static func name(_ appearance: XCUIDevice.Appearance, _ orientation: UIDeviceOrientation) -> String {
-        "\(appearance == .dark ? "dark" : "light")-\(orientation == .portrait ? "portrait" : "landscape")"
+    /// The Simulator's appearance is set from outside (`xcrun simctl ui <device>
+    /// appearance dark`), and named by TEST_RUNNER_REFERENCE_APPEARANCE when
+    /// running xcodebuild: XCUIDevice's appearance setting doesn't reach apps.
+    private static func name(_ orientation: UIDeviceOrientation) -> String {
+        let appearance = ProcessInfo.processInfo.environment["REFERENCE_APPEARANCE"] ?? "light"
+        return "\(appearance)-\(orientation == .portrait ? "portrait" : "landscape")"
     }
 
     @MainActor
     private func attach(_ app: XCUIApplication, _ name: String) {
-        let shot = XCTAttachment(screenshot: app.screenshot())
+        // Let a rotation finish, and take the whole screen: an app screenshot
+        // taken in landscape comes out drawn in portrait.
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         shot.name = name
         shot.lifetime = .keepAlways
         add(shot)

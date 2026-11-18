@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 
 // MARK: - Address networks and approvals
 
@@ -113,46 +114,17 @@ protocol HostResolving: Sendable {
     func resolve(host: String, port: Int) throws -> [IPAddress]
 }
 
+/// The system resolver. The getaddrinfo call (whose constants differ between
+/// Darwin and Glibc) lives in PlatformSupport; what the addresses may be is
+/// decided here, by `PluginNetworkPolicy`.
 struct SystemHostResolver: HostResolving {
-    struct Failure: LocalizedError {
-        let host: String
-        var errorDescription: String? { "Could not find \(host)" }
-    }
+    typealias Failure = HostAddressLookup.Failure
 
     func resolve(host: String, port: Int) throws -> [IPAddress] {
         if let literal = IPAddress(literal: host) { return [literal] }
-        var hints = addrinfo()
-        hints.ai_family = AF_UNSPEC
-        #if os(Linux)
-        hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
-        #else
-        hints.ai_socktype = SOCK_STREAM
-        #endif
-        var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, String(port), &hints, &result) == 0, let first = result else { throw Failure(host: host) }
-        defer { freeaddrinfo(first) }
-        var out: [IPAddress] = []
-        var cursor: UnsafeMutablePointer<addrinfo>? = first
-        while let info = cursor {
-            if let sa = info.pointee.ai_addr {
-                switch Int32(sa.pointee.sa_family) {
-                case AF_INET:
-                    let bytes = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { sin in
-                        withUnsafeBytes(of: sin.pointee.sin_addr) { Array($0) }
-                    }
-                    if let a = IPAddress(bytes: bytes), !out.contains(a) { out.append(a) }
-                case AF_INET6:
-                    let bytes = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { sin6 in
-                        withUnsafeBytes(of: sin6.pointee.sin6_addr) { Array($0) }
-                    }
-                    if let a = IPAddress(bytes: bytes), !out.contains(a) { out.append(a) }
-                default: break
-                }
-            }
-            cursor = info.pointee.ai_next
-        }
-        guard !out.isEmpty else { throw Failure(host: host) }
-        return out
+        let addresses = try HostAddressLookup.resolve(host: host, port: port).compactMap(IPAddress.init(bytes:))
+        guard !addresses.isEmpty else { throw Failure(host: host) }
+        return addresses
     }
 }
 

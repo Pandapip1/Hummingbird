@@ -69,7 +69,7 @@ final class ProfileAccountService {
          changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
          localNetworkEnabled: Bool = false,
-         defersBulkWork: @escaping @Sendable () -> Bool = { false },
+         defersBulkWork: @escaping @Sendable () -> Bool,
          oauthPresenter: any ATProtoOAuthPresenter,
          authenticator: ATProtoOAuthAuthenticator? = nil) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)

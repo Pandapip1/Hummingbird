@@ -47,6 +47,24 @@ final class LockedStorageTests: XCTestCase {
         XCTAssertEqual(storage.pendingWrites?.pending().isEmpty, true)
     }
 
+    /// A save that reaches the database after unlock, before the queue has
+    /// been applied, wins: the older queued value neither shadows it on read
+    /// nor overwrites it when the queue is applied later.
+    func testSaveAfterUnlockIsNotOverwrittenByAnOlderQueuedValue() async throws {
+        let directory = makeTestDirectory("LockedStorage")
+        let device = LockableDevice(unlocked: false)
+        let storage = Storage(directory: directory, protectedData: device)
+        storage.save(["while locked"], name: "history")
+        await storage.flush()
+        device.unlocked = true   // unlocked; the notification hasn't arrived yet
+        storage.save(["after unlock"], name: "history")
+        await storage.flush()
+        XCTAssertEqual(storage.load([String].self, name: "history"), ["after unlock"])
+        await storage.applyPendingWrites()
+        XCTAssertEqual(storage.load([String].self, name: "history"), ["after unlock"])
+        XCTAssertEqual(storage.pendingWrites?.pending().isEmpty, true)
+    }
+
     /// Protection classes are set explicitly, per file.
     func testDatabaseIsCompleteAndQueueIsCompleteUnlessOpen() async throws {
         let directory = makeTestDirectory("LockedStorage")

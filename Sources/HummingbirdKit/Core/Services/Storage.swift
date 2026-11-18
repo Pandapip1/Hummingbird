@@ -145,9 +145,27 @@ final class StorageBackend: @unchecked Sendable {
         if database.save(data, name: name) {
             do { try FileManager.default.removeItem(at: legacyURL) }
             catch where (error as NSError).code == NSFileNoSuchFileError { }
-            catch { if !saveLegacy(data, to: legacyURL) { enqueue(data, name: name, reason: "legacy_cleanup_failed") } }
+            catch {
+                if !saveLegacy(data, to: legacyURL) {
+                    enqueue(data, name: name, reason: "legacy_cleanup_failed")
+                    return
+                }
+            }
         } else if !saveLegacy(data, to: legacyURL) {
             enqueue(data, name: name, reason: "database_and_legacy_write_failed")
+            return
+        }
+        // Stored: anything still queued for this name is older (it was
+        // queued before this save), so it must neither shadow this value on
+        // read nor overwrite it when the queue is applied.
+        discardQueued(name: name)
+    }
+
+    private func discardQueued(name: String) {
+        guard let queue, let queued = queue.latest(key: Self.queuePrefix + name) else { return }
+        do { try queue.clear(key: Self.queuePrefix + name, through: queued.sequence) }
+        catch {
+            Logger.performance.error("storage_queue_clear_failed name=\(name, privacy: .public) error=\(String(describing: error), privacy: .public)")
         }
     }
 

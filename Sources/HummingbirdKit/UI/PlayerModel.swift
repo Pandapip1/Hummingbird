@@ -268,6 +268,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// failure the old stream keeps playing and the error is shown.
     func select(_ option: PlaybackOption) async {
         let position = backend?.currentTime
+        recordProgressNow(position)
         let autoplay = backend?.isPlaying ?? true
         var choice = option
         if choice.audio != nil, let selectedAudioSource { choice.audio = selectedAudioSource }
@@ -282,6 +283,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     func selectAudioSource(_ source: MediaSource) async {
         guard var choice = selected else { return }
         let position = backend?.currentTime
+        recordProgressNow(position)
         let autoplay = backend?.isPlaying ?? true
         guard choice.audio != nil else { return }
         choice.audio = source
@@ -422,9 +424,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 guard !Task.isCancelled else { return }
                 backend?.seek(to: target)
                 self?.pendingSeekTask = nil
+                // Once the scrub settles, not on every step of it.
+                self?.recordProgressNow(target)
             }
         } else {
             backend.seek(to: target)
+            recordProgressNow(target)
         }
     }
     func replay() {
@@ -882,6 +887,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
 
     // MARK: ticking
+
+    /// Records progress at once, outside the 5-second tick cadence: after a
+    /// seek and before a stream switch, where the position just changed or
+    /// the player is about to be replaced.
+    private func recordProgressNow(_ seconds: Double?) {
+        guard let seconds, seconds.isFinite, seconds > 1, let details, let library else { return }
+        lastHistoryWrite = Date()
+        library.recordProgress(SavedVideo(details.item), seconds: seconds)
+    }
 
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }

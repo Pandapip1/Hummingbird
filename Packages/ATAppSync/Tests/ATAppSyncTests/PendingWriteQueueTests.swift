@@ -82,6 +82,49 @@ final class PendingWriteQueueTests: XCTestCase {
         XCTAssertEqual(device.protection(of: file), .completeUnlessOpen)
     }
 
+    /// A record rewritten every few seconds doesn't grow the file without
+    /// bound while unlocked: replaced values are dropped, atomically, and
+    /// the queue still reads and appends correctly afterwards.
+    func testReplacedValuesAreCompactedWhileUnlocked() throws {
+        let file = try temporaryFile()
+        let device = FakeDevice(unlocked: true)
+        let queue = PendingWriteQueue(fileURL: file, availability: device)
+        try queue.append(key: "storage/history", payload: Data("h".utf8))
+        for tick in 0..<300 { try queue.append(key: "progress/p", payload: Data("\(tick)".utf8)) }
+        let lines = String(decoding: try Data(contentsOf: file), as: UTF8.self).split(separator: "\n")
+        XCTAssertLessThan(lines.count, 70)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.appendingPathExtension("compacting").path))
+        XCTAssertEqual(device.protection(of: file.appendingPathExtension("compacting")), .completeUnlessOpen,
+                       "the replacement is protected before it is written")
+        try queue.append(key: "progress/p", payload: Data("last".utf8))
+
+        let reopened = PendingWriteQueue(fileURL: file, availability: device)
+        XCTAssertEqual(reopened.pending().map(\.key), ["storage/history", "progress/p"])
+        XCTAssertEqual(reopened.latest(key: "progress/p")?.payload, Data("last".utf8))
+    }
+
+    /// While locked the file is only ever appended to.
+    func testNoCompactionWhileLocked() throws {
+        let file = try temporaryFile()
+        let queue = PendingWriteQueue(fileURL: file, availability: FakeDevice(unlocked: false))
+        for tick in 0..<100 { try queue.append(key: "progress/p", payload: Data("\(tick)".utf8)) }
+        let lines = String(decoding: try Data(contentsOf: file), as: UTF8.self).split(separator: "\n")
+        XCTAssertEqual(lines.count, 100)
+        XCTAssertEqual(queue.latest(key: "progress/p")?.payload, Data("99".utf8))
+    }
+
+    /// `waitUntilAvailable` returns at once when unlocked, and otherwise
+    /// when the device reports the unlock.
+    func testWaitUntilAvailableReturnsOnUnlock() async throws {
+        await FakeDevice(unlocked: true).waitUntilAvailable()
+        let device = FakeDevice(unlocked: false)
+        let waiting = Task { await device.waitUntilAvailable() }
+        try await Task.sleep(for: .milliseconds(50))
+        device.unlock()
+        await waiting.value
+        XCTAssertTrue(device.isProtectedDataAvailable)
+    }
+
     private func temporaryFile() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PendingWriteQueue-\(UUID().uuidString)", isDirectory: true)
@@ -90,11 +133,26 @@ final class PendingWriteQueueTests: XCTestCase {
     }
 }
 
-/// A device whose lock state the test sets, recording protection classes.
+/// A device whose lock state the test sets, recording protection classes
+/// and telling observers when it unlocks.
 final class FakeDevice: ProtectedDataAvailability {
-    private let state: Mutex<(unlocked: Bool, classes: [String: AppSyncFileProtection])>
+    private struct State {
+        var unlocked: Bool
+        var classes: [String: AppSyncFileProtection] = [:]
+        var observers: [@Sendable (Bool) -> Void] = []
+    }
+    private let state: Mutex<State>
 
-    init(unlocked: Bool) { state = Mutex((unlocked, [:])) }
+    init(unlocked: Bool) { state = Mutex(State(unlocked: unlocked)) }
+
+    /// The system's unlock notification.
+    func unlock() {
+        let observers = state.withLock { state in
+            state.unlocked = true
+            return state.observers
+        }
+        for observer in observers { observer(true) }
+    }
 
     var unlocked: Bool {
         get { state.withLock { $0.unlocked } }
@@ -102,7 +160,9 @@ final class FakeDevice: ProtectedDataAvailability {
     }
 
     var isProtectedDataAvailable: Bool { unlocked }
-    func observeProtectedDataAvailability(_ handler: @escaping @Sendable (Bool) -> Void) {}
+    func observeProtectedDataAvailability(_ handler: @escaping @Sendable (Bool) -> Void) {
+        state.withLock { $0.observers.append(handler) }
+    }
     func setProtection(_ protection: AppSyncFileProtection, for url: URL) throws {
         state.withLock { $0.classes[url.standardizedFileURL.path] = protection }
     }

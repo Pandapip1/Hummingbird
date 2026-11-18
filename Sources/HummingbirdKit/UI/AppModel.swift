@@ -245,6 +245,11 @@ final class AppModel {
             // Off until this instance may use the local network; the
             // controller below turns it on once the gate has passed.
             localNetworkEnabled: false,
+            // Timer-driven local-network pulls wait while energy is being
+            // saved. Nothing on this branch reports that yet; the playback
+            // branch's BackgroundWorkPolicy answers it with
+            // { stores.backgroundWork.defersNonUrgentWork }.
+            defersBulkWork: { false },
             oauthPresenter: oauthPresenter
         )
         let profileAccount = self.profileAccount

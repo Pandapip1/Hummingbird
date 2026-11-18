@@ -30,6 +30,36 @@ public protocol ProtectedDataAvailability: Sendable {
     func protection(of url: URL) -> AppSyncFileProtection?
 }
 
+extension ProtectedDataAvailability {
+    /// Returns once protected data is available: at once if it is now,
+    /// otherwise when the host reports the device unlocked.
+    public func waitUntilAvailable() async {
+        guard !isProtectedDataAvailable else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(continuation)
+            observeProtectedDataAvailability { available in if available { once.resume() } }
+            // It may have become available before the observer was added.
+            if isProtectedDataAvailable { once.resume() }
+        }
+    }
+}
+
+/// Resumes a continuation the first time it is asked to; later asks do nothing.
+private final class ResumeOnce: Sendable {
+    private let continuation: Mutex<CheckedContinuation<Void, Never>?>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = Mutex(continuation)
+    }
+
+    func resume() {
+        continuation.withLock { pending in
+            defer { pending = nil }
+            return pending
+        }?.resume()
+    }
+}
+
 /// No data protection: always available; protection classes are not kept.
 public struct UnprotectedDataAvailability: ProtectedDataAvailability {
     public init() {}
@@ -123,10 +153,17 @@ public final class PendingWriteQueue: Sendable {
     /// must then report the write as lost.
     @discardableResult
     public func append(key: String, payload: Data) throws -> UInt64 {
-        try append { sequence in
+        let sequence = try append { sequence in
             PendingWrite(sequence: sequence, key: key, kind: .value, payload: payload, through: nil)
         }
+        // A value rewritten every few seconds (the progress record) leaves
+        // replaced lines behind; drop them once enough have built up.
+        if state.withLock({ $0.records.count >= Self.compactionThreshold }) { compactIfAvailable() }
+        return sequence
     }
+
+    /// How many lines the file may hold before replaced values are dropped.
+    private static let compactionThreshold = 64
 
     /// Marks `key`'s values up to `sequence` done with. Values queued later
     /// stay pending.
@@ -188,26 +225,51 @@ public final class PendingWriteQueue: Sendable {
         }
     }
 
-    /// Rewrites the file with only what is still pending, through the open
-    /// handle. Only while protected data is available, so a rewrite is never
-    /// what a locked device has to survive.
+    /// Rewrites the file with only what is still pending. The new contents
+    /// go to a sibling file (protected `completeUnlessOpen`, fsync'd) that
+    /// then replaces the queue in one rename, so a crash mid-compaction
+    /// leaves the old file or the new one, never part of either; the kept
+    /// handle moves to the new file. Only while protected data is
+    /// available, so a rewrite is never what a locked device has to survive.
     private func compactIfAvailable() {
         guard availability.isProtectedDataAvailable else { return }
         state.withLock { state in
             guard let handle = state.handle else { return }
             let kept = Self.pendingUnlocked(state.records)
             guard kept.count < state.records.count else { return }
+            let replacement = fileURL.appendingPathExtension("compacting")
             do {
                 var data = Data()
                 for write in kept {
                     data.append(try JSONEncoder().encode(write))
                     data.append(0x0A)
                 }
-                try handle.truncate(atOffset: 0)
-                try handle.write(contentsOf: data)
-                try handle.synchronize()
+                if FileManager.default.fileExists(atPath: replacement.path) {
+                    try FileManager.default.removeItem(at: replacement)
+                }
+                guard FileManager.default.createFile(atPath: replacement.path, contents: nil) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try availability.setProtection(.completeUnlessOpen, for: replacement)
+                let newHandle = try FileHandle(forUpdating: replacement)
+                do {
+                    try newHandle.write(contentsOf: data)
+                    try newHandle.synchronize()
+                    // rename(2): atomic, and the new handle stays on the file.
+                    guard rename(replacement.path, fileURL.path) == 0 else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                } catch {
+                    try? newHandle.close()
+                    throw error
+                }
+                try? handle.close()
+                state.handle = newHandle
                 state.records = kept
             } catch {
+                if FileManager.default.fileExists(atPath: replacement.path) {
+                    try? FileManager.default.removeItem(at: replacement)
+                }
                 Self.log.error("pending_queue_compact_failed error=\(String(describing: error), privacy: .public)")
             }
         }

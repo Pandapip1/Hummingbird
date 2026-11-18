@@ -77,7 +77,7 @@ final class SignInScopeConfirmationTests: XCTestCase {
         ProfileAccountService(
             localProfileID: UUID(), stores: model.stores,
             changes: model.profileChanges, library: model.library, plugins: model.plugins,
-            peerService: nil, oauthPresenter: presenter,
+            peerService: nil, defersBulkWork: { false }, oauthPresenter: presenter,
             authenticator: ATProtoOAuthAuthenticator(flow: flow, presenter: presenter)
         )
     }

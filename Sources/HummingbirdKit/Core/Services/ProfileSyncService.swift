@@ -37,7 +37,7 @@ final class ProfileSyncService {
     init(changes: ProfileChangeStore, mutationLog: AppSyncMutationLog,
          library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
-         localNetworkEnabled: Bool = false, defersBulkWork: @escaping @Sendable () -> Bool = { false }) {
+         localNetworkEnabled: Bool = false, defersBulkWork: @escaping @Sendable () -> Bool) {
         self.defersBulkWork = defersBulkWork
         lanSync = peerService.map {
             AppSyncLANClient(

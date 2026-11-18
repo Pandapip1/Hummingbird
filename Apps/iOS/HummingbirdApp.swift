@@ -125,7 +125,15 @@ private struct LaunchGate: View {
             .onAppear { DispatchQueue.main.async { LaunchTiming.mark(.splashVisible) } }
             .task(id: "\(stores != nil):\(awaitingStorageDecision):\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
                 guard let stores else {
-                    let opened = await Self.open(protectedData: SystemProtectedData())
+                    let protectedData = SystemProtectedData()
+                    // Launched while the device is locked (and nothing yet
+                    // queued): the databases can't be read, so opening them
+                    // now would start the library empty and later writes
+                    // would replace what is stored. The splash stays until
+                    // the first unlock.
+                    await protectedData.waitUntilAvailable()
+                    guard !Task.isCancelled else { return }
+                    let opened = await Self.open(protectedData: protectedData)
                     #if os(macOS)
                     storageDecision = opened.storageDecision
                     #endif

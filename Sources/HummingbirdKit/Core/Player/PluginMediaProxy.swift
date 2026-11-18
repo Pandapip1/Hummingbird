@@ -15,13 +15,34 @@ actor PluginMediaProxy {
         let executor: Int
         let audioRuntime: PluginRuntime?
         let audioExecutor: Int?
-        let master: String
+        var master: String
         let video: String?
         let audio: String?
         let cache: UMPMediaCache.Handle?
         let resources: [DashToHLS.Resource]
         let prefetchExecutorFactory: PrefetchExecutorFactory?
         let failure: @Sendable (PluginError) -> Void
+        /// Plugin subtitles as SUBTITLES renditions: their playlists and WebVTT texts by name.
+        var subtitlePlaylists: [String: String] = [:]
+        var subtitleTexts: [String: OnceText] = [:]
+
+        /// Offers `subtitles` as SUBTITLES renditions of the master (absolute loopback URIs under `base`).
+        mutating func addSubtitles(_ subtitles: [LocalSubtitle], base: String, duration: Double) {
+            guard !subtitles.isEmpty, let variant = master.range(of: "#EXT-X-STREAM-INF:") else { return }
+            var legible: [(HLSPlaylist.Rendition, String)] = []
+            for (index, subtitle) in subtitles.enumerated() {
+                let playlist = LocalSubtitle.playlistName(index), text = LocalSubtitle.textName(index)
+                subtitlePlaylists[playlist] = LocalSubtitle.mediaPlaylist(textName: "\(base)/\(text)", duration: duration)
+                subtitleTexts[text] = OnceText(subtitle.webVTT)
+                legible.append((subtitle.rendition, "\(base)/\(playlist)"))
+            }
+            let lines = HLSPlaylist.legibleRenditions(subtitles: legible)
+            master.insert(contentsOf: lines.lines, at: variant.lowerBound)
+            if let streamInf = master.range(of: "#EXT-X-STREAM-INF:"),
+               let lineEnd = master[streamInf.upperBound...].firstIndex(of: "\n") {
+                master.insert(contentsOf: lines.variantAttributes, at: lineEnd)
+            }
+        }
     }
 
     private var presentations: [String: Presentation] = [:]
@@ -41,6 +62,7 @@ actor PluginMediaProxy {
 
     func register(manifest: String, runtime: PluginRuntime, executor: Int, prefetch: Bool = true,
                   useCache: Bool = true,
+                  subtitles: [LocalSubtitle] = [],
                   cacheAllocationBytes: Int64? = nil,
                   prefetchExecutorFactory: PrefetchExecutorFactory? = nil,
                   failure: @escaping @Sendable (PluginError) -> Void = { _ in }) async throws -> URL {
@@ -66,6 +88,7 @@ actor PluginMediaProxy {
                                            resources: playlists.resources,
                                            prefetchExecutorFactory: prefetchExecutorFactory,
                                            failure: failure)
+        if playlists.video != nil { presentations[id]?.addSubtitles(subtitles, base: base, duration: playlists.duration) }
         retain(id)
         let playlistName = playlists.video == nil ? "audio.m3u8" : "master.m3u8"
         guard let url = URL(string: "\(base)/\(playlistName)") else {
@@ -86,6 +109,7 @@ actor PluginMediaProxy {
     func register(videoManifest: String, videoRuntime: PluginRuntime, videoExecutor: Int,
                   audioManifest: String, audioRuntime: PluginRuntime, audioExecutor: Int,
                   identity: String? = nil,
+                  subtitles: [LocalSubtitle] = [],
                   failure: @escaping @Sendable (PluginError) -> Void = { _ in }) async throws -> URL {
         let channel = try await serverChannel()
         guard let port = channel.localAddress?.port else {
@@ -105,6 +129,7 @@ actor PluginMediaProxy {
             cache: cache, resources: playlists.resources,
             prefetchExecutorFactory: nil, failure: failure
         )
+        presentations[id]?.addSubtitles(subtitles, base: base, duration: playlists.duration)
         retain(id)
         guard let url = URL(string: "\(base)/master.m3u8") else {
             throw PluginError.execution("Could not construct the generated media URL")
@@ -282,6 +307,12 @@ actor PluginMediaProxy {
         case "audio.m3u8":
             guard let audio = presentation.audio else { return (.notFound, "text/plain", Data()) }
             return (.ok, "application/vnd.apple.mpegurl", Data(audio.utf8))
+        case let name where presentation.subtitlePlaylists[name] != nil:
+            return (.ok, "application/vnd.apple.mpegurl", Data((presentation.subtitlePlaylists[name] ?? "").utf8))
+        case let name where presentation.subtitleTexts[name] != nil:
+            // A subtitle the plugin cannot provide is missing; playback goes on without it.
+            guard let text = try? await presentation.subtitleTexts[name]?.value() else { return (.notFound, "text/plain", Data()) }
+            return (.ok, "text/vtt", Data(text.utf8))
         default:
             guard parts.count >= 4, ["video", "audio"].contains(parts[1]) else {
                 return (.notFound, "text/plain", Data())
@@ -388,6 +419,8 @@ enum DashToHLS {
         let audio: String?
         let resources: [Resource]
         let estimatedBytes: Int64
+        /// The presentation's length (the longest track), for subtitle playlists.
+        var duration: Double = 0
     }
     private struct Track {
         let kind: String
@@ -400,6 +433,10 @@ enum DashToHLS {
         let initialization: String
         let media: String
         let durations: [Double]
+        /// The adaptation set's `lang`.
+        var language: String? = nil
+        /// DASH `Role` "description" or an audio-purpose Accessibility of 1: an audio description.
+        var describesVideo = false
     }
 
     static func convert(_ mpd: String, baseURL: String) throws -> Result {
@@ -413,7 +450,11 @@ enum DashToHLS {
                 ?? representationAttributes.flatMap { attribute("mimeType", in: $0) }?
                     .split(separator: "/").first.map(String.init)
             guard let kind else { return nil }
-            return parseTrack(kind: kind, body: body)
+            var track = parseTrack(kind: kind, body: body)
+            track?.language = attribute("lang", in: attributes)
+            track?.describesVideo = body.contains("value=\"description\"")
+                || body.range(of: #"AudioPurposeCS:2007"\s+value="1""#, options: .regularExpression) != nil
+            return track
         }
         let video = tracks.first(where: { $0.kind == "video" })
         let audio = tracks.first(where: { $0.kind == "audio" })
@@ -424,7 +465,13 @@ enum DashToHLS {
         let audioPlaylist = audio.map { mediaPlaylist($0, baseURL: baseURL) }
         var master = "#EXTM3U\n#EXT-X-VERSION:7\n"
         if video != nil, audio != nil {
-            master += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Audio\",DEFAULT=YES,AUTOSELECT=YES,URI=\"\(baseURL)/audio.m3u8\"\n"
+            // Language and audio-description characteristics carry over from the DASH adaptation set.
+            let rendition = HLSPlaylist.Rendition(
+                groupID: "audio", name: audio?.describesVideo == true ? "Audio Description" : "Audio",
+                language: audio?.language, isDefault: true, uri: nil, autoselect: true,
+                characteristics: audio?.describesVideo == true ? "public.accessibility.describes-video" : nil
+            )
+            master += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",\(rendition.attributes(uri: "\(baseURL)/audio.m3u8"))\n"
         }
         let selectedTracks = [video, audio].compactMap { $0 }
         let codecs = selectedTracks.map(\.codec).joined(separator: ",")
@@ -449,7 +496,8 @@ enum DashToHLS {
             return total + Int64(ceil(Double(max(track.bandwidth, 1)) * seconds / 8 * 2.0))
         }
         return Result(master: master, video: videoPlaylist, audio: audioPlaylist,
-                      resources: resources, estimatedBytes: max(estimatedBytes, 16 * 1_024 * 1_024))
+                      resources: resources, estimatedBytes: max(estimatedBytes, 16 * 1_024 * 1_024),
+                      duration: selectedTracks.map { $0.durations.reduce(0, +) }.max() ?? 0)
     }
 
     private static func parseTrack(kind: String, body: String) -> Track? {

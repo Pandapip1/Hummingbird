@@ -129,6 +129,7 @@ private final class SeekDebugModel: AdvancedVideoPlayerControlling {
     func startPictureInPicture() {}
     func stopPictureInPicture() {}
     func toggleFullscreen() {}
+    func toggleCaptions() {}
 }
 
 @MainActor

@@ -369,18 +369,8 @@ struct PlayerControls: View {
 
     var body: some View {
         ZStack {
-            if let text = model.subtitleText {
-                Text(text)
-                    .font(.system(size: model.subtitleSizeChoice.rawValue).weight(.medium))
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(model.subtitleColorChoice.color)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
-                    .padding(.horizontal)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, PlayerLayout.usesStackedTransport(width: availableWidth) ? 178 : 128)
-            }
-
+            // Subtitles are drawn by the platform player (they are renditions of
+            // the local presentation), styled per the system's caption settings.
             AdvancedVideoPlayerControls(
                 model: model,
                 isFullscreen: isFullscreen,
@@ -389,6 +379,8 @@ struct PlayerControls: View {
                 HummingbirdPlayerAccessories(model: model, availableWidth: availableWidth, interacted: interacted)
             }
         }
+        // A stream switch can take a while; say how it ended.
+        .announcesChange(of: model.switchAnnouncement) { $0?.text }
     }
 }
 
@@ -462,35 +454,16 @@ private struct SubtitleMenu: View {
     let interacted: () -> Void
     var body: some View {
         let embedded = model.tracks.filter { $0.kind == .subtitles }
-        let external = model.subtitleSources.map { SubtitleOption(id: $0.id, name: $0.name) }
+        // The plugin's subtitles are tracks of the presentation like any other.
         SubtitleControl(
             embedded: embedded,
-            external: external,
-            selectedEmbeddedID: model.embeddedSubtitleChoice?.id,
-            selectedExternalID: model.subtitleChoice?.id,
-            pendingExternalID: model.pendingSubtitle?.id,
-            onSelectEmbedded: { track in Task { await model.chooseEmbeddedSubtitle(track) } },
-            onSelectExternal: { option in
-                let source = option.flatMap { selected in model.subtitleSources.first { $0.id == selected.id } }
-                Task { await model.chooseSubtitle(source) }
-            },
+            external: [],
+            selectedEmbeddedID: model.selectedTrack(ofKind: .subtitles)?.id ?? model.embeddedSubtitleChoice?.id,
+            selectedExternalID: nil,
+            onSelectEmbedded: { track in model.selectTrack(track) },
+            onSelectExternal: { _ in model.selectTrack(nil) },
             interacted: interacted
-        ) {
-            if model.embeddedSubtitleChoice == nil && !model.subtitleSources.isEmpty {
-                Divider()
-                ForEach(SubtitleColorChoice.allCases, id: \.rawValue) { choice in
-                    CheckableMenuItem("Caption Color: \(choice.label)", state: model.subtitleColorChoice == choice ? .checked : .unchecked) {
-                        interacted(); model.setSubtitleColor(choice)
-                    }
-                }
-                Divider()
-                ForEach(SubtitleSizeChoice.allCases, id: \.rawValue) { choice in
-                    CheckableMenuItem("Caption Size: \(choice.label)", state: model.subtitleSizeChoice == choice ? .checked : .unchecked) {
-                        interacted(); model.setSubtitleSize(choice)
-                    }
-                }
-            }
-        }
+        )
     }
 }
 

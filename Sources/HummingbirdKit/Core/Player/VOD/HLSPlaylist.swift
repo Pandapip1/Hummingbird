@@ -304,19 +304,32 @@ enum HLSPlaylist {
             out += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",\(main.attributes(uri: audioPlaylist))\n"
             attributes += ",AUDIO=\"audio\""
         }
+        let legible = legibleRenditions(subtitles: subtitles, closedCaptions: closedCaptions)
+        return out + legible.lines + "#EXT-X-STREAM-INF:\(attributes)\(legible.variantAttributes)\n\(videoPlaylist)\n"
+    }
+
+    /// The `EXT-X-MEDIA` lines for subtitle renditions (each with its local
+    /// playlist) and closed captions, and the attributes (`,SUBTITLES=…`,
+    /// `,CLOSED-CAPTIONS=…`) that attach them to a variant. Every local
+    /// master (cached HLS, cached fragmented MP4, generated media, live
+    /// recordings) writes them this way.
+    static func legibleRenditions(subtitles: [(Rendition, String)],
+                                  closedCaptions: [Rendition] = []) -> (lines: String, variantAttributes: String) {
+        var lines = "", attributes = ""
         if let group = subtitles.first?.0.groupID {
             for (rendition, playlist) in subtitles {
-                out += "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"\(group)\",\(rendition.attributes(uri: playlist))\n"
+                lines += "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"\(group)\",\(rendition.attributes(uri: playlist))\n"
             }
             attributes += ",SUBTITLES=\"\(group)\""
         }
-        if let group = closedCaptions.first?.groupID {
-            for rendition in closedCaptions where rendition.instreamID != nil {
-                out += "#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID=\"\(group)\",\(rendition.attributes(uri: nil))\n"
+        let captions = closedCaptions.filter { $0.instreamID != nil }
+        if let group = captions.first?.groupID {
+            for rendition in captions {
+                lines += "#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID=\"\(group)\",\(rendition.attributes(uri: nil))\n"
             }
             attributes += ",CLOSED-CAPTIONS=\"\(group)\""
         }
-        return out + "#EXT-X-STREAM-INF:\(attributes)\n\(videoPlaylist)\n"
+        return (lines, attributes)
     }
 
     /// The best variant at or under `maxHeight` that the platform player can

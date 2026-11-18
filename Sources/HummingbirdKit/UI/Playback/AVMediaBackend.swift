@@ -141,8 +141,16 @@ final class AVMediaBackend: MediaBackend {
             default: return []
             }
             return group.options.enumerated().map { index, option in
-                MediaTrack(id: "\(kind.rawValue)-\(index)", kind: kind,
-                           language: option.locale?.identifier, label: option.displayName)
+                var characteristics: Set<MediaTrack.Characteristic> = []
+                if option.hasMediaCharacteristic(.describesVideoForAccessibility) { characteristics.insert(.audioDescription) }
+                if option.mediaType == .closedCaption
+                    || option.hasMediaCharacteristic(.transcribesSpokenDialogForAccessibility)
+                    || option.hasMediaCharacteristic(.describesMusicAndSoundForAccessibility) {
+                    characteristics.insert(.closedCaptions)
+                }
+                if option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) { characteristics.insert(.forced) }
+                return MediaTrack(id: "\(kind.rawValue)-\(index)", kind: kind, language: option.locale?.identifier,
+                                  label: option.displayName, characteristics: characteristics)
             }
         }
     }

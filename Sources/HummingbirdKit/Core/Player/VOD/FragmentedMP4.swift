@@ -171,12 +171,19 @@ enum CachedHLS {
     }
 
     /// A master playlist pairing a video track with an optional separate
-    /// audio rendition.
-    static func masterPlaylist(video: Track, audio: Track?) -> String {
+    /// audio rendition (named, with its language and characteristics, by
+    /// `audioRendition`), plus subtitle renditions with their playlists.
+    static func masterPlaylist(video: Track, audio: Track?, audioRendition: HLSPlaylist.Rendition? = nil,
+                               subtitles: [(HLSPlaylist.Rendition, String)] = []) -> String {
         var master = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n"
         if let audio {
-            master += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Audio\",DEFAULT=YES,AUTOSELECT=YES,URI=\"\(audio.playlistName)\"\n"
+            var rendition = audioRendition ?? HLSPlaylist.Rendition(groupID: "audio", name: "Audio", language: nil, isDefault: true, uri: nil)
+            rendition.isDefault = true
+            rendition.autoselect = true
+            master += "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",\(rendition.attributes(uri: audio.playlistName))\n"
         }
+        let legible = HLSPlaylist.legibleRenditions(subtitles: subtitles)
+        master += legible.lines
         let codecs = [video.codec, audio?.codec ?? ""].filter { !$0.isEmpty }
         let bandwidth = max(1, video.bandwidth + (audio?.bandwidth ?? 0))
         master += "#EXT-X-STREAM-INF:BANDWIDTH=\(bandwidth)"
@@ -185,6 +192,6 @@ enum CachedHLS {
         if codecs.count == (audio == nil ? 1 : 2) { master += ",CODECS=\"\(codecs.joined(separator: ","))\"" }
         if video.width > 0, video.height > 0 { master += ",RESOLUTION=\(video.width)x\(video.height)" }
         if audio != nil { master += ",AUDIO=\"audio\"" }
-        return master + "\n\(video.playlistName)\n"
+        return master + legible.variantAttributes + "\n\(video.playlistName)\n"
     }
 }

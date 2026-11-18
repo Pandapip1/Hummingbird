@@ -153,8 +153,13 @@ actor HLSRenditionDownloader {
     }
 
     func contentType(of index: Int) -> String {
-        resources[index].kind == .key ? "application/octet-stream"
-            : resources[index].uri.pathExtension.lowercased() == "ts" ? "video/mp2t" : "video/mp4"
+        switch (resources[index].kind, resources[index].uri.pathExtension.lowercased()) {
+        case (.key, _): "application/octet-stream"
+        case (_, "ts"): "video/mp2t"
+        case (_, "vtt"), (_, "webvtt"): "text/vtt"
+        case _ where role == .subtitles: "text/vtt"
+        default: "video/mp4"
+        }
     }
 
     private func cancelWaiter(_ id: UUID) {

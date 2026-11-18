@@ -32,6 +32,11 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     @State private var controlsVisible = true
     @State private var menuPresented = false
     @State private var autoHide = ControlsAutoHide()
+    /// VoiceOver or Switch Control: the controls never hide on a timer.
+    @Environment(\.assistiveTechnologyState) private var assistiveTechnology
+    /// Control rows and spacing grow with the text size.
+    @ScaledMetric(relativeTo: .body) private var controlRowHeight: CGFloat = AdvancedVideoPlayerLayout.controlBarMinimumHeight
+    @ScaledMetric(relativeTo: .body) private var buttonSpacing: CGFloat = 14
 
     public init(
         model: Model,
@@ -47,6 +52,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
 
     public var body: some View {
         let showingControls = controlsVisible || !model.isPlaying || model.waitingReason != nil
+            || assistiveTechnology.keepsControlsVisible
         ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.remoteNonFocusable()
             bars
@@ -78,10 +84,13 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             if playing { interacted() }
             else { autoHide.task?.cancel(); controlsVisible = true }
         }
+        .onChange(of: assistiveTechnology) { _, state in
+            if state.keepsControlsVisible { autoHide.task?.cancel(); controlsVisible = true }
+        }
     }
 
     /// Keyboard commands (where there is a keyboard): space play/pause, ←/→
-    /// 10 s, ⇧←/⇧→ chapter, F full screen, [ and ] speed. Hidden from
+    /// 10 s, ⇧←/⇧→ chapter, F full screen, C captions, [ and ] speed. Hidden from
     /// assistive technology: the visible controls carry the same actions.
     private var keyCommands: some View {
         let layout = ScrubberLayout(content: model.scrubberContent, width: 1)
@@ -100,6 +109,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 if let start = layout.nextChapterStart(after: model.playbackTime) { model.seek(to: start) }
             }.playerKeyCommand(.rightArrow, modifiers: .shift)
             Button("") { interacted(); model.toggleFullscreen() }.playerKeyCommand("f")
+            Button("") { interacted(); model.toggleCaptions() }.playerKeyCommand("c")
             Button("") { interacted(); model.setPlaybackRate(rates[max(0, rateIndex - 1)]) }.playerKeyCommand("[")
             Button("") { interacted(); model.setPlaybackRate(rates[min(rates.count - 1, rateIndex + 1)]) }.playerKeyCommand("]")
         }
@@ -122,26 +132,26 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 .disabled(!model.isMediaReady)
             }
             .remoteFocusSection()
-            .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+            .frame(minHeight: controlRowHeight)
             .padding(.horizontal, 8)
 
             Spacer().frame(minHeight: AdvancedVideoPlayerLayout.minimumBarSeparation, maxHeight: .infinity)
             PlayerControlGroup { transport }
                 .disabled(!model.isMediaReady).remoteFocusSection()
-                .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+                .frame(minHeight: controlRowHeight)
                 .padding(.horizontal, 8)
         }.padding(.vertical, 8)
     }
 
     private var transport: some View {
         VStack(spacing: 6) {
-            timeline.frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+            timeline.frame(minHeight: controlRowHeight)
             if AdvancedVideoPlayerLayout.usesStackedTransport(width: availableWidth) {
-                HStack(spacing: 14) { primaryButtons }.frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
-                HStack(spacing: 14) { secondaryButtons }.frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+                HStack(spacing: buttonSpacing) { primaryButtons }.frame(minHeight: controlRowHeight)
+                HStack(spacing: buttonSpacing) { secondaryButtons }.frame(minHeight: controlRowHeight)
             } else {
-                HStack(spacing: 14) { primaryButtons; Spacer(); secondaryButtons }
-                    .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+                HStack(spacing: buttonSpacing) { primaryButtons; Spacer(); secondaryButtons }
+                    .frame(minHeight: controlRowHeight)
             }
         }
     }
@@ -152,6 +162,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         let content = model.scrubberContent
         if content.end > 0 {
             MediaScrubber(
+                "Playback position",
                 content: content,
                 value: min(model.playbackTime, content.end),
                 onScrub: { _ in interacted() },
@@ -224,7 +235,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         // subsequent release is delivered to a widget that no longer exists.
         if !controlsVisible { controlsVisible = true }
         autoHide.task?.cancel()
-        guard model.isPlaying, !menuPresented else { return }
+        guard model.isPlaying, !menuPresented, !assistiveTechnology.keepsControlsVisible else { return }
         autoHide.task = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled, model.isPlaying else { return }

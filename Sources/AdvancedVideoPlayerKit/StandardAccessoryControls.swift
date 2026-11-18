@@ -103,11 +103,11 @@ public struct MediaTrackControl: View {
 
     public var body: some View {
         if !tracks.isEmpty {
-            PlayerMenu(value: tracks.first { $0.id == selectedID }.map { $0.label ?? $0.language ?? fallbackLabel } ?? "") {
+            PlayerMenu(value: tracks.first { $0.id == selectedID }.map { $0.menuTitle(fallback: fallbackLabel) } ?? "") {
                 Text(title)
             } content: {
                 ForEach(tracks, id: \.id) { track in
-                    CheckableMenuItem(track.label ?? track.language ?? fallbackLabel,
+                    CheckableMenuItem(track.menuTitle(fallback: fallbackLabel),
                                    state: track.id == selectedID ? .checked : .unchecked) {
                         interacted(); select(track)
                     }
@@ -168,14 +168,14 @@ public struct SubtitleControl<AppearanceControls: View>: View {
     public var body: some View {
         if !embedded.isEmpty || !external.isEmpty {
             PlayerMenu(value: external.first { $0.id == selectedExternalID }?.name
-                        ?? embedded.first { $0.id == selectedEmbeddedID }.map { $0.label ?? $0.language ?? "Embedded" } ?? "Off") {
+                        ?? embedded.first { $0.id == selectedEmbeddedID }.map { $0.menuTitle(fallback: "Embedded") } ?? "Off") {
                 Text("Subtitles")
             } content: {
                 CheckableMenuItem("Off", state: selectedEmbeddedID == nil && selectedExternalID == nil ? .checked : .unchecked) {
                     interacted(); selectExternal(nil)
                 }
                 ForEach(embedded, id: \.id) { track in
-                    CheckableMenuItem(track.label ?? track.language ?? "Embedded",
+                    CheckableMenuItem(track.menuTitle(fallback: "Embedded"),
                                    state: selectedEmbeddedID == track.id ? .checked : .unchecked) {
                         interacted(); selectEmbedded(track)
                     }

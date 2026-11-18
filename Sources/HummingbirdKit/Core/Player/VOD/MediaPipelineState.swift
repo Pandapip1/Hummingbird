@@ -86,6 +86,8 @@ enum MediaPipelineStage: String, Sendable, Hashable, CaseIterable, Codable {
 
 enum MediaTrackRole: String, Sendable, Hashable, Codable {
     case video, audio, muxed
+    /// A subtitle rendition (WebVTT segments): downloaded with the rest, shown as no lane.
+    case subtitles
 }
 
 /// What a stage is doing right now.

@@ -4,16 +4,37 @@ import SwiftOpenUI
 
 public struct MediaTrack: Hashable, Sendable {
     public enum Kind: String, Sendable { case video, audio, subtitles }
+    /// Accessibility characteristics a menu shows as badges.
+    public enum Characteristic: String, Sendable, Hashable {
+        /// Closed captions or subtitles for the deaf and hard of hearing (describe sounds too).
+        case closedCaptions
+        /// An audio description of the video.
+        case audioDescription
+        /// Forced subtitles (shown even with subtitles off: signs, foreign dialogue).
+        case forced
+    }
     public let id: String
     public let kind: Kind
     public let language: String?
     public let label: String?
+    public let characteristics: Set<Characteristic>
 
-    public init(id: String, kind: Kind, language: String? = nil, label: String? = nil) {
+    public init(id: String, kind: Kind, language: String? = nil, label: String? = nil,
+                characteristics: Set<Characteristic> = []) {
         self.id = id
         self.kind = kind
         self.language = language
         self.label = label
+        self.characteristics = characteristics
+    }
+
+    /// The name a menu shows, with CC and AD badges.
+    public func menuTitle(fallback: String) -> String {
+        var title = label ?? language ?? fallback
+        if characteristics.contains(.audioDescription) { title += " · AD" }
+        if characteristics.contains(.closedCaptions) { title += " · CC" }
+        if characteristics.contains(.forced) { title += " · Forced" }
+        return title
     }
 }
 
@@ -219,4 +240,6 @@ public protocol AdvancedVideoPlayerControlling: AnyObject, Observable {
     func startPictureInPicture()
     func stopPictureInPicture()
     func toggleFullscreen()
+    /// Subtitles on (in the viewer's language) or off: the captions key command.
+    func toggleCaptions()
 }

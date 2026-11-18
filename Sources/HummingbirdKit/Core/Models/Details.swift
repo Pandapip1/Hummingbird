@@ -43,6 +43,12 @@ struct MediaSource: Sendable, Decodable, Hashable, Identifiable, PluginOutput {
         return ["audio description", "descriptive", "described", "describes-video", "role=description"]
             .contains { name.contains($0) }
     }
+    /// HLS/AVFoundation media characteristics (UTIs) the track has, for the
+    /// local master: an audio description is marked as one, so the platform
+    /// player labels it and selects it per the system's Audio Descriptions setting.
+    var characteristics: [String] {
+        describesVideo ? ["public.accessibility.describes-video"] : []
+    }
     var isDash: Bool { pluginType.hasPrefix("Dash") }
     var isWidevine: Bool { pluginType.contains("Widevine") }
 

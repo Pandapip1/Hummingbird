@@ -4,47 +4,23 @@ import SwiftOpenUI
 import AdvancedVideoPlayerKit
 import os
 
-enum SubtitleColorChoice: String, CaseIterable, Sendable {
-    case white, yellow, green, cyan
-
-    var label: String { rawValue.capitalized }
-    @MainActor var color: Color {
-        switch self {
-        case .white: .white
-        case .yellow: .yellow
-        case .green: .green
-        case .cyan: .cyan
-        }
-    }
-}
-
-enum SubtitleSizeChoice: Double, CaseIterable, Sendable {
-    case small = 16
-    case medium = 20
-    case large = 24
-    case extraLarge = 28
-
-    var label: String {
-        switch self {
-        case .small: "Small"
-        case .medium: "Medium"
-        case .large: "Large"
-        case .extraLarge: "Extra Large"
-        }
-    }
-}
-
 /// Device-local playback settings, kept in the stores' preferences domain.
 enum PlaybackPreferenceKey {
     static let maxVideoHeight = "maxVideoHeight"
     static let showSubtitlesByDefault = "showSubtitlesByDefault"
     static let subscriptionFetchLimit = "subscriptionFetchLimit"
-    static let subtitleColor = "subtitleColor"
-    static let subtitleSize = "subtitleSize"
     /// Gigabytes the media cache may hold before it removes least recently used videos.
     static let mediaCacheLimitGigabytes = "mediaCacheLimitGigabytes"
     /// Re-encode finished downloads to save space (off by default).
     static let transcodeDownloads = "transcodeDownloads"
+}
+
+/// The outcome of a stream switch, announced once to assistive technology
+/// (each one is new, even with the same words).
+struct SwitchAnnouncement: Equatable, Sendable {
+    let id = UUID()
+    let text: String
+    init(_ text: String) { self.text = text }
 }
 
 @MainActor
@@ -70,7 +46,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// A source or audio stream being switched to, not yet confirmed playing.
     private(set) var pendingOption: PlaybackOption?
     private(set) var pendingAudioSource: MediaSource?
-    private(set) var pendingSubtitle: SubtitleSource?
     /// The player gave up on local data and is being reloaded at the same position.
     private(set) var isRecovering = false
     /// Tests only: a load alone confirms a switch (fake backends that never play).
@@ -88,10 +63,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var errorMessage: String?
     private(set) var isPreparing = false
     private(set) var preparationMessage: String?
-    private(set) var subtitleText: String?
-    private(set) var subtitleChoice: SubtitleSource?
     private(set) var embeddedSubtitleChoice: MediaTrack?
-    private(set) var subtitleSources: [SubtitleSource] = []
+    /// The outcome of the last stream switch, for assistive technology to
+    /// announce ("Now playing 1080p", or why the previous stream was kept).
+    private(set) var switchAnnouncement: SwitchAnnouncement?
     var tracks: [MediaTrack] { backend?.tracks ?? [] }
     /// Picture in Picture, as the backend reports it (see `PictureInPictureState`).
     private(set) var pictureInPictureState: PictureInPictureState = .unsupported
@@ -138,13 +113,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var watchdogStalled = false
     @ObservationIgnored private var watchdog: Task<Void, Never>?
     private(set) var playbackRate: Float = 1
-    private(set) var subtitleColorChoice: SubtitleColorChoice
-    private(set) var subtitleSizeChoice: SubtitleSizeChoice
     private(set) var isFullscreen = false
     var title: String { details?.item.name ?? "" }
     var onPlaybackEnded: (() -> Void)?
 
-    @ObservationIgnored private var cues: [SubtitleCue] = []
     @ObservationIgnored private var details: VideoDetails?
     @ObservationIgnored private var runtime: PluginRuntime?
     @ObservationIgnored private var library: LibraryStore?
@@ -211,13 +183,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         mediaCache = stores.mediaCache
         mediaServer = stores.mediaServer
         mediaDownloads = stores.mediaDownloads
-        let defaults = stores.defaults
-        subtitleColorChoice = SubtitleColorChoice(
-            rawValue: defaults.string(forKey: PlaybackPreferenceKey.subtitleColor) ?? "white"
-        ) ?? .white
-        subtitleSizeChoice = SubtitleSizeChoice(
-            rawValue: defaults.double(forKey: PlaybackPreferenceKey.subtitleSize)
-        ) ?? .medium
         if let backend { attach(backend) }
     }
 
@@ -372,7 +337,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         self.details = details
         declaredDuration = Double(details.item.duration ?? 0)
         duration = declaredDuration
-        self.subtitleSources = details.subtitles
         self.runtime = runtime
         self.library = library
         errorMessage = nil
@@ -435,9 +399,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             return
         }
 
-        if let first = details.subtitles.first(where: { $0.language?.hasPrefix(Locale.current.language.languageCode?.identifier ?? "en") == true }),
-           preferences.defaults.bool(forKey: PlaybackPreferenceKey.showSubtitlesByDefault) {
-            await chooseSubtitle(first)
+        // The platform player chooses subtitles per the system's settings; the
+        // app's "show subtitles" setting asks for the viewer's language on top.
+        if preferences.defaults.bool(forKey: PlaybackPreferenceKey.showSubtitlesByDefault),
+           selectedTrack(ofKind: .subtitles) == nil, let track = preferredSubtitleTrack() {
+            selectTrack(track)
         }
         await loadChapters(sourceURL: sourceURL)
         await startTracker()
@@ -460,8 +426,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         pendingOption = option
         defer { if pendingOption?.id == option.id { pendingOption = nil } }
         guard await play(choice, resumeAt: position, duration: details?.item.duration,
-                         autoplay: autoplay, normalizeSavedPosition: false) else { return }
+                         autoplay: autoplay, normalizeSavedPosition: false) else {
+            announceKept(instead: option.label, pending: pendingOption?.id == option.id)
+            return
+        }
         refreshAudioSources(for: choice)
+        switchAnnouncement = SwitchAnnouncement("Now playing \(option.label)")
     }
 
     /// Switches the audio stream, confirming it the same way as `select`.
@@ -478,8 +448,20 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         pendingAudioSource = source
         defer { if pendingAudioSource?.id == source.id { pendingAudioSource = nil } }
         guard await play(choice, resumeAt: position, duration: details?.item.duration,
-                         autoplay: autoplay, normalizeSavedPosition: false) else { return }
+                         autoplay: autoplay, normalizeSavedPosition: false) else {
+            announceKept(instead: PlaybackSelector.audioLabel(for: source), pending: pendingAudioSource?.id == source.id)
+            return
+        }
         selectedAudioSource = source
+        switchAnnouncement = SwitchAnnouncement("Now playing audio \(PlaybackSelector.audioLabel(for: source))")
+    }
+
+    /// A switch that did not take effect: says so, unless the viewer cancelled
+    /// it or chose something else meanwhile (`pending` is false then).
+    private func announceKept(instead choice: String, pending: Bool) {
+        guard pending else { return }
+        let current = selected?.label ?? "the current stream"
+        switchAnnouncement = SwitchAnnouncement("Could not switch to \(choice). \(current) keeps playing.")
     }
 
     /// Cancels the pending stream switch: the stream that is playing stays
@@ -552,9 +534,20 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack? {
         backend?.selectedTrack(ofKind: kind)
     }
-    func chooseEmbeddedSubtitle(_ track: MediaTrack) async {
-        await chooseSubtitle(nil)
-        selectTrack(track)
+    /// The subtitle track in the viewer's language, else the first one.
+    private func preferredSubtitleTrack() -> MediaTrack? {
+        let subtitles = tracks.filter { $0.kind == .subtitles }
+        let language = Locale.current.language.languageCode?.identifier ?? "en"
+        return subtitles.first { $0.language?.hasPrefix(language) == true } ?? subtitles.first
+    }
+
+    /// Subtitles on (the viewer's language) or off: the captions key command.
+    func toggleCaptions() {
+        if selectedTrack(ofKind: .subtitles) != nil {
+            selectTrack(nil)
+        } else if let track = preferredSubtitleTrack() {
+            selectTrack(track)
+        }
     }
     func startPictureInPicture() { backend?.startPictureInPicture() }
     func stopPictureInPicture() { backend?.stopPictureInPicture() }
@@ -667,14 +660,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     func setPlaybackRate(_ rate: Float) {
         playbackRate = rate
         if isPlaying { backend?.setPlaybackRate(rate) }
-    }
-    func setSubtitleColor(_ choice: SubtitleColorChoice) {
-        subtitleColorChoice = choice
-        preferences.defaults.set(choice.rawValue, forKey: PlaybackPreferenceKey.subtitleColor)
-    }
-    func setSubtitleSize(_ choice: SubtitleSizeChoice) {
-        subtitleSizeChoice = choice
-        preferences.defaults.set(choice.rawValue, forKey: PlaybackPreferenceKey.subtitleSize)
     }
     func skip(by seconds: Double) {
         seek(to: playbackTime + seconds, coalescing: false)
@@ -815,9 +800,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             await stopMedia(session: previousSession, presentation: previousPresentation)
             backend.setPlaybackRate(playbackRate)
             didFinishCurrentItem = false
-            // Media selections belong to the replaced AVPlayerItem. Do not show
-            // a stale embedded-caption checkmark after a quality/source change.
+            // Media selections belong to the replaced item: the subtitles the
+            // viewer chose carry over to the new stream when it has them.
+            let previousSubtitle = embeddedSubtitleChoice
             embeddedSubtitleChoice = nil
+            if let previousSubtitle, let match = tracks.first(where: {
+                $0.kind == .subtitles && $0.label == previousSubtitle.label && $0.language == previousSubtitle.language
+            }) {
+                selectTrack(match)
+            }
             selected = option
             if generation == playGeneration { errorMessage = nil }
             recordProgressNow()
@@ -868,7 +859,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let audio = try option.audio.map {
             try trackSpec($0, role: .audio, runtime: runtime, sourceURL: sourceURL, declaredDuration: declared)
         }
-        return try await VODSession.start(video: video, audio: audio, downloads: mediaDownloads, server: mediaServer,
+        return try await VODSession.start(video: video, audio: audio, subtitles: localSubtitles(),
+                                          downloads: mediaDownloads, server: mediaServer,
                                           info: downloadInfo(live: false))
     }
 
@@ -895,7 +887,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             ? try await VODSession.start(live: spec, downloads: mediaDownloads, server: mediaServer,
                                          transport: PluginContentTransport(runtime: runtime), info: downloadInfo(live: true))
             : try await VODSession.start(hls: spec, downloads: mediaDownloads, server: mediaServer,
-                                         transport: PluginContentTransport(runtime: runtime), info: downloadInfo(live: false))
+                                         transport: PluginContentTransport(runtime: runtime), subtitles: localSubtitles(), info: downloadInfo(live: false))
     }
 
     /// How the downloads list names this video.
@@ -957,7 +949,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             indexHint: source.indexRange, container: source.container, codec: source.codec,
             bandwidth: source.bitrate, width: source.width, height: source.height,
             declaredDuration: source.duration > 0 ? Double(source.duration) : declaredDuration,
-            transport: PluginContentTransport(runtime: runtime)
+            transport: PluginContentTransport(runtime: runtime),
+            rendition: role == .audio ? HLSPlaylist.Rendition(
+                groupID: "audio", name: PlaybackSelector.audioLabel(for: source),
+                language: Self.languageTag(source.language), isDefault: true, uri: nil, autoselect: true,
+                characteristics: source.characteristics.isEmpty ? nil : source.characteristics.joined(separator: ",")
+            ) : nil
         )
     }
 
@@ -1081,6 +1078,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             audioManifest: audioManifest, audioRuntime: runtime, audioExecutor: audioExecutor.handle,
             identity: [runtime.id, loadedURL ?? "", "pair", video.formatID ?? video.name, String(video.height), video.codec,
                        audio.formatID ?? audio.name, audio.language, String(audio.bitrate)].joined(separator: "|"),
+            subtitles: localSubtitles(),
             failure: { [weak self] error in
                 Task { @MainActor in await self?.handlePluginMediaFailure(error, generation: generation) }
             }
@@ -1103,6 +1101,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         let url = try await mediaProxy.register(
             manifest: manifest, runtime: runtime, executor: executor.handle,
+            subtitles: localSubtitles(),
             prefetchExecutorFactory: { [source, sourceURL = loadedURL] in
                 guard let sourceURL else {
                     throw PluginError.execution("The generated prefetch source URL is unavailable")
@@ -1219,7 +1218,6 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             if seconds - playbackTime < 2 { localRecoveryAttempts = 0 }
         }
         playbackTime = seconds
-        subtitleText = cues.first(where: { seconds >= $0.start && seconds <= $0.end })?.text
         if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, seconds > 1 {
             lastHistoryWrite = Date()
             library.recordProgress(SavedVideo(details.item), seconds: seconds)
@@ -1237,54 +1235,52 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     // MARK: subtitles
 
-    /// Turns external subtitles off (at once) or on. Loading a subtitle takes
-    /// time: `pendingSubtitle` names it meanwhile, and `subtitleChoice` (the
-    /// checkmark) changes only once its cues are loaded. A subtitle that fails
-    /// to load leaves the previous choice in place and shows the error.
-    func chooseSubtitle(_ sub: SubtitleSource?) async {
-        guard let sub else {
-            pendingSubtitle = nil
-            backend?.selectTrack(nil)
-            embeddedSubtitleChoice = nil
-            subtitleChoice = nil
-            cues = []
-            subtitleText = nil
-            backend?.setExternalSubtitle(nil)
-            return
+    /// The plugin's subtitles, offered to the player as SUBTITLES renditions
+    /// of the local presentation. Each is fetched (through the plugin) only
+    /// when the player first asks for it.
+    private func localSubtitles() -> [LocalSubtitle] {
+        guard let runtime, let details else { return [] }
+        return details.subtitles.map { source in
+            LocalSubtitle(name: source.name.isEmpty ? (source.language ?? "Subtitles") : source.name,
+                          language: Self.languageTag(source.language),
+                          characteristics: Self.describesSound(source.name)
+                              ? "public.accessibility.transcribes-spoken-dialog,public.accessibility.describes-music-and-sound" : nil,
+                          webVTT: { try await Self.loadSubtitle(source, runtime: runtime) })
         }
-        pendingSubtitle = sub
-        defer { if pendingSubtitle?.id == sub.id { pendingSubtitle = nil } }
+    }
+
+    /// A BCP 47 tag ("en", "pt-BR"), or nil for anything else a plugin calls a language.
+    nonisolated static func languageTag(_ language: String?) -> String? {
+        guard let language, language.range(of: #"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})* #, options: .regularExpression) != nil
+        else { return nil }
+        return language
+    }
+
+    /// Subtitles for the deaf and hard of hearing (they describe sounds, not only speech).
+    nonisolated static func describesSound(_ name: String) -> Bool {
+        let lowered = name.lowercased()
+        return ["sdh", "[cc]", "(cc)", "closed caption", "hard of hearing"].contains { lowered.contains($0) }
+    }
+
+    /// A subtitle's text as WebVTT: the plugin's loader, else its URL fetched
+    /// through the plugin's contained content session.
+    nonisolated private static func loadSubtitle(_ source: SubtitleSource, runtime: PluginRuntime) async throws -> String {
         var text: String?
-        if let h = sub.getSubtitlesHandle, let runtime {
+        if let handle = source.getSubtitlesHandle {
             for attempt in 0..<3 where text?.isEmpty ?? true {
-                if attempt > 0 { try? await Task.sleep(for: .milliseconds(500)) }
-                if let data = try? await runtime.callHandle(h, "getSubtitles") {
+                if attempt > 0 { try await Task.sleep(for: .milliseconds(500)) }
+                if let data = try? await runtime.callHandle(handle, "getSubtitles") {
                     text = try? await PluginRuntime.decodeOffMain(String.self, from: data)
                 }
             }
         }
         // Some plugins expose both a convenience loader and the underlying URL.
         // A generated loader can expire independently, so fall back to the URL.
-        if (text?.isEmpty ?? true), let u = sub.url, let url = URL(string: u) {
-            // Through the plugin's contained content session: no app cookies, no local network.
-            text = (try? await runtime?.fetchReferenced(url)).flatMap { String(data: $0, encoding: .utf8) }
+        if text?.isEmpty ?? true, let url = source.url.flatMap(URL.init(string:)) {
+            text = String(data: try await runtime.fetchReferenced(url), encoding: .utf8)
         }
-        var parsed: [SubtitleCue] = []
-        if let text {
-            parsed = await Task.detached(priority: .userInitiated) { SubtitleParser.parse(text) }.value
-        }
-        // A newer choice replaced this one while it loaded.
-        guard pendingSubtitle?.id == sub.id else { return }
-        guard !parsed.isEmpty || sub.url != nil else {
-            errorMessage = "The subtitles \"\(sub.name)\" could not be loaded."
-            return
-        }
-        backend?.selectTrack(nil)
-        embeddedSubtitleChoice = nil
-        subtitleChoice = sub
-        cues = parsed
-        subtitleText = nil
-        backend?.setExternalSubtitle(sub.url.flatMap(URL.init(string:)))
+        guard let text, !text.isEmpty else { throw PluginError.execution("The subtitles could not be loaded") }
+        return LocalSubtitle.webVTT(from: text)
     }
 
     /// Chapters and skippable segments, when the plugin offers them. A failure
@@ -1384,7 +1380,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         isRecovering = false
         playbackTime = 0; duration = 0; declaredDuration = 0; isPlaying = false; isFullscreen = false
         playbackRequested = false
-        cues = []; subtitleText = nil; subtitleChoice = nil; embeddedSubtitleChoice = nil
+        embeddedSubtitleChoice = nil; switchAnnouncement = nil
         didFinishCurrentItem = false
     }
 }

@@ -350,6 +350,81 @@ final class MediaPipelineTests: XCTestCase {
 
     // MARK: session and loopback server
 
+    /// Plugin subtitles are SUBTITLES renditions of the local presentation
+    /// (the platform player styles, selects and shows them in Picture in
+    /// Picture); a described audio track keeps its characteristics. The
+    /// subtitle text is loaded only when the player asks for it, as WebVTT.
+    func testPluginSubtitlesAreSubtitleRenditionsOfTheLocalPresentation() async throws {
+        let video = FakeMedia.fragmentedMP4(segmentSizes: [200_000, 300_000], segmentMilliseconds: 5_000)
+        let audio = FakeMedia.fragmentedMP4(segmentSizes: [20_000, 30_000], segmentMilliseconds: 5_000)
+        let transport = FakeUpstream(files: ["/v": video.data, "/a": audio.data], failures: 0)
+        let server = LocalMediaServer()
+        let downloads = MediaDownloads(cache: temporaryCache(), transport: transport)
+        func spec(_ role: MediaTrackRole, _ path: String, codec: String) throws -> VODTrackSpec {
+            VODTrackSpec(role: role, identity: "subtitles-\(role.rawValue)",
+                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test" + path))),
+                         refresh: nil, indexHint: nil, container: role == .audio ? "audio/mp4" : "video/mp4",
+                         codec: codec, bandwidth: 1_000_000, width: 1280, height: 720, declaredDuration: 10)
+        }
+        let videoSpec = try spec(.video, "/v", codec: "avc1.64001f")
+        var audioSpec = try spec(.audio, "/a", codec: "mp4a.40.2")
+        audioSpec.rendition = HLSPlaylist.Rendition(groupID: "audio", name: "English · Audio Description", language: "en",
+                                                    isDefault: true, uri: nil,
+                                                    characteristics: "public.accessibility.describes-video")
+        let loads = Counter()
+        let subtitle = LocalSubtitle(name: "English", language: "en", characteristics: nil) {
+            await loads.increment()
+            return LocalSubtitle.webVTT(from: "1\n00:00:01,000 --> 00:00:02,500\nHello\n")
+        }
+        let (session, playback) = try await bounded {
+            try await VODSession.start(video: videoSpec, audio: audioSpec, subtitles: [subtitle],
+                                       downloads: downloads, server: server)
+        }
+        let loadsBefore = await loads.value
+        XCTAssertEqual(loadsBefore, 0, "nothing is fetched until the player asks")
+        let master = playback.request.video.url
+        let masterText = String(decoding: try await bounded { try await URLSession.shared.data(from: master) }.0, as: UTF8.self)
+        XCTAssertTrue(masterText.contains("TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\""))
+        XCTAssertTrue(masterText.contains("AUTOSELECT=YES"))
+        XCTAssertTrue(masterText.contains("SUBTITLES=\"subs\""))
+        XCTAssertTrue(masterText.contains("CHARACTERISTICS=\"public.accessibility.describes-video\""))
+        let parsed = try HLSPlaylist.parseMaster(masterText, base: master)
+        XCTAssertEqual(parsed.subtitles.count, 1)
+        XCTAssertTrue(try XCTUnwrap(parsed.audio.first).describesVideo)
+
+        let base = master.deletingLastPathComponent()
+        let playlist = String(decoding: try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("s0.m3u8")) }.0,
+                              as: UTF8.self)
+        XCTAssertTrue(playlist.contains("#EXTINF:10.000000,\ns0.vtt"))
+        let (vtt, response) = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("s0.vtt")) }
+        XCTAssertEqual((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type"), "text/vtt")
+        XCTAssertEqual(String(decoding: vtt, as: UTF8.self), "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nHello\n\n")
+        _ = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("s0.vtt")) }
+        let loadsAfter = await loads.value
+        XCTAssertEqual(loadsAfter, 1, "loaded once")
+        await session.stop()
+    }
+
+    /// Generated (DASH) media keeps the audio track's language and marks an
+    /// audio description as one in the local master.
+    func testGeneratedMediaKeepsAudioLanguageAndDescriptions() throws {
+        let mpd = """
+        <MPD><Period>
+          <AdaptationSet contentType="video"><Representation codecs="avc1.64001f" bandwidth="1000000" width="1280" height="720">
+            <SegmentTemplate timescale="1000" initialization="https://grayjay.internal/video/i.mp4" media="https://grayjay.internal/video/s.mp4?n=$Number$">
+              <SegmentTimeline><S d="2000" r="1"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>
+          <AdaptationSet contentType="audio" lang="de"><Role schemeIdUri="urn:mpeg:dash:role:2011" value="description"/>
+            <Representation codecs="mp4a.40.2" bandwidth="128000">
+            <SegmentTemplate timescale="1000" initialization="https://grayjay.internal/audio/i.mp4" media="https://grayjay.internal/audio/s.mp4?n=$Number$">
+              <SegmentTimeline><S d="2000" r="1"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>
+        </Period></MPD>
+        """
+        let playlists = try DashToHLS.convert(mpd, baseURL: "http://127.0.0.1:1234/p")
+        XCTAssertTrue(playlists.master.contains("LANGUAGE=\"de\""))
+        XCTAssertTrue(playlists.master.contains("CHARACTERISTICS=\"public.accessibility.describes-video\""))
+        XCTAssertEqual(playlists.duration, 4, accuracy: 0.001)
+    }
+
     func testSessionServesSeparateTracksAsOneLocalHLSPresentation() async throws {
         let video = FakeMedia.fragmentedMP4(segmentSizes: [200_000, 300_000], segmentMilliseconds: 5_000)
         let audio = FakeMedia.fragmentedMP4(segmentSizes: [20_000, 30_000], segmentMilliseconds: 5_000)

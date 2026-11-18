@@ -25,8 +25,15 @@ actor LocalMediaServer {
         let contentType: String
     }
 
+    /// Text made on request (a plugin subtitle as WebVTT), served whole.
+    struct ServedText: Sendable {
+        let contentType: String
+        let text: OnceText
+    }
+
     struct Presentation: Sendable {
         var playlists: [String: String] = [:]
+        var texts: [String: ServedText] = [:]
         var files: [String: ServedFile] = [:]
         var objects: [String: ServedObject] = [:]
         /// Live renditions by path prefix: `<prefix>.m3u8` is their growing
@@ -65,6 +72,7 @@ actor LocalMediaServer {
         case playlist(String)
         case file(ServedFile)
         case object(ServedObject)
+        case text(ServedText)
         case livePlaylist(LiveHLSRecorder, String)
         case liveObject(LiveHLSRecorder, String)
         case notFound
@@ -77,6 +85,7 @@ actor LocalMediaServer {
         if let playlist = presentation.playlists[name] { return .playlist(playlist) }
         if let file = presentation.files[name] { return .file(file) }
         if let object = presentation.objects[name] { return .object(object) }
+        if let text = presentation.texts[name] { return .text(text) }
         for (prefix, recorder) in presentation.live {
             if name == "\(prefix).m3u8" { return .livePlaylist(recorder, prefix) }
             if name.hasPrefix("\(prefix)/") { return .liveObject(recorder, String(name.dropFirst(prefix.count + 1))) }
@@ -255,6 +264,14 @@ actor LocalMediaServer {
                            request: request, outbound: outbound)
         case .file(let file):
             try await sendFile(file, request: request, outbound: outbound)
+        case .text(let served):
+            // A text that cannot be made (the plugin failed) is missing, not broken:
+            // the player leaves that subtitle unavailable and plays on.
+            guard let text = try? await served.text.value() else {
+                try await send(status: .notFound, contentType: "text/plain", body: Data(), request: request, outbound: outbound)
+                return
+            }
+            try await send(status: .ok, contentType: served.contentType, body: Data(text.utf8), request: request, outbound: outbound)
         case .livePlaylist(let recorder, let prefix):
             // Low-latency blocking reload: hold the response until the asked-for
             // segment or part is recorded.

@@ -387,7 +387,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         startup = PlaybackStartupTrace()
         let preferredLanguage = Locale.current.language.languageCode?.identifier
         let splitAudioSources = PlaybackSelector.audioChoices(details.audioSources)
-        selectedAudioSource = PlaybackSelector.bestAudio(details.audioSources, language: preferredLanguage)
+        selectedAudioSource = PlaybackSelector.bestAudio(details.audioSources, language: preferredLanguage,
+                                                         prefersDescriptions: MediaAccessibilityPreferences.prefersAudioDescriptions)
         let sourceTypes = Dictionary(grouping: details.videoSources, by: \.pluginType)
             .map { "\($0.key):\($0.value.count)" }
             .sorted()

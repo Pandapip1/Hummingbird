@@ -52,9 +52,11 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             bars
                 .opacity(showingControls ? 1 : 0)
                 .allowsHitTesting(showingControls)
-                .accessibilityHidden(!showingControls)
+                // Hidden by the timer, the controls stay reachable by name and focus
+                // (VoiceOver, Voice Control, Switch Control, keyboards).
                 .environment(\.playerMenuPresentationChanged, menuPresentationChanged)
             if !showingControls { RemoteRevealTarget { interacted() } }
+            keyCommands
             if let reason = model.waitingReason {
                 // Playback that should advance but does not: say so, and why.
                 PlayerControlGroup {
@@ -76,6 +78,35 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             if playing { interacted() }
             else { autoHide.task?.cancel(); controlsVisible = true }
         }
+    }
+
+    /// Keyboard commands (where there is a keyboard): space play/pause, ←/→
+    /// 10 s, ⇧←/⇧→ chapter, F full screen, [ and ] speed. Hidden from
+    /// assistive technology: the visible controls carry the same actions.
+    private var keyCommands: some View {
+        let layout = ScrubberLayout(content: model.scrubberContent, width: 1)
+        let rates: [Float] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+        let rateIndex = rates.firstIndex(of: model.playbackRate) ?? 3
+        return ZStack {
+            Button("") { interacted(); model.togglePlayback() }.playerKeyCommand(.space)
+            Button("") { interacted(); model.skip(by: -10) }.playerKeyCommand(.leftArrow)
+            Button("") { interacted(); model.skip(by: 10) }.playerKeyCommand(.rightArrow)
+            Button("") {
+                interacted()
+                if let start = layout.previousChapterStart(before: model.playbackTime) { model.seek(to: start) }
+            }.playerKeyCommand(.leftArrow, modifiers: .shift)
+            Button("") {
+                interacted()
+                if let start = layout.nextChapterStart(after: model.playbackTime) { model.seek(to: start) }
+            }.playerKeyCommand(.rightArrow, modifiers: .shift)
+            Button("") { interacted(); model.toggleFullscreen() }.playerKeyCommand("f")
+            Button("") { interacted(); model.setPlaybackRate(rates[max(0, rateIndex - 1)]) }.playerKeyCommand("[")
+            Button("") { interacted(); model.setPlaybackRate(rates[min(rates.count - 1, rateIndex + 1)]) }.playerKeyCommand("]")
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+        .disabled(!model.isMediaReady)
     }
 
     private var bars: some View {
@@ -170,7 +201,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
                 .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
         }
         .playerControlGlass()
-        PlayerMenu {
+        PlayerMenu(value: model.playbackRate == 1 ? "Normal" : "\(model.playbackRate.formatted()) times") {
             Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×")
         } content: {
             ForEach([Float(0.25), 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in

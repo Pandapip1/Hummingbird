@@ -44,6 +44,28 @@ final class SeekBarTests: XCTestCase {
         XCTAssertTrue(text.contains("Video downloaded 0 seconds to 30 seconds, 1 minute to 1 minute 10 seconds"))
     }
 
+    /// Assistive technology: hours in the spoken value and the visible label,
+    /// 10 s steps, chapter navigation, skipping a flagged segment, and lane
+    /// stages that differ without colour.
+    func testAccessibilityStepsChaptersFlagsAndNonColourStages() {
+        let long = ScrubberContent(duration: 7_200, chapters: [
+            ScrubberChapter(start: 0, end: 600, title: "One"), ScrubberChapter(start: 600, end: 7_200, title: "Two"),
+        ], flags: [ScrubberFlag(start: 3_700, end: 3_760, category: "sponsor", title: "Sponsor")])
+        let layout = ScrubberLayout(content: long, width: 300)
+        XCTAssertTrue(layout.accessibilityValue(3_720).hasPrefix("1 hour 2 minutes of 2 hours"))
+        XCTAssertEqual(layout.leadingLabel(3_720), "1:02:00")
+        XCTAssertEqual(layout.accessibilityStep, 10)
+        XCTAssertEqual(layout.nextChapterStart(after: 100), 600)
+        XCTAssertNil(layout.nextChapterStart(after: 700))
+        XCTAssertEqual(layout.previousChapterStart(before: 700), 600)
+        XCTAssertEqual(layout.previousChapterStart(before: 601), 0, "near a chapter's start: the one before")
+        XCTAssertEqual(layout.flag(at: 3_720)?.title, "Sponsor")
+        XCTAssertNil(layout.flag(at: 3_800))
+        let heights = ScrubberStage.allCases.map(\.heightFraction)
+        XCTAssertEqual(heights, heights.sorted(), "later stages are taller")
+        XCTAssertNotEqual(ScrubberStage.inFlight.heightFraction, ScrubberStage.downloaded.heightFraction)
+    }
+
     func testLiveBarShowsTheRecordedWindowRelativeToTheEdge() {
         let live = ScrubberContent(duration: 0, live: ScrubberLive(edge: 600))
         let layout = ScrubberLayout(content: live, width: 300)

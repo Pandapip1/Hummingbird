@@ -252,6 +252,43 @@ final class MediaPipelineTests: XCTestCase {
         await downloader.stop()
     }
 
+    /// Subtitles, closed captions and audio descriptions survive into the local
+    /// master with their accessibility attributes, so the platform player
+    /// offers, styles and selects them.
+    func testAccessibilityRenditionsRoundTripThroughTheLocalMaster() throws {
+        let source = """
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English AD",LANGUAGE="en",AUTOSELECT=YES,CHARACTERISTICS="public.accessibility.describes-video",URI="ad.m3u8"
+        #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English SDH",LANGUAGE="en",AUTOSELECT=YES,FORCED=NO,CHARACTERISTICS="public.accessibility.transcribes-spoken-dialog,public.accessibility.describes-music-and-sound",URI="en.m3u8"
+        #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Forced",LANGUAGE="de",FORCED=YES,URI="forced.m3u8"
+        #EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID="cc",NAME="CC1",LANGUAGE="en",INSTREAM-ID="CC1"
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2",AUDIO="aud",SUBTITLES="subs",CLOSED-CAPTIONS="cc"
+        v720.m3u8
+        """
+        let base = try XCTUnwrap(URL(string: "https://media.test/hls/master.m3u8"))
+        let master = try HLSPlaylist.parseMaster(source, base: base)
+        XCTAssertEqual(master.subtitles.count, 2)
+        XCTAssertEqual(master.closedCaptions.first?.instreamID, "CC1")
+        let description = try XCTUnwrap(master.audio.first)
+        XCTAssertTrue(description.describesVideo)
+
+        let local = HLSPlaylist.localMaster(
+            variant: try XCTUnwrap(master.variants.first), videoPlaylist: "video.m3u8",
+            audio: description, audioPlaylist: "audio.m3u8",
+            subtitles: master.subtitles.enumerated().map { ($0.element, "subs-\($0.offset).m3u8") },
+            closedCaptions: master.closedCaptions
+        )
+        let again = try HLSPlaylist.parseMaster(local, base: base)
+        XCTAssertEqual(again.audio.first?.characteristics, description.characteristics)
+        XCTAssertEqual(again.subtitles.map(\.characteristics), master.subtitles.map(\.characteristics))
+        XCTAssertEqual(again.subtitles.map(\.forced), [false, true])
+        XCTAssertEqual(again.subtitles.map(\.language), ["en", "de"])
+        XCTAssertEqual(again.closedCaptions.first?.instreamID, "CC1")
+        let variant = try XCTUnwrap(again.variants.first)
+        XCTAssertTrue(variant.attributes.contains("SUBTITLES=\"subs\""))
+        XCTAssertTrue(variant.attributes.contains("CLOSED-CAPTIONS=\"cc\""))
+    }
+
     /// After sleep or suspension (requests failed while away, now in a long
     /// backoff), returning to the app retries at once.
     func testReturningFromSuspensionRetriesAtOnce() async throws {
@@ -550,6 +587,27 @@ final class MediaPipelineTests: XCTestCase {
     }
 
     // MARK: selection (task 49)
+
+    /// An audio description is its own choice (never merged into its
+    /// language's main track), labelled as such, and chosen automatically only
+    /// when the system setting asks for descriptions.
+    func testAudioDescriptionsAreSeparateLabelledAndChosenOnlyWhenPreferred() throws {
+        func audio(_ name: String, bitrate: Int) throws -> MediaSource {
+            try JSONDecoder().decode(MediaSource.self, from: Data("""
+            {"plugin_type":"AudioUrlSource","name":"\(name)","url":"https://a.test/\(bitrate)","container":"audio/mp4","language":"en","bitrate":\(bitrate)}
+            """.utf8))
+        }
+        let main = try audio("English", bitrate: 128_000)
+        let described = try audio("English (Audio Description)", bitrate: 160_000)
+        XCTAssertTrue(described.describesVideo)
+        XCTAssertFalse(main.describesVideo)
+        let choices = PlaybackSelector.audioChoices([main, described])
+        XCTAssertEqual(choices.count, 2, "not merged into the main English track")
+        XCTAssertTrue(choices.contains { PlaybackSelector.audioLabel(for: $0).contains("Audio Description") })
+        XCTAssertEqual(PlaybackSelector.bestAudio([main, described], language: "en")?.name, "English")
+        XCTAssertEqual(PlaybackSelector.bestAudio([main, described], language: "en", prefersDescriptions: true)?.name,
+                       "English (Audio Description)")
+    }
 
     func testSelectionHonoursPreferredResolutionAndPicksBestAudio() throws {
         let details = try JSONDecoder().decode(VideoDetails.self, from: Data("""

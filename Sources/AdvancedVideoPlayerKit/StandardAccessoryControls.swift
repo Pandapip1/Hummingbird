@@ -14,6 +14,8 @@ extension EnvironmentValues {
 @MainActor
 struct PlayerMenu<Label: View, Content: View>: View {
     @Environment(\.playerMenuPresentationChanged) private var presentationChanged
+    /// The current choice, read with the menu's name ("Quality, 1080p").
+    var value: String = ""
     @ViewBuilder let label: () -> Label
     @ViewBuilder let content: () -> Content
 
@@ -22,6 +24,7 @@ struct PlayerMenu<Label: View, Content: View>: View {
         // CheckableMenuItem's left column inside).
         PresentationMenu(onPresentationChange: presentationChanged, content: content, label: label)
             .playerControlGlass()
+            .accessibilityValue(value)
     }
 }
 
@@ -58,7 +61,8 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
 
     public var body: some View {
         if !options.isEmpty {
-            PlayerMenu {
+            PlayerMenu(value: options.first { $0.id == pendingID }.map { "switching to \(label($0))" }
+                        ?? options.first { $0.id == selectedID }.map(label) ?? "") {
                 Text(title)
             } content: {
                 ForEach(options) { option in
@@ -99,7 +103,7 @@ public struct MediaTrackControl: View {
 
     public var body: some View {
         if !tracks.isEmpty {
-            PlayerMenu {
+            PlayerMenu(value: tracks.first { $0.id == selectedID }.map { $0.label ?? $0.language ?? fallbackLabel } ?? "") {
                 Text(title)
             } content: {
                 ForEach(tracks, id: \.id) { track in
@@ -163,7 +167,8 @@ public struct SubtitleControl<AppearanceControls: View>: View {
 
     public var body: some View {
         if !embedded.isEmpty || !external.isEmpty {
-            PlayerMenu {
+            PlayerMenu(value: external.first { $0.id == selectedExternalID }?.name
+                        ?? embedded.first { $0.id == selectedEmbeddedID }.map { $0.label ?? $0.language ?? "Embedded" } ?? "Off") {
                 Text("Subtitles")
             } content: {
                 CheckableMenuItem("Off", state: selectedEmbeddedID == nil && selectedExternalID == nil ? .checked : .unchecked) {

@@ -120,8 +120,15 @@ enum PlaybackSelector {
         }
     }
 
-    static func bestAudio(_ sources: [MediaSource], language: String?) -> MediaSource? {
-        bestLanguageSource(playableAudioSources(sources), language: language)
+    /// `prefersDescriptions`: the system's accessibility setting asks for audio
+    /// descriptions; otherwise they are chosen only when nothing else exists.
+    static func bestAudio(_ sources: [MediaSource], language: String?, prefersDescriptions: Bool = false) -> MediaSource? {
+        bestLanguageSource(descriptionPreference(playableAudioSources(sources), prefers: prefersDescriptions), language: language)
+    }
+
+    private static func descriptionPreference(_ sources: [MediaSource], prefers: Bool) -> [MediaSource] {
+        let matching = sources.filter { $0.describesVideo == prefers }
+        return matching.isEmpty ? sources : matching
     }
 
     static func generatedAudioSources(_ sources: [MediaSource]) -> [MediaSource] {
@@ -177,9 +184,11 @@ enum PlaybackSelector {
     }
 
     private static func languageChoices(_ sources: [MediaSource]) -> [MediaSource] {
+        // An audio description is its own choice, never merged into its
+        // language's main track.
         let groups = Dictionary(grouping: sources) {
             let language = $0.language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return language.isEmpty ? "unknown" : language
+            return (language.isEmpty ? "unknown" : language) + ($0.describesVideo ? "|described" : "")
         }
         return groups.values.compactMap { variants in
             var candidates = variants
@@ -194,8 +203,9 @@ enum PlaybackSelector {
         let language = Locale.current.localizedString(forLanguageCode: rawLanguage)
             ?? (rawLanguage.isEmpty || rawLanguage.caseInsensitiveCompare("Unknown") == .orderedSame ? "Unknown" : rawLanguage)
         let original = source.original ? " · Original" : ""
+        let described = source.describesVideo ? " · Audio Description" : ""
         let quality = source.bitrate > 0 ? " · \(source.bitrate / 1_000) kbps" : ""
-        return "\(language)\(original)\(quality)"
+        return "\(language)\(described)\(original)\(quality)"
     }
 
     private static func label(for v: MediaSource) -> String {

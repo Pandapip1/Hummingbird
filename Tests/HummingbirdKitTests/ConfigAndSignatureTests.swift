@@ -126,7 +126,7 @@ final class ConfigAndSignatureTests: XCTestCase {
     }
 
     @discardableResult
-    private func run(_ executable: URL, _ arguments: [String], environment: [String: String]) throws -> String {
+    private static func run(_ executable: URL, _ arguments: [String], environment: [String: String]) throws -> String {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -163,20 +163,20 @@ final class ConfigAndSignatureTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: home) }
         var environment = ProcessInfo.processInfo.environment
         environment["GNUPGHOME"] = home.path
-        addTeardownBlock { _ = try? self.run(gpgconf, ["--kill", "gpg-agent"], environment: environment) }
+        addTeardownBlock { _ = try? Self.run(gpgconf, ["--kill", "gpg-agent"], environment: environment) }
 
-        try run(gpg, ["--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+        try Self.run(gpg, ["--batch", "--pinentry-mode", "loopback", "--passphrase", "",
                       "--quick-gen-key", "Throwaway <test@example.invalid>", "default", "default", "never"],
                 environment: environment)
         let encryptedKey = home.appendingPathComponent("plugin-signing-key.pem.asc")
         let publicKey = home.appendingPathComponent("plugin-signing-key.pub.pem")
         // As the real key was made: generated in a pipe straight into gpg.
-        try run(shell, ["-c", """
+        try Self.run(shell, ["-c", """
             set -e
             "\(openssl.path)" genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null \\
               | "\(gpg.path)" --batch --yes --armor --encrypt --recipient test@example.invalid --output "\(encryptedKey.path)"
             """], environment: environment)
-        try run(shell, ["-c", """
+        try Self.run(shell, ["-c", """
             "\(gpg.path)" --batch --quiet --decrypt "\(encryptedKey.path)" \\
               | "\(openssl.path)" pkey -pubout -out "\(publicKey.path)"
             """], environment: environment)
@@ -188,7 +188,7 @@ final class ConfigAndSignatureTests: XCTestCase {
         try #"{"name":"Signed","id":"signer-test","scriptUrl":"Script.js","version":1,"scriptSignature":"","scriptPublicKey":""}"#
             .write(to: configURL, atomically: true, encoding: .utf8)
 
-        try run(python, [signer.path, scriptURL.path, configURL.path,
+        try Self.run(python, [signer.path, scriptURL.path, configURL.path,
                          "--key", encryptedKey.path, "--public-key", publicKey.path], environment: environment)
 
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(contentsOf: configURL))
@@ -208,7 +208,13 @@ final class ConfigAndSignatureTests: XCTestCase {
         let session = URLSession(configuration: .ephemeral)
         for entry in CuratedSourceDatabase.shared.entries where entry.name.hasSuffix("(Hummingbird)") {
             let configURL = try XCTUnwrap(URL(string: entry.configURL))
-            let (configData, _) = try await session.data(from: configURL)
+            let configData: Data
+            do {
+                (configData, _) = try await session.data(from: configURL)
+            } catch let error as URLError where [.cannotFindHost, .dnsLookupFailed, .notConnectedToInternet].contains(error.code) {
+                // Unreachable is not unverified: say so rather than fail.
+                throw XCTSkip("\(configURL.host ?? "the host") is unreachable from here (URLError \(error.code.rawValue)); the published forks were not checked")
+            }
             let config = try JSONDecoder().decode(PluginConfig.self, from: configData)
             XCTAssertEqual(config.id, entry.pluginID, entry.name)
             XCTAssertEqual(config.sourceUrl, entry.configURL, entry.name)

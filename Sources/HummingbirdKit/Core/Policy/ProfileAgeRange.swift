@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Observation
 
 /// What the profile knows about the user's age, as it syncs: an upper bound

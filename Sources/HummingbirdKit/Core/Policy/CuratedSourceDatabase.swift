@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import os
 import Synchronization
 
 /// One reviewed source: where it comes from, the author key it must be

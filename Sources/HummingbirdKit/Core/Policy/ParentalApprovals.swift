@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftOpenUI
+import ATProtoKit
 
 /// A parent's approval of one source, given through the system's
 /// parent-approval flow (PermissionKit on Apple platforms). Profile data:

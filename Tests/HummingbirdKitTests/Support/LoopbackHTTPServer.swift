@@ -12,12 +12,14 @@ final class LoopbackHTTPServer: @unchecked Sendable {
     private let lock = NSLock()
     private var heads: [String] = []
     private let body: String
+    private let contentType: String
     private var closed = false
 
     var requests: [String] { lock.withLock { heads } }
 
-    init(body: String = "ok") throws {
+    init(body: String = "ok", contentType: String = "text/plain") throws {
         self.body = body
+        self.contentType = contentType
         #if canImport(Glibc)
         let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
         #else
@@ -69,7 +71,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             if received.range(of: Data("\r\n\r\n".utf8)) != nil { break }
         }
         lock.withLock { heads.append(String(decoding: received, as: UTF8.self)) }
-        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         _ = response.withCString { write(client, $0, strlen($0)) }
     }
 }

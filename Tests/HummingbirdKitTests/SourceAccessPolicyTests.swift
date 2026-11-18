@@ -137,7 +137,7 @@ final class SourceAccessPolicyTests: XCTestCase {
         let supervision = FixedSupervisionSource(.supervised(allowsInstallingApps: false, contentAgeLimit: nil))
         let approvals = ParentalApprovals(storage: .inMemory(), storageName: "approvals", profileChanges: nil)
         let policy = SourceAccessPolicy(
-            ageSource: FixedAgeSource(.range(lowerBound: 18, upperBound: nil)), supervisionSource: supervision,
+            ageSource: FixedAgeSource(.range(lowerBound: 16, upperBound: 17)), supervisionSource: supervision,
             profileAge: ProfileAgeRange(storage: .inMemory(), storageName: "age", profileChanges: nil),
             approvals: approvals
         )
@@ -246,11 +246,12 @@ final class SourceAccessPolicyTests: XCTestCase {
         XCTAssertNotNil(database.entry(for: "new"))
     }
 
-    func testAcceptedUpdateIsReverifiedAtLaunch() throws {
+    func testAcceptedUpdateIsReverifiedAtLaunch() async throws {
         let key = Curve25519.Signing.PrivateKey()
         let storage = Storage.inMemory()
         let (body, signature) = try signedList(version: 7, key: key)
         storage.save(CuratedSourceUpdater.Stored(body: body, signature: signature), name: "curated_sources_update")
+        await storage.flush()
         let updater = CuratedSourceUpdater(listURL: URL(string: "https://example.com/list.json")!,
                                            publicKey: key.publicKey, storage: storage)
         let database = CuratedSourceDatabase(list: CuratedSourceList(format: 1, version: 1, generatedAt: "", entries: []))

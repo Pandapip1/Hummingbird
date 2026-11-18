@@ -25,7 +25,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         // Twitch-like: Grayjay's Twitch config (Http package, signed) installs
         // fine on its own; on the phone it failed transiently, which used to
         // take every record after it down too.
-        let twitch = host.serve(id: "c0f315f9-0992-4508-a061-f2738724c331", name: "Twitch")
+        let twitch = host.serve(id: "6d1e5a47-3f0b-4c2e-9a51-7b0c2d9e8f13", name: "Twitch")  // not the reviewed Twitch: that id with another key is a lookalike
         let zulu = host.serve(id: "zulu", name: "Zulu")
 
         // Mac: plugins and library that existed before sync was active, and a

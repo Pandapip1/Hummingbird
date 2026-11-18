@@ -101,6 +101,40 @@ public enum PlaybackActivity: Equatable, Sendable {
     }
 }
 
+/// A change to playback that did not come from the app's own controls. The
+/// engine reports every one; the host decides what it means for the
+/// user's intent, so the UI, intent, Now Playing and history stay in step.
+public enum ExternalPlaybackEvent: Equatable, Sendable {
+    /// The user played or paused outside the app's controls (lock screen,
+    /// Control Center, headphones, CarPlay, Siri, the system player UI,
+    /// Picture in Picture).
+    case play
+    case pause
+    case togglePlayPause
+    case seek(to: Double)
+    case skip(by: Double)
+    /// A call, an alarm or another app took the audio (the engine paused).
+    case interruptionBegan
+    /// The interruption ended; `shouldResume`: the system says playback may resume.
+    case interruptionEnded(shouldResume: Bool)
+    /// The output went away (headphones unplugged); the engine paused.
+    case outputLost
+}
+
+/// What the system's Now Playing shows (lock screen, Control Center).
+public struct NowPlaying: Equatable, Sendable {
+    public var title: String
+    public var duration: Double
+    public var position: Double
+    public var rate: Float
+    public init(title: String, duration: Double, position: Double, rate: Float) {
+        self.title = title
+        self.duration = duration
+        self.position = position
+        self.rate = rate
+    }
+}
+
 /// Platform playback engine contract. Applications can supply AVFoundation,
 /// GStreamer, VLC, or test implementations without changing player UI.
 @MainActor
@@ -113,6 +147,11 @@ public protocol MediaBackend: AnyObject {
     /// including pauses the system makes on its own (interruptions, routes).
     var activity: PlaybackActivity { get }
     var onActivityChange: (@MainActor (PlaybackActivity) -> Void)? { get set }
+    /// Changes from outside the app's controls; the engine never acts on them
+    /// itself beyond what the system already did (see `ExternalPlaybackEvent`).
+    var onExternalEvent: (@MainActor (ExternalPlaybackEvent) -> Void)? { get set }
+    /// Publishes what the system's Now Playing shows (nil: nothing playing).
+    func updateNowPlaying(_ nowPlaying: NowPlaying?)
     var onEnded: (@MainActor () -> Void)? { get set }
     var onFailure: (@MainActor (String) -> Void)? { get set }
     var tracks: [MediaTrack] { get }
@@ -139,6 +178,8 @@ public extension MediaBackend {
     var duration: Double { 0 }
     var activity: PlaybackActivity { isPlaying ? .playing : .paused }
     var onActivityChange: (@MainActor (PlaybackActivity) -> Void)? { get { nil } set {} }
+    var onExternalEvent: (@MainActor (ExternalPlaybackEvent) -> Void)? { get { nil } set {} }
+    func updateNowPlaying(_: NowPlaying?) {}
     var tracks: [MediaTrack] { [] }
     func selectTrack(_: MediaTrack?) {}
     func selectedTrack(ofKind _: MediaTrack.Kind) -> MediaTrack? { nil }

@@ -107,15 +107,18 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// seek. A video the user paused stays paused. The loopback server is
     /// checked (a suspended app's sockets are reclaimed).
     func applicationBecameActive() {
-        if currentPlayback?.origin == .mediaCache {
-            let server = mediaServer
-            Task { _ = try? await server.ensureListening() }
+        // After sleep or suspension: the server's socket may be gone and
+        // downloads may be waiting out a long backoff (or hold expired URLs,
+        // which are resolved again before use).
+        let server = mediaServer, downloads = mediaDownloads
+        Task {
+            _ = try? await server.ensureListening()
+            await downloads.retryNow()
         }
         guard playbackRequested, let backend, backend.activity == .paused, !isRecovering,
               pictureInPictureState != .active, !didFinishCurrentItem else { return }
         Logger.player.notice("resume_after_foreground position=\(backend.currentTime)")
-        backend.play()
-        if playbackRate != 1 { backend.setPlaybackRate(playbackRate) }
+        playByUser()
     }
 
     /// Another tab of the window started playing: this one pauses, unless
@@ -225,6 +228,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         engine.onEnded = { [weak self] in self?.finished() }
         engine.onFailure = { [weak self] message in self?.playerFailed(message) }
         engine.onActivityChange = { [weak self] activity in self?.activityChanged(activity) }
+        engine.onExternalEvent = { [weak self] event in self?.externalEvent(event) }
         engine.onPictureInPictureChange = { [weak self] state in self?.pictureInPictureState = state }
         engine.onRestoreFromPictureInPicture = { [weak self] in self?.onRestoreRequested?() }
         pictureInPictureState = engine.pictureInPictureState
@@ -238,6 +242,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         var summary: String
         var lastIssue: String?
         var issueIsRecent: Bool
+    }
+
+    /// Every track has at least 5 s (or the rest) downloaded from `position` on.
+    private func hasLocalDataAhead(of position: Double) -> Bool {
+        let tracks = pipeline.tracks
+        guard !tracks.isEmpty else { return false }
+        return tracks.allSatisfy { track in
+            track.isComplete || Self.margin(ahead: position, in: track.timeRanges(for: .download)) >= 5
+        }
     }
 
     /// Seconds downloaded without a gap from the playhead on, per track.
@@ -271,6 +284,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// The engine's state is the truth: a pause the system makes (an
     /// interruption, a route change, a torn-down view) shows as paused.
     private func activityChanged(_ activity: PlaybackActivity) {
+        defer { publishNowPlaying() }
         let margins = pipeline.tracks.map { track in
             "\(track.role.rawValue)=\(String(format: "%.1f", Self.margin(ahead: playbackTime, in: track.timeRanges(for: .download))))"
         }.joined(separator: ",")
@@ -322,6 +336,14 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 if stuck > .seconds(4), !checkedServer, self.currentPlayback?.origin == .mediaCache {
                     checkedServer = true
                     _ = try? await self.mediaServer.ensureListening()
+                }
+                // Waiting although the cache holds what comes next: the player
+                // lost its connection (suspension, sleep), not the network.
+                if case .waiting = activity, stuck > .seconds(12), !recovered, !self.isRecovering,
+                   self.currentPlayback?.origin == .mediaCache, self.hasLocalDataAhead(of: time) {
+                    recovered = true
+                    Logger.player.error("waiting_with_local_data position=\(time)")
+                    self.playerFailed("Playback was waiting although the video is downloaded")
                 }
                 if self.watchdogStalled, stuck > .seconds(6), !recovered, !self.isRecovering {
                     recovered = true
@@ -559,24 +581,76 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     }
     func fullscreenDidChange(_ fullscreen: Bool) { isFullscreen = fullscreen }
     func togglePlayback() {
+        if isPlaying { pauseByUser() } else { playByUser() }
+    }
+
+    // MARK: intent
+    //
+    // The one place playback is started or stopped for the user, whichever
+    // control they used: the app's, the lock screen, Control Center,
+    // headphones, CarPlay, Siri, Picture in Picture or the system player UI
+    // (`externalEvent`). Intent (`playbackRequested`), the engine, Now
+    // Playing and history change together; the UI shows the engine's state.
+
+    /// The user wants it playing.
+    func playByUser() {
         guard let backend else { return }
-        if isPlaying {
-            backend.pause()
-            isPlaying = false
-            playbackRequested = false
-            // A pause is where progress is worth syncing; ticks only update
-            // the library (see LibraryStore.recordProgress).
-            let seconds = backend.currentTime
-            if seconds.isFinite, seconds > 1, let details, let library {
-                library.recordProgress(SavedVideo(details.item), seconds: seconds)
-                library.syncHistory()
-            }
-        } else {
+        playbackRequested = true
+        if !backend.activity.wantsToPlay {
             backend.play()
-            backend.setPlaybackRate(playbackRate)
-            isPlaying = true
-            playbackRequested = true
+            if playbackRate != 1 { backend.setPlaybackRate(playbackRate) }
         }
+        isPlaying = true
+        publishNowPlaying()
+    }
+
+    /// The user wants it paused. A pause is where progress is worth syncing;
+    /// ticks only update the library (see LibraryStore.recordProgress).
+    func pauseByUser() {
+        guard let backend else { return }
+        playbackRequested = false
+        if backend.activity.wantsToPlay { backend.pause() }
+        isPlaying = false
+        let seconds = backend.currentTime
+        if seconds.isFinite, seconds > 1, let details, let library {
+            library.recordProgress(SavedVideo(details.item), seconds: seconds)
+            library.syncHistory()
+        }
+        publishNowPlaying()
+    }
+
+    /// A call or another app took the audio: playback stopped but the user
+    /// still wants it (`playbackRequested` unchanged) until the interruption
+    /// ends; the UI shows it paused meanwhile.
+    private(set) var isInterrupted = false
+
+    private func externalEvent(_ event: ExternalPlaybackEvent) {
+        Logger.player.notice("external_event \(String(describing: event), privacy: .public)")
+        switch event {
+        case .play: playByUser()
+        case .pause: pauseByUser()
+        case .togglePlayPause: togglePlayback()
+        case .seek(let seconds): seek(to: seconds, coalescing: false)
+        case .skip(let seconds): skip(by: seconds)
+        case .interruptionBegan:
+            isInterrupted = true
+            isPlaying = false
+            publishNowPlaying()
+        case .interruptionEnded(let shouldResume):
+            isInterrupted = false
+            if shouldResume, playbackRequested { playByUser() }
+            else if playbackRequested { pauseByUser() }
+        case .outputLost:
+            pauseByUser()
+        }
+    }
+
+    /// What the lock screen and Control Center show.
+    private func publishNowPlaying() {
+        guard let backend, let details else { return }
+        backend.updateNowPlaying(NowPlaying(title: details.item.name, duration: authoritativeDuration,
+                                            position: backend.currentTime,
+                                            rate: backend.activity == .playing ? playbackRate : 0))
     }
     func setPlaybackRate(_ rate: Float) {
         playbackRate = rate
@@ -617,11 +691,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard let backend else { return }
         didFinishCurrentItem = false
         backend.seek(to: 0)
-        backend.play()
-        backend.setPlaybackRate(playbackRate)
         playbackTime = 0
-        isPlaying = true
-        playbackRequested = true
+        playByUser()
     }
 
     private func play(
@@ -1258,8 +1329,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// audible. Only if a surface did pause it is playback resumed.
     func restorePlaybackAfterSurfaceTransfer() {
         guard playbackRequested, let backend, backend.activity == .paused else { return }
-        backend.play()
-        if playbackRate != 1 { backend.setPlaybackRate(playbackRate) }
+        playByUser()
     }
 
     func teardown() {

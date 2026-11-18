@@ -108,6 +108,12 @@ actor MediaDownloads {
     /// How downloads reach the network; the app installs one that keeps
     /// going while it is suspended (`BackgroundTransport`). Applies to
     /// downloads started afterwards.
+    /// After sleep or suspension: every download retries now (see
+    /// `TrackDownloader.retryNow`).
+    func retryNow() async {
+        for entry in tracks.values { await entry.downloader.retryNow() }
+    }
+
     func useTransport(_ transport: any MediaTransport) {
         self.transport = transport
     }

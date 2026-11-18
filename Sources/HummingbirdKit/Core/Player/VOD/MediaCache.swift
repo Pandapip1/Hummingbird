@@ -79,7 +79,7 @@ actor MediaCache {
         let metadataURL = root.appendingPathComponent("\(digest).json")
         var metadata = (try? Data(contentsOf: metadataURL)).flatMap { try? JSONDecoder().decode(Metadata.self, from: $0) }
         if !FileManager.default.fileExists(atPath: dataURL.path) {
-            guard FileManager.default.createFile(atPath: dataURL.path, contents: nil) else {
+            guard FileManager.default.createFile(atPath: dataURL.path, contents: nil, attributes: Self.fileAttributes) else {
                 throw CocoaError(.fileWriteUnknown)
             }
             metadata = nil
@@ -135,6 +135,18 @@ actor MediaCache {
             Task { await self.evictIfNeeded() }
         }
         return track.metadata.completed
+    }
+
+    /// Media must stay readable while the device is locked (playback continues
+    /// in the background and resumes after sleep): files are protected until
+    /// the first unlock after boot, never `complete`, which makes them
+    /// unreadable about ten seconds after the device locks.
+    static var fileAttributes: [FileAttributeKey: Any]? {
+        #if os(iOS) || os(tvOS) || os(visionOS)
+        [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        #else
+        nil
+        #endif
     }
 
     /// The bytes in `range`, or nil when any of them is missing.

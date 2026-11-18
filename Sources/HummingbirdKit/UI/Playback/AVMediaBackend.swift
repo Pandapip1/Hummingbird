@@ -10,6 +10,9 @@ import AVKit
 #if os(iOS)
 import UIKit
 #endif
+#if canImport(MediaPlayer)
+import MediaPlayer
+#endif
 
 @MainActor
 final class AVMediaBackend: MediaBackend {
@@ -20,6 +23,14 @@ final class AVMediaBackend: MediaBackend {
     private(set) var player: AVPlayer? = AVMediaBackend.makePlayer()
     var onTick: (@MainActor (Double) -> Void)?
     var onActivityChange: (@MainActor (PlaybackActivity) -> Void)?
+    var onExternalEvent: (@MainActor (ExternalPlaybackEvent) -> Void)?
+    /// The rate the app last asked for (0: paused). A rate change the player
+    /// reports that differs came from outside the app's controls.
+    private var commandedRate: Float = 0
+    private var interrupted = false
+    /// The backend whose video the system's remote commands control.
+    private static weak var remoteOwner: AVMediaBackend?
+    private var remoteTargets: [Any] = []
     private var reportedActivity: PlaybackActivity = .paused
     private var sessionObservers: [NSObjectProtocol] = []
     /// Playing when an audio interruption (a call, Siri) began.
@@ -61,9 +72,35 @@ final class AVMediaBackend: MediaBackend {
     /// reports, so pauses the system makes reach the UI).
     private func refreshActivity() {
         let current = activity
+        classifyRateChange()
         guard current != reportedActivity else { return }
         reportedActivity = current
         onActivityChange?(current)
+    }
+
+    /// A play or pause the app did not ask for. While the app is in front or
+    /// in Picture in Picture it is the user (AVKit's or PiP's controls, Siri):
+    /// it is reported so the app's intent follows. In the background it is the
+    /// system (lock-screen and remote commands come through `remoteCommand`),
+    /// and the app's intent stays as it was.
+    private func classifyRateChange() {
+        guard let player, player.currentItem != nil, !interrupted else { return }
+        let rate = player.rate
+        if rate == 0, commandedRate > 0 {
+            let atEnd = duration > 0 && currentTime >= duration - 0.5
+            commandedRate = 0
+            guard !atEnd else { return }
+            if ApplicationActivity.isActive || pictureInPictureState == .active {
+                Logger.avPlayer.notice("external_pause")
+                onExternalEvent?(.pause)
+            } else {
+                Logger.avPlayer.notice("system_pause_in_background")
+            }
+        } else if rate > 0, commandedRate == 0 {
+            commandedRate = rate
+            Logger.avPlayer.notice("external_play")
+            onExternalEvent?(.play)
+        }
     }
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
@@ -211,22 +248,29 @@ final class AVMediaBackend: MediaBackend {
         }
         if autoplay {
             activatePlaybackEnvironment()
+            commandedRate = p.defaultRate
             p.play()
+        } else {
+            commandedRate = 0
         }
     }
 
     func play() {
-        guard player != nil, !isRetired else { return }
+        guard let player, !isRetired else { return }
         activatePlaybackEnvironment()
-        player?.play()
+        commandedRate = player.defaultRate
+        player.play()
     }
     func pause() {
+        commandedRate = 0
         player?.pause()
         deactivatePlaybackEnvironment()
     }
     func setPlaybackRate(_ rate: Float) {
         if rate > 0, player != nil { activatePlaybackEnvironment() }
         else { deactivatePlaybackEnvironment() }
+        commandedRate = rate
+        player?.defaultRate = rate > 0 ? rate : 1
         player?.rate = rate
     }
     func seek(to seconds: Double) { player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
@@ -287,6 +331,9 @@ final class AVMediaBackend: MediaBackend {
     func stop() {
         deactivatePlaybackEnvironment()
         isRetired = true
+        commandedRate = 0
+        removeRemoteCommands()
+        updateNowPlaying(nil)
         loadGeneration &+= 1
         invalidatedThroughGeneration = loadGeneration
         activeLoadGenerations.removeAll()
@@ -319,6 +366,17 @@ final class AVMediaBackend: MediaBackend {
             let options = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt).map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
             MainActor.assumeIsolated { self?.audioInterruption(type, shouldResume: options.contains(.shouldResume)) }
         })
+        sessionObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
+            let reason = (notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt).flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            guard reason == .oldDeviceUnavailable else { return }
+            MainActor.assumeIsolated {
+                guard let self, self.commandedRate > 0 else { return }
+                // Headphones unplugged: the player pauses; that is the user's pause.
+                self.commandedRate = 0
+                Logger.avPlayer.notice("output_lost")
+                self.onExternalEvent?(.outputLost)
+            }
+        })
         sessionObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 Logger.avPlayer.error("media_services_reset")
@@ -336,13 +394,18 @@ final class AVMediaBackend: MediaBackend {
         switch type {
         case .began?:
             playingBeforeInterruption = activity.wantsToPlay
+            interrupted = true
+            commandedRate = 0
             #if os(iOS)
             audioSessionActive = false // the system deactivated it
             #endif
             Logger.avPlayer.notice("audio_interruption_began playing=\(self.playingBeforeInterruption)")
+            onExternalEvent?(.interruptionBegan)
         case .ended?:
             Logger.avPlayer.notice("audio_interruption_ended resume=\(shouldResume)")
-            if shouldResume, playingBeforeInterruption { play() }
+            interrupted = false
+            // The app decides (its intent may have changed meanwhile).
+            onExternalEvent?(.interruptionEnded(shouldResume: shouldResume))
             playingBeforeInterruption = false
         default: break
         }
@@ -421,6 +484,76 @@ final class AVMediaBackend: MediaBackend {
         player = nil
         mediaSelectionGroups = [:]
         committedLoadGeneration = nil
+    }
+
+    // MARK: system remote commands and Now Playing
+
+    /// The lock screen, Control Center, headphones, CarPlay and Siri control
+    /// the video that played last; each command goes to the app as an
+    /// external event, so the app's intent, UI and history follow it.
+    private func installRemoteCommands() {
+        #if canImport(MediaPlayer) && !os(visionOS)
+        Self.remoteOwner = self
+        guard remoteTargets.isEmpty else { return }
+        let center = MPRemoteCommandCenter.shared()
+        func route(_ command: MPRemoteCommand, _ event: @escaping (MPRemoteCommandEvent) -> ExternalPlaybackEvent?) {
+            command.isEnabled = true
+            remoteTargets.append(command.addTarget { [weak self] commandEvent in
+                let external = event(commandEvent)
+                return MainActor.assumeIsolated {
+                    guard let self, Self.remoteOwner === self, let external else { return .commandFailed }
+                    self.onExternalEvent?(external)
+                    return .success
+                }
+            })
+        }
+        route(center.playCommand) { _ in .play }
+        route(center.pauseCommand) { _ in .pause }
+        route(center.togglePlayPauseCommand) { _ in .togglePlayPause }
+        route(center.changePlaybackPositionCommand) { event in
+            (event as? MPChangePlaybackPositionCommandEvent).map { .seek(to: $0.positionTime) }
+        }
+        center.skipForwardCommand.preferredIntervals = [10]
+        center.skipBackwardCommand.preferredIntervals = [10]
+        route(center.skipForwardCommand) { _ in .skip(by: 10) }
+        route(center.skipBackwardCommand) { _ in .skip(by: -10) }
+        #endif
+    }
+
+    private func removeRemoteCommands() {
+        #if canImport(MediaPlayer) && !os(visionOS)
+        let center = MPRemoteCommandCenter.shared()
+        for target in remoteTargets {
+            for command in [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
+                            center.changePlaybackPositionCommand, center.skipForwardCommand, center.skipBackwardCommand] {
+                command.removeTarget(target)
+            }
+        }
+        remoteTargets.removeAll()
+        if Self.remoteOwner === self { Self.remoteOwner = nil }
+        #endif
+    }
+
+    func updateNowPlaying(_ nowPlaying: NowPlaying?) {
+        #if canImport(MediaPlayer) && !os(visionOS)
+        if nowPlaying != nil { installRemoteCommands() }
+        guard Self.remoteOwner === self || nowPlaying == nil else { return }
+        let center = MPNowPlayingInfoCenter.default()
+        guard let nowPlaying else {
+            if Self.remoteOwner == nil || Self.remoteOwner === self { center.nowPlayingInfo = nil }
+            return
+        }
+        center.nowPlayingInfo = [
+            MPMediaItemPropertyTitle: nowPlaying.title,
+            MPMediaItemPropertyPlaybackDuration: nowPlaying.duration,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: nowPlaying.position,
+            MPNowPlayingInfoPropertyPlaybackRate: nowPlaying.rate,
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
+        ]
+        #if os(macOS)
+        center.playbackState = nowPlaying.rate > 0 ? .playing : .paused
+        #endif
+        #endif
     }
 
     /// Keeps playback alive under the platform policies that normally suspend
@@ -628,6 +761,8 @@ struct PlayerSurface: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.showsPlaybackControls = false
+        // The app publishes Now Playing and handles the remote commands itself.
+        controller.updatesNowPlayingInfoCenter = false
         controller.allowsPictureInPicturePlayback = true
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
@@ -706,6 +841,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
 
             let playerController = AVPlayerViewController()
             playerController.showsPlaybackControls = false
+            playerController.updatesNowPlayingInfoCenter = false
             playerController.allowsPictureInPicturePlayback = true
             #if os(tvOS)
             let controller = FullscreenPlayerViewController(playerController: playerController)

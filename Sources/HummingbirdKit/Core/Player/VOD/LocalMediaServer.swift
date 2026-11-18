@@ -177,11 +177,30 @@ actor LocalMediaServer {
     /// the app calls this when it becomes active. Returns the port.
     @discardableResult
     func ensureListening() async throws -> Int {
-        if let channel = serverChannel, !channel.isActive {
+        // A suspended app's socket can be dead while NIO still thinks it is
+        // open: connect to it to know.
+        if let channel = serverChannel, let port, !(await Self.accepts(port: port)) {
+            Logger.mediaCache.notice("server_unreachable port=\(port)")
+            channel.close(promise: nil)
+            await listenerEnded(channel)
+        } else if let channel = serverChannel, !channel.isActive {
             channel.close(promise: nil)
             await listenerEnded(channel)
         }
         return try await serverPort()
+    }
+
+    /// Whether a loopback connection to `port` is accepted within a second.
+    private static func accepts(port: Int) async -> Bool {
+        do {
+            let channel = try await ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+                .connectTimeout(.seconds(1))
+                .connect(host: "127.0.0.1", port: port).get()
+            try? await channel.close()
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Closes the listening socket as iOS does to a suspended app (tests).

@@ -124,6 +124,64 @@ final class PlaybackStallTests: XCTestCase {
         app.closeWindow()
     }
 
+    /// Calls, remote commands, unplugged headphones and the system's own
+    /// controls go through the same intent as the app's: the UI state, the
+    /// intent (what returning to the app resumes) and the engine agree.
+    func testExternalEventsKeepStateIntentAndEngineInStep() {
+        let backend = ActivityBackend()
+        let model = makeTestPlayerModel(backend: backend)
+        model.togglePlayback()
+        XCTAssertTrue(model.isPlaying)
+
+        // A call: the engine paused; the user still wants it playing.
+        backend.report(.paused)
+        backend.external(.interruptionBegan)
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertTrue(model.isInterrupted)
+        model.applicationBecameActive()
+        backend.calls.removeAll()
+        // Hung up, the system says it may resume: it resumes.
+        backend.external(.interruptionEnded(shouldResume: true))
+        XCTAssertEqual(backend.calls, ["play"])
+        XCTAssertTrue(model.isPlaying)
+
+        // Another interruption that ends without permission to resume: stays paused.
+        backend.report(.paused)
+        backend.external(.interruptionBegan)
+        backend.external(.interruptionEnded(shouldResume: false))
+        XCTAssertFalse(model.isPlaying)
+        backend.calls.removeAll()
+        model.applicationBecameActive()
+        XCTAssertEqual(backend.calls, [], "the user's intent is now paused: returning does not resume")
+
+        // The lock screen plays, then pauses.
+        backend.external(.play)
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertEqual(backend.calls.last, "play")
+        backend.external(.pause)
+        XCTAssertFalse(model.isPlaying)
+        XCTAssertEqual(backend.calls.last, "pause")
+        backend.calls.removeAll()
+        model.applicationBecameActive()
+        XCTAssertEqual(backend.calls, [], "paused from the lock screen stays paused")
+
+        // Headphones unplugged while playing: the user's pause.
+        backend.external(.togglePlayPause)
+        XCTAssertTrue(model.isPlaying)
+        backend.report(.paused)
+        backend.external(.outputLost)
+        XCTAssertFalse(model.isPlaying)
+        backend.calls.removeAll()
+        model.applicationBecameActive()
+        XCTAssertEqual(backend.calls, [])
+
+        // A remote seek.
+        backend.external(.seek(to: 42))
+        XCTAssertEqual(backend.calls.last, "seek")
+        XCTAssertEqual(backend.currentTime, 42)
+        model.teardown()
+    }
+
     func testAQueuedBackgroundPieceRunsAsSoonAsThePlayerNeedsItsTrack() async {
         let scheduler = DownloadScheduler(backgroundLimit: 2)
         // Another track keeps the scheduler busy in the foreground.
@@ -149,6 +207,10 @@ private final class ActivityBackend: MediaBackend {
     var isPlaying: Bool { activity.wantsToPlay }
     private(set) var activity: PlaybackActivity = .paused
     var onActivityChange: (@MainActor (PlaybackActivity) -> Void)?
+    var onExternalEvent: (@MainActor (ExternalPlaybackEvent) -> Void)?
+    var nowPlaying: NowPlaying?
+    func updateNowPlaying(_ nowPlaying: NowPlaying?) { self.nowPlaying = nowPlaying }
+    func external(_ event: ExternalPlaybackEvent) { onExternalEvent?(event) }
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?

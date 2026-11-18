@@ -545,7 +545,7 @@ actor TrackDownloader {
                                                reason: failure.description)
                 publish()
                 Logger.mediaCache.notice("piece_retry role=\(self.role.rawValue, privacy: .public) attempt=\(attempt) delay=\(delay) reason=\(failure.description, privacy: .public)")
-                try await Task.sleep(for: .seconds(delay))
+                try await waitToRetry(seconds: delay)
             }
         }
     }
@@ -570,6 +570,23 @@ actor TrackDownloader {
         lastThrottleRefresh = .now
         Logger.mediaCache.notice("source_refreshed role=\(self.role.rawValue, privacy: .public) reason=throttled")
         try? await refreshedSigner()
+    }
+
+    /// Bumped by `retryNow`: a retry waiting out its backoff starts at once.
+    private var retryWake = 0
+
+    /// The app is back (after sleep or suspension): pieces waiting out a
+    /// backoff retry now instead of up to 30 s later.
+    func retryNow() { retryWake &+= 1 }
+
+    private func waitToRetry(seconds: Double) async throws {
+        let wake = retryWake
+        var remaining = seconds
+        while remaining > 0, retryWake == wake {
+            let step = min(remaining, 0.25)
+            try await Task.sleep(for: .milliseconds(Int(step * 1_000)))
+            remaining -= step
+        }
     }
 
     /// One refresh at a time for every piece that hit an expired URL.

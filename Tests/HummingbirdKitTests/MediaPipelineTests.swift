@@ -252,6 +252,33 @@ final class MediaPipelineTests: XCTestCase {
         await downloader.stop()
     }
 
+    /// After sleep or suspension (requests failed while away, now in a long
+    /// backoff), returning to the app retries at once.
+    func testReturningFromSuspensionRetriesAtOnce() async throws {
+        let data = Data((0..<200_000).map { UInt8($0 % 251) })
+        let upstream = FakeUpstream(file: data, failures: 2)
+        let cache = temporaryCache()
+        let track = try await cache.open(identity: "suspended")
+        var config = fastRetry
+        config.retry = DownloadRetryPolicy(initialDelay: 60, maximumDelay: 60, refusalsBeforeRefresh: 2)
+        let downloader = TrackDownloader(role: .muxed, cache: cache, track: track,
+                                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test/s.mp4"))),
+                                         transport: upstream, configuration: config)
+        await downloader.start()
+        let started = ContinuousClock.now
+        let retrying = Task {
+            // The app becomes active (repeatedly, as each failed attempt backs off).
+            for _ in 0..<40 {
+                try await Task.sleep(for: .milliseconds(200))
+                await downloader.retryNow()
+            }
+        }
+        try await bounded(10) { try await downloader.waitUntilAvailable(0..<200_000) }
+        retrying.cancel()
+        XCTAssertLessThan(started.duration(to: .now), .seconds(10), "not the 60 s backoff")
+        await downloader.stop()
+    }
+
     /// Upstream problems are classified, counted and shown (Download
     /// health); a 429 is waited out; a URL about to expire is resolved again
     /// before it is refused.

@@ -10,8 +10,15 @@ final class OverviewReferenceUITests: XCTestCase {
         super.tearDown()
     }
 
+    /// A reference capture, not a pass/fail check, and it drives Safari
+    /// (whose launch can time out on a busy simulator): opt-in, so it can't
+    /// block merges. Run with TEST_RUNNER_HUMMINGBIRD_UI_REFERENCE_TESTS=1.
     @MainActor
     func testSafariTabOverview() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["HUMMINGBIRD_UI_REFERENCE_TESTS"] == "1",
+            "reference capture; set TEST_RUNNER_HUMMINGBIRD_UI_REFERENCE_TESTS=1"
+        )
         for orientation in Self.orientations {
             XCUIDevice.shared.orientation = orientation
             let safari = SystemReferenceApp.safari()

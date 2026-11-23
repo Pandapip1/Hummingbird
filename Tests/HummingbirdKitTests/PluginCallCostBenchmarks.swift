@@ -37,6 +37,18 @@ final class PluginCallCostBenchmarks: XCTestCase {
         let script: String
         let query: String
         let settings: [String: String]
+
+        /// The package globals the runtime defines before the plugin script (PluginWorker).
+        var packageSetup: String {
+            config.packages.compactMap { name -> String? in
+                switch name {
+                case "Http": "var http = __makeHttp();"
+                case "DOMParser": "var domParser = __makeDomParser();"
+                case "Utilities": "var utility = __makeUtility();"
+                default: nil
+                }
+            }.joined(separator: " ")
+        }
     }
 
     static var synthetic: Plugin {
@@ -133,6 +145,8 @@ final class PluginCallCostBenchmarks: XCTestCase {
     func measureRuntime(_ plugin: Plugin, engineLabel: String, engine: () throws -> (any JSEngine, Int32?)) async throws {
         var search: [Double] = [], details: [Double] = [], next: [Double] = []
         var startups: [PluginRuntime.StartupTimings] = []
+        var failures: [String: Int] = [:]
+        var withoutVideo = 0
         var hostCalls: [String: Int] = [:]
         let (made, _) = try engine()
         let rt = PluginRuntime(approval: testLoadApproval(plugin.config), config: plugin.config,
@@ -143,22 +157,38 @@ final class PluginCallCostBenchmarks: XCTestCase {
         var keep: [PluginPager<ContentItem>] = []
         for i in 0..<Self.iterations {
             let callsBefore = rt.hostCallCount
-            let (pager, searchTime) = try await Self.time {
-                try await rt.pager("search", [plugin.query, NSNull(), NSNull(), NSNull()], as: ContentItem.self)
+            // A failed call (the network, for the real plugin) is counted, not fatal.
+            let pager: PluginPager<ContentItem>, searchTime: Double
+            do {
+                (pager, searchTime) = try await Self.time {
+                    try await rt.pager("search", [plugin.query, NSNull(), NSNull(), NSNull()], as: ContentItem.self)
+                }
+            } catch {
+                failures["search " + String(String(describing: error).prefix(120)), default: 0] += 1
+                continue
             }
             search.append(searchTime)
             startups.append(rt.lastStartupTimings)
             hostCalls["search", default: 0] += rt.hostCallCount - callsBefore
+            if pager.initial.isEmpty { withoutVideo += 1 }
             if let url = pager.initial.first(where: { $0.kind == .video })?.url ?? pager.initial.first?.url {
                 let callsBeforeDetails = rt.hostCallCount
-                let (_, detailsTime) = try await Self.time { try await rt.callRaw("getContentDetails", [url], kind: "details") }
-                details.append(detailsTime)
+                do {
+                    let (_, detailsTime) = try await Self.time { try await rt.callRaw("getContentDetails", [url], kind: "details") }
+                    details.append(detailsTime)
+                } catch {
+                    failures["getContentDetails " + String(String(describing: error).prefix(120)), default: 0] += 1
+                }
                 hostCalls["getContentDetails", default: 0] += rt.hostCallCount - callsBeforeDetails
             }
             if pager.hasMore {
                 let callsBeforeNext = rt.hostCallCount
-                let (_, nextTime) = try await Self.time { try await pager.next() }
-                next.append(nextTime)
+                do {
+                    let (_, nextTime) = try await Self.time { try await pager.next() }
+                    next.append(nextTime)
+                } catch {
+                    failures["nextPage " + String(String(describing: error).prefix(120)), default: 0] += 1
+                }
                 hostCalls["nextPage", default: 0] += rt.hostCallCount - callsBeforeNext
             }
             if i < PluginRuntime.maximumRetainedSessions { keep.append(pager) }
@@ -171,6 +201,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
             "startup_context": stats(startups.map(\.context)), "startup_prelude": stats(startups.map(\.prelude)),
             "startup_script": stats(startups.map(\.script)), "startup_enable": stats(startups.map(\.enable)),
             "host_calls_per_call": hostCalls.mapValues { Double($0) / Double(Self.iterations) },
+            "failures": failures, "results_without_a_video": withoutVideo,
             "retained_sessions": keep.count, "live_contexts": rt.liveContextCountForTesting,
             "script_bytes": plugin.script.utf8.count,
         ]
@@ -263,14 +294,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
             defer { host.close() }
             let webBefore = WebContentProcesses.footprints()
             let config = String(decoding: try JSONEncoder().encode(plugin.config), as: UTF8.self)
-            let packages = plugin.config.packages.compactMap { name -> String? in
-                switch name {
-                case "Http": "var http = __makeHttp();"
-                case "DOMParser": "var domParser = __makeDomParser();"
-                case "Utilities": "var utility = __makeUtility();"
-                default: nil
-                }
-            }.joined(separator: "\n")
+            let packages = plugin.packageSetup
             var search: [Double] = [], details: [Double] = [], next: [Double] = []
             var startup: [Double] = [], scriptTimes: [Double] = [], enableTimes: [Double] = []
             var hostCalls: [String: Int] = [:]
@@ -334,32 +358,47 @@ final class PluginCallCostBenchmarks: XCTestCase {
         }
     }
 
-    /// Whether a hung realm can be stopped: start an endless loop in a content world, then try to
-    /// recover by discarding the page and making a new one. Reports whether the old WebContent
-    /// process keeps burning CPU.
+    /// Whether a hung realm can be stopped: start an endless loop in a content world, then, as at a
+    /// call's deadline, discard the page (public API: drop the web view) and time how long until its
+    /// WebContent process is gone and its CPU released; also how soon a new page works. The page's
+    /// own process is identified by its process ID (WebKit SPI, measurements only), so no other
+    /// WebContent process on the machine is touched. A process still alive 5 s after the discard is
+    /// killed (SIGKILL) here, and that is reported.
     @MainActor
     func testWebKitHungRealmRecovery() async throws {
-        let before = Set(WebContentProcesses.pids())
-        let host = try await WebRealmHost.make { _, _, _ in "" }
-        let pages = Set(WebContentProcesses.pids()).subtracting(before)
-        let world = WKContentWorld.world(name: "hang")
-        host.evaluateDetached("while (true) {}", in: world)
+        var host: WebRealmHost? = try await WebRealmHost.make { _, _, _ in "" }
+        let pid = try XCTUnwrap(host?.processIdentifier, "the page's WebContent process")
+        host?.evaluateDetached("while (true) {}", in: .world(name: "hang"))
         try await Task.sleep(for: .milliseconds(500))
-        let cpuAtHang = pages.compactMap { WebContentProcesses.cpuSeconds(pid: $0) }.reduce(0, +)
+        let cpuAtHang = WebContentProcesses.cpuSeconds(pid: pid) ?? -1
         let started = Date()
-        host.close()
+        host?.close()
+        host = nil
         let replacement = try await WebRealmHost.make { _, _, _ in "" }
+        defer { replacement.close() }
         let ok = try await replacement.evaluate("1 + 1", in: .world(name: "after")) as? Int
-        let recovery = Date().timeIntervalSince(started)
-        try await Task.sleep(for: .seconds(2))
-        let alive = pages.filter { kill($0, 0) == 0 }
-        let cpuLater = pages.compactMap { WebContentProcesses.cpuSeconds(pid: $0) }.reduce(0, +)
+        let newPage = Date().timeIntervalSince(started)
+        var lastCPU = cpuAtHang
+        while kill(pid, 0) == 0, Date().timeIntervalSince(started) < 5 {
+            lastCPU = WebContentProcesses.cpuSeconds(pid: pid) ?? lastCPU
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let exitedByItself = kill(pid, 0) != 0
+        let gone = Date().timeIntervalSince(started)
+        var hardKilled = false
+        if !exitedByItself {
+            hardKilled = kill(pid, SIGKILL) == 0
+            for _ in 0..<100 where kill(pid, 0) == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        let survived = kill(pid, 0) == 0
         report([
-            "kind": "webkit_hung_realm", "new_page_ms": recovery * 1000, "new_page_works": ok == 2,
-            "old_webcontent_pids": Array(pages), "old_webcontent_still_alive": Array(alive),
-            "old_webcontent_cpu_seconds_during_2s_after_discard": cpuLater - cpuAtHang,
+            "kind": "webkit_hung_realm", "new_page_ms": newPage * 1000, "new_page_works": ok == 2,
+            "hung_webcontent_pid": pid, "exited_after_discard": exitedByItself,
+            "discard_to_exit_ms": exitedByItself ? gone * 1000 : -1,
+            "cpu_seconds_burned_after_discard": lastCPU - cpuAtHang,
+            "hard_killed_after_5s": hardKilled, "survived": survived,
         ])
-        replacement.close()
+        XCTAssertFalse(survived, "the hung WebContent process must be gone")
     }
 
     /// Whether WebKit realms keep containment: content worlds of one page share its DOM, storage
@@ -417,7 +456,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
                 let (_, setupTime) = try await Self.time {
                     try await host.evaluate(WebRealmHost.bridge, in: world)
                     try await host.evaluate(prelude + "\n;0", in: world)
-                    try await host.evaluate("bridge.buildPlatform = 'ios'; __jb.setHandleBase(4294967296); plugin.config = \(config); plugin.settings = parseSettings('{}'); 0", in: world)
+                    try await host.evaluate("bridge.buildPlatform = 'ios'; __jb.setHandleBase(4294967296); \(plugin.packageSetup) plugin.config = \(config); plugin.settings = parseSettings('{}'); 0", in: world)
                     try await host.evaluate(plugin.script + "\n;0", in: world)
                 }
                 page.append(pageTime)
@@ -441,7 +480,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
         let prelude = try PluginWorker.loadPrelude()
         for plugin in try plugins {
             let config = String(decoding: try JSONEncoder().encode(plugin.config), as: UTF8.self)
-            let setup = "bridge.buildPlatform = 'ios'; __jb.setHandleBase(4294967296); plugin.config = \(config); plugin.settings = parseSettings('{}'); 0"
+            let setup = "bridge.buildPlatform = 'ios'; __jb.setHandleBase(4294967296); \(plugin.packageSetup) plugin.config = \(config); plugin.settings = parseSettings('{}'); 0"
             var leaks = 0
             func startup(in machine: JSVirtualMachine?) throws -> (context: Double, prelude: Double, script: Double) {
                 let began = Date()
@@ -541,6 +580,11 @@ final class WebRealmHost: NSObject, WKURLSchemeHandler {
     func evaluate(_ script: String, in world: WKContentWorld) async throws -> Any? {
         guard let webView else { throw URLError(.cancelled) }
         return try await webView.evaluateJavaScript(script, in: nil, contentWorld: world)
+    }
+
+    /// The page's WebContent process (WebKit SPI `_webProcessIdentifier`; measurements only).
+    var processIdentifier: Int32? {
+        (webView?.value(forKey: "_webProcessIdentifier") as? NSNumber).map(\.int32Value).flatMap { $0 > 0 ? $0 : nil }
     }
 
     func evaluateDetached(_ script: String, in world: WKContentWorld) {

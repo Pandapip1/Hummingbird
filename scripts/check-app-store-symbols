@@ -16,8 +16,9 @@ symbols='_JSContextGroupSetExecutionTimeLimit|_JSContextGroupClearExecutionTimeL
 references() {
   local app="$1" found=0
   while IFS= read -r -d '' file; do
-    if /usr/bin/file -b "$file" | grep -q Mach-O \
-        && /usr/bin/nm -m "$file" 2>/dev/null | grep -Eq "$symbols"; then
+    if /usr/bin/file -b "$file" | grep Mach-O >/dev/null \
+        && /usr/bin/nm -m "$file" 2>/dev/null | grep -E "$symbols" >/dev/null; then
+      # (grep -q would stop reading early, and with pipefail nm's SIGPIPE would read as "no match")
       echo "  ${file#"$app"/}" >&2
       found=1
     fi
@@ -34,6 +35,11 @@ for distribution in appstore direct; do
     || { echo "error: the $distribution build failed (see $derived.$distribution.log)" >&2; exit 1; }
   app="$(find "$derived/$distribution/Build/Products" -name Hummingbird.app -maxdepth 2 | head -1)"
   [[ -n "$app" ]] || { echo "error: no Hummingbird.app in $derived/$distribution" >&2; exit 1; }
+  # XPC services are macOS only (the plugin host); an iOS, tvOS or visionOS app must carry none.
+  if [[ "$destination" != *macOS* && -d "$app/XPCServices" ]]; then
+    echo "error: the $distribution app for $destination embeds XPC services: $(ls "$app/XPCServices")" >&2
+    exit 1
+  fi
   if [[ "$distribution" == appstore ]]; then
     if references "$app"; then
       echo "error: the App Store build references JavaScriptCore's non-public time limit (above)" >&2

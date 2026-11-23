@@ -43,7 +43,7 @@ targets:
       - package: HummingbirdPackage
         product: CJSCExecutionLimit
       - target: PluginHostXPC
-        platformFilters: [macOS]
+        destinationFilters: [macOS]
         embed: true
     settings:
       base:

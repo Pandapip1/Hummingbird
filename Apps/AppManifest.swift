@@ -104,7 +104,7 @@ let manifest = AppManifest(
     packageProducts: ["PluginEngine", "CJSCExecutionLimit"],
     // The macOS plugin host: an XPC service with a sandbox of its own and no network
     // (Apps/PluginHostXPC), one process per plugin, killed on a deadline.
-    embeddedTargets: [(target: "PluginHostXPC", platform: "macOS")],
+    embeddedTargets: [(target: "PluginHostXPC", destination: .macOS)],
     // How the app is distributed. Builds for the App Store set HUMMINGBIRD_DISTRIBUTION=appstore:
     // APP_STORE is then defined and nothing that is not public API is compiled in
     // (scripts/check-app-store-symbols verifies the binary).

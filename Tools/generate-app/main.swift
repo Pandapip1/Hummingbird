@@ -54,6 +54,11 @@ enum SandboxEntitlement: CaseIterable, Sendable {
     }
 }
 
+/// An Xcode destination an embedded target is limited to (XcodeGen `destinationFilters`).
+enum AppDestination: String, Sendable {
+    case iOS, macOS, tvOS, visionOS
+}
+
 struct AppManifest: Sendable {
     let name: String
     let bundleID: String
@@ -71,7 +76,7 @@ struct AppManifest: Sendable {
     /// Further products of this package the app links (beyond HummingbirdKit).
     var packageProducts: [String] = []
     /// Xcode targets embedded in the app on one platform only (an XPC service on macOS).
-    var embeddedTargets: [(target: String, platform: String)] = []
+    var embeddedTargets: [(target: String, destination: AppDestination)] = []
     /// How the app is distributed, and the Swift compilation conditions each implies. The build
     /// setting HUMMINGBIRD_DISTRIBUTION picks one (default: the first); builds for the App Store
     /// set it to "appstore" so APP_STORE is defined and non-public API is compiled out.
@@ -168,7 +173,7 @@ extension AppManifest {
         }
         settings.append(("SWIFT_ACTIVE_COMPILATION_CONDITIONS", "\"$(inherited) $(HUMMINGBIRD_DISTRIBUTION_CONDITIONS_$(HUMMINGBIRD_DISTRIBUTION))\""))
         let extraDependencies = packageProducts.map { "      - package: HummingbirdPackage\n        product: \($0)" }
-            + embeddedTargets.map { "      - target: \($0.target)\n        platformFilters: [\($0.platform)]\n        embed: true" }
+            + embeddedTargets.map { "      - target: \($0.target)\n        destinationFilters: [\($0.destination.rawValue)]\n        embed: true" }
         return """
           # BEGIN \(marker).
           \(xcodeTarget):

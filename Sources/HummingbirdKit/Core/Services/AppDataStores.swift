@@ -37,6 +37,10 @@ public final class AppDataStores: Sendable {
     let mediaServer = LocalMediaServer()
     /// Every VOD download; they outlive the players that started them.
     let mediaDownloads: MediaDownloads
+    /// Optional transcoding of finished downloads (Quality setting).
+    let transcoding: TranscodeStage
+    /// Whether work that can wait should wait (saving energy, hot device).
+    let backgroundWork: BackgroundWorkPolicy
 
     public convenience init(dataDirectory: URL, cachesDirectory: URL, preferences: PreferencesDomain,
                             credentialStore: any CredentialStore) {
@@ -60,6 +64,14 @@ public final class AppDataStores: Sendable {
                                 limitBytes: MediaCache.bytes(gigabytes: limitGigabytes ?? MediaCache.defaultLimitGigabytes),
                                 sharing: [generatedCache])
         mediaDownloads = MediaDownloads(cache: mediaCache)
+        let policy = BackgroundWorkPolicy()
+        backgroundWork = policy
+        transcoding = TranscodeStage(cache: mediaCache,
+                                     scratch: cachesDirectory.appendingPathComponent("Transcode", isDirectory: true),
+                                     policy: policy)
+        // Downloads nobody watches pause while energy is saved.
+        let downloads = mediaDownloads
+        Task { await downloads.follow(policy) }
     }
 
     var defaults: UserDefaults { preferences.defaults }

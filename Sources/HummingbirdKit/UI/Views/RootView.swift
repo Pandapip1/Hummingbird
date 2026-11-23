@@ -30,6 +30,8 @@ struct RootView: View {
                 }
             }
         }
+        // An app-level item of the window, placed by the tab container's chrome.
+        .browserWindowItem { DownloadsButton(model: model.downloads) }
         .browserTabControls { MobileBrowserToolbar(showingTabOverview: $showingTabOverview) }
         .navigationTitle(windowTitle)
         .browserWindowChrome(model: model, overviewPresented: $showingTabOverview)
@@ -521,8 +523,9 @@ private struct PairedDeviceLoginSheet: View {
 public extension Scene {
     /// The app's commands for each window: the tab commands (close, new,
     /// reopen, select and cycle tabs), in the menus where the platform has
-    /// them and as keyboard shortcuts everywhere.
+    /// them and as keyboard shortcuts everywhere. Also lets the system wake
+    /// the app when media downloads made while it was suspended finish.
     func hummingbirdCommands() -> some Scene {
-        browserTabCommands()
+        browserTabCommands().handlesBackgroundTransfers()
     }
 }

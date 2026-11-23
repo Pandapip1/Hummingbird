@@ -79,10 +79,15 @@ struct MediaRangeSet: Sendable, Hashable, Codable {
 /// stages' output; each keeps its own progress.
 enum MediaPipelineStage: String, Sendable, Hashable, CaseIterable, Codable {
     case download
+    /// Optional transcoding to save space (Quality setting): consumes the
+    /// downloaded originals as its buffer.
+    case transcode
 }
 
 enum MediaTrackRole: String, Sendable, Hashable, Codable {
     case video, audio, muxed
+    /// A subtitle rendition (WebVTT segments): downloaded with the rest, shown as no lane.
+    case subtitles
 }
 
 /// What a stage is doing right now.
@@ -95,6 +100,8 @@ enum MediaStageCondition: Sendable, Equatable {
     /// The upstream URL expired or was refused; the stage is asking the
     /// plugin for fresh playback details.
     case refreshingSource
+    /// Paused by the user (the downloads list).
+    case paused
     case complete
     /// The stage gave up. Only unrecoverable problems (corrupt media the
     /// player cannot use) end here; network failures never do.
@@ -154,12 +161,18 @@ struct MediaTrackPipelineState: Sendable, Equatable {
     /// Declared duration, used to estimate time ranges for tracks without a timeline.
     var declaredDuration: Double?
     var stages: [MediaPipelineStage: MediaStageState] = [:]
+    /// Media times of discontinuities (ad breaks, encoder restarts).
+    var discontinuities: [Double] = []
+    /// Upstream health of the track's download (nil for local-only tracks).
+    var health: UpstreamHealth?
 
     func stage(_ stage: MediaPipelineStage) -> MediaStageState { stages[stage] ?? MediaStageState() }
 
     var isComplete: Bool {
         guard let totalBytes else { return false }
-        return MediaPipelineStage.allCases.allSatisfy { stage($0).completed.contains(0..<totalBytes) }
+        // Every stage this track runs (download always) has produced everything.
+        let present = Set(stages.keys).union([.download])
+        return present.allSatisfy { stage($0).completed.contains(0..<totalBytes) }
     }
 
     /// Media time ranges a stage has completed. Without a segment timeline
@@ -205,5 +218,45 @@ struct MediaPipelineSnapshot: Sendable, Equatable {
             guard let range = track.timeRanges(for: stage).first(where: { $0.contains(time) }) else { return 0 }
             return range.upperBound - time
         }.min() ?? 0
+    }
+}
+
+/// What went wrong with an upstream request, as logged (`upstream_issue`)
+/// and shown in the player's Download health.
+enum UpstreamIssueKind: String, Sendable, CaseIterable {
+    /// Bytes arrive, but slower than the track plays: the source paces this
+    /// URL (YouTube does when its throttling parameter was not deciphered).
+    case throttled
+    /// 403: the URL is refused (signature or access).
+    case forbidden
+    /// 404/410 or an expiry time in the past: the URL is no longer valid.
+    case expired
+    /// The connection was reset or timed out mid-request.
+    case reset
+    /// 429: too many requests.
+    case rateLimited = "rate_limited"
+    /// 5xx.
+    case server
+    /// Any other network failure (offline, DNS).
+    case network
+}
+
+/// A track's upstream health: how fast bytes arrive and what went wrong last.
+struct UpstreamHealth: Sendable, Equatable {
+    /// Recent transfer rate (bytes per second, transfer time only).
+    var throughput: Double = 0
+    /// The track's average bitrate (bytes per second), once known.
+    var mediaRate: Double?
+    var lastIssue: UpstreamIssueKind?
+    var lastIssueAt: Date?
+    var lastIssueDetail: String?
+    var issueCounts: [UpstreamIssueKind: Int] = [:]
+    /// Times the source URL was resolved again (expired, refused, throttled, or proactively).
+    var refreshes = 0
+
+    /// Downloading at least this many times faster than the media plays.
+    var speedFactor: Double? {
+        guard let mediaRate, mediaRate > 0, throughput > 0 else { return nil }
+        return throughput / mediaRate
     }
 }

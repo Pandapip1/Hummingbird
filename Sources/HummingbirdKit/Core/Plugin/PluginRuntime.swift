@@ -1083,3 +1083,25 @@ func jsLiteral(_ json: Data) -> String {
         .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
         .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
 }
+
+/// Media bytes a plugin pointed playback at (segments, playlists, progressive
+/// ranges), fetched through that plugin's contained content session
+/// (`PluginRuntime.contentSession()`), never an app-wide session.
+///
+/// Plugin media moves to `BackgroundTransferSession` only where that keeps
+/// the containment, and it never does today: on iOS, iPadOS, tvOS and
+/// visionOS background transfers are carried by the system outside this
+/// process, where the in-process egress proxy that pins every connection
+/// cannot be used; on macOS and GTK the contained session itself keeps
+/// running while the app is in the background. So plugin downloads pause
+/// while a mobile app is suspended and continue at once when it returns.
+struct PluginContentTransport: MediaTransport {
+    let runtime: PluginRuntime
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let runtime = runtime
+        // contentSession() may bind the egress proxy's socket: never on the caller's actor.
+        let session = await Task.detached(priority: .userInitiated) { runtime.contentSession() }.value
+        return try await session.data(for: request)
+    }
+}

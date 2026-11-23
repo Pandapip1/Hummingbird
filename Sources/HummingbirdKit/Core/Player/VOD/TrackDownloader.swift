@@ -110,6 +110,13 @@ actor TrackDownloader {
     private let indexHint: ClosedRange<Int64>?
     private var signer: UpstreamRequestSigner
     private let refreshSigner: (@Sendable () async throws -> UpstreamRequestSigner)?
+    // MARK: upstream health
+    private var health = UpstreamHealth()
+    /// Large pieces in a row that arrived slower than the media plays.
+    private var consecutiveThrottled = 0
+    private var lastThrottleRefresh: ContinuousClock.Instant?
+    /// Wait the server asked for (429 Retry-After).
+    private var retryAfter: Double?
     private var refreshTask: Task<UpstreamRequestSigner, Error>?
     private var consecutiveRefusals = 0
 
@@ -120,23 +127,36 @@ actor TrackDownloader {
     private var layout: TrackLayout?
     private var declaredDuration: Double?
     private var priorityOffset: Int64 = 0
-    private var waiters: [UUID: (range: Range<Int64>, continuation: CheckedContinuation<Void, Error>)] = [:]
+    private var waiters: [UUID: (range: Range<Int64>, continuation: CheckedContinuation<Void, Error>, sequence: Int)] = [:]
+    private var waiterSequence = 0
+    /// Pieces waiting in the scheduler at background priority; promoted the
+    /// moment the player needs this track, so they cannot hold its fetch
+    /// slots while a foreground track keeps the scheduler busy.
+    private var backgroundTickets = Set<UUID>()
+    /// A track the player is waiting on is fetched at foreground priority,
+    /// whatever its holders say.
+    private var effectivePriority: DownloadPriority { waiters.isEmpty ? priority : .foreground }
     private var layoutWaiters: [UUID: CheckedContinuation<TrackLayout, Error>] = [:]
     private var observers: [UUID: @Sendable (MediaTrackPipelineState) -> Void] = [:]
     private var driver: Task<Void, Never>?
     private var stopped = false
     private var didResetForMismatch = false
     private let scheduler: DownloadScheduler?
+    /// Serves a transcoded track: its transcode stage is complete too.
+    private let reportsTranscoded: Bool
     private(set) var priority: DownloadPriority = .foreground
     private var finishHandler: (@Sendable () async -> Void)?
     private(set) var isFinished = false
     private var lastSpaceCheck = ContinuousClock.now
+    /// Paused by the user: no new requests start (requests in flight finish).
+    private(set) var isPaused = false
 
     init(role: MediaTrackRole, cache: MediaCache, track: MediaCache.TrackID, signer: UpstreamRequestSigner,
          indexHint: ClosedRange<Int64>? = nil, declaredDuration: Double? = nil,
          refreshSigner: (@Sendable () async throws -> UpstreamRequestSigner)? = nil,
          transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession),
          scheduler: DownloadScheduler? = nil,
+         reportsTranscoded: Bool = false,
          configuration: Configuration = Configuration()) {
         self.role = role
         self.cache = cache
@@ -147,6 +167,7 @@ actor TrackDownloader {
         self.refreshSigner = refreshSigner
         self.transport = transport
         self.scheduler = scheduler
+        self.reportsTranscoded = reportsTranscoded
         self.configuration = configuration
     }
 
@@ -168,8 +189,22 @@ actor TrackDownloader {
     // MARK: control
 
     /// Foreground while something plays the track; background otherwise (see `DownloadScheduler`).
-    func setPriority(_ priority: DownloadPriority) {
+    func setPriority(_ priority: DownloadPriority) async {
         self.priority = priority
+        if priority == .foreground { await promoteQueuedPieces() }
+    }
+
+    private func promoteQueuedPieces() async {
+        guard !backgroundTickets.isEmpty, let scheduler else { return }
+        let tickets = backgroundTickets
+        backgroundTickets.removeAll()
+        await scheduler.promote(tickets)
+    }
+
+    func setPaused(_ paused: Bool) {
+        isPaused = paused
+        condition = paused ? .paused : (condition == .paused ? .running : condition)
+        publish()
     }
 
     /// Called once when the download ends: complete, failed, or stopped for space.
@@ -209,8 +244,40 @@ actor TrackDownloader {
         if case .indexed(let layout) = layout { timeline = layout.timeline }
         return MediaTrackPipelineState(
             role: role, totalBytes: totalBytes, timeline: timeline, declaredDuration: declaredDuration,
-            stages: [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight)]
+            stages: reportsTranscoded
+                ? [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight),
+                   .transcode: MediaStageState(condition: .complete, completed: completed)]
+                : [.download: MediaStageState(condition: condition, completed: completed, inFlight: inFlight)],
+            health: currentHealth
         )
+    }
+
+    private var currentHealth: UpstreamHealth {
+        var health = self.health
+        let duration = (layout.flatMap { layout -> Double? in
+            if case .indexed(let indexed) = layout { return indexed.timeline.duration }
+            return nil
+        }) ?? declaredDuration
+        if let totalBytes, let duration, duration > 0 { health.mediaRate = Double(totalBytes) / duration }
+        return health
+    }
+
+    /// Logs and counts an upstream problem (`upstream_issue`).
+    private func record(_ kind: UpstreamIssueKind, host: String?, detail: String) {
+        health.lastIssue = kind
+        health.lastIssueAt = Date()
+        health.lastIssueDetail = detail
+        health.issueCounts[kind, default: 0] += 1
+        Logger.mediaCache.notice("upstream_issue kind=\(kind.rawValue, privacy: .public) role=\(self.role.rawValue, privacy: .public) host=\(LogRedaction.redact(host ?? ""), privacy: .public) detail=\(detail, privacy: .public)")
+        OSSignposter.mediaCache.emitEvent("UpstreamIssue", "kind=\(kind.rawValue, privacy: .public) role=\(self.role.rawValue, privacy: .public)")
+    }
+
+    /// A URL that says when it expires (`expire=` unix time, as YouTube's do).
+    static func expiry(of url: URL?) -> Date? {
+        guard let url, let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "expire" })?.value,
+              let seconds = TimeInterval(value) else { return nil }
+        return Date(timeIntervalSince1970: seconds)
     }
 
     var knownTotalBytes: Int64? { totalBytes }
@@ -239,11 +306,14 @@ actor TrackDownloader {
         if stopped { throw CancellationError() }
         let gaps = completed.gaps(in: range)
         if let first = gaps.first { priorityOffset = first.lowerBound }
+        await promoteQueuedPieces()
         let id = UUID()
+        waiterSequence += 1
+        let sequence = waiterSequence
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 if completed.contains(range) { continuation.resume() }
-                else { waiters[id] = (range, continuation) }
+                else { waiters[id] = (range, continuation, sequence) }
             }
         } onCancel: {
             Task { await self.cancelWaiter(id) }
@@ -256,6 +326,18 @@ actor TrackDownloader {
 
     private func cancelWaiter(_ id: UUID) {
         waiters.removeValue(forKey: id)?.continuation.resume(throwing: CancellationError())
+        // A request the player abandoned (seek, closed connection) no longer
+        // steers the download.
+        followNewestWaiter()
+    }
+
+    /// Downloads first where the player most recently asked: that is where it
+    /// is reading now. Older requests still pending are fetched after it.
+    private func followNewestWaiter() {
+        guard let newest = waiters.values.max(by: { $0.sequence < $1.sequence }) else { return }
+        if let gap = completed.gaps(in: newest.range.lowerBound..<(totalBytes ?? .max)).first {
+            priorityOffset = gap.lowerBound
+        }
     }
 
     private func cancelLayoutWaiter(_ id: UUID) {
@@ -385,7 +467,7 @@ actor TrackDownloader {
                 publish()
                 if running == 0 {
                     if let totalBytes, completed.contains(0..<totalBytes) { return }
-                    if totalBytes == nil, nextPiece() == nil { return }
+                    if totalBytes == nil, !isPaused, nextPiece() == nil { return }
                     // Nothing to plan but not complete: wait for a waiter or total to change.
                     try await Task.sleep(for: .milliseconds(100))
                     continue
@@ -398,6 +480,7 @@ actor TrackDownloader {
 
     /// The next missing range, starting at the playhead's priority offset.
     private func nextPiece() -> Range<Int64>? {
+        guard !isPaused else { return nil }
         let busy = completed.union(inFlight)
         let urgent = waiters.values.contains { !completed.contains($0.range) }
         let size = urgent ? configuration.urgentPieceBytes : configuration.pieceBytes
@@ -447,6 +530,7 @@ actor TrackDownloader {
                         do {
                             try await refreshedSigner()
                             consecutiveRefusals = 0
+                            Logger.mediaCache.notice("source_refreshed role=\(self.role.rawValue, privacy: .public) reason=\(failure.description, privacy: .public)")
                             continue
                         } catch is CancellationError {
                             throw CancellationError()
@@ -455,18 +539,59 @@ actor TrackDownloader {
                         }
                     }
                 }
-                let delay = configuration.retry.delay(afterAttempt: attempt)
+                var delay = configuration.retry.delay(afterAttempt: attempt)
+                if let wait = retryAfter { delay = max(delay, wait); retryAfter = nil }
                 condition = .waitingForNetwork(retryAt: Date().addingTimeInterval(delay), attempt: attempt,
                                                reason: failure.description)
                 publish()
                 Logger.mediaCache.notice("piece_retry role=\(self.role.rawValue, privacy: .public) attempt=\(attempt) delay=\(delay) reason=\(failure.description, privacy: .public)")
-                try await Task.sleep(for: .seconds(delay))
+                try await waitToRetry(seconds: delay)
             }
+        }
+    }
+
+    /// Tracks the transfer rate. A source that keeps delivering large pieces
+    /// slower than the media plays is throttled: the playhead will catch up.
+    /// Its URL is resolved again (at most every two minutes); a fresh URL is
+    /// usually not paced.
+    private func noteThroughput(_ rate: Double, bytes: Int, host: String?) async {
+        guard bytes >= 256 * 1_024, rate > 0 else { return }
+        health.throughput = health.throughput == 0 ? rate : health.throughput * 0.7 + rate * 0.3
+        guard let mediaRate = currentHealth.mediaRate, mediaRate > 0 else { return }
+        if rate < mediaRate * 1.5 {
+            consecutiveThrottled += 1
+            record(.throttled, host: host, detail: "kbps=\(Int(rate * 8 / 1_000)) media_kbps=\(Int(mediaRate * 8 / 1_000))")
+        } else {
+            consecutiveThrottled = 0
+        }
+        guard consecutiveThrottled >= 4, refreshSigner != nil,
+              lastThrottleRefresh.map({ $0.duration(to: .now) > .seconds(120) }) ?? true else { return }
+        consecutiveThrottled = 0
+        lastThrottleRefresh = .now
+        Logger.mediaCache.notice("source_refreshed role=\(self.role.rawValue, privacy: .public) reason=throttled")
+        try? await refreshedSigner()
+    }
+
+    /// Bumped by `retryNow`: a retry waiting out its backoff starts at once.
+    private var retryWake = 0
+
+    /// The app is back (after sleep or suspension): pieces waiting out a
+    /// backoff retry now instead of up to 30 s later.
+    func retryNow() { retryWake &+= 1 }
+
+    private func waitToRetry(seconds: Double) async throws {
+        let wake = retryWake
+        var remaining = seconds
+        while remaining > 0, retryWake == wake {
+            let step = min(remaining, 0.25)
+            try await Task.sleep(for: .milliseconds(Int(step * 1_000)))
+            remaining -= step
         }
     }
 
     /// One refresh at a time for every piece that hit an expired URL.
     private func refreshedSigner() async throws {
+        health.refreshes += 1
         if let refreshTask {
             signer = try await refreshTask.value
             return
@@ -503,23 +628,38 @@ actor TrackDownloader {
         let signposter = OSSignposter.mediaCache
         let signpost = signposter.beginInterval("VODPiece", id: signposter.makeSignpostID(),
                                                 "role=\(self.role.rawValue, privacy: .public) offset=\(piece.lowerBound) bytes=\(piece.count)")
-        let started = ContinuousClock.now
         var outcome = "failed"
         defer { signposter.endInterval("VODPiece", signpost, "\(outcome, privacy: .public)") }
-        let request: URLRequest
+        var request: URLRequest
         do {
             request = try await signer.sign(piece)
+            // Resolve the source again before its URL expires, not after a
+            // refused request (which would stall the player meanwhile).
+            if let expiry = Self.expiry(of: request.url), expiry.timeIntervalSinceNow < 90, refreshSigner != nil {
+                record(.expired, host: request.url?.host, detail: "expires in \(Int(expiry.timeIntervalSinceNow)) s; refreshing ahead")
+                try await refreshedSigner()
+                request = try await signer.sign(piece)
+            }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             outcome = "signing"
             throw PieceFailure.signing(String(describing: type(of: error)))
         }
+        // A piece the player is waiting for must not sit on a stuck
+        // connection for the session's 20 s: with no bytes for 6 s it is
+        // abandoned and retried (the timeout is between bytes, not overall).
+        if waiters.values.contains(where: { $0.range.overlaps(piece) }) { request.timeoutInterval = 6 }
+        var transferStarted = ContinuousClock.now
         let data: Data
         let response: URLResponse
         do {
-            let admitted = priority
-            await scheduler?.admit(admitted)
+            let ticket = UUID()
+            let requested = effectivePriority
+            if requested == .background { backgroundTickets.insert(ticket) }
+            let admitted = await scheduler?.admit(requested, ticket: ticket) ?? requested
+            backgroundTickets.remove(ticket)
+            transferStarted = .now
             do {
                 (data, response) = try await transport.data(for: request)
                 await scheduler?.finish(admitted)
@@ -531,6 +671,9 @@ actor TrackDownloader {
             throw CancellationError()
         } catch let error as URLError {
             outcome = "network"
+            let reset: Set<URLError.Code> = [.timedOut, .networkConnectionLost, .cannotConnectToHost, .secureConnectionFailed]
+            record(reset.contains(error.code) ? .reset : .network, host: request.url?.host,
+                   detail: "urlerror \(error.code.rawValue) after \(Int(transferStarted.duration(to: .now).components.seconds)) s")
             throw PieceFailure.network("\(error.code.rawValue)")
         } catch is CancellationError {
             throw CancellationError()
@@ -545,12 +688,26 @@ actor TrackDownloader {
             setTotal(piece.lowerBound)
             return
         }
-        guard (200..<300).contains(http.statusCode) else { throw PieceFailure.status(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            let status = http.statusCode
+            let kind: UpstreamIssueKind = switch status {
+            case 403: .forbidden
+            case 401, 404, 410: .expired
+            case 429: .rateLimited
+            case 500...: .server
+            default: .network
+            }
+            if status == 429 { retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? 10 }
+            let expires = Self.expiry(of: request.url).map { " url_expires_in=\(Int($0.timeIntervalSinceNow))" } ?? ""
+            record(kind, host: request.url?.host, detail: "http \(status) bytes=\(piece.count)\(expires)")
+            throw PieceFailure.status(status)
+        }
         let accepted = try accept(data, for: piece, response: http)
         try await store(accepted.data, at: accepted.offset)
-        let elapsed = started.duration(to: .now)
+        let elapsed = transferStarted.duration(to: .now)
         let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         let rate = seconds > 0 ? Double(data.count) / seconds : 0
+        await noteThroughput(rate, bytes: data.count, host: request.url?.host)
         outcome = "ok bytes=\(data.count) kbps=\(Int(rate * 8 / 1_000))"
         if data.count >= 256 * 1_024, rate < 128 * 1_024 {
             Logger.mediaCache.notice("slow_piece role=\(self.role.rawValue, privacy: .public) host=\(LogRedaction.redact(request.url?.host ?? ""), privacy: .public) bytes=\(data.count) seconds=\(seconds)")
@@ -609,10 +766,7 @@ actor TrackDownloader {
             waiters[id] = nil
             waiter.continuation.resume()
         }
-        // Keep downloading near the earliest range the player still waits for.
-        if let pending = waiters.values.map(\.range.lowerBound).min() {
-            priorityOffset = completed.gaps(in: pending..<(totalBytes ?? .max)).first?.lowerBound ?? priorityOffset
-        }
+        followNewestWaiter()
     }
 
     private func publish() {

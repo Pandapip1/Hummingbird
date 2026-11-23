@@ -28,6 +28,7 @@ public enum Diagnostics {
 extension Logger {
     /// Playback model: source selection, loading, UMP refreshes.
     static let player = Logger(subsystem: Diagnostics.subsystem, category: "player")
+    static let pluginBrowser = Logger(subsystem: Diagnostics.subsystem, category: "plugin-browser")
     /// The AVFoundation playback backend.
     static let avPlayer = Logger(subsystem: Diagnostics.subsystem, category: "avplayer")
     /// Plugin lifecycle, alerts and compatibility patches.

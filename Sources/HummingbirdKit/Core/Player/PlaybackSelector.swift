@@ -11,11 +11,15 @@ struct PlaybackOption: Identifiable, Hashable {
     var height: Int
 }
 
-/// Chooses among the sources a plugin offers, keeping only what AVPlayer can play: HLS and MP4-family files.
-/// WebM/VP9/Opus, DASH and Widevine-protected streams are skipped (they need a different player or DRM support).
+/// Chooses among the sources a plugin offers: HLS, and MP4-family and WebM files (WebM is remuxed to
+/// fragmented MP4 like every progressive file, see `Matroska`). DASH and Widevine-protected streams are
+/// skipped (they need a different player or DRM support).
 enum PlaybackSelector {
     static let videoContainers: Set<String> = ["video/mp4", "video/quicktime", "video/x-m4v", "video/m4v", "video/3gpp", "video/mov"]
     static let audioContainers: Set<String> = ["audio/mp4", "audio/m4a", "audio/x-m4a", "audio/mpeg", "audio/mp3", "audio/aac", "audio/x-aac"]
+    /// Remuxed to fragmented MP4 like progressive MP4 files. Whether VP9 or AV1 can be decoded
+    /// depends on the device, so MP4-family files are preferred by default (`best`, `bestAudio`).
+    static let webContainers: Set<String> = ["video/webm", "audio/webm"]
 
     static func options(for d: VideoDetails, preferredLanguage: String? = nil) -> [PlaybackOption] {
         var out: [PlaybackOption] = []
@@ -58,11 +62,13 @@ enum PlaybackSelector {
     /// Picks the default: live stream first; otherwise the best file at or
     /// under `maxHeight`: the tallest, then the highest video bitrate (frame rate and codec efficiency show up
     /// there), then the best audio. Only when every file is taller than `maxHeight` does the smallest one win.
+    /// MP4-family files win over WebM while there are any (VP9 and AV1 decoding depends on the device).
     /// Every on-demand choice is downloaded into the media cache; upstream HLS
     /// (also cached) is used when the plugin offers no files.
     static func best(_ options: [PlaybackOption], maxHeight: Int) -> PlaybackOption? {
         if let live = options.first(where: { $0.kind == .live }) { return live }
         let files = options.filter { $0.kind == .progressive || $0.kind == .generated }
+            .preferring { !isWebContainer($0.video) }
         let capped = files.filter { $0.height <= maxHeight || $0.height == 0 }
         if let pick = capped.max(by: isLowerQuality) { return pick }
         if let smallest = files.map(\.height).min(),
@@ -102,9 +108,9 @@ enum PlaybackSelector {
 
     private static func isPlayableVideo(_ s: MediaSource) -> Bool {
         let c = s.container.lowercased()
-        if !c.isEmpty { return videoContainers.contains(c) }
+        if !c.isEmpty { return videoContainers.contains(c) || webContainers.contains(c) }
         let path = URL(string: s.url)?.pathExtension.lowercased() ?? ""
-        return ["mp4", "m4v", "mov"].contains(path)
+        return ["mp4", "m4v", "mov", "webm"].contains(path)
     }
 
     private static func isPlayableVideoContainer(_ source: MediaSource) -> Bool {
@@ -115,13 +121,20 @@ enum PlaybackSelector {
         var seen = Set<String>()
         return sources.filter {
             !$0.url.isEmpty && !$0.isWidevine && !$0.isHLS && !$0.isDash
-                && audioContainers.contains($0.container.lowercased())
+                && (audioContainers.contains($0.container.lowercased()) || webContainers.contains($0.container.lowercased()))
                 && seen.insert($0.id).inserted
         }
     }
 
-    static func bestAudio(_ sources: [MediaSource], language: String?) -> MediaSource? {
-        bestLanguageSource(playableAudioSources(sources), language: language)
+    /// `prefersDescriptions`: the system's accessibility setting asks for audio
+    /// descriptions; otherwise they are chosen only when nothing else exists.
+    static func bestAudio(_ sources: [MediaSource], language: String?, prefersDescriptions: Bool = false) -> MediaSource? {
+        bestLanguageSource(descriptionPreference(playableAudioSources(sources), prefers: prefersDescriptions), language: language)
+    }
+
+    private static func descriptionPreference(_ sources: [MediaSource], prefers: Bool) -> [MediaSource] {
+        let matching = sources.filter { $0.describesVideo == prefers }
+        return matching.isEmpty ? sources : matching
     }
 
     static func generatedAudioSources(_ sources: [MediaSource]) -> [MediaSource] {
@@ -146,6 +159,7 @@ enum PlaybackSelector {
         }
         if c.contains(where: { $0.original }) { c = c.filter { $0.original } }
         if c.contains(where: { $0.priority }) { c = c.filter { $0.priority } }
+        c = c.preferring { !isWebContainer($0) }
         return c.max(by: { $0.bitrate < $1.bitrate })
     }
 
@@ -177,9 +191,11 @@ enum PlaybackSelector {
     }
 
     private static func languageChoices(_ sources: [MediaSource]) -> [MediaSource] {
+        // An audio description is its own choice, never merged into its
+        // language's main track.
         let groups = Dictionary(grouping: sources) {
             let language = $0.language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return language.isEmpty ? "unknown" : language
+            return (language.isEmpty ? "unknown" : language) + ($0.describesVideo ? "|described" : "")
         }
         return groups.values.compactMap { variants in
             var candidates = variants
@@ -194,8 +210,9 @@ enum PlaybackSelector {
         let language = Locale.current.localizedString(forLanguageCode: rawLanguage)
             ?? (rawLanguage.isEmpty || rawLanguage.caseInsensitiveCompare("Unknown") == .orderedSame ? "Unknown" : rawLanguage)
         let original = source.original ? " · Original" : ""
+        let described = source.describesVideo ? " · Audio Description" : ""
         let quality = source.bitrate > 0 ? " · \(source.bitrate / 1_000) kbps" : ""
-        return "\(language)\(original)\(quality)"
+        return "\(language)\(described)\(original)\(quality)"
     }
 
     private static func label(for v: MediaSource) -> String {
@@ -233,5 +250,21 @@ enum SubtitleParser {
         var total = 0.0
         for p in parts { guard let v = Double(p) else { return nil }; total = total * 60 + v }
         return total
+    }
+}
+
+extension PlaybackSelector {
+    static func isWebContainer(_ source: MediaSource) -> Bool {
+        let container = source.container.lowercased()
+        if !container.isEmpty { return webContainers.contains(container) }
+        return URL(string: source.url)?.pathExtension.lowercased() == "webm"
+    }
+}
+
+extension Array {
+    /// The elements matching `condition`, or all of them when none does.
+    fileprivate func preferring(_ condition: (Element) -> Bool) -> [Element] {
+        let matching = filter(condition)
+        return matching.isEmpty ? self : matching
     }
 }

@@ -19,25 +19,42 @@ actor DownloadScheduler {
     private let backgroundLimit: Int
     private var foregroundRunning = 0
     private var backgroundRunning = 0
-    private var backgroundWaiters: [CheckedContinuation<Void, Never>] = []
+    private var backgroundWaiters: [(ticket: UUID, continuation: CheckedContinuation<DownloadPriority, Never>)] = []
+    /// Promotions that arrived before their request reached the queue.
+    private var promotedEarly = Set<UUID>()
 
     init(backgroundLimit: Int = 2) {
         self.backgroundLimit = backgroundLimit
     }
 
-    /// Waits for a slot. Every `admit` is balanced by `finish` with the same priority.
-    func admit(_ priority: DownloadPriority) async {
-        switch priority {
-        case .foreground:
+    /// Waits for a slot and returns the priority it was admitted at: a queued
+    /// background request can be promoted (`promote`) when the player starts
+    /// waiting on its track. Every `admit` is balanced by `finish` with the
+    /// returned priority.
+    @discardableResult
+    func admit(_ priority: DownloadPriority, ticket: UUID = UUID()) async -> DownloadPriority {
+        if priority == .foreground || promotedEarly.remove(ticket) != nil {
             foregroundRunning += 1
-        case .background:
-            if foregroundRunning == 0, backgroundRunning < backgroundLimit {
-                backgroundRunning += 1
-                return
-            }
-            await withCheckedContinuation { backgroundWaiters.append($0) }
-            // `wakeBackground` counted this request before resuming it.
+            return .foreground
         }
+        if foregroundRunning == 0, backgroundRunning < backgroundLimit {
+            backgroundRunning += 1
+            return .background
+        }
+        // `wakeBackground` or `promote` counts this request before resuming it.
+        return await withCheckedContinuation { backgroundWaiters.append((ticket, $0)) }
+    }
+
+    /// Lets queued background requests run now, as foreground.
+    func promote(_ tickets: Set<UUID>) {
+        var remaining = tickets
+        backgroundWaiters.removeAll { waiter in
+            guard remaining.remove(waiter.ticket) != nil else { return false }
+            foregroundRunning += 1
+            waiter.continuation.resume(returning: .foreground)
+            return true
+        }
+        promotedEarly.formUnion(remaining)
     }
 
     func finish(_ priority: DownloadPriority) {
@@ -51,7 +68,7 @@ actor DownloadScheduler {
     private func wakeBackground() {
         while foregroundRunning == 0, backgroundRunning < backgroundLimit, !backgroundWaiters.isEmpty {
             backgroundRunning += 1
-            backgroundWaiters.removeFirst().resume()
+            backgroundWaiters.removeFirst().continuation.resume(returning: .background)
         }
     }
 
@@ -71,7 +88,7 @@ actor DownloadScheduler {
 actor MediaDownloads {
     let cache: MediaCache
     let scheduler: DownloadScheduler
-    private let transport: any MediaTransport
+    private var transport: any MediaTransport
     private var tracks: [String: Entry<TrackDownloader>] = [:]
     private var renditions: [String: Entry<HLSRenditionDownloader>] = [:]
     private var recordings: [String: Entry<LiveHLSRecorder>] = [:]
@@ -88,6 +105,21 @@ actor MediaDownloads {
         self.transport = transport
     }
 
+    /// How downloads reach the network; the app installs one that keeps
+    /// going while it is suspended (`BackgroundTransport`). Applies to
+    /// downloads started afterwards.
+    /// After sleep or suspension: every download retries now (see
+    /// `TrackDownloader.retryNow`).
+    func retryNow() async {
+        for entry in tracks.values { await entry.downloader.retryNow() }
+    }
+
+    func useTransport(_ transport: any MediaTransport) {
+        self.transport = transport
+    }
+
+    var currentTransport: any MediaTransport { transport }
+
     /// The running download for `spec`'s track, or a new one; held in the
     /// foreground until `release`.
     func hold(_ spec: VODTrackSpec) async throws -> TrackDownloader {
@@ -95,12 +127,14 @@ actor MediaDownloads {
             entry.holders += 1
             tracks[spec.identity] = entry
             await entry.downloader.setPriority(.foreground)
+            await applyPausing()
             return entry.downloader
         }
         let track = try await cache.open(identity: spec.identity)
         let downloader = TrackDownloader(role: spec.role, cache: cache, track: track, signer: spec.signer,
                                          indexHint: spec.indexHint, declaredDuration: spec.declaredDuration,
-                                         refreshSigner: spec.refresh, transport: transport, scheduler: scheduler)
+                                         refreshSigner: spec.refresh, transport: spec.transport ?? transport, scheduler: scheduler,
+                                         reportsTranscoded: spec.isTranscoded)
         tracks[spec.identity] = Entry(downloader: downloader, holders: 1)
         let identity = spec.identity
         await downloader.onFinish { [weak self] in await self?.finished(track: identity) }
@@ -135,6 +169,7 @@ actor MediaDownloads {
             tracks[identity] = nil
         } else {
             await entry.downloader.setPriority(.background)
+            await applyPausing()
         }
     }
 
@@ -148,6 +183,7 @@ actor MediaDownloads {
             renditions[identity] = nil
         } else {
             await entry.downloader.setPriority(.background)
+            await applyPausing()
         }
     }
 
@@ -185,6 +221,214 @@ actor MediaDownloads {
         recordings[identity] = nil
     }
 
+    // MARK: the downloads list
+
+    /// One video's downloads as the downloads list shows them.
+    private struct Group {
+        var info: DownloadInfo
+        var tracks: [String] = []
+        var renditions: [String] = []
+        var recordings: [String] = []
+        var paused = false
+        var stopped = false
+        /// "Download anyway" while saving energy.
+        var downloadsWhileSavingEnergy = false
+        var finishedAt: Date?
+        var lastBytes: Int64 = 0
+        var lastSample = ContinuousClock.now
+        var bytesPerSecond: Double = 0
+    }
+
+    private var groups: [String: Group] = [:]
+
+    // MARK: saving energy
+
+    /// Low Power Mode, a power-saver profile or a hot device (BackgroundWorkPolicy).
+    private(set) var savesEnergy = false
+
+    /// While saving energy, downloads nobody is watching pause where they are
+    /// (no bytes are lost; they continue from there when it ends). What a
+    /// window plays keeps downloading at full speed, and live recordings keep
+    /// recording: pausing would lose the stream.
+    func setSavesEnergy(_ saves: Bool) async {
+        guard saves != savesEnergy else { return }
+        savesEnergy = saves
+        await applyPausing()
+    }
+
+    private var policy: BackgroundWorkPolicy?
+
+    /// Follows the shared policy. Each change re-reads its current answer, so
+    /// changes that arrive out of order cannot leave a stale one in place.
+    func follow(_ policy: BackgroundWorkPolicy) {
+        self.policy = policy
+        policy.observe { [weak self] _ in Task { await self?.applyEnergyPolicy() } }
+    }
+
+    private func applyEnergyPolicy() async {
+        await setSavesEnergy(policy?.defersNonUrgentWork ?? false)
+    }
+
+    /// Downloads this video although energy is being saved.
+    func downloadWhileSavingEnergy(_ id: String) async {
+        guard var group = groups[id] else { return }
+        group.downloadsWhileSavingEnergy = true
+        groups[id] = group
+        await applyPausing()
+    }
+
+    private func energyPauses(_ identity: String, holders: Int) -> Bool {
+        guard savesEnergy, holders <= 0 else { return false }
+        let owners = groups.values.filter { $0.tracks.contains(identity) || $0.renditions.contains(identity) }
+        return !owners.contains { $0.downloadsWhileSavingEnergy }
+    }
+
+    private func userPaused(_ identity: String) -> Bool {
+        groups.values.contains { $0.paused && ($0.tracks.contains(identity) || $0.renditions.contains(identity) || $0.recordings.contains(identity)) }
+    }
+
+    /// Applies the user's pauses and the energy policy to every download.
+    private func applyPausing() async {
+        for (identity, entry) in tracks {
+            await entry.downloader.setPaused(userPaused(identity) || energyPauses(identity, holders: entry.holders))
+        }
+        for (identity, entry) in renditions {
+            await entry.downloader.setPaused(userPaused(identity) || energyPauses(identity, holders: entry.holders))
+        }
+        for (identity, entry) in recordings {
+            await entry.downloader.setPaused(userPaused(identity))
+        }
+    }
+    private var groupOrder: [String] = []
+
+    /// Names the downloads a session holds, for the downloads list.
+    func describe(_ info: DownloadInfo, tracks: [String] = [], renditions: [String] = [], recordings: [String] = []) {
+        var group = groups[info.id] ?? Group(info: info)
+        group.info = info
+        group.tracks = Array(Set(group.tracks + tracks))
+        group.renditions = Array(Set(group.renditions + renditions))
+        group.recordings = Array(Set(group.recordings + recordings))
+        group.stopped = false
+        group.finishedAt = nil
+        groups[info.id] = group
+        groupOrder.removeAll { $0 == info.id }
+        groupOrder.insert(info.id, at: 0)
+    }
+
+    /// The downloads list, newest first.
+    func snapshot() async -> [DownloadSnapshot] {
+        var out: [DownloadSnapshot] = []
+        for id in groupOrder {
+            guard var group = groups[id] else { continue }
+            var states: [MediaTrackPipelineState] = []
+            var playing = false
+            for identity in group.tracks {
+                guard let entry = tracks[identity] else { continue }
+                states.append(await entry.downloader.state)
+                playing = playing || entry.holders > 0
+            }
+            for identity in group.renditions {
+                guard let entry = renditions[identity] else { continue }
+                states.append(await entry.downloader.state)
+                playing = playing || entry.holders > 0
+            }
+            for identity in group.recordings {
+                guard let entry = recordings[identity] else { continue }
+                states.append(await entry.downloader.state)
+                playing = playing || entry.holders > 0
+            }
+            let fractions = states.map { state -> Double in
+                guard let total = state.totalBytes, total > 0 else { return 0 }
+                return Double(state.stage(.download).completed.byteCount) / Double(total)
+            }
+            let fraction = fractions.isEmpty ? (group.finishedAt == nil ? 0 : 1) : fractions.reduce(0, +) / Double(fractions.count)
+            // Bytes only for file tracks; HLS progress counts segments.
+            let bytes = states.filter { $0.timeline?.initialization != 0..<0 }
+                .reduce(Int64(0)) { $0 + $1.stage(.download).completed.byteCount }
+            let elapsed = group.lastSample.duration(to: .now)
+            let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+            if seconds >= 1 {
+                group.bytesPerSecond = max(0, Double(bytes - group.lastBytes) / seconds)
+                group.lastBytes = bytes
+                group.lastSample = .now
+            }
+            let running = !states.isEmpty
+            let complete = !states.isEmpty && states.allSatisfy { if case .complete = $0.stage(.download).condition { true } else { false } }
+            if complete, group.finishedAt == nil { group.finishedAt = Date() }
+            let waiting = states.contains { if case .waitingForNetwork = $0.stage(.download).condition { true } else { false } }
+            let state: DownloadSnapshot.State =
+                group.stopped ? .stopped
+                : complete || (!running && group.finishedAt != nil) ? .complete
+                : group.paused ? .paused
+                : savesEnergy && !playing && group.recordings.isEmpty && !group.downloadsWhileSavingEnergy ? .pausedSavingEnergy
+                : waiting ? .waitingForNetwork
+                : running ? .downloading
+                : .stopped
+            groups[id] = group
+            out.append(DownloadSnapshot(id: id, info: group.info, fraction: fraction, bytes: bytes,
+                                        bytesPerSecond: state == .downloading ? group.bytesPerSecond : 0,
+                                        state: state, isPlaying: playing, finishedAt: group.finishedAt,
+                                        isRecording: !group.recordings.isEmpty))
+        }
+        return out
+    }
+
+    /// Pauses or resumes a video's downloads. Returns once they have.
+    func setPaused(_ paused: Bool, download id: String) async {
+        guard var group = groups[id] else { return }
+        group.paused = paused
+        groups[id] = group
+        await applyPausing()
+    }
+
+    /// Stops a video's downloads; what was downloaded stays cached. A video
+    /// that is playing keeps downloading (it is needed).
+    func stop(download id: String) async {
+        guard var group = groups[id] else { return }
+        for identity in group.tracks where (tracks[identity]?.holders ?? 0) <= 0 {
+            await tracks.removeValue(forKey: identity)?.downloader.stop()
+        }
+        for identity in group.renditions where (renditions[identity]?.holders ?? 0) <= 0 {
+            await renditions.removeValue(forKey: identity)?.downloader.stop()
+        }
+        for identity in group.recordings where (recordings[identity]?.holders ?? 0) <= 0 {
+            await recordings.removeValue(forKey: identity)?.downloader.stop()
+        }
+        group.stopped = true
+        groups[id] = group
+    }
+
+    /// Stops a video's downloads and deletes what they cached. Not while the
+    /// video is playing.
+    func remove(download id: String) async -> Bool {
+        guard let group = groups[id] else { return true }
+        let held = group.tracks.contains { (tracks[$0]?.holders ?? 0) > 0 }
+            || group.renditions.contains { (renditions[$0]?.holders ?? 0) > 0 }
+            || group.recordings.contains { (recordings[$0]?.holders ?? 0) > 0 }
+        guard !held else { return false }
+        var identities = group.tracks
+        for identity in group.renditions {
+            if let downloader = renditions[identity]?.downloader { identities += await downloader.cacheIdentities }
+        }
+        for identity in group.recordings {
+            if let recorder = recordings[identity]?.downloader { identities += await recorder.cacheIdentities }
+        }
+        await stop(download: id)
+        for identity in identities { await cache.remove(identity: identity) }
+        groups[id] = nil
+        groupOrder.removeAll { $0 == id }
+        return true
+    }
+
+    /// Forgets finished and stopped entries (their cached data stays).
+    func clearFinished() async {
+        let states = Dictionary(uniqueKeysWithValues: (await snapshot()).map { ($0.id, $0.state) })
+        for id in groupOrder where states[id] == .complete || states[id] == .stopped {
+            groups[id] = nil
+        }
+        groupOrder.removeAll { groups[$0] == nil }
+    }
+
     /// Stops every download (tests, sign-out).
     func stopAll() async {
         for entry in tracks.values { await entry.downloader.stop() }
@@ -210,4 +454,36 @@ actor MediaDownloads {
             renditions[identity] = nil
         }
     }
+}
+
+/// What the downloads list shows for a video.
+struct DownloadInfo: Sendable, Hashable {
+    /// Stable identity of the video (plugin and content URL).
+    var id: String
+    var title: String
+    var contentURL: String
+    var thumbnail: URL?
+    var isLive: Bool
+}
+
+/// One row of the downloads list.
+struct DownloadSnapshot: Sendable, Identifiable, Equatable {
+    enum State: Sendable, Equatable {
+        case downloading, waitingForNetwork, paused, complete, stopped
+        /// Paused while energy is saved (Low Power Mode); continues when it ends.
+        case pausedSavingEnergy
+    }
+    var id: String
+    var info: DownloadInfo
+    /// 0…1 over every track of the video.
+    var fraction: Double
+    /// Bytes downloaded (file tracks; HLS progress is in `fraction`).
+    var bytes: Int64
+    var bytesPerSecond: Double
+    var state: State
+    /// Some window is playing it.
+    var isPlaying: Bool
+    var finishedAt: Date?
+    /// A live recording: it keeps recording while energy is saved.
+    var isRecording = false
 }

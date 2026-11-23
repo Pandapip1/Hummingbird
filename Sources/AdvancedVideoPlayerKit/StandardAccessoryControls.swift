@@ -14,27 +14,17 @@ extension EnvironmentValues {
 @MainActor
 struct PlayerMenu<Label: View, Content: View>: View {
     @Environment(\.playerMenuPresentationChanged) private var presentationChanged
-    @State private var isPresented = false
+    /// The current choice, read with the menu's name ("Quality, 1080p").
+    var value: String = ""
     @ViewBuilder let label: () -> Label
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        #if os(iOS)
-        Button { isPresented = true } label: { label() }
-            .popover(isPresented: $isPresented) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) { content() }
-                        .buttonStyle(.plain)
-                        .padding()
-                }
-                .onTapGesture { isPresented = false }
-                .presentationCompactAdaptation(.popover)
-            }
-            .onChange(of: isPresented) { _, presented in presentationChanged(presented) }
-            .onDisappear { if isPresented { presentationChanged(false) } }
-        #else
-        Menu(content: content, label: label)
-        #endif
+        // Every dropdown over video is its own glass element (menus keep
+        // CheckableMenuItem's left column inside).
+        PresentationMenu(onPresentationChange: presentationChanged, content: content, label: label)
+            .playerControlGlass()
+            .accessibilityValue(value)
     }
 }
 
@@ -71,15 +61,14 @@ public struct VideoSourceControl<Option: Identifiable>: View where Option.ID: Ha
 
     public var body: some View {
         if !options.isEmpty {
-            PlayerMenu {
+            PlayerMenu(value: options.first { $0.id == pendingID }.map { "switching to \(label($0))" }
+                        ?? options.first { $0.id == selectedID }.map(label) ?? "") {
                 Text(title)
             } content: {
                 ForEach(options) { option in
                     CheckableMenuItem(label(option), state: option.id == pendingID ? .pending : option.id == selectedID ? .checked : .unchecked) {
                         interacted(); select(option)
                     }
-                    // One switch at a time: nothing else is chosen while one is pending.
-                    .disabled(pendingID != nil)
                 }
             }
         }
@@ -114,11 +103,11 @@ public struct MediaTrackControl: View {
 
     public var body: some View {
         if !tracks.isEmpty {
-            PlayerMenu {
+            PlayerMenu(value: tracks.first { $0.id == selectedID }.map { $0.menuTitle(fallback: fallbackLabel) } ?? "") {
                 Text(title)
             } content: {
                 ForEach(tracks, id: \.id) { track in
-                    CheckableMenuItem(track.label ?? track.language ?? fallbackLabel,
+                    CheckableMenuItem(track.menuTitle(fallback: fallbackLabel),
                                    state: track.id == selectedID ? .checked : .unchecked) {
                         interacted(); select(track)
                     }
@@ -178,14 +167,15 @@ public struct SubtitleControl<AppearanceControls: View>: View {
 
     public var body: some View {
         if !embedded.isEmpty || !external.isEmpty {
-            PlayerMenu {
+            PlayerMenu(value: external.first { $0.id == selectedExternalID }?.name
+                        ?? embedded.first { $0.id == selectedEmbeddedID }.map { $0.menuTitle(fallback: "Embedded") } ?? "Off") {
                 Text("Subtitles")
             } content: {
                 CheckableMenuItem("Off", state: selectedEmbeddedID == nil && selectedExternalID == nil ? .checked : .unchecked) {
                     interacted(); selectExternal(nil)
                 }
                 ForEach(embedded, id: \.id) { track in
-                    CheckableMenuItem(track.label ?? track.language ?? "Embedded",
+                    CheckableMenuItem(track.menuTitle(fallback: "Embedded"),
                                    state: selectedEmbeddedID == track.id ? .checked : .unchecked) {
                         interacted(); selectEmbedded(track)
                     }

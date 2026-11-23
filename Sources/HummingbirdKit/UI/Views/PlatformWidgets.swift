@@ -97,6 +97,7 @@ private struct ApplicationLifecycleModifier: ViewModifier {
         return content.onLifecycle { event in
             switch event {
             case .phase(.background):
+                model.recordPlaybackProgress()
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
                 let stores = model.stores
@@ -111,7 +112,9 @@ private struct ApplicationLifecycleModifier: ViewModifier {
                 let deadline = ExitDeadline.forExit()
                 model.profileChanges.flushBeforeTermination(until: deadline)
                 model.stores.flushBeforeTermination(until: deadline)
-            case .phase(.active), .phase(.inactive):
+            case .phase(.active):
+                model.applicationBecameActive()
+            case .phase(.inactive):
                 break
             }
         }
@@ -150,6 +153,7 @@ struct DebugSceneSelection<Content: View>: View {
     var body: some View {
         switch ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] {
         case "player": PlayerDebugScene(stores: stores)
+        case "player-fullscreen": FullscreenHandoverDebugScene(stores: stores)
         case "player-seek": SeekDebugScene()
         case "install-preview": InstallPreviewDebugScene()
         default: content

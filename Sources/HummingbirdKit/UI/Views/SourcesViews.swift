@@ -620,10 +620,10 @@ private struct AppSettingsForm: View {
                 Picker("Video cache", selection: $mediaCacheLimitGigabytes) {
                     ForEach([2, 5, 10, 20, 50, 100], id: \.self) { Text("\($0) GB").tag($0) }
                 }
-                .onChange(of: mediaCacheLimitGigabytes) { _, gigabytes in
-                    let cache = stores.mediaCache
-                    Task { await cache.setLimit(MediaCache.bytes(gigabytes: gigabytes)) }
-                }
+                MediaCacheUsageRows(cache: stores.mediaCache, limitGigabytes: mediaCacheLimitGigabytes)
+            }
+            Section(footer: Text("Off by default. Finished downloads are re-encoded with the hardware encoder in the background, only while the device is cool, not in Low Power Mode and, on iPhone and iPad, charging. The original is deleted only once the smaller copy is stored.")) {
+                TranscodeToggle(stage: stores.transcoding, defaults: stores.defaults)
             }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
                 RemoteFriendlyBoundedSelection(
@@ -729,6 +729,86 @@ private struct PerformanceReportsSection: View {
             catch { clearFailure = "Couldn't clear the reports: \(error.localizedDescription)" }
             await refresh()
             clearing = false
+        }
+    }
+}
+/// How much the video cache holds, applying a new limit, and clearing what
+/// is not playing. Slow work shows as such: the usage line shows a spinner
+/// while it is measured or while a new limit or a clear is applied, and the
+/// button is disabled meanwhile.
+@MainActor
+struct MediaCacheUsageRows: View {
+    let cache: MediaCache
+    let limitGigabytes: Int
+    @State private var usage: Int64?
+    @State private var working = false
+
+    var body: some View {
+        HStack {
+            Text("In use")
+            Spacer()
+            if working || usage == nil {
+                ProgressView()
+            } else if let usage {
+                Text(Fmt.bytes(usage)).foregroundStyle(.secondary)
+            }
+        }
+        .task(id: limitGigabytes) {
+            // A new limit evicts what no longer fits before the usage is shown.
+            working = true
+            await cache.setLimit(MediaCache.bytes(gigabytes: limitGigabytes))
+            usage = await cache.usage()
+            working = false
+        }
+        Button("Clear videos that are not playing") {
+            Task {
+                working = true
+                await cache.clearUnused()
+                usage = await cache.usage()
+                working = false
+            }
+        }
+        .disabled(working || usage == nil || usage == 0)
+    }
+}
+
+/// Turns optional transcoding on or off. The toggle shows what the stage
+/// reports: it is indeterminate with a spinner until the stage has applied
+/// the change, and unavailable (with the reason) without a hardware encoder.
+@MainActor
+struct TranscodeToggle: View {
+    let stage: TranscodeStage
+    let defaults: UserDefaults
+    @State private var isEnabled: Bool?
+    @State private var isAvailable = true
+    @State private var applying = false
+
+    var body: some View {
+        HStack {
+            Toggle("Save space by re-encoding videos", isOn: Binding(
+                get: { isEnabled ?? false },
+                set: { newValue in apply(newValue) }
+            ))
+            .disabled(applying || isEnabled == nil || !isAvailable)
+            if applying || isEnabled == nil { ProgressView() }
+        }
+        .task {
+            isAvailable = await stage.isAvailable
+            isEnabled = await stage.isEnabled
+        }
+        if !isAvailable {
+            Text("This device has no hardware video encoder Hummingbird can use.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func apply(_ enabled: Bool) {
+        applying = true
+        Task {
+            await stage.setEnabled(enabled)
+            defaults.set(enabled, forKey: PlaybackPreferenceKey.transcodeDownloads)
+            isEnabled = await stage.isEnabled
+            applying = false
         }
     }
 }

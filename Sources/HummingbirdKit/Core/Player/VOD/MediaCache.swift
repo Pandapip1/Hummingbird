@@ -1,4 +1,5 @@
 import Foundation
+import SwiftOpenUI
 import Crypto
 import os
 
@@ -79,7 +80,7 @@ actor MediaCache {
         let metadataURL = root.appendingPathComponent("\(digest).json")
         var metadata = (try? Data(contentsOf: metadataURL)).flatMap { try? JSONDecoder().decode(Metadata.self, from: $0) }
         if !FileManager.default.fileExists(atPath: dataURL.path) {
-            guard FileManager.default.createFile(atPath: dataURL.path, contents: nil) else {
+            guard FileManager.default.createFile(atPath: dataURL.path, contents: nil, attributes: Self.fileAttributes) else {
                 throw CocoaError(.fileWriteUnknown)
             }
             metadata = nil
@@ -137,6 +138,12 @@ actor MediaCache {
         return track.metadata.completed
     }
 
+    /// Media must stay readable while the device is locked (playback continues
+    /// in the background and resumes after sleep): files are protected until
+    /// the first unlock after boot, never `complete`, which makes them
+    /// unreadable about ten seconds after the device locks.
+    static var fileAttributes: [FileAttributeKey: Any]? { FileProtection.readableWhileLocked }
+
     /// The bytes in `range`, or nil when any of them is missing.
     func read(_ id: TrackID, range: Range<Int64>) throws -> Data? {
         guard let track = openTracks[id.digest], track.metadata.completed.contains(range) else { return nil }
@@ -144,6 +151,63 @@ actor MediaCache {
         let data = try track.handle.read(upToCount: range.count) ?? Data()
         guard data.count == range.count else { throw CocoaError(.fileReadCorruptFile) }
         return data
+    }
+
+    /// Whether a track is fully cached (open or not).
+    func isComplete(identity: String) -> Bool {
+        let digest = Self.digest(identity)
+        let metadata = openTracks[digest]?.metadata ?? readMetadata(digest)
+        guard let metadata, let total = metadata.totalBytes, total > 0 else { return false }
+        return metadata.completed.contains(0..<total)
+    }
+
+    /// Fully cached tracks that are not open, with their size: what a later
+    /// pipeline stage (transcoding) may consume.
+    func completeClosedTracks() -> [(identity: String, bytes: Int64)] {
+        guard let directory = try? root(),
+              let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
+        return files.compactMap { url -> (String, Int64)? in
+            guard url.pathExtension == "json" else { return nil }
+            let digest = url.deletingPathExtension().lastPathComponent
+            guard openTracks[digest] == nil, let metadata = readMetadata(digest), let total = metadata.totalBytes,
+                  total > 0, metadata.completed.contains(0..<total) else { return nil }
+            return (metadata.identity, total)
+        }
+    }
+
+    /// The file holding a complete, closed track: its bytes at their offsets,
+    /// i.e. the original file. Valid until the track is opened or removed.
+    func fileOfCompleteTrack(identity: String) -> URL? {
+        let digest = Self.digest(identity)
+        guard openTracks[digest] == nil, isComplete(identity: identity), let directory = try? root() else { return nil }
+        return directory.appendingPathComponent("\(digest).media")
+    }
+
+    /// Stores a finished file as a complete track (moving it into the cache).
+    func importFile(_ file: URL, identity: String) throws {
+        let digest = Self.digest(identity)
+        guard openTracks[digest] == nil else { throw CocoaError(.fileWriteFileExists) }
+        let directory = try root()
+        let media = directory.appendingPathComponent("\(digest).media")
+        try? FileManager.default.removeItem(at: media)
+        try FileManager.default.moveItem(at: file, to: media)
+        let size = (try? FileManager.default.attributesOfItem(atPath: media.path)[.size] as? NSNumber)?.int64Value ?? 0
+        let metadata = Metadata(identity: identity, totalBytes: size, completed: MediaRangeSet([0..<size]), lastAccess: Date())
+        try JSONEncoder().encode(metadata).write(to: directory.appendingPathComponent("\(digest).json"), options: .atomic)
+    }
+
+    private func readMetadata(_ digest: String) -> Metadata? {
+        guard let directory = try? root() else { return nil }
+        return (try? Data(contentsOf: directory.appendingPathComponent("\(digest).json")))
+            .flatMap { try? JSONDecoder().decode(Metadata.self, from: $0) }
+    }
+
+    /// Deletes a cached track that is not open (the downloads list's Remove).
+    func remove(identity: String) {
+        let digest = Self.digest(identity)
+        guard openTracks[digest] == nil, let directory = try? root() else { return }
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(digest).media"))
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(digest).json"))
     }
 
     /// Forgets a track's contents, e.g. when upstream bytes turned out to
@@ -209,6 +273,12 @@ actor MediaCache {
             Logger.mediaCache.info("evicted bytes=\(candidate.bytes)")
         }
         return freed
+    }
+
+    /// Removes every entry not in use (Settings' Clear). Returns the bytes freed.
+    @discardableResult
+    func clearUnused() async -> Int64 {
+        await evict(freeing: Int64.max / 4)
     }
 
     /// `write`, but a failed write (typically a full disk) first frees space by

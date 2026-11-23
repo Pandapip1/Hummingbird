@@ -19,7 +19,7 @@ final class PlayerTrackSelectionTests: XCTestCase {
         try await waitUntil { backend.loads == 2 }
         XCTAssertEqual(model.selected, first, "the checkmark stays on the playing stream")
         XCTAssertEqual(model.pendingOption, second)
-        XCTAssertFalse(model.isMediaReady)
+        XCTAssertTrue(model.isMediaReady, "every control stays usable while a switch is pending")
 
         backend.advance()
         await switching.value
@@ -48,6 +48,39 @@ final class PlayerTrackSelectionTests: XCTestCase {
         XCTAssertNil(model.pendingOption)
         XCTAssertEqual(backend.loads, loadsBefore + 2, "the new stream, then the previous one again")
         XCTAssertEqual(model.errorMessage, PlayerModel.PlaybackNotConfirmed(reason: "decode error").errorDescription)
+    }
+
+    /// A pending switch never locks the player: another choice supersedes it
+    /// (the spinner moves), and choosing the playing stream cancels it (the
+    /// playing stream is put back if the new one had replaced it).
+    func testAPendingSwitchCanBeSupersededOrCancelled() async throws {
+        let backend = DelayedStartBackend()
+        let model = makeTestPlayerModel(backend: backend, confirmsSwitchOnLoad: false)
+        let first = playbackOption(id: "first", url: "https://example.com/first.m3u8")
+        await model.select(first)
+        backend.isPlaying = true
+
+        let second = playbackOption(id: "second", url: "https://example.com/second.m3u8")
+        let switching = Task { await model.select(second) }
+        try await waitUntil { backend.loads == 2 }
+        XCTAssertEqual(model.pendingOption, second)
+        XCTAssertTrue(model.isMediaReady)
+
+        // Another choice supersedes the pending one.
+        let third = playbackOption(id: "third", url: "https://example.com/third.m3u8")
+        let superseding = Task { await model.select(third) }
+        try await waitUntil { backend.loads == 3 }
+        XCTAssertEqual(model.pendingOption, third, "the spinner moves to the newer choice")
+        XCTAssertEqual(model.selected, first, "the checkmark stays on the playing stream")
+        await switching.value
+
+        // Choosing the playing stream cancels the pending switch.
+        await model.select(first)
+        await superseding.value
+        XCTAssertNil(model.pendingOption)
+        XCTAssertEqual(model.selected, first)
+        XCTAssertEqual(backend.loaded.last, "first.m3u8", "the playing stream is put back")
+        XCTAssertNil(model.errorMessage, "a cancelled switch is not an error")
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
@@ -220,9 +253,11 @@ private final class DelayedStartBackend: MediaBackend {
     var onFailure: (@MainActor (String) -> Void)?
     var failNextLoad = false
     private(set) var loads = 0
+    private(set) var loaded: [String] = []
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
         loads += 1
+        loaded.append(request.video.url.lastPathComponent)
         if failNextLoad { failNextLoad = false; throw PluginError.execution("switch failed") }
         isPlaying = autoplay
     }

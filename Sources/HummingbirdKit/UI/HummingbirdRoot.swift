@@ -112,12 +112,19 @@ struct SeekDebugScene: View {
 @Observable
 private final class SeekDebugModel: AdvancedVideoPlayerControlling {
     let title = "Seek control test"
-    var playbackTime: Double = 60
+    @ObservationIgnored let clock = PlaybackClock(time: 60)
+    var playbackTime: Double {
+        get { clock.time }
+        set { clock.time = newValue }
+    }
     let duration: Double = 600
     var isPlaying = false
+    var waitingReason: String? { nil }
     var playbackRate: Float = 1
     let pictureInPictureState = PictureInPictureState.unsupported
     let isMediaReady = true
+    var scrubberContent: ScrubberContent { ScrubberContent(duration: duration) }
+    func jumpToLive() {}
 
     func togglePlayback() { isPlaying.toggle() }
     func skip(by seconds: Double) { seek(to: playbackTime + seconds) }
@@ -126,6 +133,8 @@ private final class SeekDebugModel: AdvancedVideoPlayerControlling {
     func startPictureInPicture() {}
     func stopPictureInPicture() {}
     func toggleFullscreen() {}
+    func toggleCaptions() {}
+    func controlsVisibilityChanged(_ visible: Bool) {}
 }
 
 @MainActor
@@ -150,3 +159,50 @@ struct InstallPreviewDebugScene: View {
         }
     }
 }
+/// UI tests of the surface handover (`HUMMINGBIRD_DEBUG_SCENE=player-fullscreen`):
+/// a real player with the real surfaces and controls, playing a clip
+/// generated on the device, so no plugin or network is involved.
+@MainActor
+struct FullscreenHandoverDebugScene: View {
+    @State private var player: PlayerModel
+    @State private var status = "preparing"
+
+    init(stores: AppDataStores) {
+        _player = State(wrappedValue: PlayerModel(stores: stores, backend: makeMediaBackend()))
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Color.black
+                if player.hasMedia { PlayerSurface(model: player) }
+                PlayerControls(model: player, isFullscreen: false)
+            }
+            .aspectRatio(16 / 9, contentMode: .fit)
+            .playerFullscreenPresentation(model: player)
+            Text("\(Int(player.playbackTime))").accessibilityIdentifier("debug-playback-time")
+            // Names what is wrong when it is not "playing", so a failing test says why.
+            Text(player.errorMessage.map { "error: \($0)" }
+                 ?? player.waitingReason.map { "waiting: \($0)" }
+                 ?? (player.isPlaying ? "playing" : status == "loaded" ? "paused" : status))
+                .accessibilityIdentifier("debug-playback-state")
+        }
+        .padding()
+        .task { await start() }
+    }
+
+    private func start() async {
+        do {
+            let shade = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_CLIP_SHADE"].flatMap(Int.init)
+            let clip = try await DebugMediaClip.make(shade: shade)
+            player.localPlaybackForTesting = { _ in try LocalPlayback(video: clip, servedBy: .mediaCache) }
+            let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://debug.invalid/clip.mp4"}"#.utf8))
+            await player.select(PlaybackOption(id: "debug-clip", label: "Clip", kind: .hls, video: source, audio: nil, height: 180))
+            if !player.isPlaying { player.togglePlayback() }
+            status = "loaded"
+        } catch {
+            status = "failed: \(error.localizedDescription)"
+        }
+    }
+}
+

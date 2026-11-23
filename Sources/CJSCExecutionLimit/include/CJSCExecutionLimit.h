@@ -21,7 +21,8 @@ JS_EXPORT void JSContextGroupClearExecutionTimeLimit(JSContextGroupRef group);
 /// JavaScriptCore measures its limit in CPU time used by the script's thread, which on a loaded
 /// machine runs far slower than the wall clock. So the limit is a short CPU slice; at the end of
 /// each slice the callback compares the wall clock with the deadline (carried in `info`) and either
-/// stops the script or lets it run another slice.
+/// stops the script or sets the next slice (JavaScriptCore does not re-arm the limit by itself when
+/// the callback returns false).
 static const double hb_execution_check_interval = 0.05;
 
 static inline uint64_t hb_monotonic_milliseconds(void) {
@@ -29,8 +30,10 @@ static inline uint64_t hb_monotonic_milliseconds(void) {
 }
 
 static inline bool hb_should_terminate(JSContextRef context, void *info) {
-    (void)context;
-    return hb_monotonic_milliseconds() >= (uint64_t)(uintptr_t)info;
+    if (hb_monotonic_milliseconds() >= (uint64_t)(uintptr_t)info) return true;
+    JSContextGroupSetExecutionTimeLimit(JSContextGetGroup(context), hb_execution_check_interval,
+                                        hb_should_terminate, info);
+    return false;
 }
 
 /// Stops any script in `context`'s group still running `seconds` of wall-clock time from now.

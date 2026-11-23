@@ -787,11 +787,10 @@ struct PlayerSurface: UIViewControllerRepresentable {
             playerController.showsPlaybackControls = false
             playerController.updatesNowPlayingInfoCenter = false
             playerController.allowsPictureInPicturePlayback = true
-            #if os(tvOS)
+            // A container holds the player and, above it, our controls: inside
+            // AVPlayerViewController's own view the controls would be outside
+            // its accessibility (and, on tvOS, focus) hierarchy.
             let controller = FullscreenPlayerViewController(playerController: playerController)
-            #else
-            let controller = playerController
-            #endif
             controller.modalPresentationStyle = .overFullScreen
             #if os(iOS)
             controller.modalPresentationCapturesStatusBarAppearance = true
@@ -815,9 +814,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
                 overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
             overlay.didMove(toParent: controller)
-            #if os(tvOS)
             controller.controlsController = overlay
-            #endif
 
             fullscreenController = controller
             overlayController = overlay
@@ -889,9 +886,10 @@ struct PlayerSurface: UIViewControllerRepresentable {
     }
 }
 
-#if os(tvOS)
-/// AVPlayerViewController otherwise prefers its own full-screen container,
-/// which is focusable even when the native playback controls are disabled.
+/// The full-screen player: AVPlayerViewController as a child, our controls
+/// above it. AVPlayerViewController otherwise prefers its own full-screen
+/// container (focusable on tvOS even with its controls disabled) and keeps
+/// added subviews out of its accessibility hierarchy.
 @MainActor
 private final class FullscreenPlayerViewController: UIViewController {
     let playerController: AVPlayerViewController
@@ -925,7 +923,6 @@ private final class FullscreenPlayerViewController: UIViewController {
     }
 
 }
-#endif
 
 @MainActor
 private struct FullscreenPlayerControls: View {

@@ -711,6 +711,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         controller.allowsPictureInPicturePlayback = true
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
+        context.coordinator.environment = context.environment
         // Only the owner of the player is attached to it (see
         // PlayerSurfaceOwnership): this surface claims it now.
         context.coordinator.claimInline(controller)
@@ -726,6 +727,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         // ownership's job, so updates cannot pause it or attach a second copy.
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter(replacing: false)
+        context.coordinator.environmentChanged(context.environment)
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
@@ -747,6 +749,13 @@ struct PlayerSurface: UIViewControllerRepresentable {
         private var fullscreenClaim: PlayerSurfaceOwnership.Claim?
         private var inlineHost: PictureInPictureHostView?
         private var preparationScheduled = false
+        /// The page's environment, carried into the full-screen controls.
+        var environment: EnvironmentValues?
+
+        func environmentChanged(_ environment: EnvironmentValues) {
+            self.environment = environment
+            (model?.preparedFullscreen as? FullscreenStage)?.update(environment: environment)
+        }
 
         private var backend: AVMediaBackend? { model?.backend as? AVMediaBackend }
 
@@ -795,7 +804,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
             preparationScheduled = true
             MainRunLoopIdle.perform(after: .milliseconds(500)) { [weak self] in
                 guard let self, let model = self.model else { return }
-                _ = FullscreenStage.prepared(for: model)
+                _ = FullscreenStage.prepared(for: model, environment: self.environment)
             }
         }
 
@@ -813,7 +822,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
                 Logger.player.notice("fullscreen_present main_ms=\(ms, format: .fixed(precision: 1))")
             }
             // Normally built already; if the tap came first it is built now, once.
-            let stage = FullscreenStage.prepared(for: model)
+            let stage = FullscreenStage.prepared(for: model, environment: environment)
             let controller = stage.controller
             fullscreenController = controller
             // The full-screen controller takes the player (attached before the
@@ -895,18 +904,27 @@ extension AVPlayerViewController {
 private final class FullscreenStage {
     let controller: FullscreenPlayerViewController
     let host: PictureInPictureHostView
+    private let overlay: UIHostingController<FullscreenPlayerControls>
+    private let model: PlayerModel
 
-    static func prepared(for model: PlayerModel) -> FullscreenStage {
+    static func prepared(for model: PlayerModel, environment: EnvironmentValues?) -> FullscreenStage {
         if let stage = model.preparedFullscreen as? FullscreenStage { return stage }
         let start = ContinuousClock.now
-        let stage = FullscreenStage(model: model)
+        let stage = FullscreenStage(model: model, environment: environment)
         model.preparedFullscreen = stage
         let ms = start.duration(to: .now) / .milliseconds(1)
         Logger.player.notice("fullscreen_prepared main_ms=\(ms, format: .fixed(precision: 1))")
         return stage
     }
 
-    private init(model: PlayerModel) {
+    /// The page's environment changed (the inline surface updated): the
+    /// full-screen controls follow it.
+    func update(environment: EnvironmentValues) {
+        overlay.rootView = FullscreenPlayerControls(model: model, inherited: environment)
+    }
+
+    private init(model: PlayerModel, environment: EnvironmentValues?) {
+        self.model = model
         let playerController = AVPlayerViewController()
         playerController.showsPlaybackControls = false
         playerController.leaveNowPlayingToTheApp()
@@ -920,7 +938,8 @@ private final class FullscreenStage {
         controller.modalPresentationCapturesStatusBarAppearance = true
         #endif
 
-        let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
+        let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model, inherited: environment))
+        self.overlay = overlay
         overlay.view.backgroundColor = .clear
         controller.addChild(overlay)
         overlay.view.translatesAutoresizingMaskIntoConstraints = false
@@ -1001,10 +1020,31 @@ private final class FullscreenPlayerViewController: UIViewController {
 
 }
 
+/// The full-screen controls, hosted by their own UIHostingController, which
+/// inherits nothing from the page: the inline surface's whole environment is
+/// carried in (so a control the page provides, such as Watch Later, can't go
+/// missing here), except what describes this screen (size classes, scale).
 @MainActor
 private struct FullscreenPlayerControls: View {
     let model: PlayerModel
+    let inherited: EnvironmentValues?
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.displayScale) private var displayScale
+
     var body: some View {
+        if let inherited {
+            controls
+                .environment(\.horizontalSizeClass, horizontalSizeClass)
+                .environment(\.verticalSizeClass, verticalSizeClass)
+                .environment(\.displayScale, displayScale)
+                .environment(\.self, inherited)
+        } else {
+            controls
+        }
+    }
+
+    private var controls: some View {
         PlayerControls(model: model, isFullscreen: true)
             .frame(maxHeight: .infinity, alignment: .bottom)
             #if os(tvOS)

@@ -7,6 +7,22 @@ public struct JavaScriptCoreEngine: JSEngine, Sendable {
     public init() {}
     public func makeContext(hostCall: @escaping (String, String, String) -> String) throws -> JSContextHost {
         guard let ctx = JSContext() else { throw JSEngineError(message: "Could not create a JavaScript context") }
+        return Self.host(ctx, hostCall: hostCall)
+    }
+
+    public func makeMachine() -> JSMachine? {
+        JSVirtualMachine().map { JSMachine($0) }
+    }
+
+    public func makeContext(in machine: JSMachine, hostCall: @escaping (String, String, String) -> String) throws -> JSContextHost {
+        guard let virtualMachine = machine.storage as? JSVirtualMachine,
+              let ctx = JSContext(virtualMachine: virtualMachine) else {
+            throw JSEngineError(message: "Could not create a JavaScript context")
+        }
+        return Self.host(ctx, hostCall: hostCall)
+    }
+
+    private static func host(_ ctx: JSContext, hostCall: @escaping (String, String, String) -> String) -> JSContextHost {
         let block: @convention(block) (String, String, String) -> String = { n, a, b in hostCall(n, a, b) }
         ctx.setObject(block, forKeyedSubscript: "__hostCall" as NSString)
         return JavaScriptCoreContextHost(ctx)

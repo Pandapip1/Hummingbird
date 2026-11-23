@@ -1,6 +1,7 @@
 import Foundation
 import XPC
 import PluginEngine
+import PlatformSupport
 
 // The macOS plugin host: an XPC service with its own sandbox and no entitlements beyond it (no
 // network, no files outside its own container), so plugin JavaScript here can reach nothing but
@@ -14,7 +15,7 @@ xpc_main { connection in
     xpc_connection_set_event_handler(connection) { event in
         if xpc_get_type(event) == XPC_TYPE_ERROR { exit(0) }
         guard xpc_get_type(event) == XPC_TYPE_DICTIONARY else { return }
-        let fd = xpc_dictionary_dup_fd(event, "channel")
+        let fd = xpc_dictionary_dup_fd(event, HelperProcess.xpcChannelKey)
         guard fd >= 0 else { return }
         let thread = Thread {
             PluginHostServer(channel: PluginHostChannel(readFD: fd, writeFD: fd), engine: JSEngines.makeInProcess()).run()

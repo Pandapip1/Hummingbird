@@ -14,7 +14,7 @@ enum PluginExecutionSetup {
         #if !APP_STORE
         PluginExecutionLimits.installEngineTimeLimit(JavaScriptCoreTimeLimit())
         #endif
-        PluginExecutionLimits.installPlatformIsolation(appBundleIdentifier: Bundle.main.bundleIdentifier)
+        PluginExecutionLimits.installPlatformIsolation()
     }
 }
 

@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import PlatformSupport
 
 /// Limits a JavaScriptCore context's script execution time; the engine stops a script that runs
 /// longer (a termination it cannot catch). Implemented only in builds outside the App Store (it
@@ -68,16 +69,14 @@ public extension PluginExecutionLimits {
     /// The XPC service's bundle name (Apps/PluginHostXPC; `<app bundle ID>.PluginHost`).
     static let serviceBundleName = "PluginHost"
 
-    /// Installs the process isolation this platform offers: the app's XPC service on macOS (when
-    /// the bundle carries it), the app's own binary run with `--plugin-host` on Linux. Elsewhere
-    /// (iOS, tvOS, visionOS cannot start processes) plugins stay in-process.
-    static func installPlatformIsolation(appBundleIdentifier: String?) {
-        #if os(macOS)
-        if let appBundleIdentifier, XPCPluginHostLauncher.isEmbedded(named: serviceBundleName) {
-            installProcessIsolation(XPCPluginHostLauncher(serviceName: "\(appBundleIdentifier).\(serviceBundleName)"))
+    /// Installs the process isolation this platform offers (SwiftOpenUI `HelperProcess`): the
+    /// app's XPC service on macOS, when the bundle carries it; the app's own binary run with
+    /// `--plugin-host` on Linux. Where the platform can start no helper (iOS, tvOS, visionOS),
+    /// plugins stay in-process.
+    static func installPlatformIsolation(bundle: Bundle = .main) {
+        if let launcher = HelperProcess.Launcher.app(serviceBundleName: serviceBundleName,
+                                                     arguments: HelperPluginHostLauncher.hostArguments, bundle: bundle) {
+            installProcessIsolation(HelperPluginHostLauncher(launcher))
         }
-        #elseif os(Linux)
-        installProcessIsolation(SubprocessPluginHostLauncher(executable: URL(fileURLWithPath: "/proc/self/exe")))
-        #endif
     }
 }

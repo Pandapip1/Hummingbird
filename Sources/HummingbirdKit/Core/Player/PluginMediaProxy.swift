@@ -722,7 +722,8 @@ extension PluginMediaProxy: SuspendedResource {
     /// Binds again on the same port: the presentations' playlists name it.
     func resumeAfterSuspension() async -> PortMove? {
         guard let before = boundPort else { return nil }
-        if let open = channel, !(open.isActive && (await LoopbackLifecycle.accepts(port: before))) {
+        let reachable = await LoopbackLifecycle.accepts(port: before)
+        if let open = channel, !(open.isActive && reachable) {
             Logger.mediaProxy.notice("proxy_unreachable port=\(before)")
             open.close(promise: nil)
             channel = nil

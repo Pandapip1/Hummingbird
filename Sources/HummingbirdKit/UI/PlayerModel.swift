@@ -40,7 +40,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     var isMediaReady: Bool { selected != nil }
     private(set) var loadedURL: String?
     private(set) var options: [PlaybackOption] = []
-    private(set) var selected: PlaybackOption?
+    private(set) var selected: PlaybackOption? { didSet { if selected?.kind != oldValue?.kind { refreshScrubberContent() } } }
     private(set) var audioSources: [MediaSource] = []
     private(set) var selectedAudioSource: MediaSource?
     /// A source or audio stream being switched to, not yet confirmed playing.
@@ -103,7 +103,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         togglePlayback()
     }
     private(set) var playbackTime: Double = 0
-    private(set) var duration: Double = 0
+    private(set) var duration: Double = 0 { didSet { if duration != oldValue { refreshScrubberContent() } } }
     private(set) var isPlaying = false
     /// Why playback that should advance does not (buffering, stalled,
     /// reconnecting); nil while it plays or is paused. Derived from what the
@@ -149,12 +149,29 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var startup: PlaybackStartupTrace?
 
     /// The video's chapters from the plugin (`getContentChapters`), for the seek bar.
-    private(set) var chapters: [PlaybackChapter] = []
+    private(set) var chapters: [PlaybackChapter] = [] { didSet { refreshScrubberContent() } }
 
     /// What the seek bar shows (see `PlaybackScrubber`).
-    var scrubberContent: ScrubberContent {
-        PlaybackScrubber.content(pipeline: pipeline, duration: duration, chapters: chapters,
-                                 isLive: selected?.kind == .live)
+    /// What the seek bar shows. Built off the main actor whenever the pipeline,
+    /// duration, chapters or kind of stream change (a long video's lanes map
+    /// thousands of byte ranges to times), never while a view renders.
+    private(set) var scrubberContent = ScrubberContent(duration: 0)
+    @ObservationIgnored private var scrubberContentTask: Task<Void, Never>?
+
+    private func refreshScrubberContent() {
+        let pipeline = pipeline, duration = duration, chapters = chapters, isLive = selected?.kind == .live
+        scrubberContentTask?.cancel()
+        scrubberContentTask = Task { [weak self] in
+            let content = await Self.makeScrubberContent(pipeline: pipeline, duration: duration,
+                                                         chapters: chapters, isLive: isLive)
+            guard !Task.isCancelled, let self, self.scrubberContent != content else { return }
+            self.scrubberContent = content
+        }
+    }
+
+    @concurrent nonisolated private static func makeScrubberContent(pipeline: MediaPipelineSnapshot, duration: Double,
+                                                                     chapters: [PlaybackChapter], isLive: Bool) async -> ScrubberContent {
+        PlaybackScrubber.content(pipeline: pipeline, duration: duration, chapters: chapters, isLive: isLive)
     }
 
     /// Seeks to just behind the live edge of the recording.
@@ -166,7 +183,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Per-track, per-stage progress of the current video's media pipeline
     /// (download today; transcoding later). The seek bar's buffered ranges
     /// come from here.
-    private(set) var pipeline: MediaPipelineSnapshot = .empty
+    private(set) var pipeline: MediaPipelineSnapshot = .empty { didSet { refreshScrubberContent() } }
 
     /// Shown over the video while playback waits for bytes that the network
     /// has not delivered yet. Downloads retry on their own.
@@ -1251,7 +1268,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     /// A BCP 47 tag ("en", "pt-BR"), or nil for anything else a plugin calls a language.
     nonisolated static func languageTag(_ language: String?) -> String? {
-        guard let language, language.range(of: #"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})* #, options: .regularExpression) != nil
+        guard let language, language.range(of: #"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"#, options: .regularExpression) != nil
         else { return nil }
         return language
     }

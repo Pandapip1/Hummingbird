@@ -597,7 +597,12 @@ final class AVMediaBackend: MediaBackend {
 
     private func makeItem(for request: PlayRequest) async throws -> AVPlayerItem {
         let videoAsset = asset(for: request.video)
-        guard let audioMedia = request.audio else { return AVPlayerItem(asset: videoAsset) }
+        guard let audioMedia = request.audio else {
+            // Loaded here, asynchronously, so neither the item nor replacing the
+            // player's item waits for the asset on the main thread.
+            _ = try await videoAsset.load(.isPlayable, .duration)
+            return AVPlayerItem(asset: videoAsset, automaticallyLoadedAssetKeys: [.isPlayable, .duration])
+        }
 
         // Separate video and audio files are combined into one composition so AVPlayer plays them in sync.
         let audioAsset = asset(for: audioMedia)

@@ -2,7 +2,7 @@ import Foundation
 import SwiftOpenUI
 
 /// A chapter as Grayjay plugins report it (`getContentChapters`).
-struct PlaybackChapter: Sendable, Decodable, Hashable {
+struct PlaybackChapter: Sendable, Decodable, Hashable, PluginOutput {
     var name: String
     var timeStart: Double
     var timeEnd: Double
@@ -14,6 +14,11 @@ struct PlaybackChapter: Sendable, Decodable, Hashable {
 
     init(name: String, timeStart: Double, timeEnd: Double, type: Int) {
         self.name = name; self.timeStart = timeStart; self.timeEnd = timeEnd; self.type = type
+    }
+
+    /// A chapter title is plugin text shown in the seek bar: one bounded line.
+    mutating func contain(_ context: PluginOutputContext) {
+        name = context.line(name)
     }
 
     init(from decoder: Decoder) throws {

@@ -371,13 +371,14 @@ final class MediaPipelineTests: XCTestCase {
         audioSpec.rendition = HLSPlaylist.Rendition(groupID: "audio", name: "English · Audio Description", language: "en",
                                                     isDefault: true, uri: nil,
                                                     characteristics: "public.accessibility.describes-video")
+        let describedAudio = audioSpec
         let loads = Counter()
         let subtitle = LocalSubtitle(name: "English", language: "en", characteristics: nil) {
             await loads.increment()
             return LocalSubtitle.webVTT(from: "1\n00:00:01,000 --> 00:00:02,500\nHello\n")
         }
         let (session, playback) = try await bounded {
-            try await VODSession.start(video: videoSpec, audio: audioSpec, subtitles: [subtitle],
+            try await VODSession.start(video: videoSpec, audio: describedAudio, subtitles: [subtitle],
                                        downloads: downloads, server: server)
         }
         let loadsBefore = await loads.value
@@ -654,7 +655,7 @@ final class MediaPipelineTests: XCTestCase {
         var state = await scheduler.snapshot
         XCTAssertEqual(state.waiting, 1, "background waits while playback downloads")
         await scheduler.finish(.foreground)
-        await background.value
+        _ = await background.value
         state = await scheduler.snapshot
         XCTAssertEqual(state.background, 1)
         XCTAssertEqual(state.waiting, 0)

@@ -1260,6 +1260,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         let url = try await mediaProxy.register(
             manifest: manifest, runtime: runtime, executor: executor.handle,
+            identity: [runtime.id, loadedURL ?? "", "single", source.formatID ?? source.name, String(source.height), source.codec,
+                       source.language, String(source.bitrate)].joined(separator: "|"),
             subtitles: localSubtitles(),
             prefetchExecutorFactory: { [source, sourceURL = loadedURL] in
                 guard let sourceURL else {

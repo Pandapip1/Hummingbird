@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import XCTest
 @testable import HummingbirdKit
 
@@ -18,7 +19,7 @@ final class MediaPipelineTests: XCTestCase {
     private func temporaryCache() -> MediaCache {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-media-\(UUID().uuidString)")
         directories.append(directory)
-        return MediaCache(directory: directory)
+        return MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory))
     }
 
     private let fastRetry = TrackDownloader.Configuration(
@@ -871,7 +872,7 @@ final class LiveRecordingTests: XCTestCase {
     func testLiveRecordingKeepsEverySegmentPastUpstreamsWindowAndEndsWithTheStream() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-live-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let cache = MediaCache(directory: directory)
+        let cache = MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory))
         let recorder = LiveHLSRecorder(role: .muxed, cache: cache, identity: "live-test",
                                        playlistURL: try XCTUnwrap(URL(string: "https://live.test/live.m3u8")),
                                        signer: .plain(), refresh: nil, transport: FakeLiveUpstream())
@@ -932,7 +933,7 @@ final class LowLatencyRecordingTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-ll-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let upstream = FakeLowLatencyUpstream()
-        let recorder = LiveHLSRecorder(role: .muxed, cache: MediaCache(directory: directory), identity: "ll-test",
+        let recorder = LiveHLSRecorder(role: .muxed, cache: MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory)), identity: "ll-test",
                                        playlistURL: try XCTUnwrap(URL(string: "https://live.test/ll.m3u8")),
                                        signer: .plain(), refresh: nil, transport: upstream)
         await recorder.start()

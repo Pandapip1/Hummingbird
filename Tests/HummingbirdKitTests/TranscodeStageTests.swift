@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import XCTest
 @testable import HummingbirdKit
 
@@ -23,7 +24,7 @@ final class TranscodeStageTests: XCTestCase {
     private let identity = "vod-v2|plugin|https://video.test/1|video|VideoUrlRangeSource|format|137|video/mp4|en"
 
     private func cacheWithCompleteVideo(bytes: Int = 100_000) async throws -> MediaCache {
-        let cache = MediaCache(directory: directory())
+        let cache = MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory()))
         let track = try await cache.open(identity: identity)
         try await cache.write(Data(repeating: 7, count: bytes), at: 0, to: track)
         try await cache.setTotalBytes(track, Int64(bytes))

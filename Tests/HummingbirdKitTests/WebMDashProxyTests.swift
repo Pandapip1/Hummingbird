@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import XCTest
 #if canImport(AVFoundation)
 import AVFoundation
@@ -27,7 +28,7 @@ final class WebMDashProxyTests: XCTestCase {
     func testTheFixtureIsServedAsFragmentedMP4ThroughTheProxy() async throws {
         let caches = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: caches) }
-        let proxy = PluginMediaProxy(cache: UMPMediaCache(directory: caches))
+        let proxy = PluginMediaProxy(cache: UMPMediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: caches)))
         let (master, runtime) = try await WebMDashFixture.register(directory: Self.fixture, proxy: proxy)
         defer { Task { await runtime.stop() } }
 

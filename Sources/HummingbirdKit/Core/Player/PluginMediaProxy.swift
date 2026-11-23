@@ -72,6 +72,7 @@ actor PluginMediaProxy {
 
     func register(manifest: String, runtime: PluginRuntime, executor: Int, prefetch: Bool = true,
                   useCache: Bool = true,
+                  identity: String? = nil,
                   subtitles: [LocalSubtitle] = [],
                   cacheAllocationBytes: Int64? = nil,
                   prefetchExecutorFactory: PrefetchExecutorFactory? = nil,
@@ -85,7 +86,10 @@ actor PluginMediaProxy {
         let playlists = try DashToHLS.convert(manifest, baseURL: base)
         // v2 invalidates entries that may have been populated by an isolated
         // executor belonging to a different generated source rendition.
-        let cacheKey = "generated-dash-v2:\(manifest)" + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
+        // Generated manifests embed per-session URLs: keyed by them, a video
+        // never found its cached bytes again. The stable identity (content and
+        // format) keys the cache when the caller has one.
+        let cacheKey = "generated-dash-v2:" + (identity ?? manifest) + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
         let cache = try await useCache ? mediaCache.open(.init(
             key: cacheKey,
             allocationBytes: cacheAllocationBytes ?? playlists.estimatedBytes,

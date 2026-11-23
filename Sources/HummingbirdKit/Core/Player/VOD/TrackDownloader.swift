@@ -396,10 +396,18 @@ actor TrackDownloader {
                 let total = found.timeline.totalBytes
                 if totalBytes == nil || totalBytes == total {
                     setTotal(total)
+                } else if let known = totalBytes, total < known {
+                    // The index covers less than the file (boxes after the last
+                    // segment): the same file. Its bytes are kept, never reset, or
+                    // a complete track would be thrown away on every launch.
+                    Logger.mediaCache.notice("index_size_mismatch role=\(self.role.rawValue, privacy: .public) index=\(total) known=\(known) reset=false trailing=true")
+                    totalBytes = nil
+                    setTotal(total)
                 } else if !didResetForMismatch {
-                    // The cached bytes describe a different file than the one
-                    // upstream now (or another rendition under the same key):
-                    // start this track over rather than mix them.
+                    // The index claims more bytes than the file has: the cached
+                    // bytes describe a different file than the one upstream now
+                    // (or another rendition under the same key): start this track
+                    // over rather than mix them.
                     Logger.mediaCache.notice("index_size_mismatch role=\(self.role.rawValue, privacy: .public) index=\(total) known=\(self.totalBytes ?? -1) reset=true")
                     didResetForMismatch = true
                     try await cache.reset(track)

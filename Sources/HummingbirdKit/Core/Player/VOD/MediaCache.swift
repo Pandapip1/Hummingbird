@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import SwiftOpenUI
 import Crypto
 import os
@@ -49,9 +50,11 @@ actor MediaCache {
     private var bytesSinceEviction: Int64 = 0
 
     /// `sharing` lists other stores whose entries count toward the same limit.
-    init(directory parent: URL, limitBytes: Int64 = MediaCache.defaultLimitBytes,
+    /// The directory is a `KeptDirectory`, never Caches: the system purges
+    /// Caches when storage runs low, and this cache is expensive to refill.
+    init(directory: KeptDirectory, limitBytes: Int64 = MediaCache.defaultLimitBytes,
          sharing others: [any EvictableMediaStore] = []) {
-        self.parent = parent
+        self.parent = directory.url
         self.limitBytes = limitBytes
         self.others = others
     }
@@ -78,7 +81,7 @@ actor MediaCache {
         let root = try root()
         let dataURL = root.appendingPathComponent("\(digest).media")
         let metadataURL = root.appendingPathComponent("\(digest).json")
-        var metadata = (try? Data(contentsOf: metadataURL)).flatMap { try? JSONDecoder().decode(Metadata.self, from: $0) }
+        var metadata = Self.salvageMetadata(at: metadataURL)
         if !FileManager.default.fileExists(atPath: dataURL.path) {
             guard FileManager.default.createFile(atPath: dataURL.path, contents: nil, attributes: Self.fileAttributes) else {
                 throw CocoaError(.fileWriteUnknown)
@@ -196,6 +199,43 @@ actor MediaCache {
         try JSONEncoder().encode(metadata).write(to: directory.appendingPathComponent("\(digest).json"), options: .atomic)
     }
 
+    /// A track's metadata, salvaged field by field when it does not decode as a
+    /// whole (the ranges are what matter: they say which bytes are there).
+    /// Nothing readable: the file is set aside (`.unreadable`), never
+    /// overwritten with an empty track, and the media file is left as it is.
+    private static func salvageMetadata(at url: URL) -> Metadata? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if let metadata = try? JSONDecoder().decode(Metadata.self, from: data) { return metadata }
+        if let partial = try? JSONDecoder().decode(PartialMetadata.self, from: data),
+           let identity = partial.identity, let completed = partial.completed {
+            Logger.mediaCache.notice("metadata_salvaged ranges=\(completed.byteCount)")
+            return Metadata(identity: identity, totalBytes: partial.totalBytes, completed: completed,
+                            lastAccess: partial.lastAccess ?? Date())
+        }
+        let aside = url.appendingPathExtension("unreadable")
+        if !FileManager.default.fileExists(atPath: aside.path) { try? FileManager.default.copyItem(at: url, to: aside) }
+        Logger.mediaCache.error("metadata_unreadable kept_aside=true")
+        return nil
+    }
+
+    /// Every field optional and decoded on its own (`salvageMetadata`).
+    private struct PartialMetadata: Decodable {
+        var identity: String?
+        var totalBytes: Int64?
+        var completed: MediaRangeSet?
+        var lastAccess: Date?
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            identity = try? container.decodeIfPresent(String.self, forKey: .identity)
+            totalBytes = try? container.decodeIfPresent(Int64.self, forKey: .totalBytes)
+            completed = try? container.decodeIfPresent(MediaRangeSet.self, forKey: .completed)
+            lastAccess = try? container.decodeIfPresent(Date.self, forKey: .lastAccess)
+        }
+
+        enum CodingKeys: String, CodingKey { case identity, totalBytes, completed, lastAccess }
+    }
+
     private func readMetadata(_ digest: String) -> Metadata? {
         guard let directory = try? root() else { return nil }
         return (try? Data(contentsOf: directory.appendingPathComponent("\(digest).json")))
@@ -281,19 +321,66 @@ actor MediaCache {
         await evict(freeing: Int64.max / 4)
     }
 
-    /// `write`, but a failed write (typically a full disk) first frees space by
+    /// `write`, but a write that found the disk full first frees space by
     /// evicting other entries and tries again, so a download is never lost to
-    /// space that the cache itself holds.
+    /// space the cache itself holds. Any other failure (a handle a suspension
+    /// invalidated, a file removed underneath) has nothing to do with other
+    /// entries: the track is reopened and the write tried once more, and no
+    /// other entry is touched. Evicting on every retried failure used to drain
+    /// the whole cache.
     @discardableResult
     func writeMakingRoom(_ data: Data, at offset: Int64, to id: TrackID) async throws -> MediaRangeSet {
         do {
             return try write(data, at: offset, to: id)
-        } catch {
+        } catch where Self.isOutOfSpace(error) {
             let freed = await evict(freeing: Int64(data.count) * 4)
             Logger.mediaCache.notice("write_retry_after_eviction freed=\(freed)")
             return try write(data, at: offset, to: id)
+        } catch {
+            Logger.mediaCache.error("write_failed_reopening message=\(error.localizedDescription)")
+            try reopen(id)
+            return try write(data, at: offset, to: id)
         }
     }
+
+    /// Whether `error` is the disk (or a quota) being full.
+    static func isOutOfSpace(_ error: any Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain, error.code == NSFileWriteOutOfSpaceError { return true }
+        if error.domain == NSPOSIXErrorDomain, error.code == Int(ENOSPC) || error.code == Int(EDQUOT) { return true }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError { return isOutOfSpace(underlying) }
+        return false
+    }
+
+    /// Opens the track's file again. If the file is gone, so are its bytes:
+    /// the track records that rather than claim ranges it no longer has.
+    private func reopen(_ id: TrackID) throws {
+        guard var track = openTracks[id.digest] else { return }
+        try? track.handle.close()
+        let dataURL = try root().appendingPathComponent("\(id.digest).media")
+        if !FileManager.default.fileExists(atPath: dataURL.path) {
+            guard FileManager.default.createFile(atPath: dataURL.path, contents: nil, attributes: Self.fileAttributes) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            Logger.mediaCache.error("track_file_missing reset=true")
+            track.metadata.completed = MediaRangeSet()
+        }
+        track.handle = try FileHandle(forUpdating: dataURL)
+        openTracks[id.digest] = track
+        try persist(id.digest)
+    }
+
+    #if DEBUG
+    /// Closes a track's file handle under the cache, as a suspension can
+    /// invalidate it (tests).
+    func invalidateHandleForTesting(_ id: TrackID) {
+        try? openTracks[id.digest]?.handle.close()
+    }
+
+    /// Evicts as a full disk would, until `bytes` are freed (tests).
+    @discardableResult
+    func evictForTesting(freeing bytes: Int64) async -> Int64 { await evict(freeing: bytes) }
+    #endif
 
     /// Closed entries on disk.
     private func candidates() throws -> [MediaCacheEvictionCandidate] {
@@ -303,12 +390,14 @@ actor MediaCache {
             guard url.pathExtension == "json" else { return nil }
             let digest = url.deletingPathExtension().lastPathComponent
             guard openTracks[digest] == nil else { return nil }
-            let metadata = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Metadata.self, from: $0) }
+            let metadata = Self.salvageMetadata(at: url)
             let media = root.appendingPathComponent("\(digest).media")
-            let allocated = (try? media.resourceValues(forKeys: [.fileAllocatedSizeKey]).fileAllocatedSize).map(Int64.init)
+            let values = try? media.resourceValues(forKeys: [.fileAllocatedSizeKey, .contentModificationDateKey])
+            let allocated = values?.fileAllocatedSize.map(Int64.init)
+            // Unreadable metadata is not "oldest": its file says when it was last written.
             return MediaCacheEvictionCandidate(id: digest,
                                                bytes: allocated ?? metadata?.completed.byteCount ?? 0,
-                                               lastAccess: metadata?.lastAccess ?? .distantPast)
+                                               lastAccess: metadata?.lastAccess ?? values?.contentModificationDate ?? Date())
         }
     }
 

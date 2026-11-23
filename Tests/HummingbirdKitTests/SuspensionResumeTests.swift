@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import XCTest
 @testable import HummingbirdKit
 
@@ -35,7 +36,7 @@ final class SuspensionResumeTests: XCTestCase {
     func testTheGeneratedMediaProxyComesBackOnItsPortAfterAReclaim() async throws {
         let caches = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: caches) }
-        let proxy = PluginMediaProxy(cache: UMPMediaCache(directory: caches))
+        let proxy = PluginMediaProxy(cache: UMPMediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: caches)))
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Fixtures/webm-dash")
         let (master, runtime) = try await WebMDashFixture.register(directory: fixture, proxy: proxy)

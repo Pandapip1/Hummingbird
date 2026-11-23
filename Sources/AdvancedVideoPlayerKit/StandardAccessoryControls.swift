@@ -22,9 +22,11 @@ struct PlayerMenu<Label: View, Content: View>: View {
     var body: some View {
         // Every dropdown over video is its own glass element (menus keep
         // CheckableMenuItem's left column inside).
-        PresentationMenu(onPresentationChange: presentationChanged, content: content, label: label)
-            .playerControlGlass()
-            .accessibilityValue(value)
+        // The glass is part of the menu's label, so all of it opens the menu.
+        PresentationMenu(onPresentationChange: presentationChanged, content: content) {
+            label().playerHitTarget()
+        }
+        .accessibilityValue(value)
     }
 }
 
@@ -203,5 +205,47 @@ public extension SubtitleControl where AppearanceControls == EmptyView {
                   selectedEmbeddedID: selectedEmbeddedID, selectedExternalID: selectedExternalID,
                   onSelectEmbedded: onSelectEmbedded, onSelectExternal: onSelectExternal,
                   interacted: interacted) { EmptyView() }
+    }
+}
+
+/// The smallest control over the video, glass included (Human Interface
+/// Guidelines: 44 × 44 pt). UI tests check every player control against it.
+public enum PlayerHitTarget {
+    public static let minimum: CGFloat = 44
+}
+
+extension View {
+    /// A control's label on its glass, at least `PlayerHitTarget.minimum`
+    /// in each direction, all of it taking touches. Used inside the label so
+    /// the glass around the icon is part of the button, not decoration
+    /// outside it.
+    func playerHitTarget() -> some View {
+        frame(minWidth: 24, minHeight: 28)
+            .playerControlGlass()
+            .frame(minWidth: PlayerHitTarget.minimum, minHeight: PlayerHitTarget.minimum)
+            .contentShape(Capsule())
+    }
+}
+
+/// An icon control over the video: at least 44 × 44 pt with its glass, the
+/// whole glass taking touches, named on the button itself (so VoiceOver and
+/// UI tests see the full target, not the icon).
+@MainActor
+struct PlayerIconButton: View {
+    let label: String
+    let systemImage: String
+    let action: () -> Void
+
+    init(_ label: String, systemImage: String, action: @escaping () -> Void) {
+        self.label = label
+        self.systemImage = systemImage
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage).playerHitTarget()
+        }
+        .accessibilityLabel(label)
     }
 }

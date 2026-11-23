@@ -406,7 +406,7 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(PlaybackSelector.best(hlsOnly, maxHeight: 1080)?.kind, .hls)
     }
 
-    func testGeneratedPlaybackSelectionKeepsMP4QualitiesOnly() throws {
+    func testGeneratedPlaybackSelectionOffersWebMAndPrefersMP4() throws {
         let d = try decode(VideoDetails.self, """
         {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},"description":"",
          "video":{"isUnMuxed":true,"videoSources":[
@@ -416,10 +416,10 @@ final class ModelAndLogicTests: XCTestCase {
             {"plugin_type":"DashManifestRawSource","__handle":4,"hasGenerate":true,"height":2160,"container":"video/webm","codec":"vp9"}]}}
         """)
         let options = PlaybackSelector.options(for: d)
-        XCTAssertEqual(options.map(\.height).sorted(), [720, 1080])
+        XCTAssertEqual(options.map(\.height).sorted(), [720, 1080, 2160], "generated WebM is offered (remuxed as it is served)")
         XCTAssertTrue(options.allSatisfy { $0.kind == .generated })
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720)?.height, 720)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080)?.height, 1080)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 4320)?.height, 1080, "MP4 stays the default")
     }
 
     func testGeneratedPlaybackPairsSeparateGeneratedAudio() throws {

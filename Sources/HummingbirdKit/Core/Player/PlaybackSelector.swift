@@ -114,7 +114,8 @@ enum PlaybackSelector {
     }
 
     private static func isPlayableVideoContainer(_ source: MediaSource) -> Bool {
-        videoContainers.contains(source.container.lowercased())
+        let container = source.container.lowercased()
+        return videoContainers.contains(container) || webContainers.contains(container)
     }
 
     static func playableAudioSources(_ sources: [MediaSource]) -> [MediaSource] {
@@ -140,7 +141,7 @@ enum PlaybackSelector {
     static func generatedAudioSources(_ sources: [MediaSource]) -> [MediaSource] {
         sources.filter {
             $0.pluginType == "DashManifestRawAudioSource" && $0.hasGenerate && $0.handle != nil
-                && !$0.isWidevine && audioContainers.contains($0.container.lowercased())
+                && !$0.isWidevine && (audioContainers.contains($0.container.lowercased()) || webContainers.contains($0.container.lowercased()))
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 import AdvancedVideoPlayerKit
 @testable import HummingbirdKit
@@ -90,51 +91,55 @@ final class MainThreadResponsivenessTests: XCTestCase {
             PluginConfig.self,
             from: Data(#"{"name":"Probe","id":"main-thread-probe","scriptUrl":"x.js","version":1}"#.utf8)
         )
-        return PluginRuntime(config: config, script: "source.enable = function() {};", settings: [:], auth: nil, captcha: nil)
+        return PluginRuntime(
+            approval: testLoadApproval(config),
+            config: config,
+            script: try ScriptSignature.check("source.enable = function() {};", for: config),
+            settings: [:], auth: nil, captcha: nil
+        )
     }
 }
 
 /// Measures, from another thread, how long the main thread takes to run a
 /// block it is sent: the longest such wait is the longest stretch it was busy.
-private final class MainThreadProbe: @unchecked Sendable {
-    private let lock = NSLock()
-    private var running = false
-    private var worst: Duration = .zero
-    private var count = 0
-    private var thread: Thread?
+private final class MainThreadProbe: Sendable {
+    private struct State {
+        var running = false
+        var worst: Duration = .zero
+        var count = 0
+    }
+    private let state = Mutex(State())
 
-    var samples: Int { lock.withLock { count } }
-    var worstSoFar: Duration { lock.withLock { worst } }
+    var samples: Int { state.withLock { $0.count } }
+    var worstSoFar: Duration { state.withLock { $0.worst } }
 
     func start() {
-        lock.withLock { running = true }
-        let thread = Thread { [self] in
+        state.withLock { $0.running = true }
+        Thread.detachNewThread { [self] in
             let clock = ContinuousClock()
-            while lock.withLock({ running }) {
+            while state.withLock({ $0.running }) {
                 let sent = clock.now
                 let answered = DispatchSemaphore(value: 0)
                 DispatchQueue.main.async { answered.signal() }
                 // Waits as long as it takes: a busy main thread is what is measured.
                 while answered.wait(timeout: .now() + 0.1) == .timedOut {
-                    if !lock.withLock({ running }) { return }
+                    if !state.withLock({ $0.running }) { return }
                 }
                 let waited = sent.duration(to: clock.now)
-                lock.withLock {
-                    worst = max(worst, waited)
-                    count += 1
+                state.withLock {
+                    $0.worst = max($0.worst, waited)
+                    $0.count += 1
                 }
                 Thread.sleep(forTimeInterval: 0.005)
             }
         }
-        self.thread = thread
-        thread.start()
     }
 
     /// Stops and returns the longest wait.
     func stop() -> Duration {
-        lock.withLock {
-            running = false
-            return worst
+        state.withLock {
+            $0.running = false
+            return $0.worst
         }
     }
 }

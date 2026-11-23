@@ -166,15 +166,12 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     }
 
     @ViewBuilder private var primaryButtons: some View {
-        Button { interacted(); model.skip(by: -10) } label: { Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds") }
-            .playerControlGlass()
-        Button { interacted(); model.togglePlayback() } label: {
-            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").accessibilityLabel(model.isPlaying ? "Pause" : "Play")
+        PlayerIconButton("Back 10 seconds", systemImage: "gobackward.10") { interacted(); model.skip(by: -10) }
+        PlayerIconButton(model.isPlaying ? "Pause" : "Play", systemImage: model.isPlaying ? "pause.fill" : "play.fill") {
+            interacted(); model.togglePlayback()
         }
-        .playerControlGlass()
         .remotePrefersDefaultFocus(isFullscreen)
-        Button { interacted(); model.skip(by: 10) } label: { Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds") }
-            .playerControlGlass()
+        PlayerIconButton("Forward 10 seconds", systemImage: "goforward.10") { interacted(); model.skip(by: 10) }
     }
 
     @ViewBuilder private var secondaryButtons: some View {
@@ -185,22 +182,15 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             // Changing: an indeterminate spinner in place of the button until it settles.
             ProgressView().accessibilityLabel("Picture in Picture is changing").playerControlGlass()
         case .active:
-            Button { interacted(); model.stopPictureInPicture() } label: {
-                Image(systemName: "pip.exit").accessibilityLabel("Exit Picture in Picture")
-            }
-            .playerControlGlass()
+            PlayerIconButton("Exit Picture in Picture", systemImage: "pip.exit") { interacted(); model.stopPictureInPicture() }
         case .possible, .unavailable:
-            Button { interacted(); model.startPictureInPicture() } label: {
-                Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
-            }
-            .playerControlGlass()
+            PlayerIconButton("Picture in Picture", systemImage: "pip.enter") { interacted(); model.startPictureInPicture() }
             .disabled(model.pictureInPictureState == .unavailable)
         }
-        Button { interacted(); model.toggleFullscreen() } label: {
-            Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
+        PlayerIconButton(isFullscreen ? "Exit Full Screen" : "Enter Full Screen",
+                         systemImage: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+            interacted(); model.toggleFullscreen()
         }
-        .playerControlGlass()
         PlayerMenu(value: model.playbackRate == 1 ? "Normal" : "\(model.playbackRate.formatted()) times") {
             Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×")
         } content: {

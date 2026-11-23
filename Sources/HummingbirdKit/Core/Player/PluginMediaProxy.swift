@@ -25,6 +25,8 @@ actor PluginMediaProxy {
         /// Plugin subtitles as SUBTITLES renditions: their playlists and WebVTT texts by name.
         var subtitlePlaylists: [String: String] = [:]
         var subtitleTexts: [String: OnceText] = [:]
+        /// WebM tracks, remuxed to fragmented MP4 segment by segment as served.
+        var webm: [String: WebMTimeline] = [:]
 
         /// Offers `subtitles` as SUBTITLES renditions of the master (absolute loopback URIs under `base`).
         mutating func addSubtitles(_ subtitles: [LocalSubtitle], base: String, duration: Double) {
@@ -46,6 +48,8 @@ actor PluginMediaProxy {
     }
 
     private var presentations: [String: Presentation] = [:]
+    /// WebM DASH tracks being remuxed, by "<presentation>/<video|audio>".
+    private var webmTracks: [String: WebMDashTrack] = [:]
     private var order: [String] = []
     private var group: MultiThreadedEventLoopGroup?
     private var channel: Channel?
@@ -88,6 +92,7 @@ actor PluginMediaProxy {
                                            resources: playlists.resources,
                                            prefetchExecutorFactory: prefetchExecutorFactory,
                                            failure: failure)
+        presentations[id]?.webm = playlists.webm
         if playlists.video != nil { presentations[id]?.addSubtitles(subtitles, base: base, duration: playlists.duration) }
         retain(id)
         let playlistName = playlists.video == nil ? "audio.m3u8" : "master.m3u8"
@@ -129,6 +134,7 @@ actor PluginMediaProxy {
             cache: cache, resources: playlists.resources,
             prefetchExecutorFactory: nil, failure: failure
         )
+        presentations[id]?.webm = playlists.webm
         presentations[id]?.addSubtitles(subtitles, base: base, duration: playlists.duration)
         retain(id)
         guard let url = URL(string: "\(base)/master.m3u8") else {
@@ -243,6 +249,7 @@ actor PluginMediaProxy {
         while order.count > 64, let expired = order.first {
             order.removeFirst()
             presentations[expired] = nil
+            webmTracks = webmTracks.filter { !$0.key.hasPrefix("\(expired)/") }
         }
     }
 
@@ -252,6 +259,7 @@ actor PluginMediaProxy {
         guard let id = url.pathComponents.dropFirst().first else { return }
         presentations[id] = nil
         order.removeAll { $0 == id }
+        webmTracks = webmTracks.filter { !$0.key.hasPrefix("\(id)/") }
     }
 
     private func serverChannel() async throws -> Channel {
@@ -321,46 +329,93 @@ actor PluginMediaProxy {
             var upstream = "https://grayjay.internal/" + parts.dropFirst().joined(separator: "/")
             if let query = components.percentEncodedQuery { upstream += "?" + query }
             do {
-                if let cache = presentation.cache,
-                   let cached = try await mediaCache.read(cache, name: upstream) {
-                    OSSignposter.mediaProxy.emitEvent("UMPCacheHit", "track=\(parts[1], privacy: .public) bytes=\(cached.count)")
-                    let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
-                    return (.ok, contentType, cached)
+                let data = try await rawSegment(id: parts[0], presentation: presentation, kind: parts[1], upstream: upstream)
+                // WebM segments become fragmented MP4 here, every platform alike;
+                // the cache keeps the bytes as the plugin returned them.
+                if let timeline = presentation.webm[parts[1]] {
+                    let remuxed = try await remuxWebM(id: parts[0], presentation: presentation, kind: parts[1],
+                                                      timeline: timeline, upstream: upstream, data: data)
+                    return (.ok, "video/mp4", remuxed)
                 }
-                foregroundRequests += 1
-                defer { foregroundRequests -= 1 }
-                let (requestRuntime, requestExecutor) = Self.executor(for: upstream, in: presentation)
-                let segment = OSSignposter.mediaProxy.beginInterval(
-                    "UMPSegment", id: OSSignposter.mediaProxy.makeSignpostID(), "track=\(parts[1], privacy: .public)"
-                )
-                let data: Data
-                do {
-                    data = try await fetchSegment(presentation: parts[0], runtime: requestRuntime,
-                                                  executor: requestExecutor, upstream: upstream)
-                    OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "bytes=\(data.count)")
-                } catch {
-                    OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "failed")
-                    throw error
-                }
-                if let cache = presentation.cache {
-                    // Cache exhaustion must never turn successfully fetched media
-                    // into a 502 response. The cache is an optimization; AVPlayer
-                    // still needs the bytes the plugin already returned.
-                    do {
-                        try await mediaCache.write(data, to: cache, name: upstream)
-                    } catch {
-                        Logger.mediaProxy.error("cache_write_failed prefetch=false message=\(error.localizedDescription)")
-                    }
-                }
-                let contentType = upstream.contains(".webm") ? "video/webm" : "video/mp4"
-                return (.ok, contentType, data)
+                return (.ok, "video/mp4", data)
             } catch let error as PluginError {
                 presentation.failure(error)
+                return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
+            } catch let error as Matroska.Failure {
+                // A format MP4 cannot carry (Vorbis) is said by name, not retried.
+                Logger.mediaProxy.error("webm_remux_failed reason=\(String(describing: error), privacy: .public)")
+                presentation.failure(.execution(error.localizedDescription))
                 return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
             } catch {
                 return (.badGateway, "text/plain", Data(error.localizedDescription.utf8))
             }
         }
+    }
+
+    /// A segment's bytes as the plugin returned them: from the cache, or
+    /// fetched through the plugin's executor (and cached).
+    private func rawSegment(id: String, presentation: Presentation, kind: String, upstream: String) async throws -> Data {
+        if let cache = presentation.cache,
+           let cached = try await mediaCache.read(cache, name: upstream) {
+            OSSignposter.mediaProxy.emitEvent("UMPCacheHit", "track=\(kind, privacy: .public) bytes=\(cached.count)")
+            return cached
+        }
+        foregroundRequests += 1
+        defer { foregroundRequests -= 1 }
+        let (requestRuntime, requestExecutor) = Self.executor(for: upstream, in: presentation)
+        let segment = OSSignposter.mediaProxy.beginInterval(
+            "UMPSegment", id: OSSignposter.mediaProxy.makeSignpostID(), "track=\(kind, privacy: .public)"
+        )
+        let data: Data
+        do {
+            data = try await fetchSegment(presentation: id, runtime: requestRuntime,
+                                          executor: requestExecutor, upstream: upstream)
+            OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "bytes=\(data.count)")
+        } catch {
+            OSSignposter.mediaProxy.endInterval("UMPSegment", segment, "failed")
+            throw error
+        }
+        if let cache = presentation.cache {
+            // Cache exhaustion must never turn successfully fetched media
+            // into a 502 response. The cache is an optimization; AVPlayer
+            // still needs the bytes the plugin already returned.
+            do {
+                try await mediaCache.write(data, to: cache, name: upstream)
+            } catch {
+                Logger.mediaProxy.error("cache_write_failed prefetch=false message=\(error.localizedDescription)")
+            }
+        }
+        return data
+    }
+
+    /// One WebM DASH segment (`upstream`, whose bytes are `data`) as fragmented MP4.
+    private func remuxWebM(id: String, presentation: Presentation, kind: String, timeline: WebMTimeline,
+                           upstream: String, data: Data) async throws -> Data {
+        let key = WebMTimeline.requestKey(upstream)
+        let remuxer: WebMDashTrack
+        if let known = webmTracks["\(id)/\(kind)"] {
+            remuxer = known
+        } else {
+            // The sample description needs the headers and the first keyframe.
+            let initialization = key == timeline.initialization ? data
+                : try await rawSegment(id: id, presentation: presentation, kind: kind,
+                                       upstream: Self.loopbackUpstream(timeline.initializationUpstream))
+            let firstKey = WebMTimeline.requestKey(timeline.firstMediaUpstream)
+            let first = key == firstKey ? data
+                : try await rawSegment(id: id, presentation: presentation, kind: kind,
+                                       upstream: Self.loopbackUpstream(timeline.firstMediaUpstream))
+            remuxer = try WebMDashTrack(initialization: [UInt8](initialization), firstSegment: [UInt8](first))
+            webmTracks["\(id)/\(kind)"] = remuxer
+        }
+        if key == timeline.initialization { return remuxer.initializationSegment() }
+        guard let index = timeline.index[key] else { throw Matroska.Failure.malformed("unknown segment") }
+        return try remuxer.mediaSegment([UInt8](data), index: index, start: timeline.starts[index],
+                                        duration: timeline.durations[index])
+    }
+
+    /// A manifest URL as the proxy names it (the host requests arrive under).
+    private static func loopbackUpstream(_ manifestURL: String) -> String {
+        "https://grayjay.internal" + WebMTimeline.requestKey(manifestURL)
     }
 
     /// AVPlayer issues startup and seek requests as short bursts with tiny gaps.
@@ -418,11 +473,13 @@ enum DashToHLS {
         let video: String?
         let audio: String?
         let resources: [Resource]
+        /// The WebM tracks ("video", "audio"), remuxed segment by segment as served.
+        var webm: [String: WebMTimeline] = [:]
         let estimatedBytes: Int64
         /// The presentation's length (the longest track), for subtitle playlists.
         var duration: Double = 0
     }
-    private struct Track {
+    fileprivate struct Track {
         let kind: String
         let codec: String
         let bandwidth: Int
@@ -434,6 +491,8 @@ enum DashToHLS {
         let media: String
         let durations: [Double]
         /// The adaptation set's `lang`.
+        /// The segments are WebM (remuxed to fragmented MP4 as they are served).
+        var isWebM = false
         var language: String? = nil
         /// DASH `Role` "description" or an audio-purpose Accessibility of 1: an audio description.
         var describesVideo = false
@@ -451,6 +510,7 @@ enum DashToHLS {
                     .split(separator: "/").first.map(String.init)
             guard let kind else { return nil }
             var track = parseTrack(kind: kind, body: body)
+            track?.isWebM = (attributes + " " + (representationAttributes ?? "")).contains("webm")
             track?.language = attribute("lang", in: attributes)
             track?.describesVideo = body.contains("value=\"description\"")
                 || body.range(of: #"AudioPurposeCS:2007"\s+value="1""#, options: .regularExpression) != nil
@@ -476,7 +536,10 @@ enum DashToHLS {
         let selectedTracks = [video, audio].compactMap { $0 }
         let codecs = selectedTracks.map(\.codec).joined(separator: ",")
         let bandwidth = selectedTracks.reduce(0) { $0 + $1.bandwidth }
-        master += "#EXT-X-STREAM-INF:BANDWIDTH=\(max(1, bandwidth)),CODECS=\"\(codecs)\""
+        master += "#EXT-X-STREAM-INF:BANDWIDTH=\(max(1, bandwidth))"
+        // A WebM track's DASH codec ("vp9") is not an MP4 codec string, and the
+        // exact one is known only from its initialization segment: no CODECS then.
+        if !selectedTracks.contains(where: \.isWebM) { master += ",CODECS=\"\(codecs)\"" }
         if let video {
             master += ",RESOLUTION=\(video.width)x\(video.height)"
             if audio != nil { master += ",AUDIO=\"audio\"" }
@@ -495,9 +558,13 @@ enum DashToHLS {
             let seconds = track.durations.reduce(0, +)
             return total + Int64(ceil(Double(max(track.bandwidth, 1)) * seconds / 8 * 2.0))
         }
-        return Result(master: master, video: videoPlaylist, audio: audioPlaylist,
-                      resources: resources, estimatedBytes: max(estimatedBytes, 16 * 1_024 * 1_024),
-                      duration: selectedTracks.map { $0.durations.reduce(0, +) }.max() ?? 0)
+        var result = Result(master: master, video: videoPlaylist, audio: audioPlaylist,
+                            resources: resources, estimatedBytes: max(estimatedBytes, 16 * 1_024 * 1_024),
+                            duration: selectedTracks.map { $0.durations.reduce(0, +) }.max() ?? 0)
+        for track in selectedTracks where track.isWebM {
+            result.webm[track.kind] = WebMTimeline(track)
+        }
+        return result
     }
 
     private static func parseTrack(kind: String, body: String) -> Track? {
@@ -559,5 +626,76 @@ enum DashToHLS {
                 return range.location == NSNotFound ? "" : ns.substring(with: range)
             }
         }
+    }
+}
+
+/// Where one WebM DASH track's segments lie in time, by request: the proxy
+/// remuxes each to fragmented MP4 as it serves it (`WebMDashTrack`).
+struct WebMTimeline: Sendable {
+    /// `requestKey` of the initialization segment.
+    let initialization: String
+    let initializationUpstream: String
+    let firstMediaUpstream: String
+    /// `requestKey` of each media segment: its index.
+    let index: [String: Int]
+    let starts: [Double]
+    let durations: [Double]
+
+    fileprivate init(_ track: DashToHLS.Track) {
+        initializationUpstream = track.initialization
+        initialization = Self.requestKey(track.initialization)
+        let media = track.durations.indices.map {
+            track.media.replacingOccurrences(of: "$Number$", with: String(track.startNumber + $0))
+        }
+        firstMediaUpstream = media.first ?? track.initialization
+        index = Dictionary(media.enumerated().map { (Self.requestKey($0.element), $0.offset) }, uniquingKeysWith: { first, _ in first })
+        var start = 0.0
+        starts = track.durations.map { duration in defer { start += duration }; return start }
+        durations = track.durations
+    }
+
+    /// A segment's identity in requests: its path and query (the host differs
+    /// between the manifest and the loopback request).
+    static func requestKey(_ upstream: String) -> String {
+        guard let url = URL(string: upstream) else { return upstream }
+        return url.path + (url.query.map { "?" + $0 } ?? "")
+    }
+}
+
+/// A WebM DASH track's segments as fragmented MP4: the initialization
+/// segment's headers and the first keyframe give the sample description;
+/// each media segment's clusters become one fragment.
+struct WebMDashTrack: Sendable {
+    let file: Matroska.File
+    let track: Matroska.TrackInfo
+    let description: Matroska.SampleDescription
+
+    init(initialization: [UInt8], firstSegment: [UInt8]) throws {
+        file = try Matroska.initialization(initialization)
+        guard let track = file.tracks.first(where: { $0.kind != .other }) else {
+            throw Matroska.Failure.malformed("no audio or video track")
+        }
+        self.track = track
+        var keyframe: [UInt8] = []
+        if track.codecID == "V_VP9" || track.codecID == "V_VP8",
+           let frame = try Matroska.frames(in: firstSegment, trackNumber: track.number).first(where: \.isKey) {
+            keyframe = Array(firstSegment[frame.data])
+        }
+        description = try Matroska.sampleDescription(track, firstFrame: keyframe)
+    }
+
+    func initializationSegment() -> Data {
+        Matroska.initializationSegment(file: file, track: track, description: description,
+                                       timescale: Matroska.timescale(for: file.timecodeScale))
+    }
+
+    /// Media segment `index` (0-based), from its DASH start and duration in seconds.
+    func mediaSegment(_ bytes: [UInt8], index: Int, start: Double, duration: Double) throws -> Data {
+        let units = 1e9 / Double(file.timecodeScale)
+        let segment = Matroska.Segment(start: UInt64(max(0, start * units).rounded()),
+                                       end: UInt64(max(0, (start + duration) * units).rounded()),
+                                       bytes: 0..<Int64(bytes.count))
+        return try Matroska.fragment(clusters: bytes, file: file, track: track, segment: segment,
+                                     sequence: UInt32(index + 1))
     }
 }

@@ -21,9 +21,38 @@ enum IsolatedApp {
     @MainActor
     static func launch() -> XCUIApplication {
         let app = make()
-        app.launch()
+        start(app)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
         return app
+    }
+
+    /// Launches (or relaunches) `app`. Every UI test launches Hummingbird
+    /// through here (`UITestIsolationTests` checks it), never `launch()`.
+    ///
+    /// The system sometimes fails to start the app at all, typically the
+    /// first launch after the simulator boots ("does not have a process ID").
+    /// That one failure is retried once, and logged; an assertion failure,
+    /// or a second failed launch, fails the test as usual.
+    @MainActor
+    static func start(_ app: XCUIApplication) {
+        let options = XCTExpectedFailure.Options()
+        options.isStrict = false
+        options.issueMatcher = { isLaunchFailure($0.compactDescription) }
+        XCTExpectFailure("The system can fail to start the app; that is retried once.", options: options) {
+            app.launch()
+        }
+        // Started: nothing to retry. Not running after launch() means the
+        // system never started it (any other issue was reported as usual).
+        guard app.state == .notRunning else { return }
+        print("IsolatedApp: the app failed to launch; retrying once")
+        XCTContext.runActivity(named: "Retry launch after a launch failure") { _ in app.launch() }
+    }
+
+    /// Whether an issue is the system failing to start the app, rather than
+    /// anything the app or the test did.
+    nonisolated static func isLaunchFailure(_ description: String) -> Bool {
+        ["does not have a process ID", "Failed to launch", "failed to launch", "Application failed to launch"]
+            .contains { description.contains($0) }
     }
 }
 

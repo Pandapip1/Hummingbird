@@ -33,6 +33,9 @@ final class ProfileSyncService {
     /// timer-driven passes then skip the local-network pull, which reads
     /// every trusted device's changes.
     @ObservationIgnored private let defersBulkWork: @Sendable () -> Bool
+    /// Whether the last pass brought anything from another device; the
+    /// periodic pass backs off while it doesn't.
+    @ObservationIgnored private(set) var lastPassReceived = false
 
     init(changes: ProfileChangeStore, mutationLog: AppSyncMutationLog,
          library: LibraryStore, plugins: PluginManager,
@@ -151,6 +154,7 @@ final class ProfileSyncService {
         async let lanOutcome = skipLocalNetwork ? nil : pullLocalNetwork()
         async let accountOutcome = syncAccount()
         let transports = [await lanOutcome, await accountOutcome].compactMap { $0 }
+        lastPassReceived = transports.contains { $0.received > 0 }
 
         let applyIssues = await applyUnapplied()
         var problems = transports.flatMap(\.issues)
@@ -178,6 +182,8 @@ final class ProfileSyncService {
 
     private struct TransportOutcome {
         var succeeded = false
+        /// Records this transport brought in.
+        var received = 0
         var failure: State?
         var issues: [String] = []
     }
@@ -190,7 +196,7 @@ final class ProfileSyncService {
         let interval = signposter.beginInterval("LANPull", id: signposter.makeSignpostID())
         let report = await lanSync.pullAndMerge(needsUpload: true)
         signposter.endInterval("LANPull", interval, "peers=\(report.peersAsked) merged=\(report.merged.count) failed=\(report.failures.count)")
-        var outcome = TransportOutcome()
+        var outcome = TransportOutcome(received: report.merged.count)
         if let mergeFailure = report.mergeFailure {
             outcome.failure = .failed("Changes from your other devices couldn’t be saved: \(mergeFailure)")
             return outcome
@@ -225,6 +231,7 @@ final class ProfileSyncService {
             let remote = try await appSync.pullMutations()
             signposter.endInterval("PDSPull", pdsPull, "mutations=\(remote.count)")
             try await Self.merge(remote, into: mutationLog, needsUpload: false)
+            outcome.received = remote.count
             try await appSync.pushMutations()
             let messages = try await appSync.syncMessages()
             try await applyMessages(messages, appSync: appSync)

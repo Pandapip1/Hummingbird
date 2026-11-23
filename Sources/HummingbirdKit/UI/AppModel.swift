@@ -180,6 +180,13 @@ final class AppModel {
     /// it (see `PlayerModel.applicationBecameActive`).
     func applicationBecameActive() {
         for player in tabPlayers.values { player.applicationBecameActive() }
+        profileAccount.setApplicationActive(true)
+    }
+
+    /// Inactive or in the background: periodic work stops until the app is
+    /// in front again.
+    func applicationResignedActive() {
+        profileAccount.setApplicationActive(false)
     }
 
     /// Players this window still owns (tests, debugging).
@@ -300,10 +307,8 @@ final class AppModel {
             // controller below turns it on once the gate has passed.
             localNetworkEnabled: false,
             // Timer-driven local-network pulls wait while energy is being
-            // saved. Nothing on this branch reports that yet; the playback
-            // branch's BackgroundWorkPolicy answers it with
-            // { stores.backgroundWork.defersNonUrgentWork }.
-            defersBulkWork: { false },
+            // saved (Low Power Mode, a power-saver profile, a hot device).
+            defersBulkWork: { [backgroundWork = stores.backgroundWork] in backgroundWork.defersNonUrgentWork },
             oauthPresenter: oauthPresenter
         )
         let profileAccount = self.profileAccount

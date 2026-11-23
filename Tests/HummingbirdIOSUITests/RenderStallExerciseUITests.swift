@@ -15,7 +15,7 @@ final class RenderStallExerciseUITests: XCTestCase {
             "live-network UI test; set TEST_RUNNER_HUMMINGBIRD_UI_NETWORK_TESTS=1"
         )
         let app = IsolatedApp.make()
-        app.launch()
+        IsolatedApp.start(app)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
         try installYouTubeIfNeeded(in: app)
 
@@ -24,7 +24,7 @@ final class RenderStallExerciseUITests: XCTestCase {
                 // A cold launch of the same instance keeps its isolated data
                 // (and the source installed above).
                 app.terminate()
-                app.launch()
+                IsolatedApp.start(app)
                 XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
             }
 

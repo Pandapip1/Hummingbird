@@ -4,7 +4,7 @@ final class PlayerFocusUITests: XCTestCase {
     @MainActor
     func testNewTabMenuOpensFromToolbar() throws {
         let app = IsolatedApp.make()
-        app.launch()
+        IsolatedApp.start(app)
 
         let newTab = app.buttons["Open section in new tab"]
         XCTAssertTrue(newTab.waitForExistence(timeout: 10))
@@ -26,7 +26,7 @@ final class PlayerFocusUITests: XCTestCase {
     func testFullscreenKeepsFocusAndCanExit() throws {
         let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player"
-        app.launch()
+        IsolatedApp.start(app)
 
         let enterFullscreen = app.buttons["Enter Full Screen"]
         XCTAssertTrue(enterFullscreen.waitForExistence(timeout: 5))
@@ -59,7 +59,7 @@ final class PlayerFocusUITests: XCTestCase {
     func testRemoteSeekControlAdjustsThenReleasesNavigation() throws {
         let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-seek"
-        app.launch()
+        IsolatedApp.start(app)
 
         let slider = app.descendants(matching: .any)["playback-seek-control"]
         XCTAssertTrue(slider.waitForExistence(timeout: 5))
@@ -92,7 +92,7 @@ final class PlayerFocusUITests: XCTestCase {
     func testPlaybackMenuSurvivesControlsAutoHideDeadline() throws {
         let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-seek"
-        app.launch()
+        IsolatedApp.start(app)
 
         let play = app.buttons["Play"]
         XCTAssertTrue(play.waitForExistence(timeout: 5))
@@ -119,7 +119,7 @@ final class PlayerFocusUITests: XCTestCase {
     func testInstallPreviewCanFocusLastAllowedURL() throws {
         let app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "install-preview"
-        app.launch()
+        IsolatedApp.start(app)
 
         let firstURL = app.buttons["https://audit-0.example.com/path"]
         XCTAssertTrue(firstURL.waitForExistence(timeout: 5))

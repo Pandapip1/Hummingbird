@@ -26,7 +26,9 @@ final class ProfileAccountService {
     @ObservationIgnored private let authenticator: ATProtoOAuthAuthenticator
     @ObservationIgnored private let credentialStore: OAuthCredentialStore
     @ObservationIgnored private let changes: ProfileChangeStore
-    @ObservationIgnored private var retryTask: Task<Void, Never>?
+    /// The periodic pass that catches other devices' changes.
+    @ObservationIgnored private var periodicSync: PeriodicSync?
+    @ObservationIgnored private var presenceWatch: Task<Void, Never>?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private let peerService: AppSyncPeerService?
     @ObservationIgnored private var localNetworkEnabled: Bool
@@ -93,12 +95,22 @@ final class ProfileAccountService {
             )
             syncService?.bootstrapCurrentProfile()
             changes.setMutationHandler { [weak self] in
-                Task { @MainActor in await self?.sync() }
+                Task { @MainActor in
+                    self?.periodicSync?.nudge()
+                    await self?.sync()
+                }
             }
-            retryTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    await self?.sync(.scheduled)
-                    try? await Task.sleep(for: .seconds(30))
+            let periodic = PeriodicSync(pass: { [weak self] in
+                guard let self, let syncService = self.syncService else { return false }
+                await syncService.sync(.scheduled)
+                return syncService.lastPassReceived
+            }, defers: defersBulkWork)
+            periodicSync = periodic
+            periodic.start()
+            // A device appearing or leaving is worth a pass soon.
+            if let peerService {
+                presenceWatch = Task { [weak self] in
+                    for await _ in peerService.changes() { self?.periodicSync?.nudge() }
                 }
             }
         }
@@ -174,6 +186,10 @@ final class ProfileAccountService {
     }
 
     func sync(_ trigger: ProfileSyncService.Trigger = .requested) async { await syncService?.sync(trigger) }
+
+    /// The app came to the front (true) or went inactive or to the
+    /// background (false): the periodic pass runs only while it is in front.
+    func setApplicationActive(_ active: Bool) { periodicSync?.setActive(active) }
 
     func setLocalNetworkEnabled(_ enabled: Bool) {
         localNetworkEnabled = enabled

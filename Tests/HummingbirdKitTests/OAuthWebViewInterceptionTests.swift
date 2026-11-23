@@ -2,6 +2,7 @@
 import ATProtoKit
 import Foundation
 import Network
+import Synchronization
 import WebKit
 import XCTest
 @testable import HummingbirdKit
@@ -9,8 +10,49 @@ import XCTest
 /// Drives a real WKWebView through SwiftOpenUI's WebPage navigation hook:
 /// a page that navigates to the redirect URI must complete the
 /// authorization, and WebKit must never load that URL.
+///
+/// Every wait here is bounded: a page that never completes, a listener that
+/// never becomes ready or a WebKit store that never answers fails the test
+/// with what was seen, instead of hanging the run.
 @MainActor
 final class OAuthWebViewInterceptionTests: XCTestCase {
+    struct Timeout: Error, CustomStringConvertible { let description: String }
+
+    /// The authorization's redirect, waiting at most `seconds` for it. `callbackURL()` itself
+    /// suspends until the authorization finishes, so it is only called once it has.
+    private func redirect(of authorization: OAuthTabAuthorization, within seconds: TimeInterval = 20,
+                          seen: @autoclosure () -> String = "") async throws -> URL {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !authorization.isFinished, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+        guard authorization.isFinished else {
+            let page = OAuthWebPageStore.shared.currentURL(for: authorization)?.absoluteString ?? "none"
+            throw Timeout(description: "no redirect within \(seconds) s (page at \(page)) \(seen())")
+        }
+        return try await authorization.callbackURL()
+    }
+
+    /// `operation`'s result, or a failure after `seconds`; the operation is left to finish on its own.
+    private func bounded<T: Sendable>(_ what: String, seconds: TimeInterval = 10,
+                                      _ operation: @escaping @MainActor () async throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            let resumed = Mutex(false)
+            let resume: @Sendable (Result<T, any Error>) -> Void = { result in
+                let first = resumed.withLock { done in
+                    defer { done = true }
+                    return !done
+                }
+                if first { continuation.resume(with: result) }
+            }
+            Task { @MainActor in
+                do { resume(.success(try await operation())) } catch { resume(.failure(error)) }
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                resume(.failure(Timeout(description: "\(what) did not answer within \(seconds) s")))
+            }
+        }
+    }
+
     func testScriptNavigationToTheRedirectURIIsIntercepted() async throws {
         let callback = try XCTUnwrap(OAuthCallbackMatcher(redirectURI: ProfileAccountService.configuration.redirectURI))
         let page = "<script>location.href='com.eightybps.hummingbird:/oauth/callback?code=abc&state=xyz'</script>"
@@ -22,11 +64,7 @@ final class OAuthWebViewInterceptionTests: XCTestCase {
         OAuthWebPageStore.shared.preparePage(for: authorization)
         defer { OAuthWebPageStore.shared.remove(authorization) }
 
-        let deadline = Date().addingTimeInterval(15)
-        while !authorization.isFinished, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
-        XCTAssertTrue(authorization.isFinished, "the redirect URI was never intercepted")
-        guard authorization.isFinished else { return }
-        let delivered = try await authorization.callbackURL()
+        let delivered = try await redirect(of: authorization, within: 15, seen: "requests: \(server.requests.count)")
         XCTAssertEqual(delivered.absoluteString, "com.eightybps.hummingbird:/oauth/callback?code=abc&state=xyz")
         XCTAssertNotEqual(OAuthWebPageStore.shared.currentURL(for: authorization)?.scheme, "com.eightybps.hummingbird")
     }
@@ -45,14 +83,23 @@ final class OAuthWebViewInterceptionTests: XCTestCase {
         }
         let ready = AsyncStream<UInt16> { continuation in
             listener.stateUpdateHandler = { state in
-                if case .ready = state, let port = listener.port?.rawValue { continuation.yield(port) }
+                switch state {
+                case .ready:
+                    if let port = listener.port?.rawValue { continuation.yield(port) }
+                case .failed, .cancelled:
+                    continuation.finish()
+                default:
+                    break
+                }
             }
             listener.start(queue: .global())
         }
         defer { listener.cancel() }
-        var ports = ready.makeAsyncIterator()
-        let nextPort = await ports.next()
-        let port = try XCTUnwrap(nextPort)
+        let port = try await bounded("the listener") {
+            var ports = ready.makeAsyncIterator()
+            guard let port = await ports.next() else { throw Timeout(description: "the listener failed") }
+            return port
+        }
 
         let callback = try XCTUnwrap(OAuthCallbackMatcher(redirectURI: ProfileAccountService.configuration.redirectURI))
         let authorization = OAuthTabAuthorization(
@@ -61,17 +108,15 @@ final class OAuthWebViewInterceptionTests: XCTestCase {
         )
         OAuthWebPageStore.shared.preparePage(for: authorization)
         defer { OAuthWebPageStore.shared.remove(authorization) }
-        let deadline = Date().addingTimeInterval(15)
-        while !authorization.isFinished, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
-        let delivered = try await authorization.callbackURL()
+        let delivered = try await redirect(of: authorization, within: 15)
         XCTAssertEqual(delivered.absoluteString, "com.eightybps.hummingbird:/oauth/callback?code=302")
     }
 
     // MARK: Single-use authorization requests
 
-    private func waitForFinish(_ authorization: OAuthTabAuthorization) async throws {
-        let deadline = Date().addingTimeInterval(20)
-        while !authorization.isFinished, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+    private func cookieNames(_ store: WKWebsiteDataStore?, _ what: String) async throws -> [String]? {
+        guard let store else { return nil }
+        return try await bounded("\(what) cookie store") { await store.httpCookieStore.allCookies().map(\.name) }
     }
 
     /// The request is bound to the device cookie of the browser that loads
@@ -97,17 +142,18 @@ final class OAuthWebViewInterceptionTests: XCTestCase {
         XCTAssertFalse(store === OAuthWebPageStore.shared.dataStore(for: otherSignIn),
                        "each sign-in must have its own store")
 
-        try await waitForFinish(authorization)
-        let delivered = try await authorization.callbackURL()
+        let delivered = try await redirect(of: authorization, seen: "server saw \(server.requestLog)")
         XCTAssertEqual(delivered.absoluteString, callbackBase + "?code=granted&state=test-state")
-        XCTAssertEqual(server.authorizeRequests, 1, "the single-use request must be loaded exactly once")
+        XCTAssertEqual(server.authorizeRequests, 1, "the single-use request must be loaded exactly once: \(server.requestLog)")
 
-        let ownCookies = await store.httpCookieStore.allCookies().map(\.name)
+        let ownCookies = try await cookieNames(store, "the sign-in's")
         XCTAssertEqual(ownCookies, ["dev-id"], "the provider's cookie stays in the sign-in's own store")
-        let otherCookies = await OAuthWebPageStore.shared.dataStore(for: otherSignIn)?.httpCookieStore.allCookies()
+        let otherCookies = try await cookieNames(OAuthWebPageStore.shared.dataStore(for: otherSignIn), "the other sign-in's")
         XCTAssertEqual(otherCookies?.count, 0)
-        let shared = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
-        XCTAssertFalse(shared.contains { $0.domain == "127.0.0.1" }, "nothing leaks into the shared default store")
+        let leaked = try await bounded("the default cookie store") {
+            await WKWebsiteDataStore.default().httpCookieStore.allCookies().filter { $0.domain == "127.0.0.1" }.count
+        }
+        XCTAssertEqual(leaked, 0, "nothing leaks into the shared default store")
     }
 
     /// What the user hit: the page loaded once, but the network delivered
@@ -126,9 +172,8 @@ final class OAuthWebViewInterceptionTests: XCTestCase {
         OAuthWebPageStore.shared.preparePage(for: authorization)
         defer { OAuthWebPageStore.shared.remove(authorization) }
 
-        try await waitForFinish(authorization)
-        let delivered = try await authorization.callbackURL()
-        XCTAssertEqual(server.authorizeRequests, 2, "WebKit re-sent the GET after the lost response")
+        let delivered = try await redirect(of: authorization, seen: "server saw \(server.requestLog)")
+        XCTAssertEqual(server.authorizeRequests, 2, "WebKit re-sent the GET after the lost response: \(server.requestLog)")
         XCTAssertTrue(delivered.absoluteString.contains("error=access_denied"))
     }
 }

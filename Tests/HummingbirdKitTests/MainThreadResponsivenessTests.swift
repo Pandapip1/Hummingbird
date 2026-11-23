@@ -90,7 +90,9 @@ final class MainThreadResponsivenessTests: XCTestCase {
             PluginConfig.self,
             from: Data(#"{"name":"Probe","id":"main-thread-probe","scriptUrl":"x.js","version":1}"#.utf8)
         )
-        return PluginRuntime(config: config, script: "source.enable = function() {};", settings: [:], auth: nil, captcha: nil)
+        return PluginRuntime(approval: testLoadApproval(config), config: config,
+                             script: try ScriptSignature.check("source.enable = function() {};", for: config),
+                             settings: [:], auth: nil, captcha: nil)
     }
 }
 

@@ -112,7 +112,11 @@ struct SeekDebugScene: View {
 @Observable
 private final class SeekDebugModel: AdvancedVideoPlayerControlling {
     let title = "Seek control test"
-    var playbackTime: Double = 60
+    @ObservationIgnored let clock = PlaybackClock(time: 60)
+    var playbackTime: Double {
+        get { clock.time }
+        set { clock.time = newValue }
+    }
     let duration: Double = 600
     var isPlaying = false
     var waitingReason: String? { nil }
@@ -130,6 +134,7 @@ private final class SeekDebugModel: AdvancedVideoPlayerControlling {
     func stopPictureInPicture() {}
     func toggleFullscreen() {}
     func toggleCaptions() {}
+    func controlsVisibilityChanged(_ visible: Bool) {}
 }
 
 @MainActor

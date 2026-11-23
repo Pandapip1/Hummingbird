@@ -340,6 +340,9 @@ struct PlayerSection: View {
         .overlay {
             PlayerControls(model: model, isFullscreen: false, availableWidth: width)
         }
+        // Off screen, nothing shows the position: the player ticks quietly.
+        .onAppear { model.pageVisibilityChanged(true) }
+        .onDisappear { model.pageVisibilityChanged(false) }
     }
 }
 

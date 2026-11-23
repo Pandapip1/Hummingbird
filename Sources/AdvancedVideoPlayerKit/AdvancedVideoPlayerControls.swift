@@ -79,6 +79,8 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         .onContinuousHover { if case .active = $0 { interacted() } }
         .remoteFocusScope()
         .task { interacted() }
+        .onAppear { model.controlsVisibilityChanged(showingControls) }
+        .onChange(of: showingControls) { _, visible in model.controlsVisibilityChanged(visible) }
         .onChange(of: model.isPlaying) { _, playing in
             if playing { interacted() }
             else { autoHide.task?.cancel(); controlsVisible = true }
@@ -157,22 +159,10 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
 
     /// The seek bar (chapters, pipeline lanes, flagged regions, live window),
     /// with its own time labels.
-    @ViewBuilder private var timeline: some View {
-        let content = model.scrubberContent
-        if content.end > 0 {
-            MediaScrubber(
-                "Playback position",
-                content: content,
-                value: min(model.playbackTime, content.end),
-                onScrub: { _ in interacted() },
-                onScrubEnded: { interacted(); model.seek(to: $0) },
-                onJumpToLive: content.isLive ? { interacted(); model.jumpToLive() } : nil
-            )
-            .frame(minWidth: 80, maxWidth: .infinity)
-            .playerSurfaceGlass()
-        } else {
-            HStack { Text(timeLabel).font(.caption.monospacedDigit()); Spacer() }.playerSurfaceGlass()
-        }
+    /// Its own view: only it observes the position (`PlaybackClock`), so the
+    /// rest of the controls do not redraw as playback advances.
+    private var timeline: some View {
+        PlayerTimeline(model: model, clock: model.clock, interacted: interacted)
     }
 
     @ViewBuilder private var primaryButtons: some View {
@@ -223,9 +213,6 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         }
     }
 
-    private var timeLabel: String {
-        let seconds = max(0, Int(model.playbackTime)); return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
 
     private func interacted() {
         // Continuous pointer motion can fire many times before a click. Avoid
@@ -277,4 +264,36 @@ public struct AdvancedVideoPlayerSlider: View {
 @MainActor private final class ControlsAutoHide {
     var task: Task<Void, Never>?
     deinit { task?.cancel() }
+}
+
+/// The seek bar and its time labels: the one part of the controls that
+/// observes the position, so it alone redraws on every tick.
+@MainActor
+private struct PlayerTimeline<Model: AdvancedVideoPlayerControlling>: View {
+    let model: Model
+    let clock: PlaybackClock
+    let interacted: () -> Void
+
+    var body: some View {
+        let content = model.scrubberContent
+        if content.end > 0 {
+            MediaScrubber(
+                "Playback position",
+                content: content,
+                value: min(clock.time, content.end),
+                onScrub: { _ in interacted() },
+                onScrubEnded: { interacted(); model.seek(to: $0) },
+                onJumpToLive: content.isLive ? { interacted(); model.jumpToLive() } : nil
+            )
+            .frame(minWidth: 80, maxWidth: .infinity)
+            .playerSurfaceGlass()
+        } else {
+            HStack { Text(timeLabel).font(.caption.monospacedDigit()); Spacer() }.playerSurfaceGlass()
+        }
+    }
+
+    private var timeLabel: String {
+        let seconds = max(0, Int(clock.time))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
 }

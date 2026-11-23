@@ -164,6 +164,9 @@ public protocol MediaBackend: AnyObject {
     var duration: Double { get }
     var isPlaying: Bool { get }
     var onTick: (@MainActor (Double) -> Void)? { get set }
+    /// How often `onTick` reports the position while playing, in seconds.
+    /// Hosts slow it down when nothing on screen shows the position.
+    func setTickInterval(_ seconds: Double)
     /// The engine's real state; `onActivityChange` reports every change,
     /// including pauses the system makes on its own (interruptions, routes).
     var activity: PlaybackActivity { get }
@@ -211,6 +214,23 @@ public extension MediaBackend {
     func startPictureInPicture() {}
     func stopPictureInPicture() {}
     func setPlaybackRate(_: Float) {}
+    func setTickInterval(_: Double) {}
+}
+
+/// The playback position, kept apart from the rest of a player's state: it
+/// changes on every tick, so only the views that show it (the seek bar, the
+/// time) observe it, and nothing else redraws as playback advances.
+@MainActor
+@Observable
+public final class PlaybackClock {
+    /// Seconds. Assigning the same value notifies no one.
+    public var time: Double {
+        get { storedTime }
+        set { if storedTime != newValue { storedTime = newValue } }
+    }
+    private var storedTime: Double
+
+    public init(time: Double = 0) { storedTime = time }
 }
 
 /// The state/actions required by the reusable control surface.
@@ -220,7 +240,9 @@ public protocol AdvancedVideoPlayerControlling: AnyObject, Observable {
     /// False until playable media is loaded. The controls stay disabled until
     /// then (the host shows its own progress), never pretending to play.
     var isMediaReady: Bool { get }
-    var playbackTime: Double { get }
+    /// The playback position (see `PlaybackClock`). Read it only in views that
+    /// show the position; actions read `playbackTime`.
+    var clock: PlaybackClock { get }
     var duration: Double { get }
     var isPlaying: Bool { get }
     var playbackRate: Float { get }
@@ -242,4 +264,12 @@ public protocol AdvancedVideoPlayerControlling: AnyObject, Observable {
     func toggleFullscreen()
     /// Subtitles on (in the viewer's language) or off: the captions key command.
     func toggleCaptions()
+    /// Whether the controls are on screen: while they are not, nothing needs
+    /// the position twice a second, so the host may tick less often.
+    func controlsVisibilityChanged(_ visible: Bool)
+}
+
+public extension AdvancedVideoPlayerControlling {
+    /// The position now, for actions (not observed: see `clock`).
+    var playbackTime: Double { clock.time }
 }

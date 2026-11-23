@@ -22,7 +22,8 @@ final class FullscreenHandoverUITests: XCTestCase {
         assertOneSurface(app, "full screen")
 
         let exit = app.buttons["Exit Full Screen"]
-        if !exit.isHittable { reveal(app) }
+        // Hidden controls stay in the accessibility tree (reachable by name), so reveal them first.
+        reveal(app)
         exit.tap()
         XCTAssertTrue(app.buttons["Enter Full Screen"].waitForExistence(timeout: 10) || revealAndFind(app, "Enter Full Screen"))
         assertOneSurface(app, "after leaving full screen")

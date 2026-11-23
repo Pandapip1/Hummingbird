@@ -95,6 +95,7 @@ final class AVMediaBackend: MediaBackend {
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
+    private var tickInterval = 0.5
     private var itemObserver: NSObjectProtocol?
     private var itemFailureObserver: NSObjectProtocol?
     private var itemStatusObserver: NSKeyValueObservation?
@@ -235,9 +236,7 @@ final class AVMediaBackend: MediaBackend {
             try Task.checkCancellation()
             guard isCurrentLoad(generation, asset: item.asset) else { throw MediaBackendLoadError.superseded }
         }
-        timeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
-            Task { @MainActor in self?.onTick?(time.seconds) }
-        }
+        installTimeObserver(on: p)
         itemObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 self?.deactivatePlaybackEnvironment()
@@ -250,6 +249,24 @@ final class AVMediaBackend: MediaBackend {
             p.play()
         } else {
             commandedRate = 0
+        }
+    }
+
+    func setTickInterval(_ seconds: Double) {
+        guard seconds != tickInterval else { return }
+        tickInterval = seconds
+        guard let player, let observer = timeObserver else { return }
+        player.removeTimeObserver(observer)
+        timeObserver = nil
+        installTimeObserver(on: player)
+    }
+
+    /// Reports the position every `tickInterval` while the time changes (AVPlayer
+    /// does not call it while paused).
+    private func installTimeObserver(on player: AVPlayer) {
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: tickInterval, preferredTimescale: 600),
+                                                      queue: .main) { [weak self] time in
+            Task { @MainActor in self?.onTick?(time.seconds) }
         }
     }
 

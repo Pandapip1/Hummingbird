@@ -47,7 +47,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     private(set) var pendingOption: PlaybackOption?
     private(set) var pendingAudioSource: MediaSource?
     /// The player gave up on local data and is being reloaded at the same position.
-    private(set) var isRecovering = false
+    private(set) var isRecovering = false { didSet { if isRecovering != oldValue { refreshBufferingMessage() } } }
     /// Tests only: a load alone confirms a switch (fake backends that never play).
     @ObservationIgnored var confirmsSwitchOnLoadForTesting = false
     /// A switch waiting for its new stream to play (its generation), and the
@@ -102,9 +102,15 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         guard isPlaying, pictureInPictureState != .active else { return }
         togglePlayback()
     }
-    private(set) var playbackTime: Double = 0
+    /// The position, in its own observable (`PlaybackClock`): only the views
+    /// that show it redraw as playback advances.
+    @ObservationIgnored let clock = PlaybackClock()
+    private(set) var playbackTime: Double {
+        get { clock.time }
+        set { clock.time = newValue }
+    }
     private(set) var duration: Double = 0 { didSet { if duration != oldValue { refreshScrubberContent() } } }
-    private(set) var isPlaying = false
+    private(set) var isPlaying = false { didSet { if isPlaying != oldValue { applyTickInterval() } } }
     /// Why playback that should advance does not (buffering, stalled,
     /// reconnecting); nil while it plays or is paused. Derived from what the
     /// engine reports and from whether its clock really advances.
@@ -113,7 +119,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var watchdogStalled = false
     @ObservationIgnored private var watchdog: Task<Void, Never>?
     private(set) var playbackRate: Float = 1
-    private(set) var isFullscreen = false
+    private(set) var isFullscreen = false { didSet { if isFullscreen != oldValue { applyTickInterval() } } }
     var title: String { details?.item.name ?? "" }
     var onPlaybackEnded: (() -> Void)?
 
@@ -183,15 +189,52 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Per-track, per-stage progress of the current video's media pipeline
     /// (download today; transcoding later). The seek bar's buffered ranges
     /// come from here.
-    private(set) var pipeline: MediaPipelineSnapshot = .empty { didSet { refreshScrubberContent() } }
+    private(set) var pipeline: MediaPipelineSnapshot = .empty { didSet { refreshScrubberContent(); refreshBufferingMessage() } }
 
     /// Shown over the video while playback waits for bytes that the network
-    /// has not delivered yet. Downloads retry on their own.
-    var bufferingMessage: String? {
-        if isRecovering { return "Reloading the video from this device…" }
-        guard pipeline.waitingForNetwork, pipeline.playableAhead(of: playbackTime) < 3 else { return nil }
-        return "Waiting for the network. The download resumes on its own."
+    /// has not delivered yet. Downloads retry on their own. Stored, and set
+    /// only when it changes, so the page does not redraw on every tick.
+    private(set) var bufferingMessage: String?
+
+    private func refreshBufferingMessage() {
+        let message: String? = if isRecovering {
+            "Reloading the video from this device…"
+        } else if pipeline.waitingForNetwork, pipeline.playableAhead(of: playbackTime) < 3 {
+            "Waiting for the network. The download resumes on its own."
+        } else {
+            nil
+        }
+        if message != bufferingMessage { bufferingMessage = message }
     }
+
+    // MARK: ticking less
+
+    @ObservationIgnored private var controlsOnScreen = true
+    @ObservationIgnored private var pageOnScreen = true
+    @ObservationIgnored private var applicationActive = true
+
+    /// The controls appeared or hid (`AdvancedVideoPlayerControls`).
+    func controlsVisibilityChanged(_ visible: Bool) {
+        controlsOnScreen = visible
+        applyTickInterval()
+    }
+
+    /// The video's page came on screen or left it (another tab, navigation).
+    func pageVisibilityChanged(_ visible: Bool) {
+        pageOnScreen = visible
+        applyTickInterval()
+    }
+
+    /// Twice a second while someone can see the position; otherwise every
+    /// `quietTickInterval` seconds, still often enough to record progress at
+    /// least every 5 s. Paused, the engine does not tick.
+    private func applyTickInterval() {
+        let watched = isPlaying && controlsOnScreen && (pageOnScreen || isFullscreen) && applicationActive
+        backend?.setTickInterval(watched ? Self.visibleTickInterval : Self.quietTickInterval)
+    }
+
+    nonisolated static let visibleTickInterval = 0.5
+    nonisolated static let quietTickInterval = 2.5
 
     init(stores: AppDataStores, backend: MediaBackend? = nil) {
         self.backend = backend
@@ -201,6 +244,14 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         mediaServer = stores.mediaServer
         mediaDownloads = stores.mediaDownloads
         if let backend { attach(backend) }
+        // In the background nobody sees the position: tick quietly (Now Playing
+        // computes elapsed time from the rate).
+        ApplicationActivity.observe { [weak self] active in
+            Task { @MainActor in
+                self?.applicationActive = active
+                self?.applyTickInterval()
+            }
+        }
     }
 
     /// Routes the backend's events to this model.
@@ -211,6 +262,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         engine.onFailure = { [weak self] message in self?.playerFailed(message) }
         engine.onActivityChange = { [weak self] activity in self?.activityChanged(activity) }
         engine.onExternalEvent = { [weak self] event in self?.externalEvent(event) }
+        applyTickInterval()
         engine.onPictureInPictureChange = { [weak self] state in self?.pictureInPictureState = state }
         engine.onRestoreFromPictureInPicture = { [weak self] in self?.onRestoreRequested?() }
         pictureInPictureState = engine.pictureInPictureState
@@ -296,9 +348,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             var since = ContinuousClock.now
             var checkedServer = false
             var recovered = false
+            var idle = false
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(500))
-                guard let self, let backend = self.backend else { continue }
+                // Paused or stopped, there is nothing to watch closely: wake rarely.
+                try? await Task.sleep(for: .milliseconds(idle ? 2_000 : 500))
+                guard let self, let backend = self.backend else { idle = true; continue }
+                idle = !backend.activity.wantsToPlay
                 let activity = backend.activity
                 let time = backend.currentTime
                 if !activity.wantsToPlay || abs(time - lastTime) > 0.01 {
@@ -1228,17 +1283,21 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        duration = authoritativeDuration
-        isPlaying = backend?.activity.wantsToPlay ?? false
+        // Only what changed is assigned: every assignment redraws what reads it.
+        let duration = authoritativeDuration
+        if duration != self.duration { self.duration = duration }
+        let playing = backend?.activity.wantsToPlay ?? false
+        if playing != isPlaying { isPlaying = playing }
         if isPlaying, seconds > playbackTime {
             startup?.firstFrame(at: seconds)
             if seconds - playbackTime < 2 { localRecoveryAttempts = 0 }
         }
         playbackTime = seconds
-        if Date().timeIntervalSince(lastHistoryWrite) > 5, let details, let library, seconds > 1 {
+        if Date().timeIntervalSince(lastHistoryWrite) >= 4.5, let details, let library, seconds > 1 {
             lastHistoryWrite = Date()
             library.recordProgress(SavedVideo(details.item), seconds: seconds)
         }
+        refreshBufferingMessage()
     }
 
     private func finished() {

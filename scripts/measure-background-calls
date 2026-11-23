@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Measures whether plugin calls complete while the iOS app is in the background playing audio
+# (Apps/iOS/BackgroundCallBench.swift): in-process JSContext, a WebKit content world, and a hidden
+# youtube.com page. Installs a Debug simulator build, runs it 40 s in the foreground, 100 s in the
+# background (Settings brought to the front), then 40 s in the foreground again, and prints the log.
+#
+# Usage: scripts/measure-background-calls <Hummingbird.app (Debug, iphonesimulator)> <simulator UDID> [out]
+set -euo pipefail
+app="$1" sim="$2" out="${3:-background-bench.jsonl}"
+bundle=com.eightybps.hummingbird
+xcrun simctl boot "$sim" 2>/dev/null || true
+xcrun simctl bootstatus "$sim" -b >/dev/null
+xcrun simctl install "$sim" "$app"
+SIMCTL_CHILD_HUMMINGBIRD_BACKGROUND_BENCH=1 xcrun simctl launch --terminate-running-process "$sim" "$bundle" >/dev/null
+sleep 40
+xcrun simctl launch "$sim" com.apple.Preferences >/dev/null
+echo "backgrounded at $(date +%T)" >&2
+sleep 100
+xcrun simctl launch "$sim" "$bundle" >/dev/null
+echo "foregrounded at $(date +%T)" >&2
+sleep 45
+container="$(xcrun simctl get_app_container "$sim" "$bundle" data)"
+cp "$container/tmp/background-bench.jsonl" "$out"
+xcrun simctl terminate "$sim" "$bundle" || true
+xcrun simctl terminate "$sim" com.apple.Preferences || true
+xcrun simctl shutdown "$sim" || true
+cat "$out"

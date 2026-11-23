@@ -21,7 +21,7 @@ final class GTKPlaybackTests: XCTestCase {
             from: Data(contentsOf: root.appendingPathComponent("YoutubeConfig.json"))
         )
         let script = try String(contentsOf: root.appendingPathComponent("YoutubeScript.js"), encoding: .utf8)
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
         let videoURL = ProcessInfo.processInfo.environment["HUMMINGBIRD_YOUTUBE_VIDEO_URL"]
             ?? "https://www.youtube.com/watch?v=ukE4nf9WeQU"
@@ -95,7 +95,7 @@ final class GTKPlaybackTests: XCTestCase {
         )
         let script = try String(contentsOf: root.appendingPathComponent("YoutubeScript.js"), encoding: .utf8)
         let runtime = PluginRuntime(
-            config: config, script: script,
+            approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config),
             settings: ["useUMP": "true", "use_native_ump": "false"],
             auth: nil, captcha: nil
         )

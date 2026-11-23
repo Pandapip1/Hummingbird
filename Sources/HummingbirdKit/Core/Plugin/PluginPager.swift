@@ -26,6 +26,7 @@ final class PluginPager<Item: PluginOutput>: @unchecked Sendable {
     private(set) var hasMore: Bool
     private(set) var nextRequest: Int?
     private(set) var pagesRead = 1
+    var handleForTesting: Int { handle }
 
     init(runtime: PluginRuntime, payload: PagerPayload<Item>) {
         self.runtime = runtime
@@ -33,6 +34,13 @@ final class PluginPager<Item: PluginOutput>: @unchecked Sendable {
         self.initial = Self.contain(payload.results, context: runtime.outputContext)
         self.hasMore = payload.hasMore && payload.pager != 0
         self.nextRequest = payload.nextRequest.map { min(max($0, 0), 3_600_000) }
+    }
+
+    /// The pager's context ends with its last handle; a pager no one holds lets it go.
+    deinit {
+        guard handle != 0 else { return }
+        let runtime = runtime, handle = handle
+        Task { await runtime.releaseHandle(handle) }
     }
 
     static func contain(_ results: [Lossy<Item>], context: PluginOutputContext) -> [Item] {

@@ -25,6 +25,14 @@ struct InstalledPlugin: Codable, Identifiable, Hashable, Sendable {
     var id: String { config.id }
 }
 
+/// A source the policy refused, with what is needed to ask a parent.
+struct PolicyRefusal: Sendable, Equatable {
+    let denial: PolicyDenial
+    let pluginID: String
+    let name: String
+    let sourceURL: String
+}
+
 struct InstallPreview: Identifiable, Sendable {
     var id: String { config.id }
     var config: PluginConfig
@@ -35,6 +43,8 @@ struct InstallPreview: Identifiable, Sendable {
     /// Local-network destinations the config names, as they resolve now. Installing approves the ones
     /// shown with addresses; the others can be approved later in the source's settings.
     var localHosts: [LocalHostRequest] = []
+    /// The source-access policy's decision; a preview cannot exist without it.
+    let approval: InstallApproval
 }
 
 enum InstallError: LocalizedError {
@@ -44,6 +54,8 @@ enum InstallError: LocalizedError {
     case emptyScript
     case invalidSignature
     case invalid(String)
+    /// The source-access policy (age or parental controls) said no.
+    case policy(PolicyRefusal)
 
     var errorDescription: String? {
         switch self {
@@ -53,6 +65,7 @@ enum InstallError: LocalizedError {
         case .emptyScript: return "The plugin script is empty."
         case .invalidSignature: return "The script signature is invalid. The plugin may have been tampered with."
         case .invalid(let m): return m
+        case .policy(let refusal): return refusal.denial.errorDescription
         }
     }
 }
@@ -77,6 +90,19 @@ final class PluginManager {
     /// The latest failure to read or write a plugin credential, shown on the
     /// plugin screen instead of the credential silently going missing.
     private(set) var credentialStorageError: String?
+    /// Why the policy stopped an installed plugin from running at its last
+    /// load, by plugin id, for the locked-state explanation on its screen.
+    private(set) var loadDenials: [String: PolicyDenial] = [:]
+    /// Synced plugins this device's policy refused, kept so they can be
+    /// tried again as soon as the policy's inputs change; their rows show
+    /// as locked in Sources (`SyncInstall.locked`). The journal does not
+    /// record them as applied, so later syncs bring them back too.
+    @ObservationIgnored private var refusedSynced: [String: PluginSyncChange] = [:]
+    /// Settings the policy forced on each running plugin (restricted modes),
+    /// by plugin id, so the settings screen can show them as locked.
+    private(set) var forcedSettings: [String: [String: String]] = [:]
+    /// Decides every install and every runtime start.
+    @ObservationIgnored let policy: SourceAccessPolicy
 
     /// Each plugin's stored sign-in and captcha cookies, read from the
     /// credential store once per process when the plugin is installed or this
@@ -84,7 +110,7 @@ final class PluginManager {
     /// pairing read only this; writes update it after the store accepts them.
     @ObservationIgnored private var storedCredentials: [String: PluginCredentials] = [:]
     @ObservationIgnored private var runtimes: [String: PluginRuntime] = [:]
-    @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime, Never>] = [:]
+    @ObservationIgnored private var runtimePreparation: [String: Task<PluginRuntime?, Never>] = [:]
     /// Fresh runtimes given to plugins that stopped responding, this session.
     @ObservationIgnored private var unresponsiveRestarts: [String: Int] = [:]
     static let maximumUnresponsiveRestarts = 3
@@ -129,11 +155,12 @@ final class PluginManager {
     }
 
     init(installed: [InstalledPlugin] = [], profileChanges: ProfileChangeStore? = nil,
-         storage: Storage, credentialStore: any CredentialStore,
+         storage: Storage, credentialStore: any CredentialStore, policy: SourceAccessPolicy,
          storageName: String = "plugins", credentialNamespace: String = "",
          preloadedCredentials: PreloadedPluginCredentials? = nil, fetch: PluginFetch? = nil) {
         self.fetch = fetch
         self.installed = installed
+        self.policy = policy
         self.profileChanges = profileChanges
         self.storage = storage
         self.credentialStore = credentialStore
@@ -144,6 +171,37 @@ final class PluginManager {
             if let failure = preloadedCredentials.failure { recordCredentialFailure(failure) }
         }
         for plugin in installed { loadCredentials(for: plugin.id) }
+        policy.onChange.append { [weak self] in self?.policyChanged() }
+        policy.approvals.onApproved.append { [weak self] request in
+            Task { await self?.installApproved(request) }
+        }
+    }
+
+    /// A parent approved a source this device asked about: install it.
+    private func installApproved(_ request: PendingParentRequest) async {
+        // A setting approval (plugin#setting) needs no install: the policy
+        // change restarts the source with the setting allowed.
+        guard !request.pluginID.contains("#"), plugin(request.pluginID) == nil,
+              refusedSynced[request.pluginID] == nil else { return }
+        do { commit(try await prepareInstall(from: request.sourceURL)) } catch {
+            Logger.plugin.error("approved_source_install_failed plugin=\(request.pluginID, privacy: .public)")
+        }
+    }
+
+    /// Parental controls changed or the age bound rose: running sources
+    /// restart under the new decision, and refused synced sources are retried.
+    private func policyChanged() {
+        for plugin in installed { invalidate(plugin.id) }
+        Task { await retryLockedSources() }
+    }
+
+    /// Tries each refused synced plugin again. Called when the policy's
+    /// inputs change and when Sources is shown (an age bracket can advance
+    /// by date alone).
+    func retryLockedSources() async {
+        let refused = Array(refusedSynced.values)
+        guard !refused.isEmpty else { return }
+        _ = await applySynced(refused)
     }
 
     private func persist() { storage.save(installed, name: storageName) }
@@ -164,16 +222,38 @@ final class PluginManager {
             return await runtime(for: id)
         }
         guard let p = plugin(id) else { return nil }
-        let preparation: Task<PluginRuntime, Never>
+        let preparation: Task<PluginRuntime?, Never>
         if let existing = runtimePreparation[id] {
             preparation = existing
         } else {
+            // Asked at every start: the user's age, and the parent's
+            // settings, may have changed since the last one.
+            let approval: LoadApproval
+            switch await policy.approveLoad(p.config) {
+            case .failure(let denial):
+                loadDenials[id] = denial
+                return nil
+            case .success(let granted):
+                loadDenials[id] = nil
+                approval = granted
+            }
+            // The decision awaited; another caller may have started meanwhile.
+            if let r = runtimes[id] { return r }
+            guard plugin(id) == p else { return await runtime(for: id) }
+            if runtimePreparation[id] != nil { return await runtime(for: id) }
             let stored = credentials(for: id)
             let localNetworkCheck = localNetworkAccess?.runtimeCheck(source: p.config.name)
             let resolver = resolver
-            let created = Task.detached(priority: .userInitiated) {
-                PluginRuntime(
-                    config: p.config, script: p.script, settings: p.settings,
+            let created = Task.detached(priority: .userInitiated) { () -> PluginRuntime? in
+                // The stored script is checked again: what runs is exactly
+                // what was published (and signed, when it is).
+                let script: CheckedScript
+                do { script = try ScriptSignature.check(p.script, for: p.config) } catch {
+                    Logger.plugin.error("stored_script_rejected plugin=\(pluginLogID(p.id), privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    return nil
+                }
+                return PluginRuntime(
+                    approval: approval, config: p.config, script: script, settings: p.settings,
                     auth: stored.auth, captcha: stored.captcha, approvals: p.approvals, resolver: resolver,
                     localNetworkAccess: localNetworkCheck
                 )
@@ -181,7 +261,10 @@ final class PluginManager {
             runtimePreparation[id] = created
             preparation = created
         }
-        let r = await preparation.value
+        guard let r = await preparation.value else {
+            runtimePreparation[id] = nil
+            return nil
+        }
         runtimePreparation[id] = nil
         guard plugin(id) == p else {
             await r.stop()
@@ -197,6 +280,7 @@ final class PluginManager {
 
     /// Makes `r` the plugin's running runtime, reporting its toasts and logs.
     private func adopt(_ r: PluginRuntime, for id: String) {
+        forcedSettings[id] = r.approval.forcedSettings.isEmpty ? nil : r.approval.forcedSettings
         r.onToast = { [weak self] msg in
             // A flood of toasts is dropped, not queued: it must not bury the UI.
             guard PluginToastLimiter.shared.allow(pluginID: id) else { return }
@@ -252,8 +336,11 @@ final class PluginManager {
 
     /// Downloads and checks a plugin. Nothing is stored until `commit` is called.
     /// `origin` is `.settings` when nobody on this instance asked for it (a
-    /// plugin synced from another instance).
-    func prepareInstall(from rawURL: String, origin: PermissionOrigin = .userAction) async throws -> InstallPreview {
+    /// plugin synced from another instance). The source-access policy decides
+    /// from the config alone, before the script is downloaded or run.
+    func prepareInstall(
+        from rawURL: String, origin: PermissionOrigin = .userAction
+    ) async throws -> InstallPreview {
         var text = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         // QR codes and links may wrap the config URL in a grayjay://plugin/ link,
         // which must be a well-formed one (PluginInstallLink).
@@ -270,12 +357,28 @@ final class PluginManager {
         catch { throw InstallError.invalidConfig(error.localizedDescription) }
         if config.sourceUrl == nil || config.sourceUrl?.isEmpty == true { config.sourceUrl = url.absoluteString }
 
+        let approval: InstallApproval
+        func refused(_ denial: PolicyDenial) -> InstallError {
+            .policy(PolicyRefusal(denial: denial, pluginID: config.id, name: config.name,
+                                  sourceURL: config.sourceUrl ?? url.absoluteString))
+        }
+        switch await policy.approveInstall(config) {
+        case .failure(let denial): throw refused(denial)
+        case .success(let granted): approval = granted
+        }
+        // The dry run below starts the script, so it needs a load decision too.
+        let probeApproval: LoadApproval
+        switch await policy.approveLoad(config) {
+        case .failure(let denial): throw refused(denial)
+        case .success(let granted): probeApproval = granted
+        }
+
         let base = URL(string: config.sourceUrl ?? "") ?? url
         guard let scriptURL = config.resolve(config.scriptUrl, base: base) else { throw InstallError.invalidConfig("scriptUrl is missing") }
         let scriptData: Data
         do { scriptData = try await download(scriptURL, origin: origin, source: config.name) } catch { throw InstallError.download(error.localizedDescription) }
         let (script, signatureValid, localHosts) = try await Self.checkScript(
-            scriptData, config: config, resolver: resolver,
+            scriptData, config: config, approval: probeApproval, resolver: resolver,
             localNetworkCheck: localNetworkAccess?.runtimeCheck(source: config.name)
         )
 
@@ -290,9 +393,12 @@ final class PluginManager {
                              "This source connects to your local network: \(request.summary)."
                                 + (request.approval == nil ? " You can approve it later in the source’s settings." : "")))
         }
+        if let reviewed = policy.classifier.reviewedName(ofLookalike: config) {
+            warnings.insert(("Not the reviewed \(reviewed)", "This plugin uses the id of the reviewed \(reviewed) source but isn’t signed by its author, so it is treated as an unreviewed source."), at: 0)
+        }
         return InstallPreview(config: config, script: script,
                               iconURL: config.resolve(config.iconUrl, base: base)?.absoluteString,
-                              warnings: warnings, existing: existing, localHosts: localHosts)
+                              warnings: warnings, existing: existing, localHosts: localHosts, approval: approval)
     }
 
     /// Whether a plugin arriving through sync must wait for the user before it installs: when it asks
@@ -323,31 +429,33 @@ final class PluginManager {
     /// contained as any plugin run (it has no sign-in and no approvals).
     @concurrent
     private static func checkScript(
-        _ scriptData: Data, config: PluginConfig, resolver: any HostResolving,
+        _ scriptData: Data, config: PluginConfig, approval: LoadApproval, resolver: any HostResolving,
         localNetworkCheck: (@Sendable (URL) async -> Bool)?
     ) async throws -> (script: String, signatureValid: Bool?, localHosts: [LocalHostRequest]) {
         guard isValidPluginID(config.id) else { throw InstallError.invalidConfig("The plugin ID is not valid") }
-        guard let script = String(data: scriptData, encoding: .utf8),
-              script.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) else {
+        guard let text = String(data: scriptData, encoding: .utf8),
+              text.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) else {
             throw InstallError.emptyScript
         }
-        var signatureValid: Bool?
-        if let sig = config.scriptSignature, let key = config.scriptPublicKey, !sig.isEmpty, !key.isEmpty {
-            signatureValid = ScriptSignature.verify(script: script, signatureBase64: sig, publicKeyBase64: key)
-            if signatureValid == false { throw InstallError.invalidSignature }
+        let script: CheckedScript
+        do { script = try ScriptSignature.check(text, for: config) } catch ScriptSignature.CheckError.invalidSignature {
+            throw InstallError.invalidSignature
+        } catch {
+            throw InstallError.invalid(error.localizedDescription)
         }
-        let probe = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil, resolver: resolver,
-                                  localNetworkAccess: localNetworkCheck)
+        let probe = PluginRuntime(approval: approval, config: config, script: script, settings: [:], auth: nil, captcha: nil,
+                                  resolver: resolver, localNetworkAccess: localNetworkCheck)
         do { try await probe.validate() } catch { await probe.stop(); throw InstallError.invalid(error.localizedDescription) }
         await probe.stop()
         let localHosts = PluginNetworkPolicy(config: config, approvals: [], resolver: resolver).localHostRequests()
-        return (script, signatureValid, localHosts)
+        return (text, script.isSigned ? true : nil, localHosts)
     }
 
     /// Stores a previewed plugin. Installing approves the local-network destinations the preview showed
     /// with their addresses. Reinstalling from the same publisher (`sameSigner`) keeps the user's
     /// settings, sign-in and approvals the config still names; from anyone else, none of them.
     func commit(_ preview: InstallPreview) {
+        precondition(preview.approval.pluginID == preview.config.id, "an install approval is for one plugin")
         var entry = InstalledPlugin(config: preview.config, script: preview.script, iconURL: preview.iconURL)
         var approvals = preview.localHosts.compactMap(\.approval)
         if let old = preview.existing {
@@ -480,8 +588,21 @@ final class PluginManager {
         guard let current = plugin(pluginID) else { throw InstallError.invalid("The source isn’t installed.") }
         var candidate = current
         candidate.settings[key] = value
+        // A rated setting is gated like installing the source at the rating
+        // that value gives it.
+        if let denial = await policy.approveSettingChange(current.config, setting: key, value: value) {
+            throw InstallError.policy(PolicyRefusal(denial: denial, pluginID: current.id, name: current.config.name,
+                                                    sourceURL: current.config.sourceUrl ?? ""))
+        }
+        let approval: LoadApproval
+        switch await policy.approveLoad(current.config) {
+        case .failure(let denial):
+            throw InstallError.policy(PolicyRefusal(denial: denial, pluginID: current.id, name: current.config.name,
+                                                    sourceURL: current.config.sourceUrl ?? ""))
+        case .success(let granted): approval = granted
+        }
         let started = try await Self.startRuntime(
-            candidate, credentials: credentials(for: pluginID),
+            candidate, approval: approval, credentials: credentials(for: pluginID),
             localNetworkCheck: localNetworkAccess?.runtimeCheck(source: current.config.name)
         )
         guard let i = installed.firstIndex(where: { $0.id == pluginID }), installed[i] == current else {
@@ -499,11 +620,12 @@ final class PluginManager {
     /// checks it runs. The JavaScript context is made off the main actor.
     @concurrent
     private static func startRuntime(
-        _ plugin: InstalledPlugin, credentials: PluginCredentials,
+        _ plugin: InstalledPlugin, approval: LoadApproval, credentials: PluginCredentials,
         localNetworkCheck: (@Sendable (URL) async -> Bool)?
     ) async throws -> PluginRuntime {
+        let script = try ScriptSignature.check(plugin.script, for: plugin.config)
         let runtime = PluginRuntime(
-            config: plugin.config, script: plugin.script, settings: plugin.settings,
+            approval: approval, config: plugin.config, script: script, settings: plugin.settings,
             auth: credentials.auth, captcha: credentials.captcha, approvals: plugin.approvals,
             localNetworkAccess: localNetworkCheck
         )
@@ -782,6 +904,7 @@ final class PluginManager {
                     }
                     installs[id] = nil
                     pendingReplacements[id] = nil
+                    refusedSynced[id] = nil
                 }
                 applied.insert(change.key)
                 continue
@@ -822,6 +945,14 @@ final class PluginManager {
                     }
                     entry = InstalledPlugin(config: preview.config, script: preview.script, iconURL: preview.iconURL)
                     installs[plugin.pluginID] = nil
+                case .failure(InstallError.policy(let refusal))?:
+                    // Refused by this device's policy: shown locked with the
+                    // reason, not as a sync error, and tried again when the
+                    // policy's inputs change.
+                    installs[plugin.pluginID]?.failure = nil
+                    installs[plugin.pluginID]?.locked = refusal.denial
+                    refusedSynced[plugin.pluginID] = change
+                    continue
                 case .failure(let error)?:
                     installs[plugin.pluginID]?.failure = error.localizedDescription
                     continue
@@ -830,6 +961,7 @@ final class PluginManager {
                     continue
                 }
             }
+            refusedSynced[plugin.pluginID] = nil
             let before = updated.first { $0.id == plugin.pluginID }
             entry.enabled = plugin.enabled
             entry.settings = plugin.settings
@@ -946,6 +1078,10 @@ struct SyncInstall: Equatable, Identifiable, Sendable {
     let pluginID: String
     let sourceURL: String
     var failure: String?
+    /// Set when this device's source-access policy refuses the plugin (age
+    /// or parental controls): shown locked with the reason; it installs by
+    /// itself once allowed.
+    var locked: PolicyDenial?
     /// Set when the download would replace this device's own copy of the
     /// plugin, from another source: nothing changes until the user picks.
     var confirmation: Confirmation?

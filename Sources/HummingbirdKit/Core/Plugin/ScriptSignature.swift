@@ -6,9 +6,55 @@ import Crypto
 import _CryptoExtras
 #endif
 
+/// A plugin's script exactly as its author published it. The only way to
+/// make one is `ScriptSignature.check`, which verifies the signature when the
+/// plugin is signed, and `PluginRuntime` accepts nothing else. So no code path
+/// can rewrite a plugin's source before it runs: changing the text means
+/// checking it again, and a changed signed script fails that check.
+struct CheckedScript: Sendable, Hashable {
+    let pluginID: String
+    let text: String
+    /// true: signed, and the signature verified; false: an unsigned plugin.
+    let isSigned: Bool
+
+    fileprivate init(pluginID: String, text: String, isSigned: Bool) {
+        self.pluginID = pluginID
+        self.text = text
+        self.isSigned = isSigned
+    }
+}
+
 /// Verifies a plugin script signature: RSA with SHA-512 (PKCS#1 v1.5) over the script text.
 /// The public key is a Base64 SubjectPublicKeyInfo (X.509) string and the signature is Base64.
 enum ScriptSignature {
+    enum CheckError: LocalizedError, Equatable {
+        case invalidSignature
+        case signatureMissing
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidSignature: return "The script signature is invalid. The plugin may have been tampered with."
+            case .signatureMissing: return "The plugin names a signing key but its script isn’t signed."
+            }
+        }
+    }
+
+    /// Checks `text` against `config`'s signature. A config that names a key
+    /// or a signature must carry both, and they must verify; one with
+    /// neither is an unsigned plugin. RSA verification over megabytes of
+    /// script is not for the main actor.
+    static func check(_ text: String, for config: PluginConfig) throws -> CheckedScript {
+        let signature = config.scriptSignature ?? "", key = config.scriptPublicKey ?? ""
+        guard !signature.isEmpty || !key.isEmpty else {
+            return CheckedScript(pluginID: config.id, text: text, isSigned: false)
+        }
+        guard !signature.isEmpty, !key.isEmpty else { throw CheckError.signatureMissing }
+        guard verify(script: text, signatureBase64: signature, publicKeyBase64: key) else {
+            throw CheckError.invalidSignature
+        }
+        return CheckedScript(pluginID: config.id, text: text, isSigned: true)
+    }
+
     static func verify(script: String, signatureBase64: String, publicKeyBase64: String) -> Bool {
         guard let sig = Data(base64Encoded: stripWhitespace(signatureBase64)),
               let spki = Data(base64Encoded: stripWhitespace(publicKeyBase64)),

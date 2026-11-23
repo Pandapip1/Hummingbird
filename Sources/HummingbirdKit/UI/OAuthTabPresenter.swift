@@ -9,22 +9,30 @@ final class OAuthTabAuthorization: Identifiable {
     let id = UUID()
     let authorizationURL: URL
     let callback: OAuthCallbackMatcher
+    /// The authorization server's site; the tab's main frame stays in it.
+    let navigationScope: LoginNavigationScope
     private var continuation: CheckedContinuation<URL, any Error>?
     private var result: Result<URL, any Error>?
 
     init(authorizationURL: URL, callback: OAuthCallbackMatcher) {
         self.authorizationURL = authorizationURL
         self.callback = callback
+        navigationScope = .oauth(authorizationURL: authorizationURL)
     }
 
     var isFinished: Bool { result != nil }
 
     /// Whether the web view should load `url`. The redirect URI is never
     /// loaded: its query holds the authorization code, and it is not a page.
-    func shouldLoad(_ url: URL) -> Bool {
-        guard callback.matches(url) else { return true }
-        finish(.success(url))
-        return false
+    /// Otherwise the main frame stays on the authorization server's site, so
+    /// the sign-in tab cannot be used to browse the web; embedded frames
+    /// (captcha widgets) are left alone.
+    func shouldLoad(_ url: URL, isMainFrame: Bool = true) -> Bool {
+        if callback.matches(url) {
+            finish(.success(url))
+            return false
+        }
+        return !isMainFrame || navigationScope.allows(url)
     }
 
     /// The user closed the tab, or the sign-in task was cancelled.

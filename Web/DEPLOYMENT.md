@@ -47,6 +47,57 @@ are only used on Linux. If it fails, revisit this and the App Store Connect
 answers. This is a reading of Apple's form, not legal advice; reconsider it
 if Hummingbird's main purpose ever becomes security or communications.
 
+### Age rating and App Review notes
+
+Age rating questionnaire: **Unrestricted Web Access: No.** The address bar
+opens links only through installed sources, and sign-in pages are confined
+to their source's domains (`Documentation/AgeAndParentalControls.md`).
+
+Paste into App Review notes (guideline 4.7 / 4.7.5):
+
+> Hummingbird plays media from sources the user installs (plugins). Some
+> sources, such as general video platforms, can show content above the
+> app's age rating. Hummingbird restricts them by age:
+>
+> - Before a source is installed, and each time one starts, the app asks the
+>   Declared Age Range API for the user's age range (gates 13, 16 and 18).
+>   The profile remembers only the highest age any of its devices has
+>   confirmed (as a bound on the birthday, never a birth date), so a device
+>   without an age signal cannot undo it. Age signals only raise it; anyone
+>   may lower it, which only restricts.
+> - Sources are rated. Unreviewed sources, and general video platforms, are
+>   18+. A source rated above the shared age range cannot be installed or
+>   run, and is hidden from the source catalog. If the user declines to share
+>   their age, sources rated above "all ages" cannot be installed.
+> - Below 18, each source's own restricted mode (for example YouTube's
+>   age-restricted videos) is forced on and cannot be changed.
+> - Parental controls are the system's (Screen Time / Family Sharing); the
+>   app has no passcode of its own. When Declared Age Range reports active
+>   parental controls, sources rated above the user's age, and unreviewed
+>   sources, need a parent's approval: "Ask a Parent" sends a PermissionKit
+>   request, and the source installs only once the parent approves.
+>   Restricted modes stay on under parental controls.
+> - Sign-in pages stay on the source's own domains; the app has no general
+>   web browser.
+>
+> When neither the device nor any other device of the profile has provided
+> an age range (operating systems before iOS/macOS 26, or regions where the
+> API is unavailable) and the system reports no parental controls, the app
+> treats the user as an adult; the system's parental controls are the way
+> to restrict such devices.
+>
+> To try it: on a child account in a Family Sharing group, add a source by
+> URL (Sources ▸ +): an unreviewed source is refused with "Ask a Parent";
+> the request appears on the parent's device, and the source installs once
+> approved.
+
+The paragraph on devices without an age range is the 4.7.5 exposure: an age
+restriction mechanism "based on verified or declared age" is only as strong
+as the platform's signal, and with no signal the app does not restrict
+(product decision, 2026-11-16). If App Review rejects that, the remedy is to
+treat "unavailable" like "declined" in `AgeEvidence.isAtLeast` (one place),
+not to store an age in the app.
+
 ## Hummingbird: OAuth client
 
 Serve `Web/hummingbird/` as the site root of `hummingbird.eightybps.com`, so

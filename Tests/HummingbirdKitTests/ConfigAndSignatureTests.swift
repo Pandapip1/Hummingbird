@@ -87,4 +87,143 @@ final class ConfigAndSignatureTests: XCTestCase {
         XCTAssertFalse(ScriptSignature.verify(script: script, signatureBase64: "AAAA", publicKeyBase64: keyB64))
         XCTAssertFalse(ScriptSignature.verify(script: script, signatureBase64: sigB64, publicKeyBase64: "not base64!"))
     }
+
+    /// The runtime only takes a script `ScriptSignature.check` produced, so a
+    /// signed plugin runs exactly as signed: altered text fails the check.
+    func testSignedScriptsRunOnlyAsPublished() throws {
+        let script = "source.enable = function() {};"
+        let (keyB64, sigB64) = try sign(script)
+        var config = try JSONDecoder().decode(
+            PluginConfig.self, from: Data(#"{"name":"Signed","id":"signed-test","scriptUrl":"x.js","version":1}"#.utf8)
+        )
+        config.scriptPublicKey = keyB64
+        config.scriptSignature = sigB64
+
+        let checked = try ScriptSignature.check(script, for: config)
+        XCTAssertTrue(checked.isSigned)
+        XCTAssertEqual(checked.text, script)
+        XCTAssertThrowsError(try ScriptSignature.check(script + "\n// rewritten", for: config)) {
+            XCTAssertEqual($0 as? ScriptSignature.CheckError, .invalidSignature)
+        }
+        var unsigned = config
+        unsigned.scriptSignature = nil
+        XCTAssertThrowsError(try ScriptSignature.check(script, for: unsigned)) {
+            XCTAssertEqual($0 as? ScriptSignature.CheckError, .signatureMissing, "a key without a signature is refused")
+        }
+        unsigned.scriptPublicKey = nil
+        XCTAssertFalse(try ScriptSignature.check(script, for: unsigned).isSigned)
+    }
+
+    // MARK: scripts/sign-plugin
+
+    /// An executable on PATH, or nil.
+    private func tool(_ name: String) -> URL? {
+        for directory in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
+            let candidate = URL(fileURLWithPath: String(directory)).appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
+
+    @discardableResult
+    private static func run(_ executable: URL, _ arguments: [String], environment: [String: String]) throws -> String {
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.environment = environment
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(decoding: data, as: UTF8.self)
+        guard process.terminationStatus == 0 else {
+            throw XCTSkip("\(executable.lastPathComponent) failed: \(text)")
+        }
+        return text
+    }
+
+    /// The signer (SHA-512, PKCS#1 v1.5, private key decrypted by gpg into
+    /// a pipe) produces signatures Hummingbird's own verifier accepts. Uses a
+    /// throwaway GPG key and RSA key in a private GNUPGHOME; never the card.
+    func testSignerScriptOutputVerifies() throws {
+        guard let gpg = tool("gpg"), let gpgconf = tool("gpgconf"), let python = tool("python3"),
+              let openssl = tool("openssl"), let shell = tool("sh") else {
+            throw XCTSkip("gpg, openssl, sh and python3 are needed")
+        }
+        let repository = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let signer = repository.appendingPathComponent("scripts/sign-plugin")
+        // gpg-agent's socket lives in GNUPGHOME, and socket paths are short
+        // (104 bytes on macOS), so the home is a short directory in /tmp.
+        let home = URL(fileURLWithPath: "/tmp/hb-gpg-" + UUID().uuidString.prefix(8))
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        addTeardownBlock { try? FileManager.default.removeItem(at: home) }
+        var environment = ProcessInfo.processInfo.environment
+        environment["GNUPGHOME"] = home.path
+        addTeardownBlock { _ = try? Self.run(gpgconf, ["--kill", "gpg-agent"], environment: environment) }
+
+        try Self.run(gpg, ["--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+                      "--quick-gen-key", "Throwaway <test@example.invalid>", "default", "default", "never"],
+                environment: environment)
+        let encryptedKey = home.appendingPathComponent("plugin-signing-key.pem.asc")
+        let publicKey = home.appendingPathComponent("plugin-signing-key.pub.pem")
+        // As the real key was made: generated in a pipe straight into gpg.
+        try Self.run(shell, ["-c", """
+            set -e
+            "\(openssl.path)" genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null \\
+              | "\(gpg.path)" --batch --yes --armor --encrypt --recipient test@example.invalid --output "\(encryptedKey.path)"
+            """], environment: environment)
+        try Self.run(shell, ["-c", """
+            "\(gpg.path)" --batch --quiet --decrypt "\(encryptedKey.path)" \\
+              | "\(openssl.path)" pkey -pubout -out "\(publicKey.path)"
+            """], environment: environment)
+
+        let script = "source.enable = function() { return 1; };\n"
+        let scriptURL = home.appendingPathComponent("Script.js")
+        let configURL = home.appendingPathComponent("Config.json")
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try #"{"name":"Signed","id":"signer-test","scriptUrl":"Script.js","version":1,"scriptSignature":"","scriptPublicKey":""}"#
+            .write(to: configURL, atomically: true, encoding: .utf8)
+
+        try Self.run(python, [signer.path, scriptURL.path, configURL.path,
+                         "--key", encryptedKey.path, "--public-key", publicKey.path], environment: environment)
+
+        let config = try JSONDecoder().decode(PluginConfig.self, from: Data(contentsOf: configURL))
+        let checked = try ScriptSignature.check(script, for: config)
+        XCTAssertTrue(checked.isSigned)
+        XCTAssertThrowsError(try ScriptSignature.check(script + " ", for: config))
+    }
+
+    /// Opt-in (network): Hummingbird's published forks, as GitHub Pages
+    /// serves them, verify with Hummingbird's verifier and count as the
+    /// reviewed sources pinned in the curated database.
+    /// HUMMINGBIRD_CHECK_PUBLISHED_FORKS=1 swift test --filter testPublishedForksVerify
+    func testPublishedForksVerify() async throws {
+        guard ProcessInfo.processInfo.environment["HUMMINGBIRD_CHECK_PUBLISHED_FORKS"] == "1" else {
+            throw XCTSkip("Set HUMMINGBIRD_CHECK_PUBLISHED_FORKS=1 to fetch the published forks")
+        }
+        let session = URLSession(configuration: .ephemeral)
+        for entry in CuratedSourceDatabase.shared.entries where entry.name.hasSuffix("(Hummingbird)") {
+            let configURL = try XCTUnwrap(URL(string: entry.configURL))
+            let configData: Data
+            do {
+                (configData, _) = try await session.data(from: configURL)
+            } catch let error as URLError where [.cannotFindHost, .dnsLookupFailed, .notConnectedToInternet].contains(error.code) {
+                // Unreachable is not unverified: say so rather than fail.
+                throw XCTSkip("\(configURL.host ?? "the host") is unreachable from here (URLError \(error.code.rawValue)); the published forks were not checked")
+            }
+            let config = try JSONDecoder().decode(PluginConfig.self, from: configData)
+            XCTAssertEqual(config.id, entry.pluginID, entry.name)
+            XCTAssertEqual(config.sourceUrl, entry.configURL, entry.name)
+            let scriptURL = try XCTUnwrap(config.resolve(config.scriptUrl, base: configURL))
+            let (scriptData, _) = try await session.data(from: scriptURL)
+            let script = try XCTUnwrap(String(data: scriptData, encoding: .utf8))
+            let checked = try ScriptSignature.check(script, for: config)
+            XCTAssertTrue(checked.isSigned, entry.name)
+            XCTAssertTrue(CuratedSourceDatabase.shared.classification(for: config).isCurated, entry.name)
+        }
+    }
 }

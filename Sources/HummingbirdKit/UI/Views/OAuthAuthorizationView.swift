@@ -111,7 +111,7 @@ private final class OAuthNavigationDecider: OAuthWebPage.NavigationDeciding {
 
     func decidePolicy(for action: OAuthWebPage.NavigationAction) -> OAuthWebPage.NavigationActionPolicy {
         guard let url = action.request.url, let authorization else { return .allow }
-        return authorization.shouldLoad(url) ? .allow : .cancel
+        return authorization.shouldLoad(url, isMainFrame: action.isMainFrame) ? .allow : .cancel
     }
 }
 #endif

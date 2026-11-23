@@ -229,9 +229,14 @@ final class AppModel {
             ?? defaults.bool(forKey: Self.localNetworkSyncEnabledKey)
         let storagePrefix = profile.storagePrefix
         let profileChanges = profile.changes
+        // Parental controls and the age bound are profile data; one policy
+        // per profile is shared by every window that opens it.
+        let policy = SourceAccessPolicy.shared(
+            stores: stores, profilePrefix: storagePrefix, profileChanges: profileChanges
+        )
         let plugins = PluginManager(
             installed: persistence.plugins, profileChanges: profileChanges,
-            storage: storage, credentialStore: credentialStore,
+            storage: storage, credentialStore: credentialStore, policy: policy,
             storageName: storagePrefix + "plugins", credentialNamespace: storagePrefix,
             preloadedCredentials: pluginCredentials
         )

@@ -214,6 +214,14 @@ struct RouteContent: View {
                 NavigationStack {
                     SyncSettingsView()
                 }
+            case .parentalControls:
+                NavigationStack {
+                    ParentalControlsView()
+                }
+            case .discoverSources:
+                NavigationStack {
+                    DiscoverSourcesView()
+                }
             case .oauthAuthorization(let id): OAuthAuthorizationView(id: id)
             }
         }

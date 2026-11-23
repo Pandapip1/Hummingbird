@@ -3,7 +3,7 @@ import Foundation
 import JavaScriptCore
 
 /// Apple's JavaScriptCore, via the Objective-C API.
-public struct JavaScriptCoreEngine: JSEngine {
+public struct JavaScriptCoreEngine: JSEngine, Sendable {
     public init() {}
     public func makeContext(hostCall: @escaping (String, String, String) -> String) throws -> JSContextHost {
         guard let ctx = JSContext() else { throw JSEngineError(message: "Could not create a JavaScript context") }
@@ -15,13 +15,28 @@ public struct JavaScriptCoreEngine: JSEngine {
 
 final class JavaScriptCoreContextHost: JSContextHost {
     private var context: JSContext?
+    private var deadline: Date?
     init(_ context: JSContext) { self.context = context }
+
+    func setExecutionTimeLimit(_ seconds: Double?) {
+        deadline = seconds.map { Date().addingTimeInterval($0) }
+    }
 
     func evaluate(_ code: String, name: String) throws -> String? {
         guard let ctx = context else { throw JSEngineError(message: "The JavaScript context is closed") }
+        // Builds that have JavaScriptCore's time limit (PluginExecutionLimits) stop the script at the
+        // deadline themselves; it counts from entry into this evaluation.
+        let limiter = PluginExecutionLimits.engineTimeLimit
+        if let limiter, let deadline {
+            limiter.setLimit(max(0.001, deadline.timeIntervalSinceNow), globalContext: ctx.jsGlobalContextRef)
+        }
+        defer { if let limiter, deadline != nil { limiter.setLimit(nil, globalContext: ctx.jsGlobalContextRef) } }
         let value = ctx.evaluateScript(code, withSourceURL: URL(string: "hummingbird://plugin/\(name.replacingOccurrences(of: " ", with: "_"))"))
         if let ex = ctx.exception {
             ctx.exception = nil
+            if let deadline, Date() >= deadline {
+                throw JSEngineError(message: JSEngineError.terminatedAtDeadline)
+            }
             throw JSEngineError(message: ex.toString() ?? "Script error", line: ex.objectForKeyedSubscript("line")?.toString())
         }
         guard let value, !value.isUndefined, !value.isNull else { return nil }
@@ -36,7 +51,7 @@ final class JavaScriptCoreContextHost: JSContextHost {
 import CJavaScriptCoreGTK
 
 /// JavaScriptCore's GLib API, supplied by WebKitGTK on Linux.
-public struct JavaScriptCoreGTKEngine: JSEngine {
+public struct JavaScriptCoreGTKEngine: JSEngine, Sendable {
     public init() {}
 
     public func makeContext(hostCall: @escaping (String, String, String) -> String) throws -> JSContextHost {

@@ -23,6 +23,7 @@ struct PersistedBrowserSession: Codable, Sendable {
 
 enum PersistedRoute: Codable, Sendable {
     case home, subscriptions, manageSubscriptions, search, library, sources, settings, syncSettings
+    case parentalControls, discoverSources
     case content(String), channel(String), playlist(String), plugin(String)
 
     /// Nil for routes that cannot outlive this launch.
@@ -41,6 +42,8 @@ enum PersistedRoute: Codable, Sendable {
         case .plugin(let value): self = .plugin(value)
         case .settings: self = .settings
         case .syncSettings: self = .syncSettings
+        case .parentalControls: self = .parentalControls
+        case .discoverSources: self = .discoverSources
         case .oauthAuthorization: return nil
         }
     }
@@ -55,6 +58,8 @@ enum PersistedRoute: Codable, Sendable {
         case .sources: .sources
         case .settings: .settings
         case .syncSettings: .syncSettings
+        case .parentalControls: .parentalControls
+        case .discoverSources: .discoverSources
         case .content(let value): .content(value)
         case .channel(let value): .channel(value)
         case .playlist(let value): .playlist(value)
@@ -90,6 +95,8 @@ extension DynamicTab where Page == Route {
         case .plugin: return "Plugin"
         case .settings: return "Settings"
         case .syncSettings: return "Sync"
+        case .parentalControls: return "Age & Parental Controls"
+        case .discoverSources: return "Discover Sources"
         case .oauthAuthorization: return "Sign In"
         }
     }

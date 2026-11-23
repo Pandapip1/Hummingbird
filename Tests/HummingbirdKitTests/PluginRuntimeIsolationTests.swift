@@ -1,4 +1,5 @@
 import Foundation
+import PluginEngine
 import XCTest
 @testable import HummingbirdKit
 
@@ -7,7 +8,7 @@ final class PluginRuntimeIsolationTests: XCTestCase {
     func testBusyJavaScriptAndHostCallbacksLeaveMainActorResponsive() async throws {
         try JSEngines.initializeDefaultRuntimeOnCurrentThread()
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data("{\"name\":\"Thread isolation\"}".utf8))
-        let runtime = PluginRuntime(config: config, script: """
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check("""
             source.enable = function () { log('enable'); };
             source.work = function () {
                 log('start');
@@ -16,7 +17,7 @@ final class PluginRuntimeIsolationTests: XCTestCase {
                 log('end');
                 return 42;
             };
-            """, settings: [:], auth: nil, captcha: nil)
+            """, for: config), settings: [:], auth: nil, captcha: nil)
         let observation = BusyPluginObservation()
         runtime.onLog = { observation.record($0) }
         let pulse = Task { @MainActor in

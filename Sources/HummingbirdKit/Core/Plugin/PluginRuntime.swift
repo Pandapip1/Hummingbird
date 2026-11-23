@@ -1,4 +1,5 @@
 import Foundation
+import PluginEngine
 import os
 import Crypto
 import Synchronization
@@ -19,9 +20,14 @@ import PlatformSupport
 /// `PluginOutput` types, which contain themselves against this plugin's identity and network policy.
 final class PluginRuntime: @unchecked Sendable {
     let config: PluginConfig
-    private let originalScript: String
-    let script: String
+    /// The plugin's script exactly as published: workers evaluate these
+    /// bytes and nothing else, so no code can rewrite a plugin.
+    let checkedScript: CheckedScript
+    var script: String { checkedScript.text }
     let storedSettings: [String: String]
+    /// The source-access policy's permission to run, kept so clones run
+    /// under the same decision.
+    let approval: LoadApproval
     let auth: SourceAuth?
     let captcha: SourceAuth?
     let approvals: [LocalHostApproval]
@@ -33,6 +39,9 @@ final class PluginRuntime: @unchecked Sendable {
     let httpSession: URLSession?
     let policy: PluginNetworkPolicy
     let timeouts: Timeouts
+    /// The engine this plugin's contexts run in: its own host process where the platform has process
+    /// isolation (`PluginExecutionLimits`), killed when a call overruns; else in-process.
+    let engine: any JSEngine
 
     /// How long calls may take (`PluginLimits`); tests shorten them.
     struct Timeouts: Sendable {
@@ -41,8 +50,6 @@ final class PluginRuntime: @unchecked Sendable {
         var requestModifier = PluginLimits.requestModifierTimeout
         static let standard = Timeouts()
     }
-    let appliedCompatibilityPatches: [String]
-    let failedCompatibilityPatches: [String]
     let detailsCacheFingerprint: String
 
     private let lock = NSLock()
@@ -74,19 +81,31 @@ final class PluginRuntime: @unchecked Sendable {
     /// Whether the plugin stopped responding and is waiting for the user to retry.
     var isSuspended: Bool { lock.withLock { suspendedMessage != nil } }
 
+    /// Contexts alive now: running calls and retained sessions.
+    var liveContextCountForTesting: Int { lock.withLock { workers.count } }
+
+    /// Where a fresh context's startup time goes, and how many host calls the plugin made: read by
+    /// the call-cost measurements (PluginCallCostBenchmarks), never by the app.
+    struct StartupTimings: Sendable, Equatable {
+        var context: TimeInterval = 0, prelude: TimeInterval = 0, script: TimeInterval = 0, enable: TimeInterval = 0
+    }
+    private let measurements = Mutex((startup: StartupTimings(), hostCalls: 0))
+    var lastStartupTimings: StartupTimings { measurements.withLock { $0.startup } }
+    var hostCallCount: Int { measurements.withLock { $0.hostCalls } }
+    fileprivate func recordStartup(_ update: (inout StartupTimings) -> Void) { measurements.withLock { update(&$0.startup) } }
+    fileprivate func countHostCall() { measurements.withLock { $0.hostCalls += 1 } }
+
     /// Identifies every input that may change persisted content details or the
     /// host-side capabilities embedded in their playback sources.
     private static func makeDetailsCacheFingerprint(
         config: PluginConfig, script: String, settings: [String: String],
-        applied: [String], failed: [String], auth: SourceAuth?, captcha: SourceAuth?
+        auth: SourceAuth?, captcha: SourceAuth?
     ) -> String {
         var inputs = [
             "host-details-abi:2",
             "plugin:\(config.id):\(config.version)",
             "script:\(script)",
             "settings:\(settings.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&"))",
-            "patches:\(applied.joined(separator: ","))",
-            "patch-failures:\(failed.joined(separator: ","))",
         ]
         if let auth, let data = try? JSONEncoder().encode(auth) {
             inputs.append("auth:\(data.base64EncodedString())")
@@ -103,27 +122,29 @@ final class PluginRuntime: @unchecked Sendable {
             .joined()
     }
 
-    init(config: PluginConfig, script: String, settings: [String: String], auth: SourceAuth?, captcha: SourceAuth?,
+    /// `approval` comes from `SourceAccessPolicy`, the only way to make one,
+    /// so no runtime starts without the policy's decision; its forced
+    /// settings (restricted modes) replace the user's values here. `script`
+    /// comes from `ScriptSignature.check`, the only way to make a
+    /// `CheckedScript`: the published text, its signature verified when the
+    /// plugin is signed.
+    init(approval: LoadApproval, config: PluginConfig, script: CheckedScript, settings: [String: String],
+         auth: SourceAuth?, captcha: SourceAuth?,
          savedState: String? = nil, approvals: [LocalHostApproval] = [], resolver: any HostResolving = SystemHostResolver(),
          localNetworkAccess: (@Sendable (URL) async -> Bool)? = nil, httpSession: URLSession? = nil,
-         timeouts: Timeouts = .standard) {
+         timeouts: Timeouts = .standard, engine: (any JSEngine)? = nil) {
+        precondition(approval.pluginID == config.id, "a load approval is for one plugin")
+        precondition(script.pluginID == config.id, "a checked script is for one plugin")
+        let settings = settings.merging(approval.forcedSettings) { _, forced in forced }
+        self.approval = approval
+        self.engine = engine ?? PluginExecutionLimits.makeEngine()
         self.timeouts = timeouts
         self.localNetworkAccess = localNetworkAccess
         self.httpSession = httpSession
-        let compatibility = PluginCompatibilityPatches.apply(
-            pluginID: config.id,
-            version: config.version,
-            original: script
-        )
         self.config = config
-        self.originalScript = script
-        self.script = compatibility.script
-        self.appliedCompatibilityPatches = compatibility.applied
-        self.failedCompatibilityPatches = compatibility.failed
+        self.checkedScript = script
         self.detailsCacheFingerprint = Self.makeDetailsCacheFingerprint(
-            config: config, script: compatibility.script, settings: settings,
-            applied: compatibility.applied, failed: compatibility.failed,
-            auth: auth, captcha: captcha
+            config: config, script: script.text, settings: settings, auth: auth, captcha: captcha
         )
         self.storedSettings = settings
         self.auth = auth
@@ -132,12 +153,6 @@ final class PluginRuntime: @unchecked Sendable {
         self.approvals = approvals
         self.resolver = resolver
         self.policy = PluginNetworkPolicy(config: config, approvals: approvals, resolver: resolver)
-        if !compatibility.applied.isEmpty {
-            Logger.plugin.info("compatibility_patches plugin=\(pluginLogID(config.id), privacy: .public) version=\(config.version) patches=\(compatibility.applied.joined(separator: ","), privacy: .public)")
-        }
-        if !compatibility.failed.isEmpty {
-            Logger.plugin.error("compatibility_patch_failures plugin=\(pluginLogID(config.id), privacy: .public) version=\(config.version) failures=\(compatibility.failed.joined(separator: ","), privacy: .public)")
-        }
     }
 
     // MARK: shared inputs, read by workers
@@ -211,28 +226,39 @@ final class PluginRuntime: @unchecked Sendable {
         lock.withLock { if capabilitiesSnapshot.isEmpty { capabilitiesSnapshot = capabilities } }
     }
 
-    // MARK: workers
+    // MARK: contexts
 
-    /// A worker for a new top-level call: an idle one, else a new one while
-    /// the pool has room, else the least busy.
-    private func workerForCall() throws -> PluginWorker {
+    /// Contexts kept alive for their call's handles (pagers, details, modifiers, trackers), at most.
+    /// The least recently used beyond it is discarded; its handles then report a session that ended.
+    static let maximumRetainedSessions = 6
+    /// A retained context unused this long is discarded.
+    static let sessionIdleLifetime: TimeInterval = 600
+
+    /// A fresh context for one top-level call. No other call ever uses it: only the continuations of
+    /// this call (its handles and promises) reach it later, by the serial in their handles.
+    private func freshWorker() throws -> PluginWorker {
         try lock.withLock {
             if let message = suspendedMessage { throw PluginError.unresponsive(message) }
-            if let idle = workers.first(where: { $0.inFlight == 0 }) { idle.inFlight += 1; return idle }
-            if workers.count < PluginLimits.maximumWorkers {
-                let worker = PluginWorker(runtime: self, serial: nextSerial)
-                nextSerial += 1
-                workers.append(worker)
-                worker.inFlight += 1
-                return worker
-            }
-            let least = workers.min { $0.inFlight < $1.inFlight }!
-            least.inFlight += 1
-            return least
+            let worker = PluginWorker(runtime: self, serial: nextSerial)
+            nextSerial += 1
+            worker.inFlight = 1
+            worker.lastUsed = Date()
+            workers.append(worker)
+            return worker
         }
     }
 
-    /// The worker that owns a handle (its serial is in the handle's high bits).
+    /// Marks `worker` busy again for a follow-up step of the call that owns it; false if it is gone.
+    private func claim(_ worker: PluginWorker) -> Bool {
+        lock.withLock {
+            guard workers.contains(where: { $0 === worker }) else { return false }
+            worker.inFlight += 1
+            worker.lastUsed = Date()
+            return true
+        }
+    }
+
+    /// The context that owns a handle (its serial is in the handle's high bits).
     private func worker(forHandle handle: Int) throws -> PluginWorker {
         let serial = PluginWorker.serial(ofHandle: handle)
         return try lock.withLock {
@@ -241,12 +267,69 @@ final class PluginRuntime: @unchecked Sendable {
                 throw PluginError.execution("This item belongs to a plugin session that has ended. Reload to continue.")
             }
             worker.inFlight += 1
+            worker.lastUsed = Date()
             return worker
         }
     }
 
     private func release(_ worker: PluginWorker) {
         lock.withLock { worker.inFlight = max(0, worker.inFlight - 1) }
+    }
+
+    /// Ends a context: no call can reach it again.
+    private func discard(_ worker: PluginWorker) {
+        let removed: Bool = lock.withLock {
+            guard let index = workers.firstIndex(where: { $0 === worker }) else { return false }
+            workers.remove(at: index)
+            return true
+        }
+        if removed { Task { await worker.stop() } }
+    }
+
+    /// Keeps a context for its call's live handles, discarding retained contexts that idled out or
+    /// exceed `maximumRetainedSessions` (least recently used first, never one in use).
+    private func retain(_ worker: PluginWorker) {
+        let evicted: [PluginWorker] = lock.withLock {
+            worker.lastUsed = Date()
+            let now = Date()
+            var out = workers.filter { $0.inFlight == 0 && $0 !== worker && now.timeIntervalSince($0.lastUsed) > Self.sessionIdleLifetime }
+            let idle = workers.filter { w in w.inFlight == 0 && !out.contains(where: { $0 === w }) }
+                .sorted { $0.lastUsed < $1.lastUsed }
+            let excess = idle.count - Self.maximumRetainedSessions
+            if excess > 0 { out += idle.filter { $0 !== worker }.prefix(excess) }
+            workers.removeAll { w in out.contains { $0 === w } }
+            return out
+        }
+        for worker in evicted { Task { await worker.stop() } }
+    }
+
+    /// After a top-level call (and its promise) finished: the plugin's state is saved for the next
+    /// call's fresh context (explicit, host-held data), and the context is discarded unless the
+    /// call left live handles or promises behind.
+    private func finish(_ worker: PluginWorker) async {
+        guard claim(worker) else { return }
+        let saves = has("saveState")
+        let outcome: (live: Int, state: String?)? = try? await run(on: worker, timeout: 5) { worker in
+            var state: String?
+            if saves, let data = try? PluginWorker.unwrap(try worker.evalResult("__jb.invoke('saveState', '[]', 'value')")),
+               let text = try? JSONDecoder().decode(String.self, from: data),
+               text.utf8.count <= PluginLimits.maximumTextLength * 10 {
+                state = text
+            }
+            let live = Int(try worker.evalResult("__jb.liveCount()") ?? "0") ?? 0
+            return (live, state)
+        }
+        if let state = outcome?.state { lock.withLock { savedState = state } }
+        if let outcome, outcome.live > 0 { retain(worker) } else { discard(worker) }
+    }
+
+    /// The caller no longer needs `handle` (a pager went away): its context ends with its last handle.
+    func releaseHandle(_ handle: Int) async {
+        guard let worker = try? worker(forHandle: handle) else { return }
+        let live: Int? = try? await run(on: worker, timeout: 5) { worker in
+            Int(try worker.evalResult("__jb.releaseHandle(\(handle))") ?? "0") ?? 0
+        }
+        if (live ?? 0) == 0 { discard(worker) }
     }
 
     /// Takes a worker that missed its deadline out of service.
@@ -261,6 +344,17 @@ final class PluginRuntime: @unchecked Sendable {
             return suspendedMessage != nil
         }
         worker.abandon()
+        if let remote = engine as? RemoteJSEngine {
+            // Process isolation: kill the plugin's host process. The stuck script stops at once, and
+            // so does every other context of this plugin (their calls fail and can be retried; the
+            // next call starts a new process). Nothing of it keeps running.
+            let others: [PluginWorker] = lock.withLock {
+                defer { workers.removeAll() }
+                return workers
+            }
+            remote.terminate()
+            for other in others { other.abandon() }
+        }
         Logger.plugin.error("worker_abandoned plugin=\(pluginLogID(self.config.id), privacy: .public) serial=\(worker.serial) suspended=\(suspended)")
         OSSignposter.plugin.emitEvent("PluginTimeout", "plugin=\(pluginLogID(self.config.id), privacy: .public)")
     }
@@ -289,15 +383,18 @@ final class PluginRuntime: @unchecked Sendable {
         }
     }
 
+    /// Starts a fresh context for one call: prelude, plugin script and `enable` (with the enable
+    /// allowance), then `body` (with the call's). Returns the context so the caller can `finish` it.
     private func withNewCall<T: Sendable>(timeout requested: TimeInterval? = nil,
-                                          _ body: @escaping @Sendable (PluginWorker) throws -> T) async throws -> T {
-        let worker = try workerForCall()
-        // A fresh context runs `enable()` first, which gets its own allowance.
-        let timeout = requested ?? timeouts.call
-        let budget = worker.isEnabled ? timeout : timeout + timeouts.enable
-        return try await run(on: worker, timeout: budget) { worker in
-            try worker.enableLocked()
-            return try body(worker)
+                                          _ body: @escaping @Sendable (PluginWorker) throws -> T) async throws -> (T, PluginWorker) {
+        let worker = try freshWorker()
+        do {
+            try await run(on: worker, timeout: timeouts.enable) { worker in try worker.enableLocked() }
+            guard claim(worker) else { throw CancellationError() }
+            return (try await run(on: worker, timeout: requested ?? timeouts.call, body), worker)
+        } catch {
+            await finish(worker)
+            throw error
         }
     }
 
@@ -334,7 +431,8 @@ final class PluginRuntime: @unchecked Sendable {
     /// Starts the runtime, runs `source.enable`, and returns the detected capabilities.
     @discardableResult
     func enable() async throws -> [String: Bool] {
-        try await withNewCall(timeout: 5) { _ in () }
+        let (_, worker) = try await withNewCall(timeout: 5) { _ in () }
+        await finish(worker)
         return capabilities
     }
 
@@ -343,7 +441,9 @@ final class PluginRuntime: @unchecked Sendable {
     /// Checks that the functions every plugin must provide exist.
     func validate() async throws {
         let required = ["getHome", "search", "isChannelUrl", "getChannel", "getChannelContents", "isContentDetailsUrl", "getContentDetails"]
-        try await run(on: try workerForCall(), timeout: timeouts.enable) { worker in
+        let worker = try freshWorker()
+        defer { discard(worker) }
+        try await run(on: worker, timeout: timeouts.enable) { worker in
             try worker.startLocked()
             for name in required {
                 let ok = (try worker.evalResult("__jb.has(\(jsString(name)))")) == "true"
@@ -359,6 +459,7 @@ final class PluginRuntime: @unchecked Sendable {
         }
         for worker in current { await worker.stop() }
         http?.close()
+        (engine as? RemoteJSEngine)?.terminate()
         let referenced: (proxy: PluginEgressProxy?, session: URLSession)? = lock.withLock {
             defer { self.referenced = nil }
             return self.referenced
@@ -372,7 +473,7 @@ final class PluginRuntime: @unchecked Sendable {
     /// Creates a fresh runtime with the same immutable plugin inputs.
     /// Handles and mutable executor state are intentionally not shared.
     func isolatedClone() -> PluginRuntime {
-        let clone = PluginRuntime(config: config, script: originalScript, settings: storedSettings,
+        let clone = PluginRuntime(approval: approval, config: config, script: checkedScript, settings: storedSettings,
                                   auth: auth, captcha: captcha, savedState: currentSavedState,
                                   approvals: approvals, resolver: resolver,
                                   localNetworkAccess: localNetworkAccess, httpSession: httpSession, timeouts: timeouts)
@@ -391,21 +492,10 @@ final class PluginRuntime: @unchecked Sendable {
         for worker in current { await worker.stop() }
     }
 
+    /// The plugin's saved state, as captured after its latest call (`finish`).
     func saveState() async -> String? {
         guard has("saveState") else { return nil }
-        do {
-            let data: Data = try await withNewCall { worker in
-                try PluginWorker.unwrap(try worker.evalResult("__jb.invoke('saveState', '[]', 'value')"))
-            }
-            let state = try? JSONDecoder().decode(String.self, from: data)
-            if let state, state.utf8.count <= PluginLimits.maximumTextLength * 10 {
-                lock.withLock { savedState = state }
-                return state
-            }
-            return nil
-        } catch {
-            return nil
-        }
+        return currentSavedState
     }
 
     /// Invokes `source.<name>(...args)`; `kind` is "value", "pager", "details" or "playlist".
@@ -419,11 +509,18 @@ final class PluginRuntime: @unchecked Sendable {
         var outcome = "failed"
         defer { signposter.endInterval("PluginCall", signpost, "\(outcome, privacy: .public)") }
         let encodedArgs = try PluginWorker.argsJSON(args)
-        let (result, serial) = try await withNewCall { worker in
+        let (result, worker) = try await withNewCall { worker in
             let js = "__jb.invoke(\(jsString(name)), \(jsString(encodedArgs)), \(jsString(kind)))"
-            return (try worker.evalResult(js), worker.serial)
+            return try worker.evalResult(js)
         }
-        let data = try await settle(result, on: nil, worker: serial, deadline: Date().addingTimeInterval(timeouts.call))
+        let data: Data
+        do {
+            data = try await settle(result, on: nil, worker: worker.serial, deadline: Date().addingTimeInterval(timeouts.call))
+        } catch {
+            await finish(worker)
+            throw error
+        }
+        await finish(worker)
         outcome = "ok"
         return PluginResult(data: data, context: outputContext)
     }
@@ -490,9 +587,10 @@ final class PluginRuntime: @unchecked Sendable {
 
     func handleFromSource(_ name: String, _ args: [Any] = []) async throws -> HandleRef? {
         let encodedArgs = try PluginWorker.argsJSON(args)
-        let data = try await withNewCall { worker in
+        let (data, worker) = try await withNewCall { worker in
             try PluginWorker.unwrap(try worker.evalResult("__jb.invokeForHandle(\(jsString(name)), \(jsString(encodedArgs)))"))
         }
+        await finish(worker)
         return try Self.decodeEnvelope(HandleRef?.self, from: data)
     }
 
@@ -643,8 +741,9 @@ final class PluginWorker: @unchecked Sendable {
     private weak var runtime: PluginRuntime?
     private let config: PluginConfig
     private let queue: DispatchQueue
-    /// Calls routed here and not finished (guarded by the runtime's lock).
+    /// Calls routed here and not finished, and when it was last used (guarded by the runtime's lock).
     var inFlight = 0
+    var lastUsed = Date()
 
     private var context: JSContextHost?
     private let dom = DOMStore()
@@ -723,7 +822,7 @@ final class PluginWorker: @unchecked Sendable {
                 }
                 let runDeadline = Date().addingTimeInterval(timeout)
                 self.deadline = runDeadline
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + self.watchdogGrace) {
                     // Atomically: the call fails, and the worker is taken out of service, before
                     // the script can return. So exactly one of the two sides cleans up.
                     let stuck: Bool = job.state.withLock {
@@ -754,7 +853,7 @@ final class PluginWorker: @unchecked Sendable {
     private func guarded(timeout: TimeInterval, _ work: () -> Void) {
         let tripwire = Tripwire()
         deadline = Date().addingTimeInterval(timeout)
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + watchdogGrace) {
             tripwire.state.withLock {
                 guard $0 == .running else { return }
                 $0 = .finished
@@ -806,14 +905,18 @@ final class PluginWorker: @unchecked Sendable {
         guard let runtime else { throw PluginError.execution("The plugin session ended") }
         let ctx: JSContextHost
         do {
-            ctx = try JSEngines.default.makeContext { [weak self] name, a, b in self?.handleHostCall(name, a, b) ?? "" }
+            let began = Date()
+            ctx = try runtime.engine.makeContext { [weak self] name, a, b in self?.handleHostCall(name, a, b) ?? "" }
+            runtime.recordStartup { $0.context = Date().timeIntervalSince(began) }
         } catch let e as JSEngineError {
             throw PluginError.execution(e.message)
         }
         context = ctx
 
         do {
+            let preludeBegan = Date()
             try eval(Self.loadPrelude(), name: "prelude.js")
+            runtime.recordStartup { $0.prelude = Date().timeIntervalSince(preludeBegan) }
             try eval("bridge.buildPlatform = \(jsString(Self.buildPlatform)); __jb.setHandleBase(\(Self.handleBase(serial: serial)));", name: "host-platform")
 
             for p in config.packages {
@@ -850,9 +953,11 @@ final class PluginWorker: @unchecked Sendable {
             let cfgData = try JSONEncoder().encode(config)
             let settingsData = try JSONSerialization.data(withJSONObject: runtime.settingsWithDefaults())
             try eval("plugin.config = \(jsLiteral(cfgData)); plugin.settings = parseSettings(\(jsLiteral(settingsData)));", name: "plugin-config")
+            let scriptBegan = Date()
             try eval(runtime.script, name: "\(pluginLogID(config.name)).js")
+            runtime.recordStartup { $0.script = Date().timeIntervalSince(scriptBegan) }
 
-            if let snap = try ctx.evaluate("__jb.capabilitySnapshot()", name: "capabilities"),
+            if let snap = try limited(ctx).evaluate("__jb.capabilitySnapshot()", name: "capabilities"),
                let d = snap.data(using: .utf8),
                let m = try? JSONDecoder().decode([String: Bool].self, from: d) { runtime.recordCapabilities(m) }
             started = true
@@ -868,7 +973,9 @@ final class PluginWorker: @unchecked Sendable {
         if enabled { return }
         let state = runtime?.currentSavedState.map { jsString($0) } ?? "null"
         let js = "__jb.invoke('enable', JSON.stringify([plugin.config, plugin.settings, \(state)]), 'value')"
+        let enableBegan = Date()
         _ = try Self.unwrap(try evalResult(js))
+        runtime?.recordStartup { $0.enable = Date().timeIntervalSince(enableBegan) }
         enabled = true
         enabledFlag.withLock { $0 = true }
     }
@@ -900,6 +1007,7 @@ final class PluginWorker: @unchecked Sendable {
     /// Once the worker is abandoned, or its call's deadline has passed, every call that could keep the
     /// script busy (HTTP, sleep, timers, browser) returns at once.
     private func handleHostCall(_ name: String, _ a: String, _ b: String) -> String {
+        runtime?.countHostCall()
         let expired = isAbandoned || (deadline.map { Date() >= $0 } ?? false)
         switch name {
         case "log":
@@ -943,7 +1051,7 @@ final class PluginWorker: @unchecked Sendable {
                 // A timer runs between calls, under its own watchdog.
                 self.guarded(timeout: self.runtime?.timeouts.call ?? PluginLimits.callTimeout) {
                     do {
-                        _ = try ctx.evaluate("__jb.fireTimer(\(id))", name: "timer")
+                        _ = try self.limited(ctx).evaluate("__jb.fireTimer(\(id))", name: "timer")
                     } catch {
                         self.runtime?.onLog?("Timer callback failed: \(error)")
                     }
@@ -994,7 +1102,7 @@ final class PluginWorker: @unchecked Sendable {
                     guard let self, !self.isAbandoned, self.contextGeneration == generation, let context = self.context else { return }
                     self.guarded(timeout: self.runtime?.timeouts.call ?? PluginLimits.callTimeout) {
                     do {
-                        _ = try context.evaluate(
+                        _ = try self.limited(context).evaluate(
                             "__jb.browserCallback(\(jsString(id)), \(jsString(value)))",
                             name: "browser-callback"
                         )
@@ -1007,23 +1115,39 @@ final class PluginWorker: @unchecked Sendable {
             script = "var browser = __makeBrowser();"
         default: return false
         }
-        do { _ = try ctx.evaluate(script, name: "package-\(name)") } catch { return false }
+        do { _ = try limited(ctx).evaluate(script, name: "package-\(name)") } catch { return false }
         installedPackages.insert(name)
         return true
     }
 
     // MARK: helpers (queue only)
 
+
+    /// `context` with the running call's remaining time as its engine time limit. Builds with
+    /// JavaScriptCore's time limit stop the script there themselves (`PluginExecutionLimits`).
+    private func limited(_ context: JSContextHost) -> JSContextHost {
+        context.setExecutionTimeLimit(deadline.map { max(0.001, $0.timeIntervalSinceNow - 0.05) })
+        return context
+    }
+
+    /// How long the watchdog waits past a deadline: a moment for an in-process engine that stops
+    /// scripts itself to do so, so the context returns rather than being abandoned.
+    private var watchdogGrace: TimeInterval {
+        guard PluginExecutionLimits.engineTimeLimit != nil, !(runtime?.engine is RemoteJSEngine) else { return 0 }
+        return 0.5
+    }
     private func eval(_ code: String, name: String) throws {
         guard let ctx = context else { throw PluginError.execution("Runtime is not running") }
-        do { _ = try ctx.evaluate(code, name: name.replacingOccurrences(of: " ", with: "_")) }
+        do { _ = try limited(ctx).evaluate(code, name: name.replacingOccurrences(of: " ", with: "_")) }
+        catch let e as JSEngineError where e.message == JSEngineError.terminatedAtDeadline { throw DeadlineMissed(whileRunning: false) }
         catch let e as JSEngineError { throw PluginError.compilation("\(e.message) (\(name):\(e.line ?? "?"))") }
     }
 
     /// Evaluates host-generated glue code and returns its string result.
     func evalResult(_ code: String) throws -> String? {
         guard let ctx = context else { throw PluginError.execution("Runtime is not running") }
-        do { return try ctx.evaluate(code, name: "host") }
+        do { return try limited(ctx).evaluate(code, name: "host") }
+        catch let e as JSEngineError where e.message == JSEngineError.terminatedAtDeadline { throw DeadlineMissed(whileRunning: false) }
         catch let e as JSEngineError { throw PluginError.execution(e.message) }
     }
 
@@ -1055,7 +1179,7 @@ final class PluginWorker: @unchecked Sendable {
         return env["pending"] as? Int
     }
 
-    private static func loadPrelude() throws -> String {
+    static func loadPrelude() throws -> String {
         guard let url = Bundle.module.url(forResource: "prelude", withExtension: "js"),
               let src = try? String(contentsOf: url, encoding: .utf8) else {
             throw PluginError.execution("prelude.js is missing from the app bundle")

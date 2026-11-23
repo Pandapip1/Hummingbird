@@ -83,6 +83,10 @@ let manifest = AppManifest(
     // keychain fallback instead of the shared access group.
     teamEntitlements: [
         "keychain-access-groups": ["$(AppIdentifierPrefix)com.eightybps.hummingbird.shared"],
+        // Age assurance (Documentation/AgeAndParentalControls.md): without it
+        // Declared Age Range throws, and every Apple device would count as
+        // having no age source. The App ID needs the capability.
+        "com.apple.developer.declared-age-range": true,
     ],
     // Xcode-only settings: which platforms the one target builds for, and
     // signing options with no xtool counterpart.
@@ -94,5 +98,15 @@ let manifest = AppManifest(
         ("SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD", "NO"),
         ("ENABLE_HARDENED_RUNTIME", "YES"),
         ("REGISTER_APP_GROUPS", "YES"),
-    ]
+    ],
+    // The plugin engine (PluginEngine) and JavaScriptCore's script time limit, which only builds
+    // outside the App Store use (Apps/iOS/DirectDistribution.swift).
+    packageProducts: ["PluginEngine", "CJSCExecutionLimit"],
+    // The macOS plugin host: an XPC service with a sandbox of its own and no network
+    // (Apps/PluginHostXPC), one process per plugin, killed on a deadline.
+    embeddedTargets: [(target: "PluginHostXPC", destination: .macOS)],
+    // How the app is distributed. Builds for the App Store set HUMMINGBIRD_DISTRIBUTION=appstore:
+    // APP_STORE is then defined and nothing that is not public API is compiled in
+    // (scripts/check-app-store-symbols verifies the binary).
+    distributions: [(name: "direct", conditions: []), (name: "appstore", conditions: ["APP_STORE"])]
 )

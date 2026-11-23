@@ -155,7 +155,8 @@ final class FeedFailureTests: XCTestCase {
     }
 
     private func channelRuntime() throws -> PluginRuntime {
-        PluginRuntime(config: try config("fake-fixture", name: "Fake"), script: channelScript,
+        let fake = try config("fake-fixture", name: "Fake")
+        return PluginRuntime(approval: testLoadApproval(fake), config: fake, script: try ScriptSignature.check(channelScript, for: fake),
                       settings: [:], auth: nil, captcha: nil)
     }
 
@@ -168,12 +169,14 @@ final class FeedFailureTests: XCTestCase {
             if request.url?.path == "/integrity" { return (200, #"{"token":"fixture-token"}"#) }
             return (200, body.value)
         }
+        let twitchConfig = try config("twitch-fixture", name: "Twitch", allow: ["gql.twitch.tv"], packages: ["Http"])
         let twitch = PluginRuntime(
-            config: try config("twitch-fixture", name: "Twitch", allow: ["gql.twitch.tv"], packages: ["Http"]),
-            script: twitchShapedScript, settings: [:], auth: nil, captcha: nil, resolver: TestResolver.publicOnly,
+            approval: testLoadApproval(twitchConfig), config: twitchConfig,
+            script: try ScriptSignature.check(twitchShapedScript, for: twitchConfig), settings: [:], auth: nil, captcha: nil, resolver: TestResolver.publicOnly,
             httpSession: session
         )
-        let other = PluginRuntime(config: try config("other-fixture", name: "Other"), script: otherSourceScript,
+        let otherConfig = try config("other-fixture", name: "Other")
+        let other = PluginRuntime(approval: testLoadApproval(otherConfig), config: otherConfig, script: try ScriptSignature.check(otherSourceScript, for: otherConfig),
                                   settings: [:], auth: nil, captcha: nil)
         let feed = makeFeed()
 

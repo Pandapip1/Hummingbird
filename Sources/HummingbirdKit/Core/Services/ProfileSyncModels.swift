@@ -37,6 +37,10 @@ enum HummingbirdProfileSchema {
         RetentionFloor(rank: entry.date.timeIntervalSinceReferenceDate,
                        path: history.rawValue + "/" + key(for: entry.id).rawValue)
     }
+    static let parentalApproval = NSID(rawValue: "com.eightybps.hummingbird.parentalApproval")!
+    static let ageRange = NSID(rawValue: "com.eightybps.hummingbird.ageRange")!
+    /// Single-record collections (one per profile) use this key.
+    static let singletonKey = RecordKey(rawValue: "self")!
 
     static func key(for stableIdentity: String) -> RecordKey {
         let digest = SHA256.hash(data: Data(stableIdentity.utf8))
@@ -82,6 +86,8 @@ enum ProfileEntity: Hashable, Sendable {
     case watchLater(SyncedWatchLater)
     case history(HistoryEntry)
     case plugin(SyncedPlugin)
+    case parentalApproval(SyncedParentalApproval)
+    case ageRange(SyncedAgeRange)
 
     /// The collections `LibraryStore` holds.
     static let libraryCollections: Set<NSID> = [
@@ -96,6 +102,8 @@ enum ProfileEntity: Hashable, Sendable {
         case .watchLater: HummingbirdProfileSchema.watchLater
         case .history: HummingbirdProfileSchema.history
         case .plugin: HummingbirdProfileSchema.plugin
+        case .parentalApproval: HummingbirdProfileSchema.parentalApproval
+        case .ageRange: HummingbirdProfileSchema.ageRange
         }
     }
 
@@ -106,6 +114,8 @@ enum ProfileEntity: Hashable, Sendable {
         case .watchLater(let value): HummingbirdProfileSchema.key(for: value.id)
         case .history(let value): HummingbirdProfileSchema.key(for: value.id)
         case .plugin(let value): HummingbirdProfileSchema.key(for: value.pluginID)
+        case .parentalApproval(let value): HummingbirdProfileSchema.key(for: value.pluginID)
+        case .ageRange: HummingbirdProfileSchema.singletonKey
         }
     }
 
@@ -116,6 +126,8 @@ enum ProfileEntity: Hashable, Sendable {
         case .watchLater(let value): return try .encoding(value)
         case .history(let value): return try .encoding(value)
         case .plugin(let value): return try .encoding(value)
+        case .parentalApproval(let value): return try .encoding(value)
+        case .ageRange(let value): return try .encoding(value)
         }
     }
 
@@ -130,6 +142,10 @@ enum ProfileEntity: Hashable, Sendable {
             return .history(try payload.decode(HistoryEntry.self))
         } else if collection == HummingbirdProfileSchema.plugin {
             return .plugin(try payload.decode(SyncedPlugin.self))
+        } else if collection == HummingbirdProfileSchema.parentalApproval {
+            return .parentalApproval(try payload.decode(SyncedParentalApproval.self))
+        } else if collection == HummingbirdProfileSchema.ageRange {
+            return .ageRange(try payload.decode(SyncedAgeRange.self))
         }
         return nil
     }

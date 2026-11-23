@@ -6,10 +6,15 @@ public struct JSEngineError: Error, CustomStringConvertible {
     public var line: String?
     public init(message: String, line: String? = nil) { self.message = message; self.line = line }
     public var description: String { line.map { "\(message) (line \($0))" } ?? message }
+    /// The message of a script the engine stopped at its time limit.
+    public static let terminatedAtDeadline = "The script ran past its time limit and was stopped"
 }
 
 /// One isolated JavaScript global environment. Not thread-safe: callers serialise access (PluginRuntime uses a queue).
 public protocol JSContextHost: AnyObject {
+    /// Bounds how long scripts in this context may run from now on (nil clears it). Engines that
+    /// cannot enforce it ignore it; `PluginExecutionLimits` says what each build enforces.
+    func setExecutionTimeLimit(_ seconds: Double?)
     /// Runs `code` as a global script. Returns the JS string conversion of the result, or nil for undefined/null.
     func evaluate(_ code: String, name: String) throws -> String?
     /// Releases the engine resources. The context must not be used afterwards.
@@ -59,8 +64,25 @@ public enum JSEngines {
     }
 }
 
-private struct UnavailableJavaScriptCoreEngine: JSEngine {
+private struct UnavailableJavaScriptCoreEngine: JSEngine, Sendable {
     func makeContext(hostCall: @escaping (_ name: String, _ a: String, _ b: String) -> String) throws -> JSContextHost {
         throw JSEngineError(message: "JavaScriptCore is not available on this platform")
+    }
+}
+
+public extension JSContextHost {
+    func setExecutionTimeLimit(_ seconds: Double?) {}
+}
+
+public extension JSEngines {
+    /// This platform's in-process engine, for the plugin host process.
+    static func makeInProcess() -> any JSEngine & Sendable {
+        #if canImport(JavaScriptCore)
+        return JavaScriptCoreEngine()
+        #elseif canImport(CJavaScriptCoreGTK)
+        return JavaScriptCoreGTKEngine()
+        #else
+        return UnavailableJavaScriptCoreEngine()
+        #endif
     }
 }

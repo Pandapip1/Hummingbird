@@ -444,6 +444,16 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Polls a pending promise on its worker until it settles or `deadline` passes.
     private func settle(_ initial: String?, on handleOrNil: Int?, worker serial: Int, deadline: Date) async throws -> Data {
+        do {
+            return try await settleResult(initial, worker: serial, deadline: deadline)
+        } catch {
+            // A call that threw (or whose promise failed) keeps its machine out of the pool.
+            lock.withLock { workers.first { $0.serial == serial } }?.markNotReusable()
+            throw error
+        }
+    }
+
+    private func settleResult(_ initial: String?, worker serial: Int, deadline: Date) async throws -> Data {
         var result = initial
         while let id = PluginWorker.pendingPromise(in: result) {
             guard Date() < deadline else { throw PluginError.timeout("\(config.name)’s asynchronous operation timed out") }

@@ -60,21 +60,23 @@ final class PeriodicSyncTests: XCTestCase {
         let waits = Waits()
         var passes = 0
         let saving = Flag()
-        var sync: PeriodicSync!
-        sync = PeriodicSync(pass: {
+        let sync = PeriodicSync(pass: {
             passes += 1
-            sync.stop()
             return true
         }, defers: { saving.isSet }, sleep: { wait in
             waits.record(wait)
             if waits.all.count == 3 { saving.clear() }
+            // The wait after the pass is held, so the test can look at it.
+            if waits.all.count > 3 { try await Task.sleep(for: .seconds(60)) }
             await Task.yield()
         })
         sync.start()
-        try await waitUntil { passes == 1 }
-        // Two skipped (energy saving) waits backed off; then a pass ran.
-        XCTAssertEqual(waits.all, [30, 60, 120].map { Duration.seconds($0) })
-        XCTAssertEqual(sync.interval, SyncBackoff.first, "a pass that brought changes resets the wait")
+        try await waitUntil { waits.all.count == 4 }
+        sync.stop()
+        // Two skipped (energy saving) waits backed off; then a pass ran and,
+        // having brought changes, the next wait is the shortest again.
+        XCTAssertEqual(passes, 1)
+        XCTAssertEqual(waits.all, [30, 60, 120, 30].map { Duration.seconds($0) })
     }
 
     private final class Flag: Sendable {

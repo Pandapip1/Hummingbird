@@ -276,6 +276,36 @@ enum Matroska {
         return File(timecodeScale: timecodeScale, duration: duration, tracks: tracks, cues: index, end: end)
     }
 
+    /// The headers of a WebM DASH initialization segment (EBML header, then
+    /// the segment's seek head, info and tracks; no clusters).
+    static func initialization(_ bytes: [UInt8]) throws -> File {
+        guard bytes.count >= 4, Array(bytes[0..<4]) == ProgressiveMP4.be32Bytes(ID.ebml),
+              let ebml = header(bytes, at: 0), let ebmlSize = ebml.size else { throw Failure.notMatroska }
+        let segmentOffset = ebml.headerLength + Int(clamping: ebmlSize)
+        guard let segment = header(bytes, at: segmentOffset), segment.id == ID.segment else {
+            throw Failure.malformed("no segment")
+        }
+        let start = segmentOffset + segment.headerLength
+        var timecodeScale: UInt64 = 1_000_000
+        var duration: Double?
+        var tracks: [TrackInfo] = []
+        for child in children(bytes, in: start..<bytes.count) {
+            switch child.id {
+            case ID.info:
+                for field in children(bytes, in: child.data) {
+                    if field.id == ID.timecodeScale { timecodeScale = max(1, unsigned(bytes, field.data)) }
+                    if field.id == ID.duration { duration = float(bytes, field.data) }
+                }
+            case ID.tracks:
+                tracks = parseTracks(Array(bytes[child.data]))
+            default:
+                break
+            }
+        }
+        guard !tracks.isEmpty else { throw Failure.malformed("no tracks") }
+        return File(timecodeScale: timecodeScale, duration: duration, tracks: tracks, cues: [], end: Int64(bytes.count))
+    }
+
     /// A file without cues: every cluster is a possible segment start.
     private static func indexClusters(from start: Int64, end: Int64, read: RemuxRead) async throws -> [CuePoint] {
         var points: [CuePoint] = []
@@ -748,6 +778,14 @@ enum Matroska {
                              read: RemuxRead) async throws -> Data {
         let bytes = [UInt8](try await read(segment.bytes))
         guard Int64(bytes.count) == Int64(segment.bytes.count) else { throw Failure.malformed("short cluster read") }
+        return try fragment(clusters: bytes, file: file, track: track, segment: segment, sequence: sequence)
+    }
+
+    /// The clusters in `bytes` (a run of whole clusters: a cached file's
+    /// segment, or one WebM DASH media segment) as one `moof` + `mdat` for
+    /// `track`; `segment` gives its start and its end (for the last frame's duration).
+    static func fragment(clusters bytes: [UInt8], file: File, track: TrackInfo, segment: Segment,
+                         sequence: UInt32) throws -> Data {
         let frames = try Self.frames(in: bytes, trackNumber: track.number)
         let scale = timescale(for: file.timecodeScale)
         let toTicks = { (units: Int64) -> Int64 in

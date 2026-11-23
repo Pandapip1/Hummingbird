@@ -230,6 +230,50 @@ final class MatroskaTests: XCTestCase {
         XCTAssertEqual(parsed.map { Array(cluster[$0.data]) }, frames)
     }
 
+    /// Generated (DASH) WebM: an initialization segment of headers and
+    /// tracks, then media segments of clusters, each remuxed as it is served.
+    func testWebMDashSegmentsBecomeFragmentedMP4() throws {
+        let header = element(M.ID.ebml, element(M.ID.docType, Array("webm".utf8)))
+        let tracks = element(M.ID.tracks,
+                             element(M.ID.trackEntry, uint(M.ID.trackNumber, 1) + uint(M.ID.trackType, 1)
+                                     + element(M.ID.codecID, Array("V_VP9".utf8))
+                                     + element(M.ID.video, uint(M.ID.pixelWidth, 1280) + uint(M.ID.pixelHeight, 720))))
+        // A live-style segment of unknown size.
+        let initialization = header + idBytes(M.ID.segment) + [0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+            + element(M.ID.info, uint(M.ID.timecodeScale, 1_000_000)) + tracks
+        let frames = [vp9Keyframe(1), vp9Inter(2), vp9Inter(3)]
+        var content = uint(M.ID.timestamp, 10_000)
+        for (index, frame) in frames.enumerated() {
+            content += simpleBlock(track: 1, relative: Int16(index * 1000), key: index == 0, frame)
+        }
+        let media = element(M.ID.cluster, content)
+
+        let track = try WebMDashTrack(initialization: initialization, firstSegment: media)
+        XCTAssertEqual(track.description.codecs, "vp09.00.31.08")
+        let text = String(decoding: track.initializationSegment(), as: UTF8.self)
+        XCTAssertTrue(text.contains("vp09") && text.contains("mvex"))
+        let fragment = try parseFragment(try track.mediaSegment(media, index: 2, start: 10, duration: 3))
+        XCTAssertEqual(fragment.payload, Array(frames.joined()))
+        XCTAssertEqual(fragment.decodeTime, 10_000, "cluster times are absolute")
+        XCTAssertEqual(fragment.durations, [1000, 1000, 1000], "the last frame lasts to the segment's end")
+        XCTAssertEqual(fragment.sync, [true, false, false])
+    }
+
+    func testWebMDashManifestOmitsCodecsAndKnowsItsSegments() throws {
+        let mpd = """
+        <MPD><Period><AdaptationSet contentType="video" mimeType="video/webm">
+        <Representation id="v" bandwidth="1000" width="1280" height="720" codecs="vp9">
+        <SegmentTemplate timescale="1000" startNumber="1" initialization="https://grayjay.internal/video/init.webm" media="https://grayjay.internal/video/$Number$.webm">
+        <SegmentTimeline><S d="4000" r="1"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>
+        """
+        let result = try DashToHLS.convert(mpd, baseURL: "http://127.0.0.1:1/x")
+        XCTAssertFalse(result.master.contains("CODECS"), "vp9 is no MP4 codec string")
+        let timeline = try XCTUnwrap(result.webm["video"])
+        XCTAssertEqual(timeline.initialization, "/video/init.webm")
+        XCTAssertEqual(timeline.index["/video/2.webm"], 1)
+        XCTAssertEqual(timeline.starts, [0, 4])
+    }
+
     func testVP9HeaderGivesProfileDepthAndChroma() {
         let header = M.VP9Header(vp9Keyframe(0))
         XCTAssertEqual(header?.profile, 0)

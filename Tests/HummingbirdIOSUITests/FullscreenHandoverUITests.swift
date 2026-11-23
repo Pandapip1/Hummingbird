@@ -13,6 +13,7 @@ final class FullscreenHandoverUITests: XCTestCase {
         XCTAssertTrue(state.waitForExistence(timeout: 60))
         XCTAssertTrue(waitUntil(60) { state.label == "playing" }, "the clip plays (state: \(state.label))")
         assertOneSurface(app, "inline")
+        assertTouchTargets(app, "inline")
 
         reveal(app)
         let enter = app.buttons["Enter Full Screen"]
@@ -20,6 +21,7 @@ final class FullscreenHandoverUITests: XCTestCase {
         XCTAssertTrue(tapWhenShown(app, enter) { app.buttons["Exit Full Screen"].exists }, "full screen opens")
         XCTAssertTrue(app.buttons["Exit Full Screen"].waitForExistence(timeout: 10) || revealAndFind(app, "Exit Full Screen"))
         assertOneSurface(app, "full screen")
+        assertTouchTargets(app, "full screen")
 
         let exit = app.buttons["Exit Full Screen"]
         // Hidden controls stay in the accessibility tree (reachable by name) but
@@ -90,6 +92,27 @@ final class FullscreenHandoverUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// Every player control takes touches over at least 44 × 44 pt, its glass
+    /// included (the UI audit found icons whose glass took no touches).
+    @MainActor
+    private func assertTouchTargets(_ app: XCUIApplication, _ step: String) {
+        reveal(app)
+        let names = ["Back 10 seconds", "Play", "Pause", "Forward 10 seconds", "Picture in Picture",
+                     "Exit Picture in Picture", "Enter Full Screen", "Exit Full Screen", "Speed"]
+        var checked = 0
+        // Frames are in points, computed in floating point: 43.99999 is 44.
+        let minimum = 44 - 0.01
+        for name in names {
+            for button in app.buttons.matching(NSPredicate(format: "label == %@", name)).allElementsBoundByIndex {
+                checked += 1
+                let frame = button.frame
+                XCTAssertGreaterThanOrEqual(frame.width, minimum, "\(step): \(name) is \(frame.width) pt wide")
+                XCTAssertGreaterThanOrEqual(frame.height, minimum, "\(step): \(name) is \(frame.height) pt tall")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(checked, 4, "\(step): the player's controls are there to check")
     }
 
     @MainActor

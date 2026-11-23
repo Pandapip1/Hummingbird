@@ -176,6 +176,30 @@ final class MediaPipelineTests: XCTestCase {
 
     // MARK: downloader
 
+    /// A file with boxes after its last indexed segment (an `mfra`): its index
+    /// is shorter than the file. That is the same file, so nothing is reset
+    /// and nothing is downloaded twice.
+    func testATrackWithDataAfterItsIndexIsNotDownloadedTwice() async throws {
+        var file = FakeMedia.fragmentedMP4(segmentSizes: [300_000, 700_000], segmentMilliseconds: 4_000)
+        let indexedBytes = Int64(file.data.count)
+        file.data.append(FakeMedia.box("mfra", Data(count: 200)))
+        let upstream = FakeUpstream(file: file.data, failures: 0)
+        let cache = temporaryCache()
+        let track = try await cache.open(identity: "trailing")
+        let downloader = TrackDownloader(role: .video, cache: cache, track: track,
+                                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test/t.mp4"))),
+                                         transport: upstream, configuration: fastRetry)
+        await downloader.start()
+        guard case .indexed = try await bounded({ try await downloader.trackLayout() }) else {
+            return XCTFail("expected an indexed layout")
+        }
+        try await bounded { try await downloader.waitUntilAvailable(0..<indexedBytes) }
+        let served = await upstream.bytesServed
+        XCTAssertLessThan(served, Int64(file.data.count) + fastRetry.headerProbeBytes / 2,
+                          "the header was not downloaded again after a reset (served \(served) of \(file.data.count))")
+        await downloader.stop()
+    }
+
     func testDownloaderFetchesWholeTrackThroughNetworkFailures() async throws {
         let file = FakeMedia.fragmentedMP4(segmentSizes: [300_000, 700_000, 1_200_000], segmentMilliseconds: 4_000)
         let upstream = FakeUpstream(file: file.data, failures: 4)
@@ -736,6 +760,8 @@ private actor FakeUpstream: MediaTransport {
     private var failures: Int
     private let refusedPath: String?
     private(set) var requestCount = 0
+    /// Body bytes returned, to tell when something is downloaded twice.
+    private(set) var bytesServed: Int64 = 0
 
     init(file: Data, failures: Int, refusedPath: String? = nil) {
         files = ["*": file]
@@ -763,9 +789,11 @@ private actor FakeUpstream: MediaTransport {
         let total = Int64(file.count)
         guard let header = request.value(forHTTPHeaderField: "Range"),
               let range = LocalMediaServer.parseRange(header, total: total) else {
+            bytesServed += Int64(file.count)
             return (file, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])))
         }
         let body = file.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
+        bytesServed += Int64(body.count)
         let headers = ["Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)"]
         return (body, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)))
     }

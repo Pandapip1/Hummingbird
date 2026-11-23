@@ -10,8 +10,12 @@ import SwiftOpenUI
 enum WebMDashFixture {
     /// Registers the fixture in `directory` (manifest.mpd, video/, audio/) and
     /// returns the master playlist's loopback URL, and the runtime to stop after.
-    static func register(directory: URL, proxy: PluginMediaProxy) async throws -> (URL, PluginRuntime) {
-        let manifest = try String(contentsOf: directory.appendingPathComponent("manifest.mpd"), encoding: .utf8)
+    /// `identity` and `useCache` as a player passes them (tests of the cache);
+    /// `manifestSuffix` changes the manifest text as a new session would;
+    /// `failing` makes every request fail (only the cache can answer).
+    static func register(directory: URL, proxy: PluginMediaProxy, identity: String? = nil, useCache: Bool = false,
+                         manifestSuffix: String = "", failing: Bool = false) async throws -> (URL, PluginRuntime) {
+        let manifest = try String(contentsOf: directory.appendingPathComponent("manifest.mpd"), encoding: .utf8) + manifestSuffix
         var segments: [String: String] = [:]
         for kind in ["video", "audio"] {
             let folder = directory.appendingPathComponent(kind)
@@ -22,10 +26,12 @@ enum WebMDashFixture {
         let table = String(decoding: try JSONSerialization.data(withJSONObject: segments), as: UTF8.self)
         let script = """
         var SEGMENTS = \(table);
+        var FAILING = \(failing);
         source.enable = function () {};
         source.fixtureExecutor = function () {
             return {
                 executeRequest: function (url, headers) {
+                    if (FAILING) throw new ScriptException("The network is unreachable");
                     var path = url.replace("https://grayjay.internal", "").split("?")[0];
                     var bytes = SEGMENTS[path];
                     if (!bytes) throw new ScriptException("No fixture segment " + path);
@@ -49,7 +55,7 @@ enum WebMDashFixture {
             throw PluginError.execution("The fixture did not return an executor")
         }
         let url = try await proxy.register(manifest: manifest, runtime: runtime, executor: executor.handle,
-                                           prefetch: false, useCache: false)
+                                           prefetch: false, useCache: useCache, identity: identity)
         return (url, runtime)
     }
 }

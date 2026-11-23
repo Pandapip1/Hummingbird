@@ -102,13 +102,15 @@ final class FullscreenHandoverUITests: XCTestCase {
         let names = ["Back 10 seconds", "Play", "Pause", "Forward 10 seconds", "Picture in Picture",
                      "Exit Picture in Picture", "Enter Full Screen", "Exit Full Screen", "Speed"]
         var checked = 0
+        // Frames are in points, computed in floating point: 43.99999 is 44.
+        let minimum = 44 - 0.01
         for name in names {
-            let button = app.buttons[name]
-            guard button.exists else { continue }
-            checked += 1
-            let frame = button.frame
-            XCTAssertGreaterThanOrEqual(frame.width, 44, "\(step): \(name) is \(frame.width) pt wide")
-            XCTAssertGreaterThanOrEqual(frame.height, 44, "\(step): \(name) is \(frame.height) pt tall")
+            for button in app.buttons.matching(NSPredicate(format: "label == %@", name)).allElementsBoundByIndex {
+                checked += 1
+                let frame = button.frame
+                XCTAssertGreaterThanOrEqual(frame.width, minimum, "\(step): \(name) is \(frame.width) pt wide")
+                XCTAssertGreaterThanOrEqual(frame.height, minimum, "\(step): \(name) is \(frame.height) pt tall")
+            }
         }
         XCTAssertGreaterThanOrEqual(checked, 4, "\(step): the player's controls are there to check")
     }

@@ -30,17 +30,22 @@ final class MainThreadResponsivenessTests: XCTestCase {
         let selectionStart = clock.now
         let options = PlaybackSelector.options(for: details, preferredLanguage: "en")
         print("[responsiveness] options=\(options.count) selection=\(selectionStart.duration(to: clock.now))")
+        // Outcomes are asserted after the probe stops: XCTest's first assertion
+        // does one-off work on the main thread (a sampled 102 ms stall under load
+        // was inside XCTAssertNotNil), which is not the player's.
+        var failures: [String] = []
         for round in 0..<3 {
             let started = clock.now
             await model.load(details: details, runtime: runtime, library: library, sourceURL: "https://example.test/v/\(round)")
             print("[responsiveness] load \(round) took \(started.duration(to: clock.now)) worst so far \(probe.worstSoFar)")
-            XCTAssertNotNil(model.selected, "a source was chosen (\(model.errorMessage ?? "no error"))")
+            if model.selected == nil { failures.append("load \(round): \(model.errorMessage ?? "no error")") }
             // Let the seek bar's content be built (off the main actor).
             try await Task.sleep(for: .milliseconds(50))
         }
         let worst = probe.stop()
         model.teardown()
         await runtime.stop()
+        XCTAssertEqual(failures, [], "a source was chosen every time")
         XCTAssertGreaterThan(probe.samples, 5, "the probe ran")
         let stack = probe.worstStack
         if !stack.isEmpty { print("[responsiveness] main thread during the longest wait (\(worst)):\n  " + stack.joined(separator: "\n  ")) }

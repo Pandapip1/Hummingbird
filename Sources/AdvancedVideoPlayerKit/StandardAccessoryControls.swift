@@ -211,7 +211,7 @@ public extension SubtitleControl where AppearanceControls == EmptyView {
 /// The smallest control over the video, glass included (Human Interface
 /// Guidelines: 44 × 44 pt). UI tests check every player control against it.
 public enum PlayerHitTarget {
-    public static let minimum: CGFloat = 44
+    public static let minimum: Double = 44
 }
 
 extension View {

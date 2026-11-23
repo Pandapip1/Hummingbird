@@ -49,6 +49,42 @@ final class PlayerRedrawTests: XCTestCase {
         XCTAssertFalse(unchanged.value, "the same position notifies no one")
     }
 
+    /// An `@Observable` setter notifies on every write, equal or not: what
+    /// runs per tick (and per download update) writes observed state only
+    /// through `setIfChanged`. Bare writes there are allowed only to state
+    /// nobody observes.
+    func testPerTickCodeWritesObservedStateOnlyWhenItChanges() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/HummingbirdKit/UI/PlayerModel.swift"), encoding: .utf8)
+        let unobserved: Set<String> = ["lastHistoryWrite", "localRecoveryAttempts"]
+        for function in ["private func tick(", "private func observePipeline("] {
+            let start = try XCTUnwrap(source.range(of: function), function)
+            let end = try XCTUnwrap(source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex))
+            let body = source[start.lowerBound..<end.lowerBound]
+            let writes = try NSRegularExpression(pattern: #"^\s*(?:self\.)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|\+=|-=)\s"#, options: .anchorsMatchLines)
+            let text = String(body)
+            for match in writes.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                let name = (text as NSString).substring(with: match.range(at: 1))
+                XCTAssertTrue(unobserved.contains(name), "\(function) writes \(name) directly; use setIfChanged")
+            }
+        }
+    }
+
+    func testRecordingTheSameProgressNotifiesNoOne() throws {
+        let library = makeTestAppModel().library
+        let video = SavedVideo(try JSONDecoder().decode(ContentItem.self, from: Data(
+            #"{"contentType":1,"id":{"pluginId":"t","value":"v"},"name":"V","url":"https://t/v"}"#.utf8)))
+        let now = Date()
+        library.recordProgress(video, seconds: 10, now: now)
+        let changed = Flag()
+        withObservationTracking { _ = library.history } onChange: { changed.set() }
+        library.recordProgress(video, seconds: 10, now: now)
+        XCTAssertFalse(changed.value, "the same entry is not written again")
+        library.recordProgress(video, seconds: 15, now: now)
+        XCTAssertTrue(changed.value, "a new position is")
+    }
+
     func testTicksSlowDownWhenNobodyWatchesThePosition() {
         let backend = TickingBackend()
         let model = makeTestPlayerModel(backend: backend)

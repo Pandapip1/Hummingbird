@@ -1139,7 +1139,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             for await snapshot in session.states {
                 guard !Task.isCancelled, let self else { return }
                 self.startup?.observe(snapshot)
-                if self.vodSession === session { self.pipeline = snapshot }
+                if self.vodSession === session { self.setIfChanged(\.pipeline, snapshot) }
             }
         }
     }
@@ -1368,19 +1368,25 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
 
     // MARK: ticking
 
+    /// Writes `value` only when it differs: an `@Observable` setter notifies
+    /// on every write, so an equal value would still redraw its readers.
+    private func setIfChanged<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<PlayerModel, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
-        // Only what changed is assigned: every assignment redraws what reads it.
-        let duration = authoritativeDuration
-        if duration != self.duration { self.duration = duration }
+        // Only what changed is written (`setIfChanged`): every write of an
+        // observed value wakes what reads it, equal or not.
+        setIfChanged(\.duration, authoritativeDuration)
         let activity = backend?.activity ?? .paused
-        if activity != engineActivity { engineActivity = activity }
-        if activity.wantsToPlay != isPlaying { isPlaying = activity.wantsToPlay }
+        setIfChanged(\.engineActivity, activity)
+        setIfChanged(\.isPlaying, activity.wantsToPlay)
         if isPlaying, seconds > playbackTime {
             startup?.firstFrame(at: seconds)
             if seconds - playbackTime < 2 { localRecoveryAttempts = 0 }
         }
-        playbackTime = seconds
+        setIfChanged(\.playbackTime, seconds)
         if Date().timeIntervalSince(lastHistoryWrite) >= 4.5, let details, let library, seconds > 1 {
             lastHistoryWrite = Date()
             library.recordProgress(SavedVideo(details.item), seconds: seconds)

@@ -55,6 +55,14 @@ actor LocalMediaServer {
     private var serverChannel: (any Channel)?
     /// Times the listener was re-established (tests, diagnostics).
     private(set) var restarts = 0
+    /// Accepted connections, so a suspension (and its simulation) can close them.
+    private var connections: [ObjectIdentifier: any Channel] = [:]
+    /// Reclaimed as a suspension does: nothing is bound again until the app resumes.
+    private var suspended = false
+
+    init() {
+        LoopbackLifecycle.shared.register(self)
+    }
 
     /// Registers a presentation; returns its base URL (ending in `/`).
     func register(_ presentation: Presentation) async throws -> (id: String, base: URL) {
@@ -173,6 +181,8 @@ actor LocalMediaServer {
         serverChannel = nil
         port = nil
         restarts += 1
+        // A suspended app runs nothing: the listener comes back when it resumes.
+        guard !suspended else { return }
         let previous = lastPort
         // Bind again until it works: the player may be waiting on it.
         var delay = Duration.milliseconds(100)
@@ -224,8 +234,13 @@ actor LocalMediaServer {
         try? await serverChannel?.close()
     }
 
+    private func track(_ channel: any Channel) { connections[ObjectIdentifier(channel)] = channel }
+    private func untrack(_ channel: any Channel) { connections[ObjectIdentifier(channel)] = nil }
+
     private nonisolated func serve(_ connection: Connection) async {
         let channel = connection.channel
+        await track(channel)
+        defer { Task { await self.untrack(channel) } }
         do {
             try await connection.executeThenClose { inbound, outbound in
                 var head: HTTPRequestHead?
@@ -424,5 +439,21 @@ extension TrackDownloader {
             if isStopped { throw CancellationError() }
             try await Task.sleep(for: .milliseconds(100))
         }
+    }
+}
+
+extension LocalMediaServer: SuspendedResource {
+    func resumeAfterSuspension() async -> PortMove? {
+        suspended = false
+        _ = try? await ensureListening()
+        return nil
+    }
+
+    func reclaimAsSuspensionWould() async {
+        suspended = true
+        let open = Array(connections.values)
+        connections = [:]
+        try? await serverChannel?.close()
+        for channel in open { try? await channel.close() }
     }
 }

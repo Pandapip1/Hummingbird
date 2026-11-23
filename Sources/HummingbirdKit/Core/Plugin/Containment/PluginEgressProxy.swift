@@ -27,6 +27,8 @@ final class PluginEgressProxy: Sendable {
         let denials = Mutex<[String: NetworkDenial]>([:])
         let connected = Mutex<[CheckedDestination]>([])
         let active = Mutex(0)
+        /// Accepted connections, so a suspension (and its simulation) can close them.
+        let connections = Mutex<[ObjectIdentifier: any Channel]>([:])
 
         init(policy: PluginNetworkPolicy, maximumConnections: Int) {
             self.policy = policy
@@ -62,7 +64,9 @@ final class PluginEgressProxy: Sendable {
             .serverChannelOption(ChannelOptions.backlog, value: 64)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { child in
-                child.eventLoop.makeCompletedFuture {
+                shared.connections.withLock { $0[ObjectIdentifier(child)] = child }
+                child.closeFuture.whenComplete { _ in shared.connections.withLock { $0[ObjectIdentifier(child)] = nil } }
+                return                 child.eventLoop.makeCompletedFuture {
                     try child.pipeline.syncOperations.addHandler(ConnectHandler(shared: shared))
                 }
             }
@@ -72,7 +76,9 @@ final class PluginEgressProxy: Sendable {
             server.close(promise: nil)
             throw NetworkDenial.invalid
         }
-        return PluginEgressProxy(port: port, server: server, shared: shared)
+        let proxy = PluginEgressProxy(port: port, server: server, shared: shared)
+        LoopbackLifecycle.shared.register(proxy)
+        return proxy
     }
 
     func close() { server.close(promise: nil) }
@@ -312,4 +318,14 @@ final class RefusingURLProtocol: URLProtocol {
         client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
     }
     override func stopLoading() {}
+}
+
+extension PluginEgressProxy: SuspendedResource {
+    func resumeAfterSuspension() async -> PortMove? { nil }
+
+    func reclaimAsSuspensionWould() async {
+        let open = shared.connections.withLock { open in defer { open = [:] }; return Array(open.values) }
+        try? await server.close()
+        for child in open { try? await child.close() }
+    }
 }

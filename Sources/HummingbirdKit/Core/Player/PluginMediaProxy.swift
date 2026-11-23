@@ -3,6 +3,7 @@ import NIOCore
 import NIOHTTP1
 import NIOPosix
 import os
+import Synchronization
 
 /// Exposes plugin-generated DASH media as a loopback fMP4 HLS presentation.
 /// The player requests ordinary HLS URLs while segment bytes remain owned by
@@ -53,6 +54,10 @@ actor PluginMediaProxy {
     private var order: [String] = []
     private var group: MultiThreadedEventLoopGroup?
     private var channel: Channel?
+    /// The port the player's URLs name: kept when the listener is bound again.
+    private var boundPort: Int?
+    /// Accepted connections, so a suspension (and its simulation) can close them.
+    private let connections = Mutex<[ObjectIdentifier: any Channel]>([:])
     private var starting: Task<Channel, Error>?
     private var foregroundRequests = 0
     private var lastForegroundRequest: Date?
@@ -62,6 +67,7 @@ actor PluginMediaProxy {
     /// caching media in their caches directory.
     init(cache: UMPMediaCache) {
         mediaCache = cache
+        LoopbackLifecycle.shared.register(self)
     }
 
     func register(manifest: String, runtime: PluginRuntime, executor: Int, prefetch: Bool = true,
@@ -271,7 +277,10 @@ actor PluginMediaProxy {
             let channel = try await ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.backlog, value: 16)
                 .childChannelInitializer { child in
-                    child.pipeline.configureHTTPServerPipeline().flatMap {
+                    let connections = self.connections
+                    connections.withLock { $0[ObjectIdentifier(child)] = child }
+                    child.closeFuture.whenComplete { _ in connections.withLock { $0[ObjectIdentifier(child)] = nil } }
+                    return child.pipeline.configureHTTPServerPipeline().flatMap {
                         child.pipeline.addHandler(HTTPHandler(proxy: self))
                     }
                 }
@@ -697,5 +706,15 @@ struct WebMDashTrack: Sendable {
                                        bytes: 0..<Int64(bytes.count))
         return try Matroska.fragment(clusters: bytes, file: file, track: track, segment: segment,
                                      sequence: UInt32(index + 1))
+    }
+}
+
+extension PluginMediaProxy: SuspendedResource {
+    func resumeAfterSuspension() async -> PortMove? { nil }
+
+    func reclaimAsSuspensionWould() async {
+        let open = connections.withLock { open in defer { open = [:] }; return Array(open.values) }
+        try? await channel?.close()
+        for child in open { try? await child.close() }
     }
 }

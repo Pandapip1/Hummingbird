@@ -103,6 +103,7 @@ actor MediaDownloads {
         self.cache = cache
         self.scheduler = scheduler
         self.transport = transport
+        LoopbackLifecycle.shared.register(self)
     }
 
     /// How downloads reach the network; the app installs one that keeps
@@ -486,4 +487,24 @@ struct DownloadSnapshot: Sendable, Identifiable, Equatable {
     var finishedAt: Date?
     /// A live recording: it keeps recording while energy is saved.
     var isRecording = false
+}
+
+extension MediaDownloads: SuspendedResource {
+    /// Transfers iOS failed while the app was suspended start again at once
+    /// (not after their backoff).
+    func resumeAfterSuspension() async -> PortMove? {
+        await retryNow()
+        return nil
+    }
+
+    /// Fails every transfer in flight, as iOS does to a suspended app.
+    func reclaimAsSuspensionWould() async {
+        var sessions = [TrackDownloader.sharedSession]
+        if let shared = transport as? URLSessionTransport, shared.session !== TrackDownloader.sharedSession {
+            sessions.append(shared.session)
+        }
+        for session in sessions {
+            for task in await session.allTasks { task.cancel() }
+        }
+    }
 }

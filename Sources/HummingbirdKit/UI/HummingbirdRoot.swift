@@ -181,7 +181,10 @@ struct FullscreenHandoverDebugScene: View {
             .aspectRatio(16 / 9, contentMode: .fit)
             .playerFullscreenPresentation(model: player)
             Text("\(Int(player.playbackTime))").accessibilityIdentifier("debug-playback-time")
-            Text(player.isPlaying && player.waitingReason == nil ? "playing" : status)
+            // Names what is wrong when it is not "playing", so a failing test says why.
+            Text(player.errorMessage.map { "error: \($0)" }
+                 ?? player.waitingReason.map { "waiting: \($0)" }
+                 ?? (player.isPlaying ? "playing" : status == "loaded" ? "paused" : status))
                 .accessibilityIdentifier("debug-playback-state")
         }
         .padding()

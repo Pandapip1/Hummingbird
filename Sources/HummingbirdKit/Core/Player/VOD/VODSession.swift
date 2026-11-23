@@ -111,9 +111,9 @@ actor VODSession {
         for downloader in downloaders { layouts.append(try await downloader.trackLayout()) }
 
         var presentation = LocalMediaServer.Presentation()
-        // Every MP4 is served as HLS: indexed fragmented files as byte-range
-        // segments, progressive files remuxed to fragments as they download.
-        // Only what cannot be read as MP4 (WebM…) is served as a whole file.
+        // Every MP4 and WebM is served as HLS: indexed fragmented files as
+        // byte-range segments, progressive MP4 and WebM files remuxed to
+        // fragments as they download. Only other containers are served whole.
         var video: CachedHLS.MasterEntry?
         var audio: CachedHLS.MasterEntry?
         var duration: Double?
@@ -131,23 +131,24 @@ actor VODSession {
                 if spec.role == .audio { audio = track.entry } else { video = track.entry }
                 duration = duration ?? layout.timeline.segments.reduce(0) { $0 + $1.duration }
             case .progressive:
-                guard let movie = try await Self.remuxableMovie(downloaders[index]) else { servedAsHLS = false; continue }
+                guard let file = try await Self.remuxableFile(downloaders[index]) else { servedAsHLS = false; continue }
                 // A file with both tracks (muxed) gives the video and, without a separate audio file, the audio.
                 var wanted: [(ProgressiveMP4.Kind, Bool)] = spec.role == .audio ? [(.audio, true)] : [(.video, false)]
                 if spec.role != .audio, specs.count == 1 { wanted.append((.audio, true)) }
                 for (kind, isAudio) in wanted {
-                    guard let track = movie.track(kind) else {
+                    guard let source = try await file.source(kind, read: RemuxedTrack.reader(downloaders[index])) else {
                         if !isAudio { servedAsHLS = false }
                         continue
                     }
                     let prefix = isAudio ? "ra" : "rv"
-                    let remuxed = RemuxedTrack(movie: movie, track: track, downloader: downloaders[index])
+                    let remuxed = RemuxedTrack(source: source, downloader: downloaders[index])
                     presentation.remuxed[prefix] = remuxed
                     presentation.playlists["\(prefix).m3u8"] = remuxed.playlist(prefix: prefix)
-                    // A muxed file's codec string names both tracks: leave CODECS out then.
+                    // A muxed file's codec string names both tracks: leave CODECS
+                    // out then, unless the track itself knows its codec exactly.
                     let entry = CachedHLS.MasterEntry(playlistName: "\(prefix).m3u8",
-                                                      codec: specs.count == 1 ? "" : spec.codec,
-                                                      bandwidth: spec.bandwidth, width: track.width, height: track.height)
+                                                      codec: source.codecs ?? (specs.count == 1 ? "" : spec.codec),
+                                                      bandwidth: spec.bandwidth, width: source.width, height: source.height)
                     if isAudio { audio = entry } else { video = entry }
                     duration = duration ?? remuxed.duration
                 }
@@ -198,23 +199,32 @@ actor VODSession {
         }
     }
 
-    /// The movie of a progressive MP4 or QuickTime file, read from the cache
-    /// (its `moov` may come last: that is fetched first), or nil when the file
-    /// cannot be remuxed and is served whole.
-    private static func remuxableMovie(_ downloader: TrackDownloader) async throws -> ProgressiveMP4.Movie? {
-        let read: (Range<Int64>) async throws -> Data = { range in
-            try await downloader.waitUntilAvailable(range)
-            guard let data = try await downloader.read(range) else { throw ProgressiveMP4.Failure.malformed("cache lost bytes") }
-            return data
-        }
+    /// The tracks of a progressive MP4, QuickTime or WebM file, read from the
+    /// cache (an MP4's `moov` may come last: that is fetched first), or nil
+    /// when the file is neither and is served whole. A WebM file that cannot
+    /// be remuxed throws its reason (an unsupported format is named): WebM is
+    /// never served whole, so subtitles always attach the same way.
+    private static func remuxableFile(_ downloader: TrackDownloader) async throws -> RemuxableFile? {
+        let read = RemuxedTrack.reader(downloader)
+        let total = try await downloader.totalBytesWhenKnown()
         do {
-            let total = try await downloader.totalBytesWhenKnown()
             let moov = try await ProgressiveMP4.locateMovie(total: total, read: read)
             let movie = try ProgressiveMP4.parseMovie([UInt8](try await read(moov)))
-            return movie.track(.video) != nil || movie.track(.audio) != nil ? movie : nil
+            return movie.track(.video) != nil || movie.track(.audio) != nil ? .mp4(movie) : nil
+        } catch ProgressiveMP4.Failure.notMP4 {
+            // Not MP4: WebM, or something served whole.
         } catch let failure as ProgressiveMP4.Failure {
             Logger.mediaCache.info("remux_unavailable reason=\(String(describing: failure), privacy: .public)")
             return nil
+        }
+        do {
+            return .webm(try await Matroska.open(total: total, read: read))
+        } catch Matroska.Failure.notMatroska {
+            Logger.mediaCache.info("remux_unavailable reason=unknown_container")
+            return nil
+        } catch let failure as Matroska.Failure {
+            Logger.mediaCache.error("webm_remux_failed reason=\(String(describing: failure), privacy: .public)")
+            throw failure
         }
     }
 
@@ -537,6 +547,22 @@ actor VODSession {
         case "audio/aac", "audio/x-aac": "aac"
         case "video/3gpp": "3gp"
         default: role == .audio ? "m4a" : "mp4"
+        }
+    }
+}
+
+/// A cached file whose tracks can be served as fragmented MP4.
+enum RemuxableFile: Sendable {
+    case mp4(ProgressiveMP4.Movie)
+    case webm(Matroska.File)
+
+    func source(_ kind: ProgressiveMP4.Kind, read: RemuxRead) async throws -> (any RemuxSource)? {
+        switch self {
+        case .mp4(let movie):
+            return movie.track(kind).map { MP4RemuxSource(movie: movie, track: $0) }
+        case .webm(let file):
+            guard let track = file.track(kind) else { return nil }
+            return try await WebMRemuxSource.make(file: file, track: track, read: read)
         }
     }
 }

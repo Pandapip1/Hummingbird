@@ -108,7 +108,7 @@ final class AppModel {
                 oauthAuthorizations[authorizationID]?.cancel()
             }
         }
-        tabPlayers.removeValue(forKey: id)?.teardown()
+        tabPlayers.removeValue(forKey: id)?.close()
         Self.livePlayers[id] = nil
         contentTabs.remove(at: index)
         persistBrowserSession()
@@ -168,7 +168,7 @@ final class AppModel {
         for id in tabPlayers.keys { Self.livePlayers[id] = nil }
         let players = tabPlayers.values
         tabPlayers.removeAll()
-        for player in players { player.teardown() }
+        for player in players { player.close() }
     }
 
     /// Before the app goes to the background: every player records where it is.

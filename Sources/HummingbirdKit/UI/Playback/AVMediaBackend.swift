@@ -94,7 +94,22 @@ final class AVMediaBackend: MediaBackend {
     }
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
+    var onUnplayableMedia: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
+
+    /// No decoder for the media's format on this device (AV1 without
+    /// hardware support, VP9 where the system has none): reloading cannot help.
+    private nonisolated static func isUnplayable(_ error: NSError) -> Bool {
+        var current: NSError? = error
+        while let error = current {
+            if error.domain == AVFoundationErrorDomain,
+               [AVError.Code.decoderNotFound.rawValue, AVError.Code.fileFormatNotRecognized.rawValue].contains(error.code) {
+                return true
+            }
+            current = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
     private var tickInterval = 0.5
     private var itemObserver: NSObjectProtocol?
     private var itemFailureObserver: NSObjectProtocol?
@@ -444,8 +459,12 @@ final class AVMediaBackend: MediaBackend {
                 let uriHost = event.uri.flatMap { URL(string: $0)?.host } ?? ""
                 Logger.avPlayer.error("error_log httpStatus=\(event.errorStatusCode) uriHost=\(LogRedaction.redact(uriHost), privacy: .public) server=\(event.serverAddress ?? "") comment=\(event.errorComment ?? "")")
             }
-            if status == .failed, let message = item?.error?.localizedDescription {
-                Task { @MainActor in self?.onFailure?(message) }
+            if status == .failed, let error = item?.error as NSError? {
+                let message = error.localizedDescription
+                let unplayable = Self.isUnplayable(error)
+                Task { @MainActor in
+                    if unplayable { self?.onUnplayableMedia?(message) } else { self?.onFailure?(message) }
+                }
             }
         }
         itemFailureObserver = NotificationCenter.default.addObserver(
@@ -695,6 +714,9 @@ struct PlayerSurface: UIViewControllerRepresentable {
         // Only the owner of the player is attached to it (see
         // PlayerSurfaceOwnership): this surface claims it now.
         context.coordinator.claimInline(controller)
+        // Entering full screen built AVKit's controller on the tap (a 349 ms
+        // main-thread stall): build it once per player, while the run loop is idle.
+        context.coordinator.prepareFullscreenWhenIdle()
         return controller
     }
 
@@ -719,12 +741,12 @@ struct PlayerSurface: UIViewControllerRepresentable {
     final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
         weak var model: PlayerModel?
         weak var inlineController: AVPlayerViewController?
+        /// The prepared presentation while it is on screen.
         private var fullscreenController: UIViewController?
-        private var overlayController: UIViewController?
         private var inlineClaim: PlayerSurfaceOwnership.Claim?
         private var fullscreenClaim: PlayerSurfaceOwnership.Claim?
         private var inlineHost: PictureInPictureHostView?
-        private var fullscreenHost: PictureInPictureHostView?
+        private var preparationScheduled = false
 
         private var backend: AVMediaBackend? { model?.backend as? AVMediaBackend }
 
@@ -759,52 +781,37 @@ struct PlayerSurface: UIViewControllerRepresentable {
             )
         }
 
+        /// Builds the full-screen presentation once per player, at the first
+        /// idle run-loop pass after this surface appears (not while scrolling,
+        /// not on the tap). AVKit's controllers are UIKit objects and must be
+        /// made on the main thread; idle time is the cheapest main time there is.
+        func prepareFullscreenWhenIdle() {
+            guard !preparationScheduled, model?.preparedFullscreen == nil else { return }
+            preparationScheduled = true
+            MainRunLoopIdle.perform(after: .milliseconds(500)) { [weak self] in
+                guard let self, let model = self.model else { return }
+                _ = FullscreenStage.prepared(for: model)
+            }
+        }
+
         private func presentFullscreen() {
             guard fullscreenController == nil,
                   let model,
                   let inlineController,
                   let presenter = presentingController(from: inlineController) else { return }
-
-            let playerController = AVPlayerViewController()
-            playerController.showsPlaybackControls = false
-            playerController.leaveNowPlayingToTheApp()
-            playerController.allowsPictureInPicturePlayback = true
-            // A container holds the player and, above it, our controls: inside
-            // AVPlayerViewController's own view the controls would be outside
-            // its accessibility (and, on tvOS, focus) hierarchy.
-            let controller = FullscreenPlayerViewController(playerController: playerController)
-            controller.modalPresentationStyle = .overFullScreen
-            #if os(iOS)
-            controller.modalPresentationCapturesStatusBarAppearance = true
-            #endif
-
-            let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
-            overlay.view.backgroundColor = .clear
-            controller.addChild(overlay)
-            overlay.view.translatesAutoresizingMaskIntoConstraints = false
-            // AVPlayerViewController's contentOverlayView belongs to AVKit's
-            // own focus environment. On tvOS its container wins focus during
-            // presentation, leaving interactive SwiftUI content unreachable.
-            // Install controls above the player root so they participate in
-            // the presented controller's focus hierarchy instead.
-            let container = controller.view!
-            container.addSubview(overlay.view)
-            NSLayoutConstraint.activate([
-                overlay.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                overlay.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                overlay.view.topAnchor.constraint(equalTo: container.topAnchor),
-                overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
-            overlay.didMove(toParent: controller)
-            controller.controlsController = overlay
-
+            let start = ContinuousClock.now
+            defer {
+                let ms = start.duration(to: .now) / .milliseconds(1)
+                Logger.player.notice("fullscreen_present main_ms=\(ms, format: .fixed(precision: 1))")
+            }
+            // Normally built already; if the tap came first it is built now, once.
+            let stage = FullscreenStage.prepared(for: model)
+            let controller = stage.controller
             fullscreenController = controller
-            overlayController = overlay
             // The full-screen controller takes the player (attached before the
             // inline one lets go), with the Picture in Picture layer.
             if let backend {
-                let host = PictureInPictureHostView.install(in: playerController)
-                fullscreenHost = host
+                let playerController = stage.controller.playerController, host = stage.host
                 let claim = PlayerSurfaceOwnership.Claim(name: "fullscreen", attach: { [weak playerController, weak backend, weak host] in
                     guard let playerController, let backend else { return }
                     if playerController.player !== backend.player { playerController.player = backend.player }
@@ -843,11 +850,8 @@ struct PlayerSurface: UIViewControllerRepresentable {
             finishDismissal()
         }
 
+        /// The presentation stays built (with its controls) for the next entry.
         private func finishDismissal() {
-            overlayController?.willMove(toParent: nil)
-            overlayController?.view.removeFromSuperview()
-            overlayController?.removeFromParent()
-            overlayController = nil
             resignFullscreen()
             fullscreenController = nil
             model?.fullscreenDidChange(false)
@@ -857,7 +861,6 @@ struct PlayerSurface: UIViewControllerRepresentable {
         private func resignFullscreen() {
             if let fullscreenClaim { backend?.surfaces.resign(fullscreenClaim) }
             fullscreenClaim = nil
-            fullscreenHost = nil
         }
 
         private func presentingController(from controller: UIViewController) -> UIViewController? {
@@ -875,6 +878,78 @@ extension AVPlayerViewController {
         #if !os(tvOS)
         updatesNowPlayingInfoCenter = false
         #endif
+    }
+}
+
+/// The full-screen presentation, built once per player (`PlayerModel.close`
+/// drops it) and presented again on every entry.
+@MainActor
+private final class FullscreenStage {
+    let controller: FullscreenPlayerViewController
+    let host: PictureInPictureHostView
+
+    static func prepared(for model: PlayerModel) -> FullscreenStage {
+        if let stage = model.preparedFullscreen as? FullscreenStage { return stage }
+        let start = ContinuousClock.now
+        let stage = FullscreenStage(model: model)
+        model.preparedFullscreen = stage
+        let ms = start.duration(to: .now) / .milliseconds(1)
+        Logger.player.notice("fullscreen_prepared main_ms=\(ms, format: .fixed(precision: 1))")
+        return stage
+    }
+
+    private init(model: PlayerModel) {
+        let playerController = AVPlayerViewController()
+        playerController.showsPlaybackControls = false
+        playerController.leaveNowPlayingToTheApp()
+        playerController.allowsPictureInPicturePlayback = true
+        // A container holds the player and, above it, our controls: inside
+        // AVPlayerViewController's own view the controls would be outside
+        // its accessibility (and, on tvOS, focus) hierarchy.
+        let controller = FullscreenPlayerViewController(playerController: playerController)
+        controller.modalPresentationStyle = .overFullScreen
+        #if os(iOS)
+        controller.modalPresentationCapturesStatusBarAppearance = true
+        #endif
+
+        let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
+        overlay.view.backgroundColor = .clear
+        controller.addChild(overlay)
+        overlay.view.translatesAutoresizingMaskIntoConstraints = false
+        // AVPlayerViewController's contentOverlayView belongs to AVKit's
+        // own focus environment. On tvOS its container wins focus during
+        // presentation, leaving interactive SwiftUI content unreachable.
+        // Install controls above the player root so they participate in
+        // the presented controller's focus hierarchy instead.
+        let container = controller.view!  // loads the player's view too
+        container.addSubview(overlay.view)
+        NSLayoutConstraint.activate([
+            overlay.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            overlay.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            overlay.view.topAnchor.constraint(equalTo: container.topAnchor),
+            overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        overlay.didMove(toParent: controller)
+        controller.controlsController = overlay
+        self.controller = controller
+        host = PictureInPictureHostView.install(in: playerController)
+    }
+}
+
+/// Runs work on the main thread when its run loop is next about to sleep
+/// (nothing else to do; not while a scroll tracks), after a delay that lets
+/// the page draw its first frames.
+@MainActor
+enum MainRunLoopIdle {
+    static func perform(after delay: Duration, _ work: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, 0) { observer, _ in
+                CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .defaultMode)
+                MainActor.assumeIsolated { work() }
+            }
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .defaultMode)
+        }
     }
 }
 

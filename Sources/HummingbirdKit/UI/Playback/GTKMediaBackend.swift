@@ -13,6 +13,7 @@ final class GTKMediaBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
+    var onUnplayableMedia: (@MainActor (String) -> Void)?
     private var ticker: Task<Void, Never>?
     private var tickInterval = 0.5
     private var pictureInPictureController: AVPictureInPictureController?
@@ -68,6 +69,12 @@ final class GTKMediaBackend: MediaBackend {
             Task { @MainActor in
                 self?.ticker?.cancel()
                 self?.onFailure?(message)
+            }
+        }
+        player._swiftOpenUIOnUnplayable = { [weak self] message in
+            Task { @MainActor in
+                self?.ticker?.cancel()
+                self?.onUnplayableMedia?(message)
             }
         }
     }

@@ -327,11 +327,18 @@ enum ProgressiveMP4 {
 
     /// `moof` and the `mdat` header for a segment whose sample bytes total `payloadSize`.
     static func fragmentHeader(_ track: Track, _ segment: Segment, sequence: UInt32, payloadSize: Int) -> [UInt8] {
-        let samples = track.samples[segment.samples]
+        fragmentHeader(trackID: track.id, decodeTime: segment.decodeTime, samples: track.samples[segment.samples],
+                       sequence: sequence, payloadSize: payloadSize)
+    }
+
+    /// `moof` and the `mdat` header for `samples` (whose bytes, in order, total
+    /// `payloadSize`), starting at `decodeTime`. Sample offsets are not used.
+    static func fragmentHeader(trackID: UInt32, decodeTime segmentDecodeTime: UInt64, samples: some Collection<Sample>,
+                               sequence: UInt32, payloadSize: Int) -> [UInt8] {
         let movieFragmentHeader = fullBox("mfhd", version: 0, flags: 0, be32Bytes(sequence))
         // default-base-is-moof: data offsets count from this moof.
-        let trackFragmentHeader = fullBox("tfhd", version: 0, flags: 0x02_0000, be32Bytes(track.id))
-        let decodeTime = fullBox("tfdt", version: 1, flags: 0, be64Bytes(segment.decodeTime))
+        let trackFragmentHeader = fullBox("tfhd", version: 0, flags: 0x02_0000, be32Bytes(trackID))
+        let decodeTime = fullBox("tfdt", version: 1, flags: 0, be64Bytes(segmentDecodeTime))
         // data-offset, sample duration, size, flags and composition offset present.
         let runFlags: UInt32 = 0x0001 | 0x0100 | 0x0200 | 0x0400 | 0x0800
         let runSize = 12 + 4 + 4 + samples.count * 16
@@ -410,40 +417,93 @@ enum ProgressiveMP4 {
     }
 }
 
-/// One track of a progressive file, served as fragmented MP4 segments by
-/// the loopback server while the file downloads (`ProgressiveMP4`).
-actor RemuxedTrack {
+/// Reads bytes of a file being cached, waiting until they are there.
+typealias RemuxRead = @Sendable (Range<Int64>) async throws -> Data
+
+/// One track of a cached file that can be served as fragmented MP4 while
+/// the file downloads, whatever its container (MP4, QuickTime, WebM): every
+/// on-demand video becomes an HLS presentation, so subtitles and other
+/// renditions attach to it the same way on every platform.
+protocol RemuxSource: Sendable {
+    var segmentDurations: [Double] { get }
+    var duration: Double { get }
+    var width: Int { get }
+    var height: Int { get }
+    /// The RFC 6381 codec string, when the source knows it exactly.
+    var codecs: String? { get }
+    func initializationSegment(read: RemuxRead) async throws -> Data
+    func mediaSegment(_ index: Int, read: RemuxRead) async throws -> Data
+}
+
+/// A progressive MP4 or QuickTime track (`ProgressiveMP4`).
+struct MP4RemuxSource: RemuxSource {
+    let movie: ProgressiveMP4.Movie
     let track: ProgressiveMP4.Track
     let segments: [ProgressiveMP4.Segment]
-    private let movie: ProgressiveMP4.Movie
-    private let downloader: TrackDownloader
 
-    init(movie: ProgressiveMP4.Movie, track: ProgressiveMP4.Track, downloader: TrackDownloader) {
+    init(movie: ProgressiveMP4.Movie, track: ProgressiveMP4.Track) {
         self.movie = movie
         self.track = track
-        self.downloader = downloader
         segments = ProgressiveMP4.segments(of: track)
+    }
+
+    var segmentDurations: [Double] { segments.map(\.duration) }
+    var duration: Double { track.duration }
+    var width: Int { track.width }
+    var height: Int { track.height }
+    var codecs: String? { nil }
+
+    func initializationSegment(read: RemuxRead) async throws -> Data {
+        ProgressiveMP4.initializationSegment(movie: movie, track: track)
+    }
+
+    func mediaSegment(_ index: Int, read: RemuxRead) async throws -> Data {
+        try await ProgressiveMP4.mediaSegment(track, segments[index], sequence: UInt32(index + 1), read: read)
+    }
+}
+
+/// One track of a cached file, served as fragmented MP4 segments by the
+/// loopback server while the file downloads.
+actor RemuxedTrack {
+    let source: any RemuxSource
+    private let downloader: TrackDownloader
+    private var initialization: Data?
+
+    init(source: any RemuxSource, downloader: TrackDownloader) {
+        self.source = source
+        self.downloader = downloader
     }
 
     /// The media playlist: `<prefix>/init.mp4`, then `<prefix>/<n>.m4s`.
     nonisolated func playlist(prefix: String) -> String {
-        let target = max(1, Int(ceil(segments.map(\.duration).max() ?? 1)))
+        let durations = source.segmentDurations
+        let target = max(1, Int(ceil(durations.max() ?? 1)))
         var out = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:\(target)\n#EXT-X-MEDIA-SEQUENCE:0\n"
         out += "#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n#EXT-X-MAP:URI=\"\(prefix)/init.mp4\"\n"
-        for (index, segment) in segments.enumerated() {
-            out += "#EXTINF:\(String(format: "%.6f", segment.duration)),\n\(prefix)/\(index).m4s\n"
+        for (index, duration) in durations.enumerated() {
+            out += "#EXTINF:\(String(format: "%.6f", duration)),\n\(prefix)/\(index).m4s\n"
         }
         return out + "#EXT-X-ENDLIST\n"
     }
 
-    nonisolated var duration: Double { track.duration }
+    nonisolated var duration: Double { source.duration }
 
     /// `init.mp4` or `<n>.m4s`; nil for any other name.
     func resource(_ name: String) async throws -> Data? {
-        if name == "init.mp4" { return ProgressiveMP4.initializationSegment(movie: movie, track: track) }
-        guard name.hasSuffix(".m4s"), let index = Int(name.dropLast(4)), segments.indices.contains(index) else { return nil }
-        let downloader = downloader
-        return try await ProgressiveMP4.mediaSegment(track, segments[index], sequence: UInt32(index + 1)) { range in
+        let read = Self.reader(downloader)
+        if name == "init.mp4" {
+            if let initialization { return initialization }
+            let data = try await source.initializationSegment(read: read)
+            initialization = data
+            return data
+        }
+        guard name.hasSuffix(".m4s"), let index = Int(name.dropLast(4)),
+              source.segmentDurations.indices.contains(index) else { return nil }
+        return try await source.mediaSegment(index, read: read)
+    }
+
+    static func reader(_ downloader: TrackDownloader) -> RemuxRead {
+        { range in
             try await downloader.waitUntilAvailable(range)
             guard let data = try await downloader.read(range) else { throw ProgressiveMP4.Failure.malformed("cache lost bytes") }
             return data

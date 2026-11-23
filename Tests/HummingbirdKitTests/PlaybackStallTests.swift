@@ -32,6 +32,22 @@ final class PlaybackStallTests: XCTestCase {
         model.teardown()
     }
 
+    /// After a surface handover the scene showed "loaded" although the clock
+    /// advanced: the waiting reason was a stored copy that only an activity
+    /// callback refreshed. It now follows the engine on every tick too.
+    func testWaitingReasonFollowsTheEngineEvenWithoutACallback() {
+        let backend = ActivityBackend()
+        let model = makeTestPlayerModel(backend: backend)
+        backend.report(.waiting("Buffering"))
+        XCTAssertEqual(model.waitingReason, "Buffering")
+        backend.changeSilently(.playing)
+        backend.currentTime = 3
+        backend.onTick?(3)
+        XCTAssertTrue(model.isPlaying)
+        XCTAssertNil(model.waitingReason, "a tick reconciles what the engine is doing")
+        model.teardown()
+    }
+
     func testPlayingWithoutAdvancingShowsStalledUntilTheClockMoves() async {
         let backend = ActivityBackend()
         let model = makeTestPlayerModel(backend: backend)
@@ -221,6 +237,9 @@ private final class ActivityBackend: MediaBackend {
         self.activity = activity
         onActivityChange?(activity)
     }
+    /// Changes the state without reporting it, as a callback lost in a
+    /// surface handover would.
+    func changeSilently(_ activity: PlaybackActivity) { self.activity = activity }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws { calls.append("load") }
     var calls: [String] = []

@@ -366,9 +366,13 @@ final class ModelAndLogicTests: XCTestCase {
              {"plugin_type":"AudioUrlSource","url":"https://x/op.webm","container":"audio/webm","bitrate":256000,"language":"en"}]}}
         """)
         let options = PlaybackSelector.options(for: d)
-        XCTAssertEqual(options.count, 2, "WebM video must be dropped")
-        XCTAssertTrue(options.allSatisfy { $0.audio?.url == "https://x/hi.m4a" }, "best playable audio is chosen")
+        XCTAssertEqual(options.count, 3, "WebM video is offered (remuxed like MP4)")
+        XCTAssertTrue(options.allSatisfy { $0.audio?.url == "https://x/hi.m4a" }, "MP4 audio is preferred over WebM")
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080)?.height, 1080)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 4320)?.height, 1080,
+                       "an MP4 file is the default while there is one; WebM is chosen from the menu")
+        let webmOnly = options.filter { $0.video.container == "video/webm" }
+        XCTAssertEqual(PlaybackSelector.best(webmOnly, maxHeight: 4320)?.height, 2160, "WebM plays when it is all there is")
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720)?.height, 720)
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 480)?.height, 720, "falls back to the smallest if all are too tall")
     }

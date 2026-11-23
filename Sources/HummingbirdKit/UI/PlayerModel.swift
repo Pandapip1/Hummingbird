@@ -78,22 +78,42 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Called when playback starts; the window pauses its other tabs.
     @ObservationIgnored var onStartedPlaying: (() -> Void)?
 
-    /// The app is back in front. A video the user had playing keeps playing:
-    /// if the system paused it meanwhile (an interruption, a route change,
-    /// the surface going away), it resumes where it is, without a reload or a
-    /// seek. A video the user paused stays paused. The loopback server is
-    /// checked (a suspended app's sockets are reclaimed).
-    func applicationBecameActive() {
-        // After sleep or suspension: the server's socket may be gone and
-        // downloads may be waiting out a long backoff (or hold expired URLs,
-        // which are resolved again before use).
-        let server = mediaServer, downloads = mediaDownloads
-        Task {
-            _ = try? await server.ensureListening()
-            await downloads.retryNow()
+    /// The app is back in front (the player's own activity observer: one path
+    /// for every player, in the app and in debug scenes). First every loopback
+    /// listener is bound again and downloads restart, awaited, so nothing asks
+    /// a socket iOS closed (`LoopbackLifecycle.resume`). Then a video the user
+    /// had playing keeps playing: an item that failed while the app was away,
+    /// or whose server could not keep its port, is rebuilt at the same
+    /// position from the cache (VOD never needs the network for bytes it has);
+    /// one the system only paused resumes where it is. A video the user paused
+    /// stays paused.
+    func resumeAfterBackground() async {
+        let generation = playGeneration
+        let moves = await LoopbackLifecycle.shared.resume()
+        guard generation == playGeneration, let backend, !didFinishCurrentItem, !unplayable else { return }
+        if let playback = currentPlayback, case let moved = playback.moved(moves),
+           case let failed = backend.hasFailedItem || recoverOnResume, moved != nil || failed {
+            recoverOnResume = false
+            let next = moved ?? playback
+            currentPlayback = next
+            let position = backend.currentTime > 0 ? backend.currentTime : playbackTime
+            Logger.player.notice("resume_rebuild position=\(position) moved=\(moved != nil) failed=\(failed)")
+            errorMessage = nil
+            isRecovering = true
+            defer { isRecovering = false }
+            do {
+                try await backend.load(next.request, resumeAt: position > 0 ? position : nil, autoplay: playbackRequested)
+                backend.setPlaybackRate(playbackRate)
+            } catch is CancellationError {
+            } catch MediaBackendLoadError.superseded {
+            } catch {
+                guard generation == playGeneration else { return }
+                errorMessage = error.localizedDescription
+            }
+            return
         }
-        guard playbackRequested, let backend, backend.activity == .paused, !isRecovering, !isInterrupted,
-              pictureInPictureState != .active, !didFinishCurrentItem else { return }
+        guard playbackRequested, backend.activity == .paused, !isRecovering, !isInterrupted,
+              pictureInPictureState != .active else { return }
         Logger.player.notice("resume_after_foreground position=\(backend.currentTime)")
         playByUser()
     }
@@ -167,6 +187,10 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var generatedPresentation: URL?
     /// What the player was last given, to reload it from local data after a player failure.
     @ObservationIgnored private var currentPlayback: LocalPlayback?
+    /// Local playback failed while the app was away: rebuilt when it is back.
+    @ObservationIgnored private var recoverOnResume = false
+    /// This system has no decoder for the media (`mediaUnplayable`): nothing to rebuild.
+    @ObservationIgnored private var unplayable = false
     @ObservationIgnored private var localRecoveryAttempts = 0
     @ObservationIgnored private var startup: PlaybackStartupTrace?
 
@@ -264,8 +288,11 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         // computes elapsed time from the rate).
         ApplicationActivity.observe { [weak self] active in
             Task { @MainActor in
-                self?.applicationActive = active
-                self?.applyTickInterval()
+                guard let self else { return }
+                let returning = active && !self.applicationActive
+                self.applicationActive = active
+                self.applyTickInterval()
+                if returning { await self.resumeAfterBackground() }
             }
         }
     }
@@ -1131,6 +1158,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             confirmationFailure = message
             return
         }
+        unplayable = true
         let codec = selected.map { MediaFormatNames.describe(codec: $0.video.codec, container: $0.video.container) } ?? "this format"
         Logger.player.error("media_unplayable codec=\(codec, privacy: .public) message=\(message)")
         errorMessage = "This device can't play \(codec). Choose another quality from the player's menu."
@@ -1142,6 +1170,14 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         if confirmingGeneration == playGeneration {
             // The stream being switched to failed: the switch restores the previous one.
             confirmationFailure = message
+            return
+        }
+        // Away from the foreground (a suspension may have closed the sockets
+        // it serves from), local media is rebuilt when the app is back, after
+        // its listeners are: reloading now would fail the same way.
+        if !ApplicationActivity.isActive, currentPlayback != nil {
+            Logger.player.notice("local_playback_failed_in_background message=\(message)")
+            recoverOnResume = true
             return
         }
         guard let playback = currentPlayback, playback.origin == .mediaCache || playback.origin == .generatedMedia else {
@@ -1492,6 +1528,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         watchdog = nil
         watchdogStalled = false
         engineActivity = .paused
+        recoverOnResume = false
+        unplayable = false
         pictureInPictureState = .unsupported
         // Downloads stop with the player; what was downloaded stays cached and
         // resumes the next time this video plays.

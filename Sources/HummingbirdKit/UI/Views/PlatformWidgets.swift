@@ -112,9 +112,9 @@ private struct ApplicationLifecycleModifier: ViewModifier {
                 let deadline = ExitDeadline.forExit()
                 model.profileChanges.flushBeforeTermination(until: deadline)
                 model.stores.flushBeforeTermination(until: deadline)
-            case .phase(.active):
-                model.applicationBecameActive()
-            case .phase(.inactive):
+            case .phase(.active), .phase(.inactive):
+                // Resuming after the background is the players' and
+                // LoopbackLifecycle's own (ApplicationActivity): one path.
                 break
             }
         }

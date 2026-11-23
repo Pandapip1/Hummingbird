@@ -443,10 +443,18 @@ extension TrackDownloader {
 }
 
 extension LocalMediaServer: SuspendedResource {
+    /// Binds again (the same port when it can be had) and reports a move.
     func resumeAfterSuspension() async -> PortMove? {
         suspended = false
-        _ = try? await ensureListening()
-        return nil
+        // A server that never listened has nothing to bring back.
+        guard let before = lastPort else { return nil }
+        guard let after = try? await ensureListening() else {
+            Logger.mediaCache.error("server_resume_failed")
+            return nil
+        }
+        guard before != after else { return nil }
+        Logger.mediaCache.notice("server_port_moved from=\(before) to=\(after)")
+        return PortMove(from: before, to: after)
     }
 
     func reclaimAsSuspensionWould() async {

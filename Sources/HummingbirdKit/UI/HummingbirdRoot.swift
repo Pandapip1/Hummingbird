@@ -1,6 +1,5 @@
 import Foundation
 import SwiftOpenUI
-import Synchronization
 import ATAppSync
 
 /// The app's root view with its model, for platform entry points (`Apps/iOS`, `Sources/HummingbirdGTK`).
@@ -222,23 +221,10 @@ struct FullscreenHandoverDebugScene: View {
             await player.select(PlaybackOption(id: "debug-clip", label: "Clip", kind: .hls, video: source, audio: nil, height: 180))
             if !player.isPlaying { player.togglePlayback() }
             status = "loaded"
-            // The app calls this when it becomes active (RootView's scene phase).
-            let player = player
-            let wasInactive = InactivityFlag()
-            ApplicationActivity.observe { active in
-                if !active { wasInactive.value.withLock { $0 = true }; return }
-                guard wasInactive.value.withLock({ was in defer { was = false }; return was }) else { return }
-                Task { @MainActor in player.applicationBecameActive() }
-            }
         } catch {
             status = "failed: \(error.localizedDescription)"
         }
     }
-}
-
-/// Whether the app left the foreground since it was last active.
-private final class InactivityFlag: Sendable {
-    let value = Mutex(false)
 }
 
 /// Serves a file's bytes as an upstream would, ranges included (debug scenes).

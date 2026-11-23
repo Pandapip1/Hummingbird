@@ -1,4 +1,7 @@
 import Foundation
+import os
+import NIOCore
+import NIOPosix
 import Synchronization
 import SwiftOpenUI
 
@@ -41,7 +44,13 @@ final class LoopbackLifecycle: Sendable {
     private init() {
         ApplicationActivity.observe { [self] active in
             if active {
-                state.withLock { $0.wasInactive = false }
+                // Back in front: every resource is resumed now, before any player
+                // resumes playback (players await the same resume).
+                let wasInactive = state.withLock { state in
+                    defer { state.wasInactive = false }
+                    return state.wasInactive
+                }
+                if wasInactive { Task { _ = await self.resume() } }
             } else {
                 state.withLock { $0.wasInactive = true; $0.moves = [] }
                 #if DEBUG
@@ -87,6 +96,20 @@ final class LoopbackLifecycle: Sendable {
                 state.moves += moves
             }
             return state.moves
+        }
+    }
+
+    /// Whether a loopback connection to `port` is accepted within a second: a
+    /// suspended app's socket can be dead while NIO still thinks it is open.
+    static func accepts(port: Int) async -> Bool {
+        do {
+            let channel = try await ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+                .connectTimeout(.seconds(1))
+                .connect(host: "127.0.0.1", port: port).get()
+            try? await channel.close()
+            return true
+        } catch {
+            return false
         }
     }
 

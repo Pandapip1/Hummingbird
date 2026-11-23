@@ -138,6 +138,7 @@ final class AVMediaBackend: MediaBackend {
     private var loadCompletionWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     var currentTime: Double { player?.currentTime().seconds ?? 0 }
+    var hasFailedItem: Bool { player?.currentItem?.status == .failed }
     var duration: Double {
         guard let seconds = player?.currentItem?.duration.seconds, seconds.isFinite else { return 0 }
         return seconds

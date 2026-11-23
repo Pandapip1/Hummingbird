@@ -504,7 +504,12 @@ extension MediaDownloads: SuspendedResource {
             sessions.append(shared.session)
         }
         for session in sessions {
-            for task in await session.allTasks { task.cancel() }
+            let tasks: [URLSessionTask] = await withCheckedContinuation { continuation in
+                session.getTasksWithCompletionHandler { data, upload, download in
+                    continuation.resume(returning: data + upload + download)
+                }
+            }
+            for task in tasks { task.cancel() }
         }
     }
 }

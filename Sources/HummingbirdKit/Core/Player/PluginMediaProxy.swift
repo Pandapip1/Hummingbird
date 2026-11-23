@@ -268,36 +268,45 @@ actor PluginMediaProxy {
         webmTracks = webmTracks.filter { !$0.key.hasPrefix("\(id)/") }
     }
 
+    /// The listening channel, bound again if it died (a suspended app's
+    /// socket is closed by iOS) on the port its playlists already name.
     private func serverChannel() async throws -> Channel {
-        if let channel { return channel }
+        if let channel, channel.isActive { return channel }
         if let starting { return try await starting.value }
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let group = self.group ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.group = group
+        let wanted = boundPort
         let task = Task<Channel, Error> {
-            let channel = try await ServerBootstrap(group: group)
-                .serverChannelOption(ChannelOptions.backlog, value: 16)
-                .childChannelInitializer { child in
-                    let connections = self.connections
-                    connections.withLock { $0[ObjectIdentifier(child)] = child }
-                    child.closeFuture.whenComplete { _ in connections.withLock { $0[ObjectIdentifier(child)] = nil } }
-                    return child.pipeline.configureHTTPServerPipeline().flatMap {
-                        child.pipeline.addHandler(HTTPHandler(proxy: self))
-                    }
-                }
-                .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .bind(host: "127.0.0.1", port: 0).get()
-            return channel
+            if let wanted, let channel = try? await self.bind(group: group, port: wanted) { return channel }
+            return try await self.bind(group: group, port: 0)
         }
         starting = task
         do {
             let result = try await task.value
             channel = result
+            boundPort = result.localAddress?.port
             starting = nil
             return result
         } catch {
             starting = nil
             throw error
         }
+    }
+
+    private nonisolated func bind(group: MultiThreadedEventLoopGroup, port: Int) async throws -> Channel {
+        let connections = self.connections
+        return try await ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.backlog, value: 16)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { child in
+                connections.withLock { $0[ObjectIdentifier(child)] = child }
+                child.closeFuture.whenComplete { _ in connections.withLock { $0[ObjectIdentifier(child)] = nil } }
+                return child.pipeline.configureHTTPServerPipeline().flatMap {
+                    child.pipeline.addHandler(HTTPHandler(proxy: self))
+                }
+            }
+            .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .bind(host: "127.0.0.1", port: port).get()
     }
 
     private func response(for uri: String) async -> (HTTPResponseStatus, String, Data) {
@@ -710,7 +719,22 @@ struct WebMDashTrack: Sendable {
 }
 
 extension PluginMediaProxy: SuspendedResource {
-    func resumeAfterSuspension() async -> PortMove? { nil }
+    /// Binds again on the same port: the presentations' playlists name it.
+    func resumeAfterSuspension() async -> PortMove? {
+        guard let before = boundPort else { return nil }
+        if let open = channel, !(open.isActive && (await LoopbackLifecycle.accepts(port: before))) {
+            Logger.mediaProxy.notice("proxy_unreachable port=\(before)")
+            open.close(promise: nil)
+            channel = nil
+        }
+        guard let after = try? await serverChannel().localAddress?.port else {
+            Logger.mediaProxy.error("proxy_resume_failed")
+            return nil
+        }
+        guard after != before else { return nil }
+        Logger.mediaProxy.fault("proxy_port_moved from=\(before) to=\(after)")
+        return PortMove(from: before, to: after)
+    }
 
     func reclaimAsSuspensionWould() async {
         let open = connections.withLock { open in defer { open = [:] }; return Array(open.values) }

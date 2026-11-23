@@ -74,7 +74,8 @@ public final class AppDataStores: Sendable {
     public func flush() async { await storage.flush() }
 
     /// Blocks until pending writes are done; only for quitting.
-    func flushBeforeTermination() { storage.flushBeforeTermination() }
+    @discardableResult
+    func flushBeforeTermination(until deadline: ExitDeadline) -> Bool { storage.flushBeforeTermination(until: deadline) }
 
     /// The key under which the window that opens next finds its profile.
     static let localProfileIDKey = "appsync.localProfileID"

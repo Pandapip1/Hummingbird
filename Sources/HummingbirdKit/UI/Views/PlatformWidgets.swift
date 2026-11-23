@@ -104,11 +104,13 @@ private struct ApplicationLifecycleModifier: ViewModifier {
             case .sceneEnded, .willTerminate:
                 // Closing the last window can quit the application with no
                 // termination event reaching this window (it has already
-                // ended), so both wait for the queued writes here.
+                // ended), so both wait for the queued writes here, within one
+                // exit budget: the system kills an app that takes 5 seconds.
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
-                model.profileChanges.flushBeforeTermination()
-                model.stores.flushBeforeTermination()
+                let deadline = ExitDeadline.forExit()
+                model.profileChanges.flushBeforeTermination(until: deadline)
+                model.stores.flushBeforeTermination(until: deadline)
             case .phase(.active), .phase(.inactive):
                 break
             }

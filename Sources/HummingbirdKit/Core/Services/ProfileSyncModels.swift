@@ -233,9 +233,11 @@ final class ProfileChangeStore: @unchecked Sendable {
         }
     }
 
-    /// Blocks until every edit submitted so far is in the journal. Only for
-    /// the moment the application quits, when nothing may run afterwards.
-    func flushBeforeTermination() { writer.sync {} }
+    /// Waits until every edit submitted so far is in the journal, but never
+    /// past `deadline`: only for the moment the application exits. True if
+    /// everything was written.
+    @discardableResult
+    func flushBeforeTermination(until deadline: ExitDeadline) -> Bool { deadline.drain(writer) }
 
     /// Waits until every edit submitted so far is in the journal.
     func flush() async {

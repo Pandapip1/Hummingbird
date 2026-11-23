@@ -17,14 +17,14 @@ final class FullscreenHandoverUITests: XCTestCase {
         reveal(app)
         let enter = app.buttons["Enter Full Screen"]
         XCTAssertTrue(enter.waitForExistence(timeout: 10))
-        enter.tap()
+        XCTAssertTrue(tapWhenShown(app, enter) { app.buttons["Exit Full Screen"].exists }, "full screen opens")
         XCTAssertTrue(app.buttons["Exit Full Screen"].waitForExistence(timeout: 10) || revealAndFind(app, "Exit Full Screen"))
         assertOneSurface(app, "full screen")
 
         let exit = app.buttons["Exit Full Screen"]
-        // Hidden controls stay in the accessibility tree (reachable by name), so reveal them first.
-        reveal(app)
-        exit.tap()
+        // Hidden controls stay in the accessibility tree (reachable by name) but
+        // take no touches: tap only once they are shown.
+        XCTAssertTrue(tapWhenShown(app, exit) { !app.buttons["Exit Full Screen"].exists }, "full screen closes")
         XCTAssertTrue(app.buttons["Enter Full Screen"].waitForExistence(timeout: 10) || revealAndFind(app, "Enter Full Screen"))
         assertOneSurface(app, "after leaving full screen")
 
@@ -75,7 +75,8 @@ final class FullscreenHandoverUITests: XCTestCase {
             reveal(app)
             attach(app, "controls-inline-over-\(name)")
             let enter = app.buttons["Enter Full Screen"]
-            if enter.waitForExistence(timeout: 5) { enter.tap() }
+            XCTAssertTrue(enter.waitForExistence(timeout: 5))
+            XCTAssertTrue(tapWhenShown(app, enter) { app.buttons["Exit Full Screen"].exists }, "full screen opened over \(name)")
             Thread.sleep(forTimeInterval: 1)
             reveal(app)
             attach(app, "controls-fullscreen-over-\(name)")
@@ -103,7 +104,30 @@ final class FullscreenHandoverUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ app: XCUIApplication) {
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        // On the player itself (its upper part, clear of the controls): a tap
+        // elsewhere on the screen does not show them.
+        let surface = app.descendants(matching: .any).matching(identifier: "player-surface").firstMatch
+        if surface.exists {
+            surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+    }
+
+    /// Taps `button` once it takes touches: hidden controls stay in the
+    /// accessibility tree (for VoiceOver) but a synthesized touch on one lands
+    /// on the video and only toggles the controls.
+    @MainActor
+    private func tapWhenShown(_ app: XCUIApplication, _ button: XCUIElement, until done: () -> Bool) -> Bool {
+        // The controls hide again after a few seconds: reveal, then tap at once.
+        for _ in 0..<4 {
+            guard button.exists else { return done() }
+            // Hidden controls still report themselves hittable: always reveal.
+            reveal(app)
+            button.tap()
+            if waitUntil(4, done) { return true }
+        }
+        return false
     }
 
     @MainActor

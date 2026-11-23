@@ -628,7 +628,6 @@ actor TrackDownloader {
         let signposter = OSSignposter.mediaCache
         let signpost = signposter.beginInterval("VODPiece", id: signposter.makeSignpostID(),
                                                 "role=\(self.role.rawValue, privacy: .public) offset=\(piece.lowerBound) bytes=\(piece.count)")
-        let started = ContinuousClock.now
         var outcome = "failed"
         defer { signposter.endInterval("VODPiece", signpost, "\(outcome, privacy: .public)") }
         var request: URLRequest

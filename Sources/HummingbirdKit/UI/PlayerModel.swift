@@ -141,6 +141,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     @ObservationIgnored private var lastHistoryWrite = Date.distantPast
     @ObservationIgnored private var presentFullscreenAction: (() -> Void)?
     @ObservationIgnored private var dismissFullscreenAction: (() -> Void)?
+    /// The surface whose presenter is installed: only it can remove it.
+    @ObservationIgnored private weak var fullscreenPresenterOwner: AnyObject?
     /// The full-screen presentation the player's surface built ahead of time
     /// and reuses for every entry, for as long as this player lives (opaque:
     /// each surface keeps its own kind).
@@ -357,6 +359,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             var checkedServer = false
             var recovered = false
             var idle = false
+            var lastActivity = PlaybackActivity.paused
             while !Task.isCancelled {
                 // Paused or stopped, there is nothing to watch closely: wake rarely.
                 try? await Task.sleep(for: .milliseconds(idle ? 2_000 : 500))
@@ -365,22 +368,32 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
                 let activity = backend.activity
                 if activity != self.engineActivity { self.engineActivity = activity }
                 let time = backend.currentTime
-                if !activity.wantsToPlay || abs(time - lastTime) > 0.01 {
+                // Every change of state starts a fresh window: time spent buffering
+                // (the clock rightly still) is not "playing without advancing".
+                let changed = activity != lastActivity
+                lastActivity = activity
+                if changed || !activity.wantsToPlay || abs(time - lastTime) > 0.01 {
                     lastTime = time
                     since = .now
                     checkedServer = false
                     recovered = false
-                    if self.watchdogStalled { self.watchdogStalled = false }
+                    if self.watchdogStalled {
+                        self.watchdogStalled = false
+                        Logger.player.notice("playback_advancing_again position=\(time)")
+                    }
                     continue
                 }
                 let stuck = since.duration(to: .now)
                 if activity == .playing, stuck > .seconds(2), !self.watchdogStalled {
                     self.watchdogStalled = true
-                    Logger.player.error("playback_not_advancing position=\(time)")
+                    Logger.player.error("playback_not_advancing position=\(time) since_ms=\(Int(stuck / .milliseconds(1)))")
                 }
                 if stuck > .seconds(4), !checkedServer, self.currentPlayback?.origin == .mediaCache {
                     checkedServer = true
-                    _ = try? await self.mediaServer.ensureListening()
+                    // Never awaited here: a check that hangs must not stop the
+                    // watchdog (a stall it set would then never clear).
+                    let server = self.mediaServer
+                    Task { _ = try? await server.ensureListening() }
                 }
                 // Waiting although the cache holds what comes next: the player
                 // lost its connection (suspension, sleep), not the network.
@@ -632,6 +645,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     func startPictureInPicture() { backend?.startPictureInPicture() }
     func stopPictureInPicture() { backend?.stopPictureInPicture() }
     func toggleFullscreen() {
+        Logger.player.notice("fullscreen_toggle fullscreen=\(self.isFullscreen) presenter=\(self.presentFullscreenAction != nil)")
         if isFullscreen {
             if let dismissFullscreenAction { dismissFullscreenAction() }
             else { isFullscreen = false }
@@ -645,11 +659,23 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         if let dismissFullscreenAction { dismissFullscreenAction() }
         else { isFullscreen = false }
     }
-    func installFullscreenPresenter(present: @escaping () -> Void, dismiss: @escaping () -> Void) {
+    /// `owner` is the surface presenting full screen. A surface torn down
+    /// after its replacement installed itself (a reload rebuilds the surface)
+    /// must not remove the replacement's presenter: removal names its owner.
+    func installFullscreenPresenter(owner: AnyObject, present: @escaping () -> Void, dismiss: @escaping () -> Void) {
+        fullscreenPresenterOwner = owner
         presentFullscreenAction = present
         dismissFullscreenAction = dismiss
     }
-    func removeFullscreenPresenter() {
+    /// Installs `owner` only when no surface presents full screen: a surface
+    /// being replaced, updated late, must not take it back from its replacement.
+    func installFullscreenPresenterIfNone(owner: AnyObject, present: @escaping () -> Void, dismiss: @escaping () -> Void) {
+        guard fullscreenPresenterOwner == nil else { return }
+        installFullscreenPresenter(owner: owner, present: present, dismiss: dismiss)
+    }
+    func removeFullscreenPresenter(owner: AnyObject) {
+        guard fullscreenPresenterOwner === owner else { return }
+        fullscreenPresenterOwner = nil
         presentFullscreenAction = nil
         dismissFullscreenAction = nil
     }
@@ -1128,7 +1154,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         let position = backend?.currentTime ?? playbackTime
         let autoplay = playbackRequested
         let generation = playGeneration
-        Logger.player.notice("local_playback_recover attempt=\(attempt) position=\(position)")
+        Logger.player.notice("local_playback_recover attempt=\(attempt) position=\(position) reason=\(message, privacy: .public)")
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(min(30, Double(attempt * attempt))))
             guard let self else { return }

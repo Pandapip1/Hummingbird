@@ -725,7 +725,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         // menus, tabs). Nothing here touches the player: attaching is the
         // ownership's job, so updates cannot pause it or attach a second copy.
         context.coordinator.inlineController = controller
-        context.coordinator.installPresenter()
+        context.coordinator.installPresenter(replacing: false)
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
@@ -734,7 +734,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         // layout changes rebuild this view): resigning detaches it first and
         // hands the player to the surface before it, if any.
         coordinator.resignInline()
-        coordinator.model?.removeFullscreenPresenter()
+        coordinator.model?.removeFullscreenPresenter(owner: coordinator)
     }
 
     @MainActor
@@ -774,11 +774,16 @@ struct PlayerSurface: UIViewControllerRepresentable {
 
         init(model: PlayerModel) { self.model = model }
 
-        func installPresenter() {
-            model?.installFullscreenPresenter(
-                present: { [weak self] in self?.presentFullscreen() },
-                dismiss: { [weak self] in self?.dismissFullscreen(animated: true) }
-            )
+        /// A new surface takes over full screen (`replacing`); updates only
+        /// install it when no surface has.
+        func installPresenter(replacing: Bool = true) {
+            let present: () -> Void = { [weak self] in self?.presentFullscreen() }
+            let dismiss: () -> Void = { [weak self] in self?.dismissFullscreen(animated: true) }
+            if replacing {
+                model?.installFullscreenPresenter(owner: self, present: present, dismiss: dismiss)
+            } else {
+                model?.installFullscreenPresenterIfNone(owner: self, present: present, dismiss: dismiss)
+            }
         }
 
         /// Builds the full-screen presentation once per player, at the first
@@ -798,7 +803,10 @@ struct PlayerSurface: UIViewControllerRepresentable {
             guard fullscreenController == nil,
                   let model,
                   let inlineController,
-                  let presenter = presentingController(from: inlineController) else { return }
+                  let presenter = presentingController(from: inlineController) else {
+                Logger.player.error("fullscreen_present_refused presented=\(self.fullscreenController != nil) model=\(self.model != nil) inline=\(self.inlineController != nil) window=\(self.inlineController?.view.window != nil)")
+                return
+            }
             let start = ContinuousClock.now
             defer {
                 let ms = start.duration(to: .now) / .milliseconds(1)
@@ -946,7 +954,9 @@ enum MainRunLoopIdle {
             try? await Task.sleep(for: delay)
             let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, 0) { observer, _ in
                 CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .defaultMode)
-                MainActor.assumeIsolated { work() }
+                // Not inside the observer: SwiftUI and Core Animation commit their
+                // transactions in this same phase. Run as the next main-queue work.
+                Task { @MainActor in work() }
             }
             CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .defaultMode)
         }

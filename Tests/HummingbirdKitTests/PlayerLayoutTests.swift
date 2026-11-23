@@ -42,7 +42,9 @@ final class PlayerLayoutTests: XCTestCase {
     func testMediaTeardownPreservesViewOwnedFullscreenPresenter() {
         let model = makeTestPlayerModel()
         var presentationCount = 0
+        let surface = NSObject()
         model.installFullscreenPresenter(
+            owner: surface,
             present: { presentationCount += 1 },
             dismiss: {}
         )
@@ -51,7 +53,22 @@ final class PlayerLayoutTests: XCTestCase {
         model.toggleFullscreen()
 
         XCTAssertEqual(presentationCount, 1)
-        model.removeFullscreenPresenter()
+        model.removeFullscreenPresenter(owner: surface)
+    }
+
+    /// A reload rebuilds the surface; the old one may be torn down after the
+    /// new one installed its presenter. Full screen must still open.
+    @MainActor
+    func testAnOutgoingSurfaceCannotRemoveItsReplacementsPresenter() {
+        let model = makeTestPlayerModel()
+        var presented = ""
+        let old = NSObject(), new = NSObject()
+        model.installFullscreenPresenter(owner: old, present: { presented = "old" }, dismiss: {})
+        model.installFullscreenPresenter(owner: new, present: { presented = "new" }, dismiss: {})
+        model.removeFullscreenPresenter(owner: old)
+        model.toggleFullscreen()
+        XCTAssertEqual(presented, "new")
+        model.removeFullscreenPresenter(owner: new)
     }
 }
 

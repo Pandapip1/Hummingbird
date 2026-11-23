@@ -124,7 +124,7 @@ struct DownloadsButton: View {
             .accessibilityLabel(model.isDownloading
                 ? "Downloads, \(Int(model.overallFraction * 100)) percent"
                 : model.isSavingEnergy ? "Downloads, paused for Low Power Mode" : "Downloads")
-            .popover(isPresented: $showingList) {
+            .attachedPanel(isPresented: $showingList) {
                 DownloadsList(model: model) { showingList = false }
             }
         }

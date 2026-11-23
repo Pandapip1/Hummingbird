@@ -1,4 +1,5 @@
 import HummingbirdKit
+import PluginEngine
 import SwiftOpenUI
 @_spi(SwiftOpenUIBackend) import BackendGTK4
 #if BACKEND_GTK_WEBKIT
@@ -43,7 +44,12 @@ private func liveStores() -> AppDataStores {
     #endif
 }
 
+// Started by itself as a plugin host (PluginExecutionLimits.installPlatformIsolation): serve JavaScript
+// contexts on stdin/stdout and nothing else, before any GTK, WebKit or app state exists.
+if CommandLine.arguments.dropFirst().first == "--plugin-host" { PluginHostServer.runAsProcess() }
+
 MainActor.assumeIsolated {
+    PluginExecutionLimits.installPlatformIsolation(appBundleIdentifier: nil)
     liveStores().registerCredentialVault()
     // Crashes recorded by systemd-coredump since the last run arrive as
     // MetricKit diagnostics (SwiftOpenUI's MetricKit on Linux).

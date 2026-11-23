@@ -1,8 +1,5 @@
 import SwiftOpenUI
 import Foundation
-#if os(tvOS)
-import UIKit
-#endif
 
 public enum AdvancedVideoPlayerLayout {
     public static let controlBarMinimumHeight: CGFloat = 44
@@ -35,9 +32,11 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     @State private var controlsVisible = true
     @State private var menuPresented = false
     @State private var autoHide = ControlsAutoHide()
-    #if os(tvOS)
-    @Namespace private var focusNamespace
-    #endif
+    /// VoiceOver or Switch Control: the controls never hide on a timer.
+    @Environment(\.assistiveTechnologyState) private var assistiveTechnology
+    /// Control rows and spacing grow with the text size.
+    @ScaledMetric(relativeTo: .body) private var controlRowHeight: CGFloat = AdvancedVideoPlayerLayout.controlBarMinimumHeight
+    @ScaledMetric(relativeTo: .body) private var buttonSpacing: CGFloat = 14
 
     public init(
         model: Model,
@@ -52,90 +51,130 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
     }
 
     public var body: some View {
-        let showingControls = controlsVisible || !model.isPlaying
+        let showingControls = controlsVisible || !model.isPlaying || model.waitingReason != nil
+            || assistiveTechnology.keepsControlsVisible
         ZStack {
-            Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.modifier(NonFocusable())
+            Color.clear.contentShape(Rectangle()).onTapGesture { interacted() }.remoteNonFocusable()
             bars
-                .opacity(showingControls ? 1 : 0)
-                .allowsHitTesting(showingControls)
-                .accessibilityHidden(!showingControls)
+                .autoHiddenControls(!showingControls)
+                // Hidden by the timer, the controls stay reachable by name and focus
+                // (VoiceOver, Voice Control, Switch Control, keyboards).
                 .environment(\.playerMenuPresentationChanged, menuPresentationChanged)
-            #if os(tvOS)
-            if !showingControls { hiddenFocusTarget }
-            #endif
+            if !showingControls { RemoteRevealTarget { interacted() } }
+            keyCommands
+            if let reason = model.waitingReason {
+                // Playback that should advance but does not: say so, and why.
+                PlayerControlGroup {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text(reason).font(.callout)
+                    }
+                    .playerSurfaceGlass()
+                }
+                .allowsHitTesting(false)
+                .accessibilityLabel(reason)
+            }
         }
-        #if os(tvOS)
-        .onMoveCommand { _ in interacted() }
-        #endif
+        .onRemoteMove { interacted() }
         .onContinuousHover { if case .active = $0 { interacted() } }
-        #if os(tvOS)
-        .focusScope(focusNamespace)
-        #endif
+        .remoteFocusScope()
         .task { interacted() }
+        .onAppear { model.controlsVisibilityChanged(showingControls) }
+        .onChange(of: showingControls) { _, visible in model.controlsVisibilityChanged(visible) }
         .onChange(of: model.isPlaying) { _, playing in
             if playing { interacted() }
             else { autoHide.task?.cancel(); controlsVisible = true }
         }
+        .onChange(of: assistiveTechnology) { _, state in
+            if state.keepsControlsVisible { autoHide.task?.cancel(); controlsVisible = true }
+        }
+    }
+
+    /// Keyboard commands (where there is a keyboard): space play/pause, ←/→
+    /// 10 s, ⇧←/⇧→ chapter, F full screen, C captions, [ and ] speed. Hidden from
+    /// assistive technology: the visible controls carry the same actions.
+    private var keyCommands: some View {
+        let layout = ScrubberLayout(content: model.scrubberContent, width: 1)
+        let rates: [Float] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+        let rateIndex = rates.firstIndex(of: model.playbackRate) ?? 3
+        return ZStack {
+            Button("") { interacted(); model.togglePlayback() }.playerKeyCommand(.space)
+            Button("") { interacted(); model.skip(by: -10) }.playerKeyCommand(.leftArrow)
+            Button("") { interacted(); model.skip(by: 10) }.playerKeyCommand(.rightArrow)
+            Button("") {
+                interacted()
+                if let start = layout.previousChapterStart(before: model.playbackTime) { model.seek(to: start) }
+            }.playerKeyCommand(.leftArrow, modifiers: .shift)
+            Button("") {
+                interacted()
+                if let start = layout.nextChapterStart(after: model.playbackTime) { model.seek(to: start) }
+            }.playerKeyCommand(.rightArrow, modifiers: .shift)
+            Button("") { interacted(); model.toggleFullscreen() }.playerKeyCommand("f")
+            Button("") { interacted(); model.toggleCaptions() }.playerKeyCommand("c")
+            Button("") { interacted(); model.setPlaybackRate(rates[max(0, rateIndex - 1)]) }.playerKeyCommand("[")
+            Button("") { interacted(); model.setPlaybackRate(rates[min(rates.count - 1, rateIndex + 1)]) }.playerKeyCommand("]")
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+        .disabled(!model.isMediaReady)
     }
 
     private var bars: some View {
         VStack(spacing: 6) {
             HStack(spacing: 12) {
                 if isFullscreen && !AdvancedVideoPlayerLayout.usesStackedTransport(width: availableWidth) {
-                    Text(model.title).font(.headline)
+                    Text(model.title).font(.headline).playerTitleGlass()
                 }
                 Spacer()
-                accessories(interacted).disabled(!model.isMediaReady)
+                PlayerControlGroup {
+                    HStack(spacing: 12) { accessories(interacted) }
+                }
+                .disabled(!model.isMediaReady)
             }
-            .modifier(FocusSection()).foregroundStyle(Color.white)
-            .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
-            .padding(.horizontal, 12).padding(.vertical, 9)
-            .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
+            .remoteFocusSection()
+            .frame(minHeight: controlRowHeight)
+            .padding(.horizontal, 8)
 
             Spacer().frame(minHeight: AdvancedVideoPlayerLayout.minimumBarSeparation, maxHeight: .infinity)
-            transport.disabled(!model.isMediaReady).modifier(FocusSection()).foregroundStyle(Color.white)
-                .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
-                .padding(.horizontal, 12).padding(.vertical, 9)
-                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 8)).padding(.horizontal, 8)
+            PlayerControlGroup { transport }
+                .disabled(!model.isMediaReady).remoteFocusSection()
+                .frame(minHeight: controlRowHeight)
+                .padding(.horizontal, 8)
         }.padding(.vertical, 8)
     }
 
     private var transport: some View {
         VStack(spacing: 6) {
-            timeline.frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+            timeline.frame(minHeight: controlRowHeight)
             if AdvancedVideoPlayerLayout.usesStackedTransport(width: availableWidth) {
-                HStack(spacing: 14) { primaryButtons }.frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
-                HStack(spacing: 14) { secondaryButtons }.frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+                HStack(spacing: buttonSpacing) { primaryButtons }.frame(minHeight: controlRowHeight)
+                HStack(spacing: buttonSpacing) { secondaryButtons }.frame(minHeight: controlRowHeight)
             } else {
-                HStack(spacing: 14) { primaryButtons; Spacer(); secondaryButtons }
-                    .frame(minHeight: AdvancedVideoPlayerLayout.controlBarMinimumHeight)
+                HStack(spacing: buttonSpacing) { primaryButtons; Spacer(); secondaryButtons }
+                    .frame(minHeight: controlRowHeight)
             }
         }
     }
 
+    /// The seek bar (chapters, pipeline lanes, flagged regions, live window),
+    /// with its own time labels.
+    /// Its own view: only it observes the position (`PlaybackClock`), so the
+    /// rest of the controls do not redraw as playback advances.
     private var timeline: some View {
-        HStack(spacing: 14) {
-            Text(timeLabel).font(.caption.monospacedDigit())
-            if model.duration > 0 {
-                AdvancedVideoPlayerSlider(
-                    value: min(model.playbackTime, model.duration),
-                    range: 0...model.duration,
-                    onChange: { interacted(); model.seek(to: $0) }
-                )
-                .frame(minWidth: 80, maxWidth: .infinity)
-            } else { Spacer() }
-        }
+        PlayerTimeline(model: model, clock: model.clock, interacted: interacted)
     }
 
     @ViewBuilder private var primaryButtons: some View {
         Button { interacted(); model.skip(by: -10) } label: { Image(systemName: "gobackward.10").accessibilityLabel("Back 10 seconds") }
+            .playerControlGlass()
         Button { interacted(); model.togglePlayback() } label: {
             Image(systemName: model.isPlaying ? "pause.fill" : "play.fill").accessibilityLabel(model.isPlaying ? "Pause" : "Play")
         }
-        #if os(tvOS)
-        .prefersDefaultFocus(isFullscreen, in: focusNamespace)
-        #endif
+        .playerControlGlass()
+        .remotePrefersDefaultFocus(isFullscreen)
         Button { interacted(); model.skip(by: 10) } label: { Image(systemName: "goforward.10").accessibilityLabel("Forward 10 seconds") }
+            .playerControlGlass()
     }
 
     @ViewBuilder private var secondaryButtons: some View {
@@ -144,23 +183,26 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
             EmptyView()
         case .starting, .stopping:
             // Changing: an indeterminate spinner in place of the button until it settles.
-            ProgressView().accessibilityLabel("Picture in Picture is changing")
+            ProgressView().accessibilityLabel("Picture in Picture is changing").playerControlGlass()
         case .active:
             Button { interacted(); model.stopPictureInPicture() } label: {
                 Image(systemName: "pip.exit").accessibilityLabel("Exit Picture in Picture")
             }
+            .playerControlGlass()
         case .possible, .unavailable:
             Button { interacted(); model.startPictureInPicture() } label: {
                 Image(systemName: "pip.enter").accessibilityLabel("Picture in Picture")
             }
+            .playerControlGlass()
             .disabled(model.pictureInPictureState == .unavailable)
         }
         Button { interacted(); model.toggleFullscreen() } label: {
             Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                 .accessibilityLabel(isFullscreen ? "Exit Full Screen" : "Enter Full Screen")
         }
-        PlayerMenu {
-            Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×").foregroundStyle(.white)
+        .playerControlGlass()
+        PlayerMenu(value: model.playbackRate == 1 ? "Normal" : "\(model.playbackRate.formatted()) times") {
+            Text(model.playbackRate == 1 ? "Speed" : "\(model.playbackRate.formatted())×")
         } content: {
             ForEach([Float(0.25), 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { rate in
                 CheckableMenuItem(rate == 1 ? "Normal" : "\(rate.formatted())×",
@@ -171,17 +213,6 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         }
     }
 
-    #if os(tvOS)
-    private var hiddenFocusTarget: some View {
-        Color.clear.contentShape(Rectangle()).frame(maxWidth: .infinity, maxHeight: .infinity)
-            .focusable().focusEffectDisabled().accessibilityLabel("Show playback controls")
-            .onTapGesture { interacted() }.onMoveCommand { _ in interacted() }
-    }
-    #endif
-
-    private var timeLabel: String {
-        let seconds = max(0, Int(model.playbackTime)); return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
 
     private func interacted() {
         // Continuous pointer motion can fire many times before a click. Avoid
@@ -190,7 +221,7 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         // subsequent release is delivered to a widget that no longer exists.
         if !controlsVisible { controlsVisible = true }
         autoHide.task?.cancel()
-        guard model.isPlaying, !menuPresented else { return }
+        guard model.isPlaying, !menuPresented, !assistiveTechnology.keepsControlsVisible else { return }
         autoHide.task = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled, model.isPlaying else { return }
@@ -226,168 +257,43 @@ public struct AdvancedVideoPlayerSlider: View {
 
     @ViewBuilder
     public var body: some View {
-        #if os(tvOS)
-        TVRemoteSlider(value: value, range: range, onChange: onChange)
-        #else
-        Slider(value: Binding(get: { value }, set: { newValue in onChange(newValue) }), in: range)
-        #endif
-    }
-}
-
-#if os(tvOS)
-/// A focusable slider for the Siri Remote. Select enters adjustment mode,
-/// directional presses seek while selected, and Select again releases focus
-/// movement so the user can navigate to the surrounding player controls.
-@MainActor
-private struct TVRemoteSlider: UIViewRepresentable {
-    let value: Double
-    let range: ClosedRange<Double>
-    let onChange: (Double) -> Void
-
-    func makeUIView(context: Context) -> TVRemoteSliderControl {
-        TVRemoteSliderControl()
-    }
-
-    func updateUIView(_ control: TVRemoteSliderControl, context: Context) {
-        control.update(value: value, range: range, onChange: onChange)
-    }
-}
-
-@MainActor
-private final class TVRemoteSliderControl: UIControl {
-    private let progress = UIProgressView(progressViewStyle: .default)
-    private var value: Double = 0
-    private var range: ClosedRange<Double> = 0...1
-    private var onChange: ((Double) -> Void)?
-    private var adjustmentStartValue: Double?
-    private var isCancellingWithMenu = false
-    private var isAdjusting = false { didSet { refreshAppearance() } }
-
-    override var canBecomeFocused: Bool { true }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        isAccessibilityElement = true
-        accessibilityIdentifier = "playback-seek-control"
-        accessibilityLabel = "Playback position"
-        accessibilityTraits = [.adjustable]
-        progress.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(progress)
-        NSLayoutConstraint.activate([
-            progress.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            progress.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
-            progress.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-        layer.cornerRadius = 12
-        refreshAppearance()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-
-    func update(value: Double, range: ClosedRange<Double>, onChange: @escaping (Double) -> Void) {
-        self.value = value
-        self.range = range
-        self.onChange = onChange
-        let length = range.upperBound - range.lowerBound
-        progress.progress = length > 0 ? Float((value - range.lowerBound) / length) : 0
-        accessibilityValue = "\(time(value)) of \(time(range.upperBound))\(isAdjusting ? ", adjusting" : "")"
-    }
-
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if isAdjusting, presses.contains(where: { $0.type == .menu }) {
-            if let adjustmentStartValue { adjust(to: adjustmentStartValue) }
-            adjustmentStartValue = nil
-            isAdjusting = false
-            isCancellingWithMenu = true
-            return
-        }
-        guard isAdjusting, let type = presses.first?.type else {
-            super.pressesBegan(presses, with: event)
-            return
-        }
-        switch type {
-        case .leftArrow: adjust(by: -step)
-        case .rightArrow: adjust(by: step)
-        default: super.pressesBegan(presses, with: event)
-        }
-    }
-
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if isCancellingWithMenu, presses.contains(where: { $0.type == .menu }) {
-            isCancellingWithMenu = false
-            return
-        }
-        if presses.contains(where: { $0.type == .select }) {
-            if isAdjusting {
-                adjustmentStartValue = nil
-                isAdjusting = false
-            } else {
-                adjustmentStartValue = value
-                isAdjusting = true
-            }
-            return
-        }
-        super.pressesEnded(presses, with: event)
-    }
-
-    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
-        super.didUpdateFocus(in: context, with: coordinator)
-        if !isFocused { isAdjusting = false }
-        coordinator.addCoordinatedAnimations { self.refreshAppearance() }
-    }
-
-    override func accessibilityIncrement() { adjust(by: step) }
-    override func accessibilityDecrement() { adjust(by: -step) }
-
-    private var step: Double { min(30, max(5, (range.upperBound - range.lowerBound) / 100)) }
-
-    private func adjust(by delta: Double) {
-        adjust(to: value + delta)
-    }
-
-    private func adjust(to proposedValue: Double) {
-        let target = min(max(proposedValue, range.lowerBound), range.upperBound)
-        value = target
-        onChange?(target)
-        update(value: target, range: range, onChange: onChange ?? { _ in })
-    }
-
-    private func refreshAppearance() {
-        progress.progressTintColor = isAdjusting ? tintColor : .white
-        backgroundColor = isFocused ? UIColor.white.withAlphaComponent(0.18) : .clear
-        transform = isFocused ? CGAffineTransform(scaleX: 1.03, y: 1.03) : .identity
-        accessibilityValue = "\(time(value)) of \(time(range.upperBound))\(isAdjusting ? ", adjusting" : "")"
-    }
-
-    private func time(_ value: Double) -> String {
-        let seconds = max(0, Int(value))
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
-}
-#endif
-
-private struct FocusSection: ViewModifier {
-    @ViewBuilder func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.focusSection()
-        #else
-        content
-        #endif
-    }
-}
-
-private struct NonFocusable: ViewModifier {
-    @ViewBuilder func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.focusable(false)
-        #else
-        content
-        #endif
+        ScrubSlider(value: value, range: range, onChange: onChange)
     }
 }
 
 @MainActor private final class ControlsAutoHide {
     var task: Task<Void, Never>?
     deinit { task?.cancel() }
+}
+
+/// The seek bar and its time labels: the one part of the controls that
+/// observes the position, so it alone redraws on every tick.
+@MainActor
+private struct PlayerTimeline<Model: AdvancedVideoPlayerControlling>: View {
+    let model: Model
+    let clock: PlaybackClock
+    let interacted: () -> Void
+
+    var body: some View {
+        let content = model.scrubberContent
+        if content.end > 0 {
+            MediaScrubber(
+                "Playback position",
+                content: content,
+                value: min(clock.time, content.end),
+                onScrub: { _ in interacted() },
+                onScrubEnded: { interacted(); model.seek(to: $0) },
+                onJumpToLive: content.isLive ? { interacted(); model.jumpToLive() } : nil
+            )
+            .frame(minWidth: 80, maxWidth: .infinity)
+            .playerSurfaceGlass()
+        } else {
+            HStack { Text(timeLabel).font(.caption.monospacedDigit()); Spacer() }.playerSurfaceGlass()
+        }
+    }
+
+    private var timeLabel: String {
+        let seconds = max(0, Int(clock.time))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
 }

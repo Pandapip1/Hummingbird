@@ -252,7 +252,179 @@ final class MediaPipelineTests: XCTestCase {
         await downloader.stop()
     }
 
+    /// Subtitles, closed captions and audio descriptions survive into the local
+    /// master with their accessibility attributes, so the platform player
+    /// offers, styles and selects them.
+    func testAccessibilityRenditionsRoundTripThroughTheLocalMaster() throws {
+        let source = """
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English AD",LANGUAGE="en",AUTOSELECT=YES,CHARACTERISTICS="public.accessibility.describes-video",URI="ad.m3u8"
+        #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English SDH",LANGUAGE="en",AUTOSELECT=YES,FORCED=NO,CHARACTERISTICS="public.accessibility.transcribes-spoken-dialog,public.accessibility.describes-music-and-sound",URI="en.m3u8"
+        #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="Forced",LANGUAGE="de",FORCED=YES,URI="forced.m3u8"
+        #EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID="cc",NAME="CC1",LANGUAGE="en",INSTREAM-ID="CC1"
+        #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2",AUDIO="aud",SUBTITLES="subs",CLOSED-CAPTIONS="cc"
+        v720.m3u8
+        """
+        let base = try XCTUnwrap(URL(string: "https://media.test/hls/master.m3u8"))
+        let master = try HLSPlaylist.parseMaster(source, base: base)
+        XCTAssertEqual(master.subtitles.count, 2)
+        XCTAssertEqual(master.closedCaptions.first?.instreamID, "CC1")
+        let description = try XCTUnwrap(master.audio.first)
+        XCTAssertTrue(description.describesVideo)
+
+        let local = HLSPlaylist.localMaster(
+            variant: try XCTUnwrap(master.variants.first), videoPlaylist: "video.m3u8",
+            audio: description, audioPlaylist: "audio.m3u8",
+            subtitles: master.subtitles.enumerated().map { ($0.element, "subs-\($0.offset).m3u8") },
+            closedCaptions: master.closedCaptions
+        )
+        let again = try HLSPlaylist.parseMaster(local, base: base)
+        XCTAssertEqual(again.audio.first?.characteristics, description.characteristics)
+        XCTAssertEqual(again.subtitles.map(\.characteristics), master.subtitles.map(\.characteristics))
+        XCTAssertEqual(again.subtitles.map(\.forced), [false, true])
+        XCTAssertEqual(again.subtitles.map(\.language), ["en", "de"])
+        XCTAssertEqual(again.closedCaptions.first?.instreamID, "CC1")
+        let variant = try XCTUnwrap(again.variants.first)
+        XCTAssertTrue(variant.attributes.contains("SUBTITLES=\"subs\""))
+        XCTAssertTrue(variant.attributes.contains("CLOSED-CAPTIONS=\"cc\""))
+    }
+
+    /// After sleep or suspension (requests failed while away, now in a long
+    /// backoff), returning to the app retries at once.
+    func testReturningFromSuspensionRetriesAtOnce() async throws {
+        let data = Data((0..<200_000).map { UInt8($0 % 251) })
+        let upstream = FakeUpstream(file: data, failures: 2)
+        let cache = temporaryCache()
+        let track = try await cache.open(identity: "suspended")
+        var config = fastRetry
+        config.retry = DownloadRetryPolicy(initialDelay: 60, maximumDelay: 60, refusalsBeforeRefresh: 2)
+        let downloader = TrackDownloader(role: .muxed, cache: cache, track: track,
+                                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test/s.mp4"))),
+                                         transport: upstream, configuration: config)
+        await downloader.start()
+        let started = ContinuousClock.now
+        let retrying = Task {
+            // The app becomes active (repeatedly, as each failed attempt backs off).
+            for _ in 0..<40 {
+                try await Task.sleep(for: .milliseconds(200))
+                await downloader.retryNow()
+            }
+        }
+        try await bounded(10) { try await downloader.waitUntilAvailable(0..<200_000) }
+        retrying.cancel()
+        XCTAssertLessThan(started.duration(to: .now), .seconds(10), "not the 60 s backoff")
+        await downloader.stop()
+    }
+
+    /// Upstream problems are classified, counted and shown (Download
+    /// health); a 429 is waited out; a URL about to expire is resolved again
+    /// before it is refused.
+    func testUpstreamIssuesAreClassifiedAndExpiringURLsRefreshedAhead() async throws {
+        let data = Data((0..<300_000).map { UInt8($0 % 251) })
+        let upstream = StatusUpstream(file: data, statuses: [429, 403])
+        let cache = temporaryCache()
+        let track = try await cache.open(identity: "health")
+        let soon = Int(Date().timeIntervalSince1970) + 30
+        let expiring = try XCTUnwrap(URL(string: "https://media.test/v.mp4?expire=\(soon)"))
+        let fresh = try XCTUnwrap(URL(string: "https://media.test/v.mp4?expire=\(soon + 21_600)"))
+        var config = fastRetry
+        config.retry.refusalsBeforeRefresh = 1
+        let downloader = TrackDownloader(role: .muxed, cache: cache, track: track, signer: .plain(expiring),
+                                         refreshSigner: { .plain(fresh) },
+                                         transport: upstream, configuration: config)
+        await downloader.start()
+        try await bounded { try await downloader.waitUntilAvailable(0..<300_000) }
+        let state = await downloader.state
+        let health = try XCTUnwrap(state.health)
+        XCTAssertEqual(health.issueCounts[.rateLimited], 1)
+        XCTAssertEqual(health.issueCounts[.forbidden], 1)
+        XCTAssertGreaterThanOrEqual(health.issueCounts[.expired] ?? 0, 1, "the expiring URL was noticed")
+        XCTAssertGreaterThanOrEqual(health.refreshes, 1, "and resolved again ahead of expiry")
+        let urls = await upstream.urls
+        XCTAssertTrue(urls.contains { $0.query?.contains("expire=\(soon + 21_600)") == true }, "later pieces use the fresh URL")
+        await downloader.stop()
+
+        XCTAssertEqual(PlayerModel.margin(ahead: 10, in: [0...30, 40...50]), 20)
+        XCTAssertEqual(PlayerModel.margin(ahead: 35, in: [0...30, 40...50]), 0)
+    }
+
     // MARK: session and loopback server
+
+    /// Plugin subtitles are SUBTITLES renditions of the local presentation
+    /// (the platform player styles, selects and shows them in Picture in
+    /// Picture); a described audio track keeps its characteristics. The
+    /// subtitle text is loaded only when the player asks for it, as WebVTT.
+    func testPluginSubtitlesAreSubtitleRenditionsOfTheLocalPresentation() async throws {
+        let video = FakeMedia.fragmentedMP4(segmentSizes: [200_000, 300_000], segmentMilliseconds: 5_000)
+        let audio = FakeMedia.fragmentedMP4(segmentSizes: [20_000, 30_000], segmentMilliseconds: 5_000)
+        let transport = FakeUpstream(files: ["/v": video.data, "/a": audio.data], failures: 0)
+        let server = LocalMediaServer()
+        let downloads = MediaDownloads(cache: temporaryCache(), transport: transport)
+        func spec(_ role: MediaTrackRole, _ path: String, codec: String) throws -> VODTrackSpec {
+            VODTrackSpec(role: role, identity: "subtitles-\(role.rawValue)",
+                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test" + path))),
+                         refresh: nil, indexHint: nil, container: role == .audio ? "audio/mp4" : "video/mp4",
+                         codec: codec, bandwidth: 1_000_000, width: 1280, height: 720, declaredDuration: 10)
+        }
+        let videoSpec = try spec(.video, "/v", codec: "avc1.64001f")
+        var audioSpec = try spec(.audio, "/a", codec: "mp4a.40.2")
+        audioSpec.rendition = HLSPlaylist.Rendition(groupID: "audio", name: "English · Audio Description", language: "en",
+                                                    isDefault: true, uri: nil,
+                                                    characteristics: "public.accessibility.describes-video")
+        let describedAudio = audioSpec
+        let loads = Counter()
+        let subtitle = LocalSubtitle(name: "English", language: "en", characteristics: nil) {
+            await loads.increment()
+            return LocalSubtitle.webVTT(from: "1\n00:00:01,000 --> 00:00:02,500\nHello\n")
+        }
+        let (session, playback) = try await bounded {
+            try await VODSession.start(video: videoSpec, audio: describedAudio, subtitles: [subtitle],
+                                       downloads: downloads, server: server)
+        }
+        let loadsBefore = await loads.value
+        XCTAssertEqual(loadsBefore, 0, "nothing is fetched until the player asks")
+        let master = playback.request.video.url
+        let masterText = String(decoding: try await bounded { try await URLSession.shared.data(from: master) }.0, as: UTF8.self)
+        XCTAssertTrue(masterText.contains("TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",LANGUAGE=\"en\""))
+        XCTAssertTrue(masterText.contains("AUTOSELECT=YES"))
+        XCTAssertTrue(masterText.contains("SUBTITLES=\"subs\""))
+        XCTAssertTrue(masterText.contains("CHARACTERISTICS=\"public.accessibility.describes-video\""))
+        let parsed = try HLSPlaylist.parseMaster(masterText, base: master)
+        XCTAssertEqual(parsed.subtitles.count, 1)
+        XCTAssertTrue(try XCTUnwrap(parsed.audio.first).describesVideo)
+
+        let base = master.deletingLastPathComponent()
+        let playlist = String(decoding: try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("s0.m3u8")) }.0,
+                              as: UTF8.self)
+        XCTAssertTrue(playlist.contains("#EXTINF:10.000000,\ns0.vtt"))
+        let (vtt, response) = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("s0.vtt")) }
+        XCTAssertEqual((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type"), "text/vtt")
+        XCTAssertEqual(String(decoding: vtt, as: UTF8.self), "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nHello\n\n")
+        _ = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("s0.vtt")) }
+        let loadsAfter = await loads.value
+        XCTAssertEqual(loadsAfter, 1, "loaded once")
+        await session.stop()
+    }
+
+    /// Generated (DASH) media keeps the audio track's language and marks an
+    /// audio description as one in the local master.
+    func testGeneratedMediaKeepsAudioLanguageAndDescriptions() throws {
+        let mpd = """
+        <MPD><Period>
+          <AdaptationSet contentType="video"><Representation codecs="avc1.64001f" bandwidth="1000000" width="1280" height="720">
+            <SegmentTemplate timescale="1000" initialization="https://grayjay.internal/video/i.mp4" media="https://grayjay.internal/video/s.mp4?n=$Number$">
+              <SegmentTimeline><S d="2000" r="1"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>
+          <AdaptationSet contentType="audio" lang="de"><Role schemeIdUri="urn:mpeg:dash:role:2011" value="description"/>
+            <Representation codecs="mp4a.40.2" bandwidth="128000">
+            <SegmentTemplate timescale="1000" initialization="https://grayjay.internal/audio/i.mp4" media="https://grayjay.internal/audio/s.mp4?n=$Number$">
+              <SegmentTimeline><S d="2000" r="1"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>
+        </Period></MPD>
+        """
+        let playlists = try DashToHLS.convert(mpd, baseURL: "http://127.0.0.1:1234/p")
+        XCTAssertTrue(playlists.master.contains("LANGUAGE=\"de\""))
+        XCTAssertTrue(playlists.master.contains("CHARACTERISTICS=\"public.accessibility.describes-video\""))
+        XCTAssertEqual(playlists.duration, 4, accuracy: 0.001)
+    }
 
     func testSessionServesSeparateTracksAsOneLocalHLSPresentation() async throws {
         let video = FakeMedia.fragmentedMP4(segmentSizes: [200_000, 300_000], segmentMilliseconds: 5_000)
@@ -292,6 +464,65 @@ final class MediaPipelineTests: XCTestCase {
         XCTAssertEqual(bytes, video.data.subdata(in: start..<(start + 100_000)))
 
         await session.stop()
+    }
+
+    /// Switching YouTube-style streams (byte-range fMP4 video + a shared audio
+    /// track) mid-playback: the new format gets its own local presentation,
+    /// the shared audio download is kept (not restarted or stopped), the new
+    /// presentation serves the segment at the current position, and the old
+    /// format keeps downloading at low priority after the old session ends.
+    func testSwitchingFormatsKeepsAudioAndTheOldTrackDownloading() async throws {
+        let high = FakeMedia.fragmentedMP4(segmentSizes: Array(repeating: 300_000, count: 6), segmentMilliseconds: 5_000)
+        let low = FakeMedia.fragmentedMP4(segmentSizes: Array(repeating: 100_000, count: 6), segmentMilliseconds: 5_000)
+        let audio = FakeMedia.fragmentedMP4(segmentSizes: Array(repeating: 20_000, count: 6), segmentMilliseconds: 5_000)
+        let transport = FakeUpstream(files: ["/1080": high.data, "/720": low.data, "/a": audio.data], failures: 0)
+        let downloads = MediaDownloads(cache: temporaryCache(), transport: transport)
+        let server = LocalMediaServer()
+        func spec(_ role: MediaTrackRole, _ path: String) throws -> VODTrackSpec {
+            VODTrackSpec(role: role, identity: "switch-\(path)",
+                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test" + path))),
+                         refresh: nil, indexHint: nil, container: role == .audio ? "audio/mp4" : "video/mp4",
+                         codec: role == .audio ? "mp4a.40.2" : "avc1.64001f", bandwidth: 1_000_000,
+                         width: 1920, height: 1080, declaredDuration: 30)
+        }
+        let audioSpec = try spec(.audio, "/a")
+        let highSpec = try spec(.video, "/1080")
+        let lowSpec = try spec(.video, "/720")
+        let (first, _) = try await bounded {
+            try await VODSession.start(video: highSpec, audio: audioSpec, downloads: downloads, server: server)
+        }
+        // References to the downloads (a hold, released at once).
+        let sharedAudio = try await downloads.hold(audioSpec)
+        await downloads.release(track: audioSpec.identity)
+        let oldVideo = try await downloads.hold(highSpec)
+        await downloads.release(track: "switch-/1080")
+
+        // Switch to 720p: a new session; then the old one ends.
+        let (second, playback) = try await bounded {
+            try await VODSession.start(video: lowSpec, audio: audioSpec, downloads: downloads, server: server)
+        }
+        await first.stop()
+        let audioAfter = try await downloads.hold(audioSpec)
+        await downloads.release(track: audioSpec.identity)
+        XCTAssertTrue(audioAfter === sharedAudio, "the shared audio download continues, it is not restarted")
+        let audioStopped = await sharedAudio.isStopped
+        XCTAssertFalse(audioStopped)
+        let oldPriority = await oldVideo.priority
+        let oldStopped = await oldVideo.isStopped
+        let oldFinished = await oldVideo.isFinished
+        XCTAssertTrue(oldFinished || (oldPriority == .background && !oldStopped),
+                      "the old format keeps downloading at low priority until it is complete")
+
+        // The new presentation serves the segment at the current position (15 s: segment 3).
+        let base = playback.request.video.url.deletingLastPathComponent()
+        let (playlist, _) = try await bounded { try await URLSession.shared.data(from: base.appendingPathComponent("video.m3u8")) }
+        let offset = Int(low.firstSegmentOffset) + 3 * 100_000
+        XCTAssertTrue(String(decoding: playlist, as: UTF8.self).contains("#EXT-X-BYTERANGE:100000@\(offset)"))
+        var ranged = URLRequest(url: base.appendingPathComponent("video.mp4"))
+        ranged.setValue("bytes=\(offset)-\(offset + 99_999)", forHTTPHeaderField: "Range")
+        let (bytes, _) = try await bounded { [ranged] in try await URLSession.shared.data(for: ranged) }
+        XCTAssertEqual(bytes, low.data.subdata(in: offset..<(offset + 100_000)))
+        await second.stop()
     }
 
     // MARK: HLS
@@ -424,7 +655,7 @@ final class MediaPipelineTests: XCTestCase {
         var state = await scheduler.snapshot
         XCTAssertEqual(state.waiting, 1, "background waits while playback downloads")
         await scheduler.finish(.foreground)
-        await background.value
+        _ = await background.value
         state = await scheduler.snapshot
         XCTAssertEqual(state.background, 1)
         XCTAssertEqual(state.waiting, 0)
@@ -432,6 +663,27 @@ final class MediaPipelineTests: XCTestCase {
     }
 
     // MARK: selection (task 49)
+
+    /// An audio description is its own choice (never merged into its
+    /// language's main track), labelled as such, and chosen automatically only
+    /// when the system setting asks for descriptions.
+    func testAudioDescriptionsAreSeparateLabelledAndChosenOnlyWhenPreferred() throws {
+        func audio(_ name: String, bitrate: Int) throws -> MediaSource {
+            try JSONDecoder().decode(MediaSource.self, from: Data("""
+            {"plugin_type":"AudioUrlSource","name":"\(name)","url":"https://a.test/\(bitrate)","container":"audio/mp4","language":"en","bitrate":\(bitrate)}
+            """.utf8))
+        }
+        let main = try audio("English", bitrate: 128_000)
+        let described = try audio("English (Audio Description)", bitrate: 160_000)
+        XCTAssertTrue(described.describesVideo)
+        XCTAssertFalse(main.describesVideo)
+        let choices = PlaybackSelector.audioChoices([main, described])
+        XCTAssertEqual(choices.count, 2, "not merged into the main English track")
+        XCTAssertTrue(choices.contains { PlaybackSelector.audioLabel(for: $0).contains("Audio Description") })
+        XCTAssertEqual(PlaybackSelector.bestAudio([main, described], language: "en")?.name, "English")
+        XCTAssertEqual(PlaybackSelector.bestAudio([main, described], language: "en", prefersDescriptions: true)?.name,
+                       "English (Audio Description)")
+    }
 
     func testSelectionHonoursPreferredResolutionAndPicksBestAudio() throws {
         let details = try JSONDecoder().decode(VideoDetails.self, from: Data("""
@@ -512,6 +764,33 @@ private actor FakeUpstream: MediaTransport {
               let range = LocalMediaServer.parseRange(header, total: total) else {
             return (file, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])))
         }
+        let body = file.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
+        let headers = ["Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)"]
+        return (body, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)))
+    }
+}
+
+/// Serves a file, answering the first requests with the given statuses.
+private actor StatusUpstream: MediaTransport {
+    private let file: Data
+    private var statuses: [Int]
+    private(set) var urls: [URL] = []
+
+    init(file: Data, statuses: [Int]) {
+        self.file = file
+        self.statuses = statuses
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = try XCTUnwrap(request.url)
+        urls.append(url)
+        if !statuses.isEmpty {
+            let status = statuses.removeFirst()
+            let headers = status == 429 ? ["Retry-After": "0"] : [:]
+            return (Data(), try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)))
+        }
+        let total = Int64(file.count)
+        let range = request.value(forHTTPHeaderField: "Range").flatMap { LocalMediaServer.parseRange($0, total: total) } ?? 0..<total
         let body = file.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
         let headers = ["Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)"]
         return (body, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)))
@@ -615,6 +894,63 @@ final class LiveRecordingTests: XCTestCase {
         XCTAssertEqual(first.count, 1_000)
         let state = await recorder.state
         XCTAssertEqual(state.timeline?.duration ?? 0, 5, accuracy: 0.001, "the seek bar spans the whole recording")
+        await recorder.stop()
+    }
+}
+
+/// A low-latency stream: one part of the segment being published per
+/// playlist request, blocking reload supported (later requests are held as a
+/// server holding a blocking reload would), ending on the third request.
+private actor FakeLowLatencyUpstream: MediaTransport {
+    private var polls = 0
+    private(set) var playlistQueries: [String] = []
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        let url = try XCTUnwrap(request.url)
+        let ok = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:]))
+        guard url.path == "/ll.m3u8" else { return (Data(repeating: 9, count: 500), ok) }
+        playlistQueries.append(url.query ?? "")
+        let n = polls
+        polls += 1
+        if n > 0 { try await Task.sleep(for: .milliseconds(600)) }
+        var text = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-PART-INF:PART-TARGET=0.5\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        for sequence in 0..<n {
+            text += "#EXT-X-PART:DURATION=0.5,URI=\"s\(sequence)p0.mp4\",INDEPENDENT=YES\n#EXT-X-PART:DURATION=0.5,URI=\"s\(sequence)p1.mp4\"\n"
+            text += "#EXTINF:1.0,\nseg\(sequence).mp4\n"
+        }
+        if n >= 2 {
+            text += "#EXT-X-ENDLIST\n"
+        } else {
+            text += "#EXT-X-PART:DURATION=0.5,URI=\"s\(n)p0.mp4\",INDEPENDENT=YES\n"
+        }
+        return (Data(text.utf8), ok)
+    }
+}
+
+final class LowLatencyRecordingTests: XCTestCase {
+    func testLowLatencyStreamsAreRecordedPartByPartAndServedAsLowLatency() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-ll-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let upstream = FakeLowLatencyUpstream()
+        let recorder = LiveHLSRecorder(role: .muxed, cache: MediaCache(directory: directory), identity: "ll-test",
+                                       playlistURL: try XCTUnwrap(URL(string: "https://live.test/ll.m3u8")),
+                                       signer: .plain(), refresh: nil, transport: upstream)
+        await recorder.start()
+        try await recorder.waitForFirstPoll()
+        let early = await recorder.localPlaylist(prefix: "v")
+        XCTAssertTrue(early.contains("#EXT-X-PART-INF:PART-TARGET=0.500"))
+        XCTAssertTrue(early.contains("CAN-BLOCK-RELOAD=YES"))
+        XCTAssertTrue(early.contains("URI=\"v/p0.0\",INDEPENDENT=YES"), "the published part is served before its segment exists")
+        XCTAssertTrue(early.contains("#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"v/p0.1\""))
+        try await recorder.waitForResource("p0.0")
+
+        // A blocking reload for segment 0 returns once the stream has it.
+        await recorder.waitForPlaylist(msn: 0, part: nil)
+        let later = await recorder.localPlaylist(prefix: "v")
+        XCTAssertTrue(later.contains("v/s0\n") || later.contains("#EXT-X-ENDLIST"))
+        let queries = await upstream.playlistQueries
+        XCTAssertTrue(queries.dropFirst().contains { $0.contains("_HLS_msn=") && $0.contains("_HLS_part=") },
+                      "later reloads ask upstream to block until the next part")
         await recorder.stop()
     }
 }

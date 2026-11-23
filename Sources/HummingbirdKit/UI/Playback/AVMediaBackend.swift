@@ -13,15 +13,104 @@ import UIKit
 
 @MainActor
 final class AVMediaBackend: MediaBackend {
-    private static let audioSessionQueue = DispatchQueue(label: "Hummingbird.AudioSession", qos: .userInitiated)
     // The view must be able to attach a rendering surface before the first item
     // has finished loading. Replacing the item on a stable player also avoids
     // making view attachment depend on completion of the initial seek.
-    private(set) var player: AVPlayer? = AVPlayer()
+    private(set) var player: AVPlayer? = AVMediaBackend.makePlayer()
     var onTick: (@MainActor (Double) -> Void)?
+    var onActivityChange: (@MainActor (PlaybackActivity) -> Void)?
+    var onExternalEvent: (@MainActor (ExternalPlaybackEvent) -> Void)?
+    /// The rate the app last asked for (0: paused). A rate change the player
+    /// reports that differs came from outside the app's controls.
+    private var commandedRate: Float = 0
+    private var interrupted = false
+    private var reportedActivity: PlaybackActivity = .paused
+    private var sessionObserver: UUID?
+    /// Playing when an audio interruption (a call, Siri) began.
+    private var playingBeforeInterruption = false
+    /// Stopped for good (its model tore it down): it never plays again, so
+    /// a load still in flight cannot start an invisible second player.
+    private(set) var isRetired = false
+
+    /// Video keeps playing (as audio) when the app goes to the background or
+    /// the device locks; by default AVFoundation pauses it silently.
+    private static func makePlayer() -> AVPlayer {
+        let player = AVPlayer()
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+        return player
+    }
+
+    var activity: PlaybackActivity {
+        guard let player, player.currentItem != nil else { return .paused }
+        switch player.timeControlStatus {
+        case .playing: return .playing
+        case .paused: return .paused
+        case .waitingToPlayAtSpecifiedRate: return .waiting(Self.describe(player.reasonForWaitingToPlay))
+        @unknown default: return .paused
+        }
+    }
+
+    private static func describe(_ reason: AVPlayer.WaitingReason?) -> String {
+        switch reason {
+        case .toMinimizeStalls?, .evaluatingBufferingRate?: "Buffering"
+        case .noItemToPlay?: "Loading"
+        default: "Waiting"
+        }
+    }
+
+    /// Reports the engine's state as it is now (called on every change AVPlayer
+    /// reports, so pauses the system makes reach the UI).
+    private func refreshActivity() {
+        let current = activity
+        classifyRateChange()
+        guard current != reportedActivity else { return }
+        reportedActivity = current
+        onActivityChange?(current)
+    }
+
+    /// A play or pause the app did not ask for. While the app is in front or
+    /// in Picture in Picture it is the user (AVKit's or PiP's controls, Siri):
+    /// it is reported so the app's intent follows. In the background it is the
+    /// system (lock-screen and remote commands come through `remoteCommand`),
+    /// and the app's intent stays as it was.
+    private func classifyRateChange() {
+        guard let player, player.currentItem != nil, !interrupted else { return }
+        let rate = player.rate
+        if rate == 0, commandedRate > 0 {
+            let atEnd = duration > 0 && currentTime >= duration - 0.5
+            commandedRate = 0
+            guard !atEnd else { return }
+            if ApplicationActivity.isActive || pictureInPictureState == .active {
+                Logger.avPlayer.notice("external_pause")
+                onExternalEvent?(.pause)
+            } else {
+                Logger.avPlayer.notice("system_pause_in_background")
+            }
+        } else if rate > 0, commandedRate == 0 {
+            commandedRate = rate
+            Logger.avPlayer.notice("external_play")
+            onExternalEvent?(.play)
+        }
+    }
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
+    var onUnplayableMedia: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
+
+    /// No decoder for the media's format on this device (AV1 without
+    /// hardware support, VP9 where the system has none): reloading cannot help.
+    private nonisolated static func isUnplayable(_ error: NSError) -> Bool {
+        var current: NSError? = error
+        while let error = current {
+            if error.domain == AVFoundationErrorDomain,
+               [AVError.Code.decoderNotFound.rawValue, AVError.Code.fileFormatNotRecognized.rawValue].contains(error.code) {
+                return true
+            }
+            current = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
+    private var tickInterval = 0.5
     private var itemObserver: NSObjectProtocol?
     private var itemFailureObserver: NSObjectProtocol?
     private var itemStatusObserver: NSKeyValueObservation?
@@ -34,6 +123,8 @@ final class AVMediaBackend: MediaBackend {
     /// The layer Picture in Picture takes the video from. The surface puts it in
     /// the view hierarchy (AVKit requires that); on macOS it is the surface.
     let pictureInPictureLayer = AVPlayerLayer()
+    /// Which surface shows the player: one at a time.
+    let surfaces = PlayerSurfaceOwnership()
     #if !os(visionOS)
     private var pictureInPicture: AVPictureInPictureController?
     private var pictureInPictureDelegate: PictureInPictureDelegate?
@@ -45,9 +136,6 @@ final class AVMediaBackend: MediaBackend {
     private var committedLoadGeneration: Int?
     private var invalidatedThroughGeneration = 0
     private var loadCompletionWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
-    #if os(macOS)
-    private var playbackActivity: NSObjectProtocol?
-    #endif
 
     var currentTime: Double { player?.currentTime().seconds ?? 0 }
     var duration: Double {
@@ -66,8 +154,16 @@ final class AVMediaBackend: MediaBackend {
             default: return []
             }
             return group.options.enumerated().map { index, option in
-                MediaTrack(id: "\(kind.rawValue)-\(index)", kind: kind,
-                           language: option.locale?.identifier, label: option.displayName)
+                var characteristics: Set<MediaTrack.Characteristic> = []
+                if option.hasMediaCharacteristic(.describesVideoForAccessibility) { characteristics.insert(.audioDescription) }
+                if option.mediaType == .closedCaption
+                    || option.hasMediaCharacteristic(.transcribesSpokenDialogForAccessibility)
+                    || option.hasMediaCharacteristic(.describesMusicAndSoundForAccessibility) {
+                    characteristics.insert(.closedCaptions)
+                }
+                if option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) { characteristics.insert(.forced) }
+                return MediaTrack(id: "\(kind.rawValue)-\(index)", kind: kind, language: option.locale?.identifier,
+                                  label: option.displayName, characteristics: characteristics)
             }
         }
     }
@@ -105,6 +201,7 @@ final class AVMediaBackend: MediaBackend {
     }
 
     func load(_ request: PlayRequest, resumeAt: Double?, autoplay: Bool) async throws {
+        guard !isRetired else { throw MediaBackendLoadError.superseded }
         Logger.avPlayer.info("load_started videoHost=\(LogRedaction.redact(request.video.url.host ?? "unknown"), privacy: .public) audioHost=\(LogRedaction.redact(request.audio?.url.host ?? "none"), privacy: .public) separateAudio=\(request.audio != nil)")
         loadGeneration &+= 1
         let generation = loadGeneration
@@ -126,13 +223,16 @@ final class AVMediaBackend: MediaBackend {
         try Task.checkCancellation()
         try await waitForNewerLoads(than: generation)
         try Task.checkCancellation()
-        guard canCommitLoad(generation) else { throw MediaBackendLoadError.superseded }
+        guard canCommitLoad(generation), !isRetired else { throw MediaBackendLoadError.superseded }
         removeObservers()
-        let p = player ?? AVPlayer()
+        let p = player ?? Self.makePlayer()
+        observeAudioSession()
         p.replaceCurrentItem(with: item)
         player = p
         pictureInPictureLayer.player = p
+        surfaces.refresh()
         observeStatus(of: item)
+        refreshActivity()
         committedLoadGeneration = generation
         committedAsset = item.asset
         mediaSelectionGroups = [:]
@@ -148,9 +248,7 @@ final class AVMediaBackend: MediaBackend {
             try Task.checkCancellation()
             guard isCurrentLoad(generation, asset: item.asset) else { throw MediaBackendLoadError.superseded }
         }
-        timeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] time in
-            Task { @MainActor in self?.onTick?(time.seconds) }
-        }
+        installTimeObserver(on: p)
         itemObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 self?.deactivatePlaybackEnvironment()
@@ -159,22 +257,47 @@ final class AVMediaBackend: MediaBackend {
         }
         if autoplay {
             activatePlaybackEnvironment()
+            commandedRate = p.defaultRate
             p.play()
+        } else {
+            commandedRate = 0
+        }
+    }
+
+    func setTickInterval(_ seconds: Double) {
+        guard seconds != tickInterval else { return }
+        tickInterval = seconds
+        guard let player, let observer = timeObserver else { return }
+        player.removeTimeObserver(observer)
+        timeObserver = nil
+        installTimeObserver(on: player)
+    }
+
+    /// Reports the position every `tickInterval` while the time changes (AVPlayer
+    /// does not call it while paused).
+    private func installTimeObserver(on player: AVPlayer) {
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: tickInterval, preferredTimescale: 600),
+                                                      queue: .main) { [weak self] time in
+            Task { @MainActor in self?.onTick?(time.seconds) }
         }
     }
 
     func play() {
-        guard player != nil else { return }
+        guard let player, !isRetired else { return }
         activatePlaybackEnvironment()
-        player?.play()
+        commandedRate = player.defaultRate
+        player.play()
     }
     func pause() {
+        commandedRate = 0
         player?.pause()
         deactivatePlaybackEnvironment()
     }
     func setPlaybackRate(_ rate: Float) {
         if rate > 0, player != nil { activatePlaybackEnvironment() }
         else { deactivatePlaybackEnvironment() }
+        commandedRate = rate
+        player?.defaultRate = rate > 0 ? rate : 1
         player?.rate = rate
     }
     func seek(to seconds: Double) { player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
@@ -234,6 +357,10 @@ final class AVMediaBackend: MediaBackend {
 
     func stop() {
         deactivatePlaybackEnvironment()
+        isRetired = true
+        commandedRate = 0
+        removeRemoteCommands()
+        updateNowPlaying(nil)
         loadGeneration &+= 1
         invalidatedThroughGeneration = loadGeneration
         activeLoadGenerations.removeAll()
@@ -249,6 +376,44 @@ final class AVMediaBackend: MediaBackend {
         player?.replaceCurrentItem(with: nil)
         player = nil
         mediaSelectionGroups = [:]
+        refreshActivity()
+    }
+
+    /// Audio interruptions and media-services resets (iOS). AVPlayer pauses
+    /// itself for an interruption; that pause reaches the UI through
+    /// `refreshActivity`, and playback resumes when the system says it may. A
+    /// media-services reset invalidates the player: it is reported as a
+    /// failure so the model reloads from the cache at the same position.
+    private func observeAudioSession() {
+        guard sessionObserver == nil else { return }
+        sessionObserver = SystemMediaSession.observeAudio { [weak self] event in self?.audioEvent(event) }
+    }
+
+    private func audioEvent(_ event: SystemMediaSession.AudioEvent) {
+        switch event {
+        case .interruptionBegan:
+            playingBeforeInterruption = activity.wantsToPlay
+            interrupted = true
+            commandedRate = 0
+            Logger.avPlayer.notice("audio_interruption_began playing=\(self.playingBeforeInterruption)")
+            onExternalEvent?(.interruptionBegan)
+        case .interruptionEnded(let shouldResume):
+            Logger.avPlayer.notice("audio_interruption_ended resume=\(shouldResume)")
+            interrupted = false
+            // The app decides (its intent may have changed meanwhile).
+            onExternalEvent?(.interruptionEnded(shouldResume: shouldResume))
+            playingBeforeInterruption = false
+        case .outputLost:
+            guard commandedRate > 0 else { return }
+            // Headphones unplugged: the player pauses; that is the user's pause.
+            commandedRate = 0
+            Logger.avPlayer.notice("output_lost")
+            onExternalEvent?(.outputLost)
+        case .mediaServicesReset:
+            Logger.avPlayer.error("media_services_reset")
+            onFailure?("The system restarted its media services")
+        }
+        refreshActivity()
     }
 
     private func removeObservers() {
@@ -264,7 +429,8 @@ final class AVMediaBackend: MediaBackend {
     private func observeStatus(of item: AVPlayerItem) {
         // Where the player waits, and why (e.g. "evaluating buffering rate",
         // "to minimize stalls"): the last step of a slow start or a stall.
-        timeControlObserver = player?.observe(\.timeControlStatus, options: [.new]) { player, _ in
+        timeControlObserver = player?.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in self?.refreshActivity() }
             let status = player.timeControlStatus
             let name = switch status {
             case .paused: "paused"
@@ -293,8 +459,12 @@ final class AVMediaBackend: MediaBackend {
                 let uriHost = event.uri.flatMap { URL(string: $0)?.host } ?? ""
                 Logger.avPlayer.error("error_log httpStatus=\(event.errorStatusCode) uriHost=\(LogRedaction.redact(uriHost), privacy: .public) server=\(event.serverAddress ?? "") comment=\(event.errorComment ?? "")")
             }
-            if status == .failed, let message = item?.error?.localizedDescription {
-                Task { @MainActor in self?.onFailure?(message) }
+            if status == .failed, let error = item?.error as NSError? {
+                let message = error.localizedDescription
+                let unplayable = Self.isUnplayable(error)
+                Task { @MainActor in
+                    if unplayable { self?.onUnplayableMedia?(message) } else { self?.onFailure?(message) }
+                }
             }
         }
         itemFailureObserver = NotificationCenter.default.addObserver(
@@ -323,43 +493,51 @@ final class AVMediaBackend: MediaBackend {
         committedLoadGeneration = nil
     }
 
+    // MARK: system remote commands and Now Playing
+
+    /// The lock screen, Control Center, headphones, CarPlay and Siri control
+    /// the video that played last; each command goes to the app as an
+    /// external event, so the app's intent, UI and history follow it.
+    private func installRemoteCommands() {
+        SystemMediaSession.takeRemoteCommands(owner: self) { [weak self] command in
+            guard let self else { return false }
+            let event: ExternalPlaybackEvent = switch command {
+            case .play: .play
+            case .pause: .pause
+            case .togglePlayPause: .togglePlayPause
+            case .seek(let seconds): .seek(to: seconds)
+            case .skip(let seconds): .skip(by: seconds)
+            }
+            self.onExternalEvent?(event)
+            return true
+        }
+    }
+
+    private func removeRemoteCommands() {
+        SystemMediaSession.releaseRemoteCommands(owner: self)
+    }
+
+    func updateNowPlaying(_ nowPlaying: NowPlaying?) {
+        if nowPlaying != nil { installRemoteCommands() }
+        guard SystemMediaSession.ownsRemoteCommands(self) else { return }
+        SystemMediaSession.publishNowPlaying(nowPlaying.map {
+            SystemMediaSession.NowPlaying(title: $0.title, duration: $0.duration, position: $0.position, rate: $0.rate)
+        })
+    }
+
     /// Keeps playback alive under the platform policies that normally suspend
     /// media or blank the display after user inactivity.
     private func activatePlaybackEnvironment() {
-        #if os(iOS)
-        UIApplication.shared.isIdleTimerDisabled = true
-        Self.audioSessionQueue.async { [weak self] in
-            let session = AVAudioSession.sharedInstance()
-            do {
-                try session.setCategory(.playback, mode: .moviePlayback)
-                try session.setActive(true)
-            } catch {
-                Task { @MainActor in self?.onFailure?("Could not activate background audio: \(error.localizedDescription)") }
-            }
+        // The playback audio session, once (re-applying it is audible).
+        SystemMediaSession.activateForPlayback { [weak self] message in
+            self?.onFailure?("Could not activate background audio: \(message)")
         }
-        #elseif os(macOS)
-        guard playbackActivity == nil else { return }
-        playbackActivity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleDisplaySleepDisabled],
-            reason: "Hummingbird is playing video"
-        )
-        #endif
+        SystemMediaSession.keepDisplayAwake(true)
     }
 
     private func deactivatePlaybackEnvironment() {
-        #if os(iOS)
-        UIApplication.shared.isIdleTimerDisabled = false
-        // setActive performs a synchronous XPC round-trip and was repeatedly
-        // blocking pause-button handling for 600+ ms on real hardware.
-        Self.audioSessionQueue.async {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
-        #elseif os(macOS)
-        if let playbackActivity {
-            ProcessInfo.processInfo.endActivity(playbackActivity)
-            self.playbackActivity = nil
-        }
-        #endif
+        SystemMediaSession.deactivate()
+        SystemMediaSession.keepDisplayAwake(false)
     }
 
     private func canCommitLoad(_ generation: Int) -> Bool {
@@ -437,7 +615,12 @@ final class AVMediaBackend: MediaBackend {
 
     private func makeItem(for request: PlayRequest) async throws -> AVPlayerItem {
         let videoAsset = asset(for: request.video)
-        guard let audioMedia = request.audio else { return AVPlayerItem(asset: videoAsset) }
+        guard let audioMedia = request.audio else {
+            // Loaded here, asynchronously, so neither the item nor replacing the
+            // player's item waits for the asset on the main thread.
+            _ = try await videoAsset.load(.isPlayable, .duration)
+            return AVPlayerItem(asset: videoAsset, automaticallyLoadedAssetKeys: [.isPlayable, .duration])
+        }
 
         // Separate video and audio files are combined into one composition so AVPlayer plays them in sync.
         let audioAsset = asset(for: audioMedia)
@@ -459,6 +642,58 @@ final class AVMediaBackend: MediaBackend {
 }
 
 #if canImport(AVKit) && canImport(SwiftUI) && (os(iOS) || os(tvOS) || os(visionOS))
+/// Holds the backend's Picture in Picture layer at the back of a player
+/// controller's view, always filling it (rotation, resizing): AVKit needs the
+/// layer on screen, and a layer with a stale frame would show a second copy
+/// of the video in the corner.
+@MainActor
+final class PictureInPictureHostView: UIView {
+    weak var backend: AVMediaBackend?
+
+    func host(_ backend: AVMediaBackend) {
+        self.backend = backend
+        let layer = backend.pictureInPictureLayer
+        if layer.superlayer !== self.layer {
+            layer.removeFromSuperlayer()
+            self.layer.addSublayer(layer)
+        }
+        // Marks the one surface that shows the player (UI tests count them).
+        isAccessibilityElement = true
+        accessibilityIdentifier = "player-surface"
+        setNeedsLayout()
+        if window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
+    }
+
+    func release() {
+        isAccessibilityElement = false
+        accessibilityIdentifier = nil
+        if let layer = backend?.pictureInPictureLayer, layer.superlayer === self.layer { layer.removeFromSuperlayer() }
+        backend = nil
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backend?.pictureInPictureLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+    }
+
+    /// Installs a host at the back of `controller`'s view.
+    static func install(in controller: AVPlayerViewController) -> PictureInPictureHostView {
+        let host = PictureInPictureHostView(frame: controller.view.bounds)
+        host.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        host.isUserInteractionEnabled = false
+        controller.view.insertSubview(host, at: 0)
+        return host
+    }
+}
+
 /// AVKit's SwiftUI `VideoPlayer` always supplies its own controls. Wrap the
 /// underlying view controller so Hummingbird can provide one shared control
 /// surface on Apple and GTK.
@@ -466,112 +701,136 @@ final class AVMediaBackend: MediaBackend {
 struct PlayerSurface: UIViewControllerRepresentable {
     let model: PlayerModel
 
-    /// Puts the backend's Picture in Picture layer in the window, beneath the
-    /// controller's own video (AVKit requires the layer to be on screen).
-    private func installPictureInPictureLayer(in controller: AVPlayerViewController) {
-        guard let backend = model.backend as? AVMediaBackend else { return }
-        let layer = backend.pictureInPictureLayer
-        if layer.superlayer !== controller.view.layer {
-            layer.removeFromSuperlayer()
-            controller.view.layer.insertSublayer(layer, at: 0)
-        }
-        layer.frame = controller.view.bounds
-        if controller.view.window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
-        // After layout, when the controller's view has its size and window.
-        Task { @MainActor [weak controller] in
-            await Task.yield()
-            guard let controller else { return }
-            backend.pictureInPictureLayer.frame = controller.view.bounds
-            if controller.view.window != nil { backend.pictureInPictureLayerDidMoveToWindow() }
-        }
-    }
-
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.showsPlaybackControls = false
+        // The app publishes Now Playing and handles the remote commands itself.
+        controller.leaveNowPlayingToTheApp()
         controller.allowsPictureInPicturePlayback = true
-        controller.player = (model.backend as? AVMediaBackend)?.player
-        installPictureInPictureLayer(in: controller)
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
+        // Only the owner of the player is attached to it (see
+        // PlayerSurfaceOwnership): this surface claims it now.
+        context.coordinator.claimInline(controller)
+        // Entering full screen built AVKit's controller on the tap (a 349 ms
+        // main-thread stall): build it once per player, while the run loop is idle.
+        context.coordinator.prepareFullscreenWhenIdle()
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        controller.player = (model.backend as? AVMediaBackend)?.player
-        installPictureInPictureLayer(in: controller)
+        // SwiftUI updates this view for any change it observes (every tick,
+        // menus, tabs). Nothing here touches the player: attaching is the
+        // ownership's job, so updates cannot pause it or attach a second copy.
         context.coordinator.inlineController = controller
-        context.coordinator.installPresenter()
+        context.coordinator.installPresenter(replacing: false)
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
         coordinator.dismissFullscreen(animated: false)
-        coordinator.model?.removeFullscreenPresenter()
+        // A torn-down AVPlayerViewController pauses its player (tab switches,
+        // layout changes rebuild this view): resigning detaches it first and
+        // hands the player to the surface before it, if any.
+        coordinator.resignInline()
+        coordinator.model?.removeFullscreenPresenter(owner: coordinator)
     }
 
     @MainActor
     final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
         weak var model: PlayerModel?
         weak var inlineController: AVPlayerViewController?
+        /// The prepared presentation while it is on screen.
         private var fullscreenController: UIViewController?
-        private var overlayController: UIViewController?
+        private var inlineClaim: PlayerSurfaceOwnership.Claim?
+        private var fullscreenClaim: PlayerSurfaceOwnership.Claim?
+        private var inlineHost: PictureInPictureHostView?
+        private var preparationScheduled = false
+
+        private var backend: AVMediaBackend? { model?.backend as? AVMediaBackend }
+
+        func claimInline(_ controller: AVPlayerViewController) {
+            guard let backend else { return }
+            let host = PictureInPictureHostView.install(in: controller)
+            inlineHost = host
+            let claim = PlayerSurfaceOwnership.Claim(name: "inline", attach: { [weak controller, weak backend, weak host] in
+                guard let controller, let backend else { return }
+                if controller.player !== backend.player { controller.player = backend.player }
+                host?.host(backend)
+            }, detach: { [weak controller, weak host] in
+                controller?.player = nil
+                host?.release()
+            })
+            inlineClaim = claim
+            backend.surfaces.claim(claim)
+        }
+
+        func resignInline() {
+            if let inlineClaim { backend?.surfaces.resign(inlineClaim) }
+            inlineClaim = nil
+        }
+        var isFullscreen: Bool { fullscreenController != nil }
 
         init(model: PlayerModel) { self.model = model }
 
-        func installPresenter() {
-            model?.installFullscreenPresenter(
-                present: { [weak self] in self?.presentFullscreen() },
-                dismiss: { [weak self] in self?.dismissFullscreen(animated: true) }
-            )
+        /// A new surface takes over full screen (`replacing`); updates only
+        /// install it when no surface has.
+        func installPresenter(replacing: Bool = true) {
+            let present: () -> Void = { [weak self] in self?.presentFullscreen() }
+            let dismiss: () -> Void = { [weak self] in self?.dismissFullscreen(animated: true) }
+            if replacing {
+                model?.installFullscreenPresenter(owner: self, present: present, dismiss: dismiss)
+            } else {
+                model?.installFullscreenPresenterIfNone(owner: self, present: present, dismiss: dismiss)
+            }
+        }
+
+        /// Builds the full-screen presentation once per player, at the first
+        /// idle run-loop pass after this surface appears (not while scrolling,
+        /// not on the tap). AVKit's controllers are UIKit objects and must be
+        /// made on the main thread; idle time is the cheapest main time there is.
+        func prepareFullscreenWhenIdle() {
+            guard !preparationScheduled, model?.preparedFullscreen == nil else { return }
+            preparationScheduled = true
+            MainRunLoopIdle.perform(after: .milliseconds(500)) { [weak self] in
+                guard let self, let model = self.model else { return }
+                _ = FullscreenStage.prepared(for: model)
+            }
         }
 
         private func presentFullscreen() {
             guard fullscreenController == nil,
                   let model,
                   let inlineController,
-                  let presenter = presentingController(from: inlineController) else { return }
-
-            let playerController = AVPlayerViewController()
-            playerController.player = (model.backend as? AVMediaBackend)?.player
-            playerController.showsPlaybackControls = false
-            playerController.allowsPictureInPicturePlayback = true
-            #if os(tvOS)
-            let controller = FullscreenPlayerViewController(playerController: playerController)
-            #else
-            let controller = playerController
-            #endif
-            controller.modalPresentationStyle = .overFullScreen
-            #if os(iOS)
-            controller.modalPresentationCapturesStatusBarAppearance = true
-            #endif
-
-            let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
-            overlay.view.backgroundColor = .clear
-            controller.addChild(overlay)
-            overlay.view.translatesAutoresizingMaskIntoConstraints = false
-            // AVPlayerViewController's contentOverlayView belongs to AVKit's
-            // own focus environment. On tvOS its container wins focus during
-            // presentation, leaving interactive SwiftUI content unreachable.
-            // Install controls above the player root so they participate in
-            // the presented controller's focus hierarchy instead.
-            let container = controller.view!
-            container.addSubview(overlay.view)
-            NSLayoutConstraint.activate([
-                overlay.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                overlay.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                overlay.view.topAnchor.constraint(equalTo: container.topAnchor),
-                overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
-            overlay.didMove(toParent: controller)
-            #if os(tvOS)
-            controller.controlsController = overlay
-            #endif
-
+                  let presenter = presentingController(from: inlineController) else {
+                Logger.player.error("fullscreen_present_refused presented=\(self.fullscreenController != nil) model=\(self.model != nil) inline=\(self.inlineController != nil) window=\(self.inlineController?.view.window != nil)")
+                return
+            }
+            let start = ContinuousClock.now
+            defer {
+                let ms = start.duration(to: .now) / .milliseconds(1)
+                Logger.player.notice("fullscreen_present main_ms=\(ms, format: .fixed(precision: 1))")
+            }
+            // Normally built already; if the tap came first it is built now, once.
+            let stage = FullscreenStage.prepared(for: model)
+            let controller = stage.controller
             fullscreenController = controller
-            overlayController = overlay
-            inlineController.player = nil
+            // The full-screen controller takes the player (attached before the
+            // inline one lets go), with the Picture in Picture layer.
+            if let backend {
+                let playerController = stage.controller.playerController, host = stage.host
+                let claim = PlayerSurfaceOwnership.Claim(name: "fullscreen", attach: { [weak playerController, weak backend, weak host] in
+                    guard let playerController, let backend else { return }
+                    if playerController.player !== backend.player { playerController.player = backend.player }
+                    host?.host(backend)
+                }, detach: { [weak playerController, weak host] in
+                    playerController?.player = nil
+                    host?.release()
+                })
+                fullscreenClaim = claim
+                backend.surfaces.claim(claim)
+            }
             model.fullscreenDidChange(true)
             presenter.present(controller, animated: true) {
                 model.restorePlaybackAfterSurfaceTransfer()
@@ -589,8 +848,9 @@ struct PlayerSurface: UIViewControllerRepresentable {
             // AVPlayerViewController may pause its player while it tears down.
             // Transfer ownership back to the inline controller before dismissal
             // so late AVKit cleanup cannot pause the shared player after restore.
-            detachFullscreenPlayer()
-            inlineController?.player = (model?.backend as? AVMediaBackend)?.player
+            // Hand the same player back without a gap: the inline surface
+            // attaches first, then the full-screen one lets go.
+            resignFullscreen()
             controller.dismiss(animated: animated) { [weak self] in self?.finishDismissal() }
         }
 
@@ -598,23 +858,17 @@ struct PlayerSurface: UIViewControllerRepresentable {
             finishDismissal()
         }
 
+        /// The presentation stays built (with its controls) for the next entry.
         private func finishDismissal() {
-            overlayController?.willMove(toParent: nil)
-            overlayController?.view.removeFromSuperview()
-            overlayController?.removeFromParent()
-            overlayController = nil
+            resignFullscreen()
             fullscreenController = nil
-            inlineController?.player = (model?.backend as? AVMediaBackend)?.player
             model?.fullscreenDidChange(false)
             model?.restorePlaybackAfterSurfaceTransfer()
         }
 
-        private func detachFullscreenPlayer() {
-            #if os(tvOS)
-            (fullscreenController as? FullscreenPlayerViewController)?.playerController.player = nil
-            #else
-            (fullscreenController as? AVPlayerViewController)?.player = nil
-            #endif
+        private func resignFullscreen() {
+            if let fullscreenClaim { backend?.surfaces.resign(fullscreenClaim) }
+            fullscreenClaim = nil
         }
 
         private func presentingController(from controller: UIViewController) -> UIViewController? {
@@ -625,9 +879,94 @@ struct PlayerSurface: UIViewControllerRepresentable {
     }
 }
 
-#if os(tvOS)
-/// AVPlayerViewController otherwise prefers its own full-screen container,
-/// which is focusable even when the native playback controls are disabled.
+extension AVPlayerViewController {
+    /// The app publishes Now Playing and handles the remote commands itself
+    /// (`SystemMediaSession`); tvOS players never update Now Playing.
+    func leaveNowPlayingToTheApp() {
+        #if !os(tvOS)
+        updatesNowPlayingInfoCenter = false
+        #endif
+    }
+}
+
+/// The full-screen presentation, built once per player (`PlayerModel.close`
+/// drops it) and presented again on every entry.
+@MainActor
+private final class FullscreenStage {
+    let controller: FullscreenPlayerViewController
+    let host: PictureInPictureHostView
+
+    static func prepared(for model: PlayerModel) -> FullscreenStage {
+        if let stage = model.preparedFullscreen as? FullscreenStage { return stage }
+        let start = ContinuousClock.now
+        let stage = FullscreenStage(model: model)
+        model.preparedFullscreen = stage
+        let ms = start.duration(to: .now) / .milliseconds(1)
+        Logger.player.notice("fullscreen_prepared main_ms=\(ms, format: .fixed(precision: 1))")
+        return stage
+    }
+
+    private init(model: PlayerModel) {
+        let playerController = AVPlayerViewController()
+        playerController.showsPlaybackControls = false
+        playerController.leaveNowPlayingToTheApp()
+        playerController.allowsPictureInPicturePlayback = true
+        // A container holds the player and, above it, our controls: inside
+        // AVPlayerViewController's own view the controls would be outside
+        // its accessibility (and, on tvOS, focus) hierarchy.
+        let controller = FullscreenPlayerViewController(playerController: playerController)
+        controller.modalPresentationStyle = .overFullScreen
+        #if os(iOS)
+        controller.modalPresentationCapturesStatusBarAppearance = true
+        #endif
+
+        let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
+        overlay.view.backgroundColor = .clear
+        controller.addChild(overlay)
+        overlay.view.translatesAutoresizingMaskIntoConstraints = false
+        // AVPlayerViewController's contentOverlayView belongs to AVKit's
+        // own focus environment. On tvOS its container wins focus during
+        // presentation, leaving interactive SwiftUI content unreachable.
+        // Install controls above the player root so they participate in
+        // the presented controller's focus hierarchy instead.
+        let container = controller.view!  // loads the player's view too
+        container.addSubview(overlay.view)
+        NSLayoutConstraint.activate([
+            overlay.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            overlay.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            overlay.view.topAnchor.constraint(equalTo: container.topAnchor),
+            overlay.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        overlay.didMove(toParent: controller)
+        controller.controlsController = overlay
+        self.controller = controller
+        host = PictureInPictureHostView.install(in: playerController)
+    }
+}
+
+/// Runs work on the main thread when its run loop is next about to sleep
+/// (nothing else to do; not while a scroll tracks), after a delay that lets
+/// the page draw its first frames.
+@MainActor
+enum MainRunLoopIdle {
+    static func perform(after delay: Duration, _ work: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, 0) { observer, _ in
+                CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .defaultMode)
+                // Not inside the observer: SwiftUI and Core Animation commit their
+                // transactions in this same phase. Run as the next main-queue work.
+                Task { @MainActor in work() }
+            }
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .defaultMode)
+        }
+    }
+}
+
+/// The full-screen player: AVPlayerViewController as a child, our controls
+/// above it. AVPlayerViewController otherwise prefers its own full-screen
+/// container (focusable on tvOS even with its controls disabled) and keeps
+/// added subviews out of its accessibility hierarchy.
 @MainActor
 private final class FullscreenPlayerViewController: UIViewController {
     let playerController: AVPlayerViewController
@@ -661,7 +1000,6 @@ private final class FullscreenPlayerViewController: UIViewController {
     }
 
 }
-#endif
 
 @MainActor
 private struct FullscreenPlayerControls: View {
@@ -683,26 +1021,54 @@ struct PlayerSurface: NSViewRepresentable {
     /// Picture in Picture (AVKit needs it on screen).
     final class LayerView: NSView {
         weak var backend: AVMediaBackend?
+        private var claim: PlayerSurfaceOwnership.Claim?
 
         func show(_ backend: AVMediaBackend?) {
             guard backend !== self.backend else { return }
+            resign()
             self.backend = backend
-            // A layer-hosting view: the layer is set before `wantsLayer`.
-            layer = backend?.pictureInPictureLayer ?? CALayer()
             wantsLayer = true
-            layer?.frame = bounds
-            backend?.pictureInPictureLayer.videoGravity = .resizeAspect
-            if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+            if window != nil { claimPlayer() }
+        }
+
+        /// Only the owner hosts the layer (see PlayerSurfaceOwnership): a
+        /// second view hosting the same layer is a second copy on screen.
+        private func claimPlayer() {
+            guard let backend, claim == nil else { return }
+            let claim = PlayerSurfaceOwnership.Claim(name: "mac", attach: { [weak self, weak backend] in
+                guard let self, let backend else { return }
+                let layer = backend.pictureInPictureLayer
+                layer.videoGravity = .resizeAspect
+                if layer.superlayer !== self.layer {
+                    layer.removeFromSuperlayer()
+                    self.layer?.addSublayer(layer)
+                }
+                layer.frame = self.bounds
+                backend.pictureInPictureLayerDidMoveToWindow()
+            }, detach: { [weak self, weak backend] in
+                guard let layer = backend?.pictureInPictureLayer, layer.superlayer === self?.layer else { return }
+                layer.removeFromSuperlayer()
+            })
+            self.claim = claim
+            backend.surfaces.claim(claim)
+        }
+
+        private func resign() {
+            if let claim { backend?.surfaces.resign(claim) }
+            claim = nil
         }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window != nil { backend?.pictureInPictureLayerDidMoveToWindow() }
+            if window != nil { claimPlayer() } else { resign() }
         }
 
         override func layout() {
             super.layout()
-            layer?.frame = bounds
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            if let layer = backend?.pictureInPictureLayer, layer.superlayer === self.layer { layer.frame = bounds }
+            CATransaction.commit()
         }
     }
 
@@ -772,4 +1138,14 @@ final class PictureInPictureDelegate: NSObject, AVPictureInPictureControllerDele
 
 @MainActor
 func makeMediaBackend() -> MediaBackend { AVMediaBackend() }
+
+/// Loads the playback frameworks once, off the main thread, so the first video
+/// does not pay for it there (making the first AVPlayerLayer initialises
+/// AVFoundation and QuartzCore: about 100 ms on the main thread otherwise).
+func prewarmMediaBackend() {
+    Task.detached(priority: .utility) {
+        _ = AVPlayerLayer()
+        _ = AVURLAsset(url: URL(fileURLWithPath: "/dev/null"))
+    }
+}
 #endif

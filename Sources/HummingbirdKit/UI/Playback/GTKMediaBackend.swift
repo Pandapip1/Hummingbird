@@ -13,7 +13,9 @@ final class GTKMediaBackend: MediaBackend {
     var onTick: (@MainActor (Double) -> Void)?
     var onEnded: (@MainActor () -> Void)?
     var onFailure: (@MainActor (String) -> Void)?
+    var onUnplayableMedia: (@MainActor (String) -> Void)?
     private var ticker: Task<Void, Never>?
+    private var tickInterval = 0.5
     private var pictureInPictureController: AVPictureInPictureController?
     private var mediaSelectionGroups: [AVMediaCharacteristic: AVMediaSelectionGroup] = [:]
     private var mediaSelectionRefreshTask: Task<Void, Never>?
@@ -67,6 +69,12 @@ final class GTKMediaBackend: MediaBackend {
             Task { @MainActor in
                 self?.ticker?.cancel()
                 self?.onFailure?(message)
+            }
+        }
+        player._swiftOpenUIOnUnplayable = { [weak self] message in
+            Task { @MainActor in
+                self?.ticker?.cancel()
+                self?.onUnplayableMedia?(message)
             }
         }
     }
@@ -124,9 +132,11 @@ final class GTKMediaBackend: MediaBackend {
         ticker?.cancel()
         ticker = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let interval = self?.tickInterval else { return }
+                try? await Task.sleep(for: .seconds(interval))
                 guard let self else { return }
-                self.onTick?(self.player.currentTime().seconds)
+                // Paused: nothing moves, nothing to report.
+                if self.isPlaying { self.onTick?(self.player.currentTime().seconds) }
             }
         }
     }
@@ -134,6 +144,7 @@ final class GTKMediaBackend: MediaBackend {
     func play() { player.play() }
     func pause() { player.pause() }
     func setPlaybackRate(_ rate: Float) { player.rate = rate }
+    func setTickInterval(_ seconds: Double) { tickInterval = seconds }
     func selectTrack(_ track: MediaTrack?) {
         guard let item = player.currentItem else { return }
         let characteristic: AVMediaCharacteristic
@@ -319,6 +330,9 @@ final class GTKMediaBackend: MediaBackend {
 
 @MainActor
 func makeMediaBackend() -> MediaBackend { GTKMediaBackend() }
+
+/// Nothing to load ahead: GStreamer starts with the first pipeline.
+func prewarmMediaBackend() {}
 
 @MainActor
 struct PlayerSurface: View {

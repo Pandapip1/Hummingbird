@@ -37,6 +37,10 @@ public final class AppDataStores: Sendable {
     let mediaServer = LocalMediaServer()
     /// Every VOD download; they outlive the players that started them.
     let mediaDownloads: MediaDownloads
+    /// Optional transcoding of finished downloads (Quality setting).
+    let transcoding: TranscodeStage
+    /// Whether work that can wait should wait (saving energy, hot device).
+    let backgroundWork: BackgroundWorkPolicy
 
     /// `protectedData` is the platform's data-protection state (the app
     /// passes `SystemProtectedData`): stores protected until unlock queue
@@ -64,6 +68,14 @@ public final class AppDataStores: Sendable {
                                 limitBytes: MediaCache.bytes(gigabytes: limitGigabytes ?? MediaCache.defaultLimitGigabytes),
                                 sharing: [generatedCache])
         mediaDownloads = MediaDownloads(cache: mediaCache)
+        let policy = BackgroundWorkPolicy()
+        backgroundWork = policy
+        transcoding = TranscodeStage(cache: mediaCache,
+                                     scratch: cachesDirectory.appendingPathComponent("Transcode", isDirectory: true),
+                                     policy: policy)
+        // Downloads nobody watches pause while energy is saved.
+        let downloads = mediaDownloads
+        Task { await downloads.follow(policy) }
     }
 
     var defaults: UserDefaults { preferences.defaults }
@@ -78,7 +90,8 @@ public final class AppDataStores: Sendable {
     public func flush() async { await storage.flush() }
 
     /// Blocks until pending writes are done; only for quitting.
-    func flushBeforeTermination() { storage.flushBeforeTermination() }
+    @discardableResult
+    func flushBeforeTermination(until deadline: ExitDeadline) -> Bool { storage.flushBeforeTermination(until: deadline) }
 
     /// The key under which the window that opens next finds its profile.
     static let localProfileIDKey = "appsync.localProfileID"

@@ -10,7 +10,7 @@ final class DebugPluginTests: XCTestCase {
         XCTAssertEqual(config.authentication?.completionUrl, "http://127.0.0.1:8742/api/authorization/")
         XCTAssertEqual(config.authentication?.headersToFind, ["Authorization"])
         XCTAssertEqual(config.authentication?.cookiesToFind, ["debug_session"])
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil,
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil,
                                     approvals: [loopbackApproval(port: 8742)])
         // validate() is what the installer runs; it throws if an entry point is missing.
         try await runtime.validate()
@@ -19,7 +19,7 @@ final class DebugPluginTests: XCTestCase {
 
     func testDebugPluginHomeReturnsRangeAndNonRangeVideos() async throws {
         let (config, script) = try DebugPluginFixture.loadPlugin()
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil,
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil,
                                     approvals: [loopbackApproval(port: 8742)])
         try await runtime.enable()
         let pager = try await runtime.pager("getHome", as: ContentItem.self)

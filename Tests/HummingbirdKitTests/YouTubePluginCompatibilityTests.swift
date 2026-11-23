@@ -27,7 +27,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             from: Data(contentsOf: root.appendingPathComponent("YoutubeConfig.json"))
         )
         let script = try String(contentsOf: root.appendingPathComponent("YoutubeScript.js"), encoding: .utf8)
-        let runtime = PluginRuntime(config: config, script: script, settings: [:], auth: nil, captcha: nil)
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: [:], auth: nil, captcha: nil)
         defer { Task { await runtime.stop() } }
         XCTAssertNotNil(config.authentication)
         XCTAssertNotNil(config.captcha)
@@ -375,13 +375,13 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
                 from: Data(contentsOf: root.appendingPathComponent("YoutubeConfig.json"))
             )
             let script = try String(contentsOf: root.appendingPathComponent("YoutubeScript.js"), encoding: .utf8)
-            return configuredRuntime(config: config, script: script, settings: settingsOverride)
+            return try configuredRuntime(config: config, script: script, settings: settingsOverride)
         }
         if let path = ProcessInfo.processInfo.environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE"],
            let data = StorageDatabase(url: URL(fileURLWithPath: path), protectedData: UnprotectedDataAvailability()).load(name: "plugins"),
            let plugin = try JSONDecoder().decode([InstalledPlugin].self, from: data)
                .first(where: { $0.config.name.caseInsensitiveCompare("YouTube") == .orderedSame }) {
-            return configuredRuntime(
+            return try configuredRuntime(
                 config: plugin.config,
                 script: plugin.script,
                 settings: plugin.settings.merging(settingsOverride) { _, override in override }
@@ -391,8 +391,8 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
     }
 
     private func configuredRuntime(config: PluginConfig, script: String,
-                                   settings: [String: String]) -> PluginRuntime {
-        let runtime = PluginRuntime(config: config, script: script, settings: settings, auth: nil, captcha: nil)
+                                   settings: [String: String]) throws -> PluginRuntime {
+        let runtime = PluginRuntime(approval: testLoadApproval(config), config: config, script: try ScriptSignature.check(script, for: config), settings: settings, auth: nil, captcha: nil)
         if ProcessInfo.processInfo.environment["HUMMINGBIRD_PLUGIN_VERBOSE"] == "1" {
             runtime.onLog = { message in
                 let useful = ["Using Browser", "Using Non-Browser", "Initializing browser", "Browser result",

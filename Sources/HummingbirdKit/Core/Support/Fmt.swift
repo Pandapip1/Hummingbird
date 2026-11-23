@@ -6,6 +6,15 @@ enum Fmt {
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 
+    /// A byte count in decimal units, e.g. "12.3 MB".
+    static func bytes(_ n: Int64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(max(n, 0))
+        var unit = 0
+        while value >= 1_000, unit < units.count - 1 { value /= 1_000; unit += 1 }
+        return unit == 0 ? "\(Int(value)) B" : String(format: value < 10 ? "%.1f" : "%.0f", value) + " " + units[unit]
+    }
+
     static func count(_ n: Int) -> String {
         switch n {
         case 1_000_000_000...: return String(format: "%.1fB", Double(n) / 1e9)

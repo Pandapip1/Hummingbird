@@ -1,0 +1,8 @@
+{
+  "name": "Call-cost benchmark",
+  "id": "hummingbird-bench",
+  "version": 1,
+  "scriptUrl": "./bench.js",
+  "allowUrls": ["bench.invalid"],
+  "packages": ["Http", "DOMParser", "Utilities"]
+}

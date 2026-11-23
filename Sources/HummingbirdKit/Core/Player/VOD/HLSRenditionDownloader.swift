@@ -57,6 +57,16 @@ actor HLSRenditionDownloader {
     private var finishHandler: (@Sendable () async -> Void)?
     private(set) var isFinished = false
     var isStopped: Bool { stopped }
+    private(set) var isPaused = false
+
+    func setPaused(_ paused: Bool) {
+        isPaused = paused
+        condition = paused ? .paused : (condition == .paused ? .running : condition)
+        publish()
+    }
+
+    /// Every cache entry this rendition uses (to remove a download).
+    var cacheIdentities: [String] { resources.indices.map { key($0) } }
 
     init(role: MediaTrackRole, cache: MediaCache, identity: String, media: HLSPlaylist.Media,
          signer: UpstreamURLSigner,
@@ -143,8 +153,13 @@ actor HLSRenditionDownloader {
     }
 
     func contentType(of index: Int) -> String {
-        resources[index].kind == .key ? "application/octet-stream"
-            : resources[index].uri.pathExtension.lowercased() == "ts" ? "video/mp2t" : "video/mp4"
+        switch (resources[index].kind, resources[index].uri.pathExtension.lowercased()) {
+        case (.key, _): "application/octet-stream"
+        case (_, "ts"): "video/mp2t"
+        case (_, "vtt"), (_, "webvtt"): "text/vtt"
+        case _ where role == .subtitles: "text/vtt"
+        default: "video/mp4"
+        }
     }
 
     private func cancelWaiter(_ id: UUID) {
@@ -178,7 +193,11 @@ actor HLSRenditionDownloader {
                         group.addTask { try await self.fetchWithRetry(next) }
                     }
                     publish()
-                    if running == 0 { break }
+                    if running == 0 {
+                        guard isPaused else { break }
+                        try await Task.sleep(for: .milliseconds(250))
+                        continue
+                    }
                     _ = try await group.next()
                     running -= 1
                 }
@@ -198,6 +217,7 @@ actor HLSRenditionDownloader {
 
     /// Maps and keys first, then segments from the priority ordinal onward.
     private func nextResource() -> Int? {
+        guard !isPaused else { return nil }
         let busy = done.union(inFlight)
         if let pending = resources.indices.first(where: { resources[$0].kind != .segment && !busy.contains($0) }) {
             return pending

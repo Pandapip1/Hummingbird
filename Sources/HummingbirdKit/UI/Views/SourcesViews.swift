@@ -7,6 +7,7 @@ import SwiftOpenUI
 @MainActor
 struct SourcesView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.openRoute) private var openRoute
     let browserToolbar: BrowserToolbarContext?
     @State private var showAdd = false
     @State private var removeTarget: String?
@@ -30,7 +31,15 @@ struct SourcesView: View {
                         .equatable()
                 }
             }
+            // An age bracket can advance by date alone, so check again.
+            .task { await app.plugins.retryLockedSources() }
             .navigationTitle("Sources")
+            .browserPageToolbarItem(id: "sources.discover", placement: .trailing) {
+                Button { openRoute(.discoverSources, title: "Discover Sources") } label: {
+                    Image(systemName: "sparkle.magnifyingglass")
+                }
+                .accessibilityLabel("Discover sources")
+            }
             .browserPageToolbarItem(id: "sources.add", placement: .trailing) {
                 Button { showAdd = true } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Add source")
@@ -68,9 +77,29 @@ private struct SyncInstallRow: View {
     var body: some View {
         if let confirmation = install.confirmation {
             confirm(confirmation)
+        } else if let locked = install.locked {
+            lockedRow(locked)
         } else {
             progress
         }
+    }
+
+    /// Refused by this device's source-access policy (age or parental
+    /// controls): the reason, not an error. It installs by itself once
+    /// allowed; under parental controls a parent can be asked.
+    private func lockedRow(_ denial: PolicyDenial) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "lock.fill").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(install.displayName).font(.headline)
+                Text(denial.errorDescription ?? "Not allowed on this device.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("It installs here by itself once allowed.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(install.displayName), locked on this device. \(denial.errorDescription ?? "")")
     }
 
     /// Another device uses a different copy of a plugin this device has:
@@ -194,6 +223,7 @@ struct AddSourceSheet: View {
     @State private var working = false
     @State private var errorText: String?
     @State private var preview: InstallPreview?
+    @State private var refusal: PolicyRefusal?
     @State private var hasCamera = false
 
     /// With `initialURL` (from a link), the plugin is checked and shown at
@@ -226,7 +256,9 @@ struct AddSourceSheet: View {
                         if working {
                             Section { ProgressView("Checking the plugin…") }
                         }
-                        if let errorText {
+                        if let refusal, !working {
+                            PolicyDenialSection(refusal: refusal)
+                        } else if let errorText {
                             Section {
                                 Text(errorText).foregroundStyle(.red).font(.footnote)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -269,10 +301,13 @@ struct AddSourceSheet: View {
         .task { if checksInitialURL, preview == nil { await prepare() } }
     }
 
+    /// Every install path (typed URL, QR code) goes through `prepareInstall`,
+    /// which asks the source-access policy.
     private func prepare() async {
-        working = true; errorText = nil
+        working = true; errorText = nil; refusal = nil
         defer { working = false }
         do { preview = try await app.plugins.prepareInstall(from: urlText) }
+        catch InstallError.policy(let refused) { refusal = refused }
         catch { errorText = error.localizedDescription }
     }
 
@@ -366,6 +401,11 @@ struct PluginDetailView: View {
 
     private func pluginForm(for p: InstalledPlugin) -> some View {
         Form {
+                if let denial = app.plugins.loadDenials[pluginID] {
+                    PolicyDenialSection(refusal: PolicyRefusal(
+                        denial: denial, pluginID: pluginID, name: p.config.name, sourceURL: p.config.sourceUrl ?? ""
+                    ))
+                }
                 Section {
                     Toggle("Enabled", isOn: Binding(get: { p.enabled }, set: { app.plugins.setEnabled(pluginID, $0) }))
                     LabeledContent("Version", value: "\(p.config.version)")
@@ -508,6 +548,28 @@ struct SettingRow: View, Equatable {
     }
 
     var body: some View {
+        if let forced = app.plugins.forcedSettings[pluginID]?[setting.key] {
+            // Forced by the source-access policy; the stored value is kept
+            // for when the restriction lifts.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    label
+                    Spacer(minLength: 8)
+                    Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                    Text(forced == "false" ? "Off" : forced == "true" ? "On" : forced).foregroundStyle(.secondary)
+                }
+                Text("Set by age or parental controls.").font(.caption).foregroundStyle(.secondary)
+                LockedSettingAskParent(pluginID: pluginID, setting: setting)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("\(setting.name), locked by age or parental controls")
+        } else {
+            editableBody
+        }
+    }
+
+    @ViewBuilder
+    private var editableBody: some View {
         switch setting.kind {
         case "header":
             VStack(alignment: .leading) {
@@ -606,6 +668,15 @@ private struct AppSettingsForm: View {
                     Label("Sync", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
+            Section {
+                Button {
+                    openRoute(.parentalControls, title: "Age & Parental Controls")
+                } label: {
+                    Label("Age & Parental Controls", systemImage: "lock.shield")
+                }
+            } footer: {
+                Text("Parental controls come from the system (Screen Time, Parental Controls). Here you can see them, ask a parent, and lower this profile’s age.")
+            }
             // Only where the platform has a weaker store the user can opt in to.
             if let store = stores.keychain, store.offersLoginKeychainFallback {
                 CredentialStorageSettingsSection(store: store)
@@ -620,10 +691,10 @@ private struct AppSettingsForm: View {
                 Picker("Video cache", selection: $mediaCacheLimitGigabytes) {
                     ForEach([2, 5, 10, 20, 50, 100], id: \.self) { Text("\($0) GB").tag($0) }
                 }
-                .onChange(of: mediaCacheLimitGigabytes) { _, gigabytes in
-                    let cache = stores.mediaCache
-                    Task { await cache.setLimit(MediaCache.bytes(gigabytes: gigabytes)) }
-                }
+                MediaCacheUsageRows(cache: stores.mediaCache, limitGigabytes: mediaCacheLimitGigabytes)
+            }
+            Section(footer: Text("Off by default. Finished downloads are re-encoded with the hardware encoder in the background, only while the device is cool, not in Low Power Mode and, on iPhone and iPad, charging. The original is deleted only once the smaller copy is stored.")) {
+                TranscodeToggle(stage: stores.transcoding, defaults: stores.defaults)
             }
             Section(footer: Text("Limits how many channels per source are refreshed at once. The rest show their last known videos. 0 means no limit.")) {
                 RemoteFriendlyBoundedSelection(
@@ -657,6 +728,9 @@ private struct PerformanceReportsSection: View {
     @State private var exportURL: URL?
     @State private var reportCount = 0
     @State private var stallCount = 0
+    @State private var confirmingClear = false
+    @State private var clearing = false
+    @State private var clearFailure: String?
 
     var body: some View {
         Section("Diagnostics") {
@@ -664,10 +738,21 @@ private struct PerformanceReportsSection: View {
                 ShareContentAction(item: exportURL) {
                     Label("Export performance reports (\(reportCount))", systemImage: "square.and.arrow.up")
                 }
+                .disabled(clearing)
                 if stallCount > 0 {
                     Text("Includes \(stallCount) recorded main-thread stall\(stallCount == 1 ? "" : "s").")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+                // Nothing is shown deleted until it is: the button waits,
+                // disabled with a spinner, and the counts then show what is left.
+                HStack(spacing: 8) {
+                    Button("Clear performance reports", role: .destructive) { confirmingClear = true }
+                        .disabled(clearing)
+                    if clearing { ProgressView() }
+                }
+                if let clearFailure {
+                    Text(clearFailure).font(.footnote).foregroundStyle(.red)
                 }
             } else {
                 Text("No crash, hang or stall reports yet.")
@@ -677,15 +762,124 @@ private struct PerformanceReportsSection: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+        .confirmationDialog("Clear performance reports?", isPresented: $confirmingClear, titleVisibility: .visible) {
+            Button("Clear", role: .destructive) { startClearing() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deletes the crash, hang and stall reports kept on this device. This can't be undone.")
+        }
+        // Every time the page comes on screen, not once: tabs stay mounted, so
+        // a count and export made when Settings was first shown missed every
+        // stall and report recorded since.
+        .browserTaskWhileVisible { await refresh() }
+    }
+
+    private var destination: URL { exportDirectory.appendingPathComponent("Export", isDirectory: true) }
+
+    private func refresh() async {
+        let store = store
+        let destination = destination
+        let result = await Task.detached(priority: .utility) {
+            (store.reports().count, await store.stallLog.records().count, try? await store.exportBundle(to: destination))
+        }.value
+        reportCount = result.0
+        stallCount = result.1
+        exportURL = result.2 ?? nil
+    }
+
+    /// Deletes everything off the main thread; the section then shows what
+    /// is actually left (normally nothing), or the error.
+    private func startClearing() {
+        guard !clearing else { return }
+        clearing = true
+        clearFailure = nil
+        let store = store
+        let destination = destination
+        Task {
+            do { try await store.clear(exportDirectory: destination) }
+            catch { clearFailure = "Couldn't clear the reports: \(error.localizedDescription)" }
+            await refresh()
+            clearing = false
+        }
+    }
+}
+/// How much the video cache holds, applying a new limit, and clearing what
+/// is not playing. Slow work shows as such: the usage line shows a spinner
+/// while it is measured or while a new limit or a clear is applied, and the
+/// button is disabled meanwhile.
+@MainActor
+struct MediaCacheUsageRows: View {
+    let cache: MediaCache
+    let limitGigabytes: Int
+    @State private var usage: Int64?
+    @State private var working = false
+
+    var body: some View {
+        HStack {
+            Text("In use")
+            Spacer()
+            if working || usage == nil {
+                ProgressView()
+            } else if let usage {
+                Text(Fmt.bytes(usage)).foregroundStyle(.secondary)
+            }
+        }
+        .task(id: limitGigabytes) {
+            // A new limit evicts what no longer fits before the usage is shown.
+            working = true
+            await cache.setLimit(MediaCache.bytes(gigabytes: limitGigabytes))
+            usage = await cache.usage()
+            working = false
+        }
+        Button("Clear videos that are not playing") {
+            Task {
+                working = true
+                await cache.clearUnused()
+                usage = await cache.usage()
+                working = false
+            }
+        }
+        .disabled(working || usage == nil || usage == 0)
+    }
+}
+
+/// Turns optional transcoding on or off. The toggle shows what the stage
+/// reports: it is indeterminate with a spinner until the stage has applied
+/// the change, and unavailable (with the reason) without a hardware encoder.
+@MainActor
+struct TranscodeToggle: View {
+    let stage: TranscodeStage
+    let defaults: UserDefaults
+    @State private var isEnabled: Bool?
+    @State private var isAvailable = true
+    @State private var applying = false
+
+    var body: some View {
+        HStack {
+            Toggle("Save space by re-encoding videos", isOn: Binding(
+                get: { isEnabled ?? false },
+                set: { newValue in apply(newValue) }
+            ))
+            .disabled(applying || isEnabled == nil || !isAvailable)
+            if applying || isEnabled == nil { ProgressView() }
+        }
         .task {
-            let store = store
-            let destination = exportDirectory.appendingPathComponent("Export", isDirectory: true)
-            let result = await Task.detached(priority: .utility) {
-                (store.reports().count, store.stallLog.records().count, try? store.exportBundle(to: destination))
-            }.value
-            reportCount = result.0
-            stallCount = result.1
-            exportURL = result.2 ?? nil
+            isAvailable = await stage.isAvailable
+            isEnabled = await stage.isEnabled
+        }
+        if !isAvailable {
+            Text("This device has no hardware video encoder Hummingbird can use.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func apply(_ enabled: Bool) {
+        applying = true
+        Task {
+            await stage.setEnabled(enabled)
+            defaults.set(enabled, forKey: PlaybackPreferenceKey.transcodeDownloads)
+            isEnabled = await stage.isEnabled
+            applying = false
         }
     }
 }

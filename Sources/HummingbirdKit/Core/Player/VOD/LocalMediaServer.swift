@@ -25,13 +25,23 @@ actor LocalMediaServer {
         let contentType: String
     }
 
+    /// Text made on request (a plugin subtitle as WebVTT), served whole.
+    struct ServedText: Sendable {
+        let contentType: String
+        let text: OnceText
+    }
+
     struct Presentation: Sendable {
         var playlists: [String: String] = [:]
+        var texts: [String: ServedText] = [:]
         var files: [String: ServedFile] = [:]
         var objects: [String: ServedObject] = [:]
         /// Live renditions by path prefix: `<prefix>.m3u8` is their growing
         /// playlist, `<prefix>/<id>` their recorded resources.
         var live: [String: LiveHLSRecorder] = [:]
+        /// Progressive files served as fragmented MP4, by path prefix:
+        /// `<prefix>/init.mp4` and `<prefix>/<n>.m4s` (see `ProgressiveMP4`).
+        var remuxed: [String: RemuxedTrack] = [:]
     }
 
     private typealias Connection = NIOAsyncChannel<HTTPServerRequestPart, HTTPServerResponsePart>
@@ -39,7 +49,12 @@ actor LocalMediaServer {
     private var presentations: [String: Presentation] = [:]
     private var port: Int?
     private var starting: Task<Int, Error>?
+    private var lastPort: Int?
     private var listener: Task<Void, Never>?
+    /// The listening channel, so a dead one can be noticed and replaced.
+    private var serverChannel: (any Channel)?
+    /// Times the listener was re-established (tests, diagnostics).
+    private(set) var restarts = 0
 
     /// Registers a presentation; returns its base URL (ending in `/`).
     func register(_ presentation: Presentation) async throws -> (id: String, base: URL) {
@@ -60,6 +75,8 @@ actor LocalMediaServer {
         case playlist(String)
         case file(ServedFile)
         case object(ServedObject)
+        case text(ServedText)
+        case remuxed(RemuxedTrack, String)
         case livePlaylist(LiveHLSRecorder, String)
         case liveObject(LiveHLSRecorder, String)
         case notFound
@@ -72,6 +89,10 @@ actor LocalMediaServer {
         if let playlist = presentation.playlists[name] { return .playlist(playlist) }
         if let file = presentation.files[name] { return .file(file) }
         if let object = presentation.objects[name] { return .object(object) }
+        if let text = presentation.texts[name] { return .text(text) }
+        for (prefix, track) in presentation.remuxed where name.hasPrefix("\(prefix)/") {
+            return .remuxed(track, String(name.dropFirst(prefix.count + 1)))
+        }
         for (prefix, recorder) in presentation.live {
             if name == "\(prefix).m3u8" { return .livePlaylist(recorder, prefix) }
             if name.hasPrefix("\(prefix)/") { return .liveObject(recorder, String(name.dropFirst(prefix.count + 1))) }
@@ -84,16 +105,15 @@ actor LocalMediaServer {
     private func serverPort() async throws -> Int {
         if let port { return port }
         if let starting { return try await starting.value }
+        let previous = lastPort
         let task = Task<Int, Error> {
-            let server = try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
-                .serverChannelOption(ChannelOptions.backlog, value: 64)
-                .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .bind(host: "127.0.0.1", port: 0) { channel in
-                    channel.eventLoop.makeCompletedFuture {
-                        try channel.pipeline.syncOperations.configureHTTPServerPipeline()
-                        return try Connection(wrappingChannelSynchronously: channel)
-                    }
-                }
+            // Rebinding the port the player already knows keeps its URLs valid.
+            let server: NIOAsyncChannel<Connection, Never>
+            if let previous, let rebound = try? await Self.bind(port: previous) {
+                server = rebound
+            } else {
+                server = try await Self.bind(port: 0)
+            }
             guard let port = server.channel.localAddress?.port else {
                 throw TrackDownloadError.unexpectedResponse("no loopback port")
             }
@@ -104,6 +124,7 @@ actor LocalMediaServer {
         do {
             let value = try await task.value
             port = value
+            lastPort = value
             starting = nil
             return value
         } catch {
@@ -112,8 +133,24 @@ actor LocalMediaServer {
         }
     }
 
+    private static func bind(port: Int) async throws -> NIOAsyncChannel<Connection, Never> {
+        try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+            .serverChannelOption(ChannelOptions.backlog, value: 64)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .bind(host: "127.0.0.1", port: port) { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.configureHTTPServerPipeline()
+                    return try Connection(wrappingChannelSynchronously: channel)
+                }
+            }
+    }
+
+    /// The server lives as long as the stores that own it (the process). If
+    /// its socket dies (iOS reclaims sockets of a suspended app), it is bound
+    /// again, on the same port, so the player's URLs keep working.
     private func listen(on server: NIOAsyncChannel<Connection, Never>) {
-        // The server lives as long as the stores that own it (the process).
+        serverChannel = server.channel
+        let channel = server.channel
         listener = Task {
             do {
                 try await withThrowingDiscardingTaskGroup { group in
@@ -123,13 +160,72 @@ actor LocalMediaServer {
                         }
                     }
                 }
+                Logger.mediaCache.error("server_stopped")
             } catch {
                 Logger.mediaCache.error("server_stopped message=\(error.localizedDescription)")
+            }
+            await self.listenerEnded(channel)
+        }
+    }
+
+    private func listenerEnded(_ channel: any Channel) async {
+        guard serverChannel === channel else { return }
+        serverChannel = nil
+        port = nil
+        restarts += 1
+        let previous = lastPort
+        // Bind again until it works: the player may be waiting on it.
+        var delay = Duration.milliseconds(100)
+        while port == nil, !Task.isCancelled {
+            do {
+                let value = try await serverPort()
+                Logger.mediaCache.notice("server_restarted port_kept=\(value == previous)")
+                return
+            } catch {
+                Logger.mediaCache.error("server_restart_failed message=\(error.localizedDescription)")
+                try? await Task.sleep(for: delay)
+                delay = min(delay * 2, .seconds(5))
             }
         }
     }
 
+    /// Re-establishes the listener if its socket died (the app was suspended);
+    /// the app calls this when it becomes active. Returns the port.
+    @discardableResult
+    func ensureListening() async throws -> Int {
+        // A suspended app's socket can be dead while NIO still thinks it is
+        // open: connect to it to know.
+        if let channel = serverChannel, let port, !(await Self.accepts(port: port)) {
+            Logger.mediaCache.notice("server_unreachable port=\(port)")
+            channel.close(promise: nil)
+            await listenerEnded(channel)
+        } else if let channel = serverChannel, !channel.isActive {
+            channel.close(promise: nil)
+            await listenerEnded(channel)
+        }
+        return try await serverPort()
+    }
+
+    /// Whether a loopback connection to `port` is accepted within a second.
+    private static func accepts(port: Int) async -> Bool {
+        do {
+            let channel = try await ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+                .connectTimeout(.seconds(1))
+                .connect(host: "127.0.0.1", port: port).get()
+            try? await channel.close()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Closes the listening socket as iOS does to a suspended app (tests).
+    func simulateSocketReclaim() async {
+        try? await serverChannel?.close()
+    }
+
     private nonisolated func serve(_ connection: Connection) async {
+        let channel = connection.channel
         do {
             try await connection.executeThenClose { inbound, outbound in
                 var head: HTTPRequestHead?
@@ -140,7 +236,7 @@ actor LocalMediaServer {
                     case .end:
                         guard let requestHead = head else { continue }
                         head = nil
-                        try await self.respond(to: requestHead, outbound: outbound)
+                        try await self.respondUntilClosed(requestHead, channel: channel, outbound: outbound)
                     }
                 }
             }
@@ -148,6 +244,19 @@ actor LocalMediaServer {
         } catch {
             // The player closing a connection mid-response is routine.
             Logger.mediaCache.debug("connection_closed message=\(error.localizedDescription)")
+        }
+    }
+
+    /// A request whose connection the player closes (it seeked, gave up or
+    /// timed out) is cancelled, so it stops steering the download.
+    private nonisolated func respondUntilClosed(_ request: HTTPRequestHead, channel: any Channel,
+                                                outbound: NIOAsyncChannelOutboundWriter<HTTPServerResponsePart>) async throws {
+        let response = Task { try await self.respond(to: request, outbound: outbound) }
+        channel.closeFuture.whenComplete { _ in response.cancel() }
+        try await withTaskCancellationHandler {
+            try await response.value
+        } onCancel: {
+            response.cancel()
         }
     }
 
@@ -162,7 +271,28 @@ actor LocalMediaServer {
                            request: request, outbound: outbound)
         case .file(let file):
             try await sendFile(file, request: request, outbound: outbound)
+        case .remuxed(let track, let name):
+            guard let data = try await track.resource(name) else {
+                try await send(status: .notFound, contentType: "text/plain", body: Data(), request: request, outbound: outbound)
+                return
+            }
+            try await send(status: .ok, contentType: "video/mp4", body: data, request: request, outbound: outbound)
+        case .text(let served):
+            // A text that cannot be made (the plugin failed) is missing, not broken:
+            // the player leaves that subtitle unavailable and plays on.
+            guard let text = try? await served.text.value() else {
+                try await send(status: .notFound, contentType: "text/plain", body: Data(), request: request, outbound: outbound)
+                return
+            }
+            try await send(status: .ok, contentType: served.contentType, body: Data(text.utf8), request: request, outbound: outbound)
         case .livePlaylist(let recorder, let prefix):
+            // Low-latency blocking reload: hold the response until the asked-for
+            // segment or part is recorded.
+            let query = URLComponents(string: request.uri)?.queryItems ?? []
+            if let msn = query.first(where: { $0.name == "_HLS_msn" })?.value.flatMap({ Int($0) }) {
+                let part = query.first(where: { $0.name == "_HLS_part" })?.value.flatMap { Int($0) }
+                await recorder.waitForPlaylist(msn: msn, part: part)
+            }
             let text = await recorder.localPlaylist(prefix: prefix)
             try await send(status: .ok, contentType: "application/vnd.apple.mpegurl", body: Data(text.utf8),
                            request: request, outbound: outbound)
@@ -239,7 +369,14 @@ actor LocalMediaServer {
         var offset = range.lowerBound
         while offset < range.upperBound {
             let piece = offset..<min(range.upperBound, offset + step)
-            try await file.downloader.waitUntilAvailable(piece)
+            let waitStarted = ContinuousClock.now
+            do {
+                try await file.downloader.waitUntilAvailable(piece)
+            } catch {
+                Self.logWait(since: waitStarted, role: file.downloader.role.rawValue, offset: piece.lowerBound, outcome: "abandoned")
+                throw error
+            }
+            Self.logWait(since: waitStarted, role: file.downloader.role.rawValue, offset: piece.lowerBound, outcome: "served")
             guard let data = try await file.downloader.read(piece) else {
                 throw TrackDownloadError.unexpectedResponse("cache lost bytes")
             }
@@ -248,6 +385,14 @@ actor LocalMediaServer {
         }
         try await outbound.write(.end(nil))
         outcome = "served"
+    }
+
+    /// Logs a player request that had to wait for bytes (over half a second).
+    private static func logWait(since start: ContinuousClock.Instant, role: String, offset: Int64, outcome: StaticString) {
+        let waited = start.duration(to: .now)
+        guard waited > .milliseconds(500) else { return }
+        let ms = Int(waited.components.seconds * 1_000 + waited.components.attoseconds / 1_000_000_000_000_000)
+        Logger.mediaCache.notice("local_request_wait role=\(role, privacy: .public) offset=\(offset) ms=\(ms) outcome=\(outcome, privacy: .public)")
     }
 
     /// `bytes=a-b`, `bytes=a-` or `bytes=-n`; one range only.

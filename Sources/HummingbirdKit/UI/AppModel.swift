@@ -16,6 +16,8 @@ final class AppModel {
     let localProfileID: UUID
     let library: LibraryStore
     let platform: PlatformService
+    /// This window's view of every download in the media cache.
+    let downloads: DownloadsModel
     let subscriptionFeed: SubscriptionFeed
     let homeFeed: FeedModel
     let playbackQueue: PlaybackQueue
@@ -37,6 +39,9 @@ final class AppModel {
     var activeTabID: BrowserTab.ID { didSet { persistBrowserSession() } }
 
     @ObservationIgnored private var tabPlayers: [BrowserTab.ID: PlayerModel] = [:]
+    private struct WeakPlayer { weak var player: PlayerModel? }
+    /// Every tab player alive in the process, by tab (see `player(forTab:)`).
+    private static var livePlayers: [BrowserTab.ID: WeakPlayer] = [:]
     /// Makes each tab's player (tests supply players with fake backends).
     @ObservationIgnored var makePlayer: @MainActor (AppDataStores) -> PlayerModel = { PlayerModel(stores: $0) }
 
@@ -103,7 +108,8 @@ final class AppModel {
                 oauthAuthorizations[authorizationID]?.cancel()
             }
         }
-        tabPlayers.removeValue(forKey: id)?.teardown()
+        tabPlayers.removeValue(forKey: id)?.close()
+        Self.livePlayers[id] = nil
         contentTabs.remove(at: index)
         persistBrowserSession()
         guard activeTabID == id else { return }
@@ -130,7 +136,20 @@ final class AppModel {
     /// elsewhere (`shouldKeepPlaybackWhenHidden`) or is closed.
     func player(forTab id: BrowserTab.ID) -> PlayerModel {
         if let player = tabPlayers[id] { return player }
+        // One player per tab, in the whole process: a second one for the same
+        // tab (a tab restored twice, two scenes restoring one session) would
+        // play the same video twice.
+        if let existing = Self.livePlayers[id]?.player, existing !== tabPlayers[id] {
+            Logger.player.fault("second_player_for_tab")
+            assertionFailure("A second PlayerModel was created for tab \(id)")
+        }
         let player = makePlayer(stores)
+        Self.livePlayers[id] = WeakPlayer(player: player)
+        // At most one tab plays in a window (Picture in Picture aside).
+        player.onStartedPlaying = { [weak self, weak player] in
+            guard let self, let player else { return }
+            for other in self.tabPlayers.values where other !== player { other.pauseForAnotherTab() }
+        }
         // Returning from Picture in Picture brings this tab back.
         player.onRestoreRequested = { [weak self] in self?.activeTabID = id }
         tabPlayers[id] = player
@@ -145,9 +164,22 @@ final class AppModel {
     /// downloads continue in the background (`MediaDownloads`). Other
     /// windows have their own models and are unaffected.
     func closeWindow() {
+        downloads.stop()
+        for id in tabPlayers.keys { Self.livePlayers[id] = nil }
         let players = tabPlayers.values
         tabPlayers.removeAll()
-        for player in players { player.teardown() }
+        for player in players { player.close() }
+    }
+
+    /// Before the app goes to the background: every player records where it is.
+    func recordPlaybackProgress() {
+        for player in tabPlayers.values { player.recordProgressNow() }
+    }
+
+    /// The app is back in front: each tab's player continues as the user left
+    /// it (see `PlayerModel.applicationBecameActive`).
+    func applicationBecameActive() {
+        for player in tabPlayers.values { player.applicationBecameActive() }
     }
 
     /// Players this window still owns (tests, debugging).
@@ -197,9 +229,14 @@ final class AppModel {
             ?? defaults.bool(forKey: Self.localNetworkSyncEnabledKey)
         let storagePrefix = profile.storagePrefix
         let profileChanges = profile.changes
+        // Parental controls and the age bound are profile data; one policy
+        // per profile is shared by every window that opens it.
+        let policy = SourceAccessPolicy.shared(
+            stores: stores, profilePrefix: storagePrefix, profileChanges: profileChanges
+        )
         let plugins = PluginManager(
             installed: persistence.plugins, profileChanges: profileChanges,
-            storage: storage, credentialStore: credentialStore,
+            storage: storage, credentialStore: credentialStore, policy: policy,
             storageName: storagePrefix + "plugins", credentialNamespace: storagePrefix,
             preloadedCredentials: pluginCredentials
         )
@@ -211,6 +248,23 @@ final class AppModel {
         let platform = PlatformService(
             plugins: plugins, storage: storage, detailsCacheStorageName: storagePrefix + "details_cache"
         )
+        let downloadsModel = DownloadsModel(downloads: stores.mediaDownloads)
+        downloadsModel.start()
+        // The first video should not initialise the playback frameworks on the main thread.
+        prewarmMediaBackend()
+        // Downloads keep going while the app is suspended (iOS and friends).
+        let mediaDownloads = stores.mediaDownloads
+        Task { await mediaDownloads.useTransport(BackgroundTransport()) }
+        // Optional transcoding uses the platform's hardware encoder.
+        let transcoding = stores.transcoding
+        let transcodeEnabled = stores.defaults.bool(forKey: PlaybackPreferenceKey.transcodeDownloads)
+        Task {
+            await transcoding.useEncoder(TranscodeEncoder.platform)
+            await transcoding.setEnabled(transcodeEnabled)
+        }
+        // The platform's power conditions drive the shared background-work policy.
+        stores.backgroundWork.followPlatformPowerState()
+        self.downloads = downloadsModel
         self.stores = stores
         self.plugins = plugins
         self.localProfileID = localProfileID

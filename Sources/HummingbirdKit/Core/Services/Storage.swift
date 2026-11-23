@@ -75,9 +75,10 @@ final class Storage: Sendable {
         }
     }
 
-    /// Blocks until every write submitted so far is done. Only for the
-    /// moment the application quits, when nothing may run afterwards.
-    func flushBeforeTermination() { writer.sync {} }
+    /// Waits for every write submitted so far, but never past `deadline`: only
+    /// for the moment the application exits. True if everything was written.
+    @discardableResult
+    func flushBeforeTermination(until deadline: ExitDeadline) -> Bool { deadline.drain(writer) }
 }
 
 /// Serializes migration and ordinary reads/writes as one operation. A legacy

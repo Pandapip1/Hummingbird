@@ -97,6 +97,7 @@ private struct ApplicationLifecycleModifier: ViewModifier {
         return content.onLifecycle { event in
             switch event {
             case .phase(.background):
+                model.recordPlaybackProgress()
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
                 let stores = model.stores
@@ -104,12 +105,16 @@ private struct ApplicationLifecycleModifier: ViewModifier {
             case .sceneEnded, .willTerminate:
                 // Closing the last window can quit the application with no
                 // termination event reaching this window (it has already
-                // ended), so both wait for the queued writes here.
+                // ended), so both wait for the queued writes here, within one
+                // exit budget: the system kills an app that takes 5 seconds.
                 model.library.flushHistory()
                 model.library.persistSubscriptionState()
-                model.profileChanges.flushBeforeTermination()
-                model.stores.flushBeforeTermination()
-            case .phase(.active), .phase(.inactive):
+                let deadline = ExitDeadline.forExit()
+                model.profileChanges.flushBeforeTermination(until: deadline)
+                model.stores.flushBeforeTermination(until: deadline)
+            case .phase(.active):
+                model.applicationBecameActive()
+            case .phase(.inactive):
                 break
             }
         }
@@ -148,6 +153,7 @@ struct DebugSceneSelection<Content: View>: View {
     var body: some View {
         switch ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] {
         case "player": PlayerDebugScene(stores: stores)
+        case "player-fullscreen": FullscreenHandoverDebugScene(stores: stores)
         case "player-seek": SeekDebugScene()
         case "install-preview": InstallPreviewDebugScene()
         default: content

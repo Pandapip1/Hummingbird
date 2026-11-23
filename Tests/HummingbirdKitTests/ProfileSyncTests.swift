@@ -39,7 +39,8 @@ final class ProfileSyncTests: XCTestCase {
         let config = try JSONDecoder().decode(PluginConfig.self, from: Data(configJSON.utf8))
         let manager = PluginManager(
             installed: [InstalledPlugin(config: config, script: "secret executable")],
-            profileChanges: recorder, storage: stores.storage, credentialStore: stores.credentialStore
+            profileChanges: recorder, storage: stores.storage, credentialStore: stores.credentialStore,
+            policy: makeTestPolicy()
         )
 
         manager.setSetting(pluginID: "example", key: "region", value: "ca")

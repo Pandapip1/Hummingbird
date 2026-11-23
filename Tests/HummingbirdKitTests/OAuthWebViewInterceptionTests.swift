@@ -14,13 +14,18 @@ final class OAuthWebViewInterceptionTests: XCTestCase {
     func testScriptNavigationToTheRedirectURIIsIntercepted() async throws {
         let callback = try XCTUnwrap(OAuthCallbackMatcher(redirectURI: ProfileAccountService.configuration.redirectURI))
         let page = "<script>location.href='com.eightybps.hummingbird:/oauth/callback?code=abc&state=xyz'</script>"
-        let start = try XCTUnwrap(URL(string: "data:text/html," + page.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!))
+        // Served by an authorization server (on loopback): the sign-in tab only loads that site.
+        let server = try LoopbackHTTPServer(body: page, contentType: "text/html")
+        defer { server.stop() }
+        let start = try XCTUnwrap(URL(string: "http://127.0.0.1:\(server.port)/oauth/authorize"))
         let authorization = OAuthTabAuthorization(authorizationURL: start, callback: callback)
         OAuthWebPageStore.shared.preparePage(for: authorization)
         defer { OAuthWebPageStore.shared.remove(authorization) }
 
         let deadline = Date().addingTimeInterval(15)
         while !authorization.isFinished, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertTrue(authorization.isFinished, "the redirect URI was never intercepted")
+        guard authorization.isFinished else { return }
         let delivered = try await authorization.callbackURL()
         XCTAssertEqual(delivered.absoluteString, "com.eightybps.hummingbird:/oauth/callback?code=abc&state=xyz")
         XCTAssertNotEqual(OAuthWebPageStore.shared.currentURL(for: authorization)?.scheme, "com.eightybps.hummingbird")

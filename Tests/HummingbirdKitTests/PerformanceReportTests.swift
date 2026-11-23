@@ -26,13 +26,15 @@ final class PerformanceReportTests: XCTestCase {
         XCTAssertEqual(store.reports().map(\.lastPathComponent), ["crash-4-3.json"])
     }
 
-    func testExportBundlesEveryReport() throws {
+    func testExportBundlesEveryReport() async throws {
         let stores = makeTestStores()
         let store = PerformanceReportStore(cachesDirectory: stores.cachesDirectory)
-        XCTAssertNil(try store.exportBundle(to: makeTestDirectory()))
+        let nothing = try await store.exportBundle(to: makeTestDirectory())
+        XCTAssertNil(nothing)
         try store.write(Data("{\"hangDiagnostics\":[]}".utf8), kind: "hang", begin: Date(timeIntervalSince1970: 1), end: Date(timeIntervalSince1970: 2))
         try store.write(Data("{\"crashDiagnostics\":[]}".utf8), kind: "crash", begin: Date(timeIntervalSince1970: 3), end: Date(timeIntervalSince1970: 4))
-        let url = try XCTUnwrap(try store.exportBundle(to: makeTestDirectory()))
+        let exported = try await store.exportBundle(to: makeTestDirectory())
+        let url = try XCTUnwrap(exported)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let reports = try XCTUnwrap(object["reports"] as? [[String: Any]])
         XCTAssertEqual(reports.compactMap { $0["file"] as? String }, ["crash-4-3.json", "hang-2-1.json"])
@@ -48,7 +50,8 @@ final class PerformanceReportTests: XCTestCase {
         log.append(.init(date: now.addingTimeInterval(-2), milliseconds: 400, context: [:]))
         log.append(.init(date: now.addingTimeInterval(-1), milliseconds: 500, context: [:]))
         await log.flush()
-        XCTAssertEqual(log.records().map(\.milliseconds), [400, 500])
+        let records = await log.records()
+        XCTAssertEqual(records.map(\.milliseconds), [400, 500])
         XCTAssertTrue(log.fileURL.path.hasPrefix(stores.cachesDirectory.path))
     }
 
@@ -57,12 +60,43 @@ final class PerformanceReportTests: XCTestCase {
         let store = PerformanceReportStore(cachesDirectory: stores.cachesDirectory)
         store.stallLog.append(.init(date: Date(), milliseconds: 1_234, context: ["route": "library"]))
         await store.stallLog.flush()
-        let url = try XCTUnwrap(try store.exportBundle(to: makeTestDirectory()))
+        let exported = try await store.exportBundle(to: makeTestDirectory())
+        let url = try XCTUnwrap(exported)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let stalls = try XCTUnwrap(object["stalls"] as? [[String: Any]])
         XCTAssertEqual(stalls.first?["milliseconds"] as? Int, 1_234)
         XCTAssertEqual((stalls.first?["context"] as? [String: String])?["route"], "library")
         XCTAssertEqual((object["reports"] as? [Any])?.count, 0)
+    }
+
+    func testClearDeletesReportsStallsAndExport() async throws {
+        let stores = makeTestStores()
+        let store = PerformanceReportStore(cachesDirectory: stores.cachesDirectory)
+        try store.write(Data("{\"hangDiagnostics\":[]}".utf8), kind: "hang", begin: Date(timeIntervalSince1970: 1), end: Date(timeIntervalSince1970: 2))
+        store.stallLog.append(.init(date: Date(), milliseconds: 900, context: [:]))
+        await store.stallLog.flush()
+        let exportDirectory = makeTestDirectory().appendingPathComponent("Export", isDirectory: true)
+        let exported = try await store.exportBundle(to: exportDirectory)
+        XCTAssertNotNil(exported)
+
+        try await store.clear(exportDirectory: exportDirectory)
+
+        XCTAssertEqual(store.reports(), [])
+        let stalls = await store.stallLog.records()
+        XCTAssertEqual(stalls, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: exportDirectory.path))
+        let afterwards = try await store.exportBundle(to: exportDirectory)
+        XCTAssertNil(afterwards, "nothing is left to export")
+    }
+
+    func testRetentionDropsPayloadsOlderThanTheMaximumAge() throws {
+        let stores = makeTestStores()
+        let store = PerformanceReportStore(cachesDirectory: stores.cachesDirectory, maximumAge: 30 * 24 * 60 * 60)
+        let old = try store.write(Data("{}".utf8), kind: "hang", begin: Date(timeIntervalSince1970: 1), end: Date(timeIntervalSince1970: 2))
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-31 * 24 * 60 * 60)],
+                                              ofItemAtPath: old.path)
+        try store.write(Data("{}".utf8), kind: "crash", begin: Date(timeIntervalSince1970: 3), end: Date(timeIntervalSince1970: 4))
+        XCTAssertEqual(store.reports().map(\.lastPathComponent), ["crash-4-3.json"], "the oldest payload is dropped")
     }
 
     #if canImport(MetricKit) && !os(tvOS)

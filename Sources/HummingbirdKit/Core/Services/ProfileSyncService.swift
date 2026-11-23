@@ -90,6 +90,8 @@ final class ProfileSyncService {
         entities += library.watchLater.enumerated().map { .watchLater(.init(video: $1, position: $0)) }
         entities += library.history.map { .history($0) }
         entities += plugins.installed.compactMap { SyncedPlugin($0).map { .plugin($0) } }
+        entities += plugins.policy.approvals.syncedRecords.map { .parentalApproval($0) }
+        if let age = plugins.policy.profileAge.record { entities.append(.ageRange(age)) }
         changes.bootstrap(entities)
     }
 
@@ -299,6 +301,19 @@ final class ProfileSyncService {
         var trim = LibrarySyncBatch.needsTrim(library.history, to: floor)
         guard !records.isEmpty || trim else { return [] }
 
+        // Age and parental approvals first: the plugin decisions below use
+        // them. Each is merged by its own rule (see ProfileAgeRange and
+        // ParentalApprovals), so applying one always succeeds.
+        for record in records.policy {
+            switch (record.entity, record.mutation.collection) {
+            case (.ageRange(let value)?, _): await plugins.policy.profileAge.applyRemote(value)
+            case (.parentalApproval(let value)?, _): await plugins.policy.approvals.applyRemote(value)
+            case (nil, HummingbirdProfileSchema.ageRange): await plugins.policy.profileAge.applyRemoteDelete()
+            case (nil, _): await plugins.policy.approvals.applyRemoteDelete(key: record.mutation.recordKey)
+            default: break
+            }
+        }
+
         async let pluginKeys = plugins.applySynced(records.plugins.map(\.change))
 
         var appliedLibrary: [JournalMutation] = []
@@ -321,7 +336,7 @@ final class ProfileSyncService {
         let appliedPlugins = records.plugins.filter { installedKeys.contains($0.change.key) }.map(\.mutation)
         var problems: [String] = []
         do {
-            try await Self.markApplied(appliedLibrary + appliedPlugins, in: mutationLog)
+            try await Self.markApplied(appliedLibrary + appliedPlugins + records.policy.map(\.mutation), in: mutationLog)
         } catch {
             problems.append("This device couldn’t record what it synced: \(error.localizedDescription)")
         }
@@ -345,10 +360,12 @@ final class ProfileSyncService {
     struct UnappliedRecords: Sendable {
         var library: [LibrarySyncChange] = []
         var plugins: [(mutation: JournalMutation, change: PluginSyncChange)] = []
+        /// The profile's age bound and parents' approvals.
+        var policy: [(mutation: JournalMutation, entity: ProfileEntity?)] = []
         var undecodable: [JournalMutation] = []
         /// Where the journal's history retention has dropped records.
         var historyFloor: RetentionFloor?
-        var isEmpty: Bool { library.isEmpty && plugins.isEmpty && undecodable.isEmpty }
+        var isEmpty: Bool { library.isEmpty && plugins.isEmpty && policy.isEmpty && undecodable.isEmpty }
     }
 
     @concurrent
@@ -378,6 +395,9 @@ final class ProfileSyncService {
                 var plugin: SyncedPlugin?
                 if case .plugin(let value)? = entity { plugin = value }
                 records.plugins.append((mutation, PluginSyncChange(key: mutation.recordKey, plugin: plugin)))
+            } else if mutation.collection == HummingbirdProfileSchema.ageRange
+                        || mutation.collection == HummingbirdProfileSchema.parentalApproval {
+                records.policy.append((mutation, entity))
             } else if ProfileEntity.libraryCollections.contains(mutation.collection) {
                 records.library.append(LibrarySyncChange(mutation: mutation, entity: entity))
             }

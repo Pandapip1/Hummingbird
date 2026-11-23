@@ -1,0 +1,372 @@
+{
+  "entries": [
+    {
+      "category": "podcasts",
+      "configURL": "https://plugins.grayjay.app/ApplePodcasts/ApplePodcastsConfig.json",
+      "minimumAge": 13,
+      "name": "Apple Podcasts",
+      "pluginID": "89ae4889-0420-4d16-ad6c-19c776b28f99",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "allowExplicit",
+          "values": [
+            "true"
+          ]
+        }
+      ],
+      "summary": "One of the biggest podcast indexes owned by Apple"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Bilibili/BiliBiliConfig.json",
+      "minimumAge": 18,
+      "name": "BiliBili (CN)",
+      "pluginID": "cf8ea74d-ad9b-489e-a083-539b6aa8648c",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "BiliBili (CN) is the biggest video platform in China\n\nLogin to access higher video quality, subtitles, and premium content"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Bitchute/BitchuteConfig.json",
+      "minimumAge": 18,
+      "name": "Bitchute",
+      "pluginID": "e8b1ad5f-0c6d-497d-a5fa-0a785a16d902",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "BitChute is a video service that prioritizes creators and champions users' freedoms and privacy."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Crunchyroll/CrunchyrollConfig.json",
+      "minimumAge": 16,
+      "name": "Crunchyroll",
+      "pluginID": "9bb33039-8580-48d4-9849-21319ae845a4",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Watch the latest anime on Crunchyroll"
+    },
+    {
+      "category": "education",
+      "configURL": "https://plugins.grayjay.app/CuriosityStream/CuriosityStreamConfig.json",
+      "minimumAge": 0,
+      "name": "Curiosity Stream",
+      "pluginID": "273b6523-5438-44e2-9f5d-78e0325a8fd9",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Curiosity Stream has thousands of documentaries that enlighten, entertain & inspire. What are you curious about?"
+    },
+    {
+      "category": "education",
+      "configURL": "https://plugins.grayjay.app/FOSDEM/FOSDEMConfig.json",
+      "minimumAge": 0,
+      "name": "FOSDEM",
+      "pluginID": "d890ff43-7d9f-4f0e-a52d-239014fd512d",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "FOSDEM is a two-day event organised by volunteers to promote the widespread use of free and open source software."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/InternetArchive/InternetArchiveConfig.json",
+      "minimumAge": 18,
+      "name": "Internet Archive",
+      "pluginID": "902c1d65-0a2a-4ee9-be3b-cc5ac76e3df0",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [
+        {
+          "minimumAge": 18,
+          "safeValue": "true",
+          "setting": "hideAdultContent",
+          "values": [
+            "false"
+          ]
+        },
+        {
+          "minimumAge": 18,
+          "safeValue": "true",
+          "setting": "hideSensitiveContent",
+          "values": [
+            "false"
+          ]
+        }
+      ],
+      "summary": "Digital library with historical videos, documentaries, educational content, and archived media"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Kick/KickConfig.json",
+      "minimumAge": 18,
+      "name": "Kick",
+      "pluginID": "4a78c2ff-c20f-43ac-8f75-34515df1d320",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "A live streaming platform, backed by Stake.com."
+    },
+    {
+      "category": "music",
+      "configURL": "https://plugins.grayjay.app/Mixcloud/MixcloudConfig.json",
+      "minimumAge": 13,
+      "name": "Mixcloud",
+      "pluginID": "84331338-b045-419c-88e4-c86036f4cbf5",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Listen to the best DJs and radio presenters in the world for free."
+    },
+    {
+      "category": "education",
+      "configURL": "https://plugins.grayjay.app/NASA-Plus/NASA-PlusConfig.json",
+      "minimumAge": 0,
+      "name": "NASA+",
+      "pluginID": "a1b2c3d4-5e6f-7890-abcd-ef1234567890",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Explore the unknown in air and space. Watch original series, documentaries, and features from NASA's streaming service."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Nebula/NebulaConfig.json",
+      "minimumAge": 16,
+      "name": "Nebula",
+      "pluginID": "9d703ff5-c556-4962-a990-4f000829cb87",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "A subscription-based video platform, co-owned by Standard Broadcast LLC and various creators."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Niconico/NiconicoConfig.json",
+      "minimumAge": 18,
+      "name": "Niconico",
+      "pluginID": "99224109-ac6d-426f-a1c1-4c8051f946fd",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Niconico is the biggest video platform in Japan"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Odysee/OdyseeConfig.json",
+      "minimumAge": 18,
+      "name": "Odysee",
+      "pluginID": "1c05bfc3-08b9-42d0-93d3-6d52e0fd34d8",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "allowMatureContent",
+          "values": [
+            "true"
+          ]
+        }
+      ],
+      "summary": "A video platform running on the LBRY blockchain."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
+      "minimumAge": 18,
+      "name": "Patreon",
+      "pluginID": "aac9e9f0-24b5-11ee-be56-0242ac120002",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Patreon is a subscription platform allowing creators to release membership only content."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://pandapip1.github.io/grayjay-plugin-patreon-hummingbird/PatreonConfig.json",
+      "minimumAge": 16,
+      "name": "Patreon (Hummingbird)",
+      "pluginID": "bf1ab295-96fa-445d-bb78-215116ee472e",
+      "publicKey": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAs9K0NL91Kiz2t1gx/vge0ChHZVt8F+g+pf7a7zOLRVAg9yCdtfPJNhbv/uBPdZwXY5FXVlV/Qywplh7Qb6tr7IXJWTA/Y9wJrVsx0MbmkfA1IIdunboLf9wLWu5G7sTvZOKq/MvLwv31O5rzEig19W9rNFJRAfOYSrDIfC53fJZIk2SqwWmngsehlEuUfhqrgzNPJG0H2cu5SyxYlyrXNZ3yE2ZQLSto+PiJskVJFnZj4eJTc38NoP06dvcP2maNNBKWsJe0p7zZwf432BCBS6wdlBhqjmPZaNvEUDk/vQvpEELwLkAkxFb9FBSeuR9Q5gsQKkGmjlMMyhHo5MshtxLFS+zWDlfOkB+zi5/Jpdwxp0ok6aLBVLAC2aJ7C60sh6Yv9TpGlq0uMzSbH+P05ol/hS0TLdcv9Rsfy5ssrcux4SWV0W46ux22/rg6HGQWg/ophKA3RSSVIoL313gHEpjrrOTSz8hz/3yrvObuWkc7Rp9DAVb/fvdtbxuCiwwaciNf7crg1EFZwFRkM6l9Aysg2nvs5sWy/EKkypenbWgTfBjrLvy7o43trpcmQKVfRBItHXensOydlliQWGkXrV1O9oHRieqM7LXXYB9+kHTBUYamfQ0d8UgFuam5EIIi+ZJHC9tVZiItj5qbbJDMLoAuFZ85KLDUT9/NPeYT7iMCAwEAAQ==",
+      "settingRatings": [
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "includeNsfwResults",
+          "values": [
+            "true"
+          ]
+        },
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "showNsfwContent",
+          "values": [
+            "true"
+          ]
+        }
+      ],
+      "summary": "Patreon is a subscription platform allowing creators to release membership only content. Hummingbird's fork of the FUTO plugin."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/PeerTube/PeerTubeConfig.json",
+      "minimumAge": 18,
+      "name": "PeerTube",
+      "pluginID": "1c291164-294c-4c2d-800d-7bc6d31d0019",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [
+        {
+          "minimumAge": 18,
+          "safeValue": "0",
+          "setting": "nsfwPolicy",
+          "values": [
+            "1",
+            "2"
+          ]
+        },
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "allowPlayNsfwContent",
+          "values": [
+            "true"
+          ]
+        }
+      ],
+      "summary": "A plugin that adds PeerTube as a source"
+    },
+    {
+      "category": "music",
+      "configURL": "https://plugins.grayjay.app/RadioBrowser/RadioBrowserConfig.json",
+      "minimumAge": 16,
+      "name": "Radio Browser",
+      "pluginID": "009775f8-9173-48a2-8df3-d730d08d198d",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Access over 50,000 radio stations from around the world through the community-driven radio-browser.info directory"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/RedbullTv/RedBullTvConfig.json",
+      "minimumAge": 13,
+      "name": "Red Bull TV",
+      "pluginID": "5f6658bb-96cc-4965-ba04-c81f8686ab67",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Watch all the action from the world of Red Bull."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Rumble/RumbleConfig.json",
+      "minimumAge": 18,
+      "name": "Rumble",
+      "pluginID": "2ce7b35e-d2b2-4adb-a728-a34a30d30359",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "A plugin that adds Rumble as a source"
+    },
+    {
+      "category": "music",
+      "configURL": "https://plugins.grayjay.app/Soundcloud/SoundcloudConfig.json",
+      "minimumAge": 16,
+      "name": "SoundCloud",
+      "pluginID": "5fb74e28-2fba-406a-9418-38af04f63c08",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "One of the biggest music distribution platforms, Privately owned"
+    },
+    {
+      "category": "music",
+      "configURL": "https://plugins.grayjay.app/Spotify/SpotifyConfig.json",
+      "minimumAge": 13,
+      "name": "Spotify",
+      "pluginID": "4e365633-6d3f-4267-8941-fdc36631d813",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Listen to millions of songs on Spotify"
+    },
+    {
+      "category": "education",
+      "configURL": "https://plugins.grayjay.app/TedTalks/TedTalksConfig.json",
+      "minimumAge": 13,
+      "name": "Ted Talks",
+      "pluginID": "8d029a7f-5507-4e36-8bd8-c19a3b77d383",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "TED Talks are influential videos from expert speakers on education, business, science, tech and creativity"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/TikTok/TikTokConfig.json",
+      "minimumAge": 18,
+      "name": "TikTok",
+      "pluginID": "37b3aed3-24b8-4717-8388-dfc439908bf8",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "Watch millions of short-form videos on TikTok"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Twitch/TwitchConfig.json",
+      "minimumAge": 18,
+      "name": "Twitch",
+      "pluginID": "c0f315f9-0992-4508-a061-f2738724c331",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [],
+      "summary": "One of the biggest livestreaming platforms, owned by Amazon."
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://plugins.grayjay.app/Youtube/YoutubeConfig.json",
+      "minimumAge": 16,
+      "name": "Youtube",
+      "pluginID": "35ae969a-a7db-11ed-afa1-0242ac120002",
+      "publicKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsoFJU4AReDyUnSQI9A99UjLCwkY8OH+1o8cdtf2EjSb+fO2qmP8MGMTAvfvgmq5d2QBJE2XHRkRO3JKcTlcc1j0WlOlU8P9W272DYCeX6oYaavpKNqGKoGEuodp9wtiyNwyH46++JfpU/uIUacZbZKkHv9gIGchmNvpKYZQjFd/8pUqXGpcXZP54tGSC9PLcY+5TozZThK7Oy1+3YEf1bZ44UinRYYATbLk/wNuAfsupvlt6nxZOcJhABhdo9V+gY0FE6Ayg5+1cd1noWhnRtLF+sPdEr3z8Nt15JEK5a/524t25FMhwz8yKxlGW5qW3QLJHSUgLQncL6a1zlZ1s8QIDAQAB",
+      "settingRatings": [
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "allowAgeRestricted",
+          "values": [
+            "true"
+          ]
+        },
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "allowControversialRestricted",
+          "values": [
+            "true"
+          ]
+        }
+      ],
+      "summary": "One of the biggest video platforms owned by Google"
+    },
+    {
+      "category": "generalVideo",
+      "configURL": "https://pandapip1.github.io/grayjay-plugin-youtube-hummingbird/YoutubeConfig.json",
+      "minimumAge": 16,
+      "name": "Youtube (Hummingbird)",
+      "pluginID": "ce484355-23d5-44d5-95ff-aa0b1a0c2471",
+      "publicKey": "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAs9K0NL91Kiz2t1gx/vge0ChHZVt8F+g+pf7a7zOLRVAg9yCdtfPJNhbv/uBPdZwXY5FXVlV/Qywplh7Qb6tr7IXJWTA/Y9wJrVsx0MbmkfA1IIdunboLf9wLWu5G7sTvZOKq/MvLwv31O5rzEig19W9rNFJRAfOYSrDIfC53fJZIk2SqwWmngsehlEuUfhqrgzNPJG0H2cu5SyxYlyrXNZ3yE2ZQLSto+PiJskVJFnZj4eJTc38NoP06dvcP2maNNBKWsJe0p7zZwf432BCBS6wdlBhqjmPZaNvEUDk/vQvpEELwLkAkxFb9FBSeuR9Q5gsQKkGmjlMMyhHo5MshtxLFS+zWDlfOkB+zi5/Jpdwxp0ok6aLBVLAC2aJ7C60sh6Yv9TpGlq0uMzSbH+P05ol/hS0TLdcv9Rsfy5ssrcux4SWV0W46ux22/rg6HGQWg/ophKA3RSSVIoL313gHEpjrrOTSz8hz/3yrvObuWkc7Rp9DAVb/fvdtbxuCiwwaciNf7crg1EFZwFRkM6l9Aysg2nvs5sWy/EKkypenbWgTfBjrLvy7o43trpcmQKVfRBItHXensOydlliQWGkXrV1O9oHRieqM7LXXYB9+kHTBUYamfQ0d8UgFuam5EIIi+ZJHC9tVZiItj5qbbJDMLoAuFZ85KLDUT9/NPeYT7iMCAwEAAQ==",
+      "settingRatings": [
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "allowAgeRestricted",
+          "values": [
+            "true"
+          ]
+        },
+        {
+          "minimumAge": 18,
+          "safeValue": "false",
+          "setting": "allowControversialRestricted",
+          "values": [
+            "true"
+          ]
+        }
+      ],
+      "summary": "One of the biggest video platforms owned by Google. Hummingbird's fork of the FUTO plugin."
+    }
+  ],
+  "format": 1,
+  "generatedAt": "2026-11-17",
+  "schema": "format 1. Each entry: pluginID, name, summary, configURL; publicKey = the plugin's pinned scriptPublicKey (a config with this id and another key is unlisted); category (generalVideo, music, podcasts, news, education, adult, unknown); minimumAge = the rating with every rated setting at its safe value (null: the category default); settingRatings = settings that raise the rating: when `setting` holds one of `values` (as the plugin stores them), the source is rated `minimumAge`; the policy holds it at `safeValue` when the user may not have that rating, and changing it is gated like installing the source at that rating.",
+  "version": 3
+}

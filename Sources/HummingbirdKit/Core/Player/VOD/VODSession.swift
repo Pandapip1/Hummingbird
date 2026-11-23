@@ -17,6 +17,15 @@ struct VODTrackSpec: Sendable {
     var width: Int
     var height: Int
     var declaredDuration: Double?
+    /// The track is the transcode stage's output (re-encoded, complete).
+    var isTranscoded = false
+    /// The transport for this track's upstream bytes; nil uses the downloads'
+    /// shared one. Plugin media passes `PluginContentTransport` (the plugin's
+    /// contained content session).
+    var transport: (any MediaTransport)?
+    /// How an audio track is listed in the local master: its name, language
+    /// and characteristics (an audio description is marked as one).
+    var rendition: HLSPlaylist.Rendition?
 }
 
 /// What to download for an on-demand HLS presentation.
@@ -50,6 +59,7 @@ actor VODSession {
     private var heldTracks: [String] = []
     private var heldRenditions: [String] = []
     private var heldRecordings: [String] = []
+    private var info: DownloadInfo?
     private var presentationID: String?
     private var trackStates: [MediaTrackRole: MediaTrackPipelineState] = [:]
     private var order: [MediaTrackRole] = []
@@ -67,19 +77,22 @@ actor VODSession {
     // MARK: files
 
     /// Starts (or joins) the download of `video` (and `audio`, when separate)
-    /// and returns the session with the playback to load.
-    static func start(video: VODTrackSpec, audio: VODTrackSpec?, downloads: MediaDownloads,
-                      server: LocalMediaServer) async throws -> (VODSession, LocalPlayback) {
+    /// and returns the session with the playback to load. `subtitles` become
+    /// SUBTITLES renditions when the tracks are served as HLS (fragmented
+    /// MP4); whole files have no master playlist to carry them.
+    static func start(video: VODTrackSpec, audio: VODTrackSpec?, subtitles: [LocalSubtitle] = [], downloads: MediaDownloads,
+                      server: LocalMediaServer, info: DownloadInfo? = nil) async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
+        await session.setInfo(info)
         do {
-            return (session, try await session.beginFiles([video, audio].compactMap { $0 }))
+            return (session, try await session.beginFiles([video, audio].compactMap { $0 }, subtitles: subtitles))
         } catch {
             await session.stop()
             throw error
         }
     }
 
-    private func beginFiles(_ specs: [VODTrackSpec]) async throws -> LocalPlayback {
+    private func beginFiles(_ specs: [VODTrackSpec], subtitles: [LocalSubtitle]) async throws -> LocalPlayback {
         var downloaders: [TrackDownloader] = []
         for spec in specs {
             let downloader = try await downloads.hold(spec)
@@ -98,26 +111,60 @@ actor VODSession {
         for downloader in downloaders { layouts.append(try await downloader.trackLayout()) }
 
         var presentation = LocalMediaServer.Presentation()
-        let indexed = layouts.compactMap { layout -> FragmentedMP4.Layout? in
-            if case .indexed(let found) = layout { found } else { nil }
-        }
-        if indexed.count == layouts.count {
-            var tracks: [CachedHLS.Track] = []
-            for (index, spec) in specs.enumerated() {
+        // Every MP4 and WebM is served as HLS: indexed fragmented files as
+        // byte-range segments, progressive MP4 and WebM files remuxed to
+        // fragments as they download. Only other containers are served whole.
+        var video: CachedHLS.MasterEntry?
+        var audio: CachedHLS.MasterEntry?
+        var duration: Double?
+        var servedAsHLS = true
+        for (index, spec) in specs.enumerated() where servedAsHLS {
+            switch layouts[index] {
+            case .indexed(let layout):
                 let name = spec.role.rawValue
-                let track = CachedHLS.Track(role: spec.role, layout: indexed[index], fileName: "\(name).mp4",
+                let track = CachedHLS.Track(role: spec.role, layout: layout, fileName: "\(name).mp4",
                                             playlistName: "\(name).m3u8", codec: spec.codec,
                                             bandwidth: spec.bandwidth, width: spec.width, height: spec.height)
-                tracks.append(track)
                 presentation.playlists[track.playlistName] = CachedHLS.mediaPlaylist(track)
                 presentation.files[track.fileName] = .init(downloader: downloaders[index],
                                                            contentType: spec.role == .audio ? "audio/mp4" : "video/mp4")
+                if spec.role == .audio { audio = track.entry } else { video = track.entry }
+                duration = duration ?? layout.timeline.segments.reduce(0) { $0 + $1.duration }
+            case .progressive:
+                guard let file = try await Self.remuxableFile(downloaders[index]) else { servedAsHLS = false; continue }
+                // A file with both tracks (muxed) gives the video and, without a separate audio file, the audio.
+                var wanted: [(ProgressiveMP4.Kind, Bool)] = spec.role == .audio ? [(.audio, true)] : [(.video, false)]
+                if spec.role != .audio, specs.count == 1 { wanted.append((.audio, true)) }
+                for (kind, isAudio) in wanted {
+                    guard let source = try await file.source(kind, read: RemuxedTrack.reader(downloaders[index])) else {
+                        if !isAudio { servedAsHLS = false }
+                        continue
+                    }
+                    let prefix = isAudio ? "ra" : "rv"
+                    let remuxed = RemuxedTrack(source: source, downloader: downloaders[index])
+                    presentation.remuxed[prefix] = remuxed
+                    presentation.playlists["\(prefix).m3u8"] = remuxed.playlist(prefix: prefix)
+                    // A muxed file's codec string names both tracks: leave CODECS
+                    // out then, unless the track itself knows its codec exactly.
+                    let entry = CachedHLS.MasterEntry(playlistName: "\(prefix).m3u8",
+                                                      codec: source.codecs ?? (specs.count == 1 ? "" : spec.codec),
+                                                      bandwidth: spec.bandwidth, width: source.width, height: source.height)
+                    if isAudio { audio = entry } else { video = entry }
+                    duration = duration ?? remuxed.duration
+                }
             }
-            presentation.playlists["master.m3u8"] = CachedHLS.masterPlaylist(video: tracks[0], audio: tracks.count > 1 ? tracks[1] : nil)
+        }
+        if servedAsHLS, let video {
+            let legible = LocalSubtitle.add(subtitles, duration: duration ?? 0, to: &presentation)
+            let separateAudio = specs.count > 1 ? specs[1].rendition : nil
+            presentation.playlists["master.m3u8"] = CachedHLS.masterPlaylist(
+                video: video, audio: audio, audioRendition: separateAudio, subtitles: legible
+            )
             let base = try await register(presentation)
-            Logger.mediaCache.info("vod_presentation kind=indexed tracks=\(tracks.count)")
+            Logger.mediaCache.info("vod_presentation kind=hls tracks=\(specs.count) remuxed=\(presentation.remuxed.count)")
             return try LocalPlayback(video: base.appendingPathComponent("master.m3u8"), servedBy: .mediaCache)
         }
+        presentation = LocalMediaServer.Presentation()
         var names: [String] = []
         for (index, spec) in specs.enumerated() {
             let name = "\(spec.role.rawValue).\(Self.fileExtension(for: spec.container, role: spec.role))"
@@ -137,14 +184,47 @@ actor VODSession {
     /// Starts (or joins) the download of an on-demand HLS presentation: the
     /// best variant at or under `maxHeight` and its audio rendition.
     static func start(hls spec: HLSPresentationSpec, downloads: MediaDownloads, server: LocalMediaServer,
-                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession))
+                      transport: (any MediaTransport)? = nil,
+                      subtitles: [LocalSubtitle] = [],
+                      info: DownloadInfo? = nil)
         async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
+        await session.setInfo(info)
+        let transport = if let transport { transport } else { await downloads.currentTransport }
         do {
-            return (session, try await session.beginHLS(spec, transport: transport))
+            return (session, try await session.beginHLS(spec, transport: transport, subtitles: subtitles))
         } catch {
             await session.stop()
             throw error
+        }
+    }
+
+    /// The tracks of a progressive MP4, QuickTime or WebM file, read from the
+    /// cache (an MP4's `moov` may come last: that is fetched first), or nil
+    /// when the file is neither and is served whole. A WebM file that cannot
+    /// be remuxed throws its reason (an unsupported format is named): WebM is
+    /// never served whole, so subtitles always attach the same way.
+    private static func remuxableFile(_ downloader: TrackDownloader) async throws -> RemuxableFile? {
+        let read = RemuxedTrack.reader(downloader)
+        let total = try await downloader.totalBytesWhenKnown()
+        do {
+            let moov = try await ProgressiveMP4.locateMovie(total: total, read: read)
+            let movie = try ProgressiveMP4.parseMovie([UInt8](try await read(moov)))
+            return movie.track(.video) != nil || movie.track(.audio) != nil ? .mp4(movie) : nil
+        } catch ProgressiveMP4.Failure.notMP4 {
+            // Not MP4: WebM, or something served whole.
+        } catch let failure as ProgressiveMP4.Failure {
+            Logger.mediaCache.info("remux_unavailable reason=\(String(describing: failure), privacy: .public)")
+            return nil
+        }
+        do {
+            return .webm(try await Matroska.open(total: total, read: read))
+        } catch Matroska.Failure.notMatroska {
+            Logger.mediaCache.info("remux_unavailable reason=unknown_container")
+            return nil
+        } catch let failure as Matroska.Failure {
+            Logger.mediaCache.error("webm_remux_failed reason=\(String(describing: failure), privacy: .public)")
+            throw failure
         }
     }
 
@@ -155,6 +235,9 @@ actor VODSession {
         var video: HLSPlaylist.Media
         var audio: HLSPlaylist.Media?
         var audioRendition: HLSPlaylist.Rendition?
+        /// The variant's subtitle renditions with their media playlists, and its closed captions.
+        var subtitles: [(HLSPlaylist.Rendition, HLSPlaylist.Media)] = []
+        var closedCaptions: [HLSPlaylist.Rendition] = []
     }
 
     private static func select(_ spec: HLSPresentationSpec, signer: UpstreamURLSigner,
@@ -176,10 +259,23 @@ actor VODSession {
             let audioText = try await fetchText(uri, signer: signer, transport: transport)
             audio = try HLSPlaylist.parseMedia(audioText.text, base: audioText.url)
         }
-        return Selection(master: master, variant: variant, video: video, audio: audio, audioRendition: rendition)
+        // Subtitles are optional: one that cannot be read is left out, never failing playback.
+        var subtitles: [(HLSPlaylist.Rendition, HLSPlaylist.Media)] = []
+        if let group = HLSPlaylist.attribute("SUBTITLES", in: variant.attributes) {
+            for subtitle in master.subtitles where subtitle.groupID == group {
+                guard let uri = subtitle.uri,
+                      let text = try? await fetchText(uri, signer: signer, transport: transport, attempts: 3),
+                      let media = try? HLSPlaylist.parseMedia(text.text, base: text.url) else { continue }
+                subtitles.append((subtitle, media))
+            }
+        }
+        let captionGroup = HLSPlaylist.attribute("CLOSED-CAPTIONS", in: variant.attributes)
+        return Selection(master: master, variant: variant, video: video, audio: audio, audioRendition: rendition,
+                         subtitles: subtitles, closedCaptions: master.closedCaptions.filter { $0.groupID == captionGroup })
     }
 
-    private func beginHLS(_ spec: HLSPresentationSpec, transport: any MediaTransport) async throws -> LocalPlayback {
+    private func beginHLS(_ spec: HLSPresentationSpec, transport: any MediaTransport,
+                          subtitles plugin: [LocalSubtitle] = []) async throws -> LocalPlayback {
         let selection = try await Self.select(spec, signer: spec.signer, transport: transport)
         if selection.video.isEndless || selection.audio?.isEndless == true { throw HLSPlaylist.Failure.live }
         let variantKey = selection.variant.map { "\($0.height)p-\($0.bandwidth)-\($0.codecs)" } ?? "single"
@@ -220,12 +316,40 @@ actor VODSession {
                 )
             }
         }
+        // The source's own subtitles, downloaded like every other rendition.
+        var legible: [(HLSPlaylist.Rendition, String)] = []
+        for (index, (rendition, media)) in selection.subtitles.enumerated() {
+            let prefix = "t\(index)"
+            let identity = "\(spec.identity)|hls|subtitles|\(rendition.groupID)-\(rendition.language ?? "")-\(rendition.name)"
+            let cache = downloads.cache
+            let scheduler = downloads.scheduler
+            let downloader = await downloads.hold(rendition: identity) {
+                HLSRenditionDownloader(role: .subtitles, cache: cache, identity: identity, media: media,
+                                       signer: spec.signer, refresh: nil, transport: transport, scheduler: scheduler)
+            }
+            heldRenditions.append(identity)
+            presentation.playlists["\(prefix).m3u8"] = HLSPlaylist.localMedia(media) { "\(prefix)/\($0)" }
+            for resource in media.resources.indices {
+                presentation.objects["\(prefix)/\(resource)"] = .init(
+                    downloader: downloader, index: resource, contentType: await downloader.contentType(of: resource)
+                )
+            }
+            var local = rendition
+            local.groupID = LocalSubtitle.groupID
+            legible.append((local, "\(prefix).m3u8"))
+        }
+        // The plugin's subtitles (WebVTT it provides apart from the stream).
+        legible += LocalSubtitle.add(plugin, duration: selection.video.duration, to: &presentation)
         let entry: String
-        if let variant = selection.variant {
+        // A single media playlist gets a master of its own when there are subtitles to offer.
+        let single = legible.isEmpty ? nil
+            : HLSPlaylist.Variant(uri: spec.url, bandwidth: 1, width: 0, height: 0, codecs: "", audioGroup: nil, attributes: "")
+        if let variant = selection.variant ?? single {
             presentation.playlists["master.m3u8"] = HLSPlaylist.localMaster(
                 variant: variant, videoPlaylist: "v.m3u8",
                 audio: selection.audio == nil ? nil : selection.audioRendition,
-                audioPlaylist: selection.audio == nil ? nil : "a.m3u8"
+                audioPlaylist: selection.audio == nil ? nil : "a.m3u8",
+                subtitles: legible, closedCaptions: selection.closedCaptions
             )
             entry = "master.m3u8"
         } else {
@@ -242,9 +366,12 @@ actor VODSession {
     /// under `maxHeight` and its audio rendition, each recorded into the
     /// cache and served as a growing local playlist (see `LiveHLSRecorder`).
     static func start(live spec: HLSPresentationSpec, downloads: MediaDownloads, server: LocalMediaServer,
-                      transport: any MediaTransport = URLSessionTransport(session: TrackDownloader.sharedSession))
+                      transport: (any MediaTransport)? = nil,
+                      info: DownloadInfo? = nil)
         async throws -> (VODSession, LocalPlayback) {
         let session = VODSession(server: server, downloads: downloads)
+        await session.setInfo(info)
+        let transport = if let transport { transport } else { await downloads.currentTransport }
         do {
             return (session, try await session.beginLive(spec, transport: transport))
         } catch {
@@ -258,6 +385,10 @@ actor VODSession {
         var variant: HLSPlaylist.Variant?
         var videoURL: URL
         var audio: HLSPlaylist.Rendition?
+        /// Closed captions carried in the video (kept: they cost nothing to record).
+        var closedCaptions: [HLSPlaylist.Rendition] = []
+        /// The variant's subtitle renditions, recorded like the rest.
+        var subtitles: [HLSPlaylist.Rendition] = []
     }
 
     private static func selectLive(_ spec: HLSPresentationSpec, signer: UpstreamURLSigner,
@@ -268,8 +399,13 @@ actor VODSession {
         guard let variant = HLSPlaylist.bestVariant(master.variants, maxHeight: spec.maxHeight) else {
             throw HLSPlaylist.Failure.notAPlaylist
         }
+        let captionGroup = HLSPlaylist.attribute("CLOSED-CAPTIONS", in: variant.attributes)
         return LiveSelection(variant: variant, videoURL: variant.uri,
-                             audio: HLSPlaylist.bestAudio(master.audio, group: variant.audioGroup, language: spec.language))
+                             audio: HLSPlaylist.bestAudio(master.audio, group: variant.audioGroup, language: spec.language),
+                             closedCaptions: master.closedCaptions.filter { $0.groupID == captionGroup },
+                             subtitles: master.subtitles.filter {
+                                 $0.uri != nil && $0.groupID == HLSPlaylist.attribute("SUBTITLES", in: variant.attributes)
+                             })
     }
 
     private func beginLive(_ spec: HLSPresentationSpec, transport: any MediaTransport) async throws -> LocalPlayback {
@@ -308,11 +444,31 @@ actor VODSession {
             try await recorder.waitForFirstPoll()
             presentation.live[prefix] = recorder
         }
+        // Subtitles are recorded too, as their own growing playlists.
+        var legible: [(HLSPlaylist.Rendition, String)] = []
+        for (index, subtitle) in selection.subtitles.enumerated() {
+            guard let url = subtitle.uri else { continue }
+            let prefix = "t\(index)"
+            let identity = "\(spec.identity)|live|subtitles|\(subtitle.groupID)-\(subtitle.language ?? "")-\(subtitle.name)"
+            let cache = downloads.cache
+            let scheduler = downloads.scheduler
+            let recorder = await downloads.hold(recording: identity) {
+                LiveHLSRecorder(role: .subtitles, cache: cache, identity: identity, playlistURL: url, signer: spec.signer,
+                                refresh: nil, transport: transport, scheduler: scheduler)
+            }
+            heldRecordings.append(identity)
+            // Not waited for: subtitles never hold up the start of a live stream.
+            presentation.live[prefix] = recorder
+            var local = subtitle
+            local.groupID = LocalSubtitle.groupID
+            legible.append((local, "\(prefix).m3u8"))
+        }
         let entry: String
         if let variant = selection.variant {
             let audio = renditions.count > 1 ? selection.audio : nil
             presentation.playlists["master.m3u8"] = HLSPlaylist.localMaster(
-                variant: variant, videoPlaylist: "v.m3u8", audio: audio, audioPlaylist: audio == nil ? nil : "a.m3u8"
+                variant: variant, videoPlaylist: "v.m3u8", audio: audio, audioPlaylist: audio == nil ? nil : "a.m3u8",
+                subtitles: legible, closedCaptions: selection.closedCaptions
             )
             entry = "master.m3u8"
         } else {
@@ -324,9 +480,10 @@ actor VODSession {
     }
 
     /// Fetches a playlist, retrying with backoff until it arrives or the
-    /// caller is cancelled.
-    private static func fetchText(_ url: URL, signer: UpstreamURLSigner,
-                                  transport: any MediaTransport) async throws -> (text: String, url: URL) {
+    /// caller is cancelled (or, given `attempts`, until that many failed: for
+    /// optional playlists such as subtitles).
+    private static func fetchText(_ url: URL, signer: UpstreamURLSigner, transport: any MediaTransport,
+                                  attempts: Int? = nil) async throws -> (text: String, url: URL) {
         let policy = DownloadRetryPolicy()
         var attempt = 0
         while true {
@@ -340,6 +497,7 @@ actor VODSession {
                 throw CancellationError()
             } catch {
                 attempt += 1
+                if let attempts, attempt >= attempts { throw error }
                 // Never gives up while wanted: a slow or absent network is waiting, not failure.
                 Logger.mediaCache.notice("playlist_retry attempt=\(attempt)")
                 try await Task.sleep(for: .seconds(policy.delay(afterAttempt: attempt)))
@@ -349,7 +507,12 @@ actor VODSession {
 
     // MARK: lifetime
 
+    private func setInfo(_ info: DownloadInfo?) { self.info = info }
+
     private func register(_ presentation: LocalMediaServer.Presentation) async throws -> URL {
+        if let info {
+            await downloads.describe(info, tracks: heldTracks, renditions: heldRenditions, recordings: heldRecordings)
+        }
         let (id, base) = try await server.register(presentation)
         presentationID = id
         return base
@@ -384,6 +547,22 @@ actor VODSession {
         case "audio/aac", "audio/x-aac": "aac"
         case "video/3gpp": "3gp"
         default: role == .audio ? "m4a" : "mp4"
+        }
+    }
+}
+
+/// A cached file whose tracks can be served as fragmented MP4.
+enum RemuxableFile: Sendable {
+    case mp4(ProgressiveMP4.Movie)
+    case webm(Matroska.File)
+
+    func source(_ kind: ProgressiveMP4.Kind, read: RemuxRead) async throws -> (any RemuxSource)? {
+        switch self {
+        case .mp4(let movie):
+            return movie.track(kind).map { MP4RemuxSource(movie: movie, track: $0) }
+        case .webm(let file):
+            guard let track = file.track(kind) else { return nil }
+            return try await WebMRemuxSource.make(file: file, track: track, read: read)
         }
     }
 }

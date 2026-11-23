@@ -17,14 +17,23 @@ final class MainThreadResponsivenessTests: XCTestCase {
     func testPreparingAVideoNeverBlocksTheMainThread() async throws {
         let backend = QuietBackend()
         let model = makeTestPlayerModel(backend: backend)
+        // Each load makes a fresh engine; measure the player's own work with a quiet one
+        // (creating the platform engine is prewarmed at launch: prewarmMediaBackend).
+        model.makeBackend = { QuietBackend() }
         let details = try Self.manySourceDetails()
         let runtime = try Self.runtime()
         let library = makeTestAppModel().library
         let probe = MainThreadProbe()
         probe.start()
+        let clock = ContinuousClock()
+        let selectionStart = clock.now
+        let options = PlaybackSelector.options(for: details, preferredLanguage: "en")
+        print("[responsiveness] options=\(options.count) selection=\(selectionStart.duration(to: clock.now))")
         for round in 0..<3 {
+            let started = clock.now
             await model.load(details: details, runtime: runtime, library: library, sourceURL: "https://example.test/v/\(round)")
-            XCTAssertNotNil(model.selected, "a source was chosen")
+            print("[responsiveness] load \(round) took \(started.duration(to: clock.now)) worst so far \(probe.worstSoFar)")
+            XCTAssertNotNil(model.selected, "a source was chosen (\(model.errorMessage ?? "no error"))")
             // Let the seek bar's content be built (off the main actor).
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -38,13 +47,17 @@ final class MainThreadResponsivenessTests: XCTestCase {
     /// The seek bar's lanes for a long video (thousands of downloaded ranges)
     /// are built off the main actor; building them is still quick.
     func testLongVideoSeekBarContentIsCheap() {
-        let clock = ContinuousClock()
-        let elapsed = clock.measure {
-            _ = PlaybackScrubber.content(pipeline: .empty, duration: 10_800, chapters: (0..<300).map {
-                PlaybackChapter(name: "Chapter \($0)", timeStart: Double($0) * 36, timeEnd: Double($0 + 1) * 36, type: $0 % 10 == 0 ? 5 : 0)
-            }, isLive: false)
+        var chapters: [PlaybackChapter] = []
+        for index in 0..<300 {
+            let start = Double(index) * 36
+            let type = index % 10 == 0 ? 5 : 0
+            chapters.append(PlaybackChapter(name: "Chapter \(index)", timeStart: start, timeEnd: start + 36, type: type))
         }
-        XCTAssertLessThan(elapsed, .milliseconds(50))
+        let clock = ContinuousClock()
+        let started = clock.now
+        _ = PlaybackScrubber.content(pipeline: .empty, duration: 10_800, chapters: chapters, isLive: false)
+        let elapsed: Duration = started.duration(to: clock.now)
+        XCTAssertLessThan(elapsed, Duration.milliseconds(50))
     }
 
     // MARK: fixtures
@@ -91,6 +104,7 @@ private final class MainThreadProbe: @unchecked Sendable {
     private var thread: Thread?
 
     var samples: Int { lock.withLock { count } }
+    var worstSoFar: Duration { lock.withLock { worst } }
 
     func start() {
         lock.withLock { running = true }

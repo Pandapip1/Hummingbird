@@ -641,10 +641,6 @@ final class AVMediaBackend: MediaBackend {
 }
 
 #if canImport(AVKit) && canImport(SwiftUI) && (os(iOS) || os(tvOS) || os(visionOS))
-/// AVKit's SwiftUI `VideoPlayer` always supplies its own controls. Wrap the
-/// underlying view controller so Hummingbird can provide one shared control
-/// surface on Apple and GTK.
-@MainActor
 /// Holds the backend's Picture in Picture layer at the back of a player
 /// controller's view, always filling it (rotation, resizing): AVKit needs the
 /// layer on screen, and a layer with a stale frame would show a second copy
@@ -697,6 +693,10 @@ final class PictureInPictureHostView: UIView {
     }
 }
 
+/// AVKit's SwiftUI `VideoPlayer` always supplies its own controls. Wrap the
+/// underlying view controller so Hummingbird can provide one shared control
+/// surface on Apple and GTK.
+@MainActor
 struct PlayerSurface: UIViewControllerRepresentable {
     let model: PlayerModel
 
@@ -1064,4 +1064,14 @@ final class PictureInPictureDelegate: NSObject, AVPictureInPictureControllerDele
 
 @MainActor
 func makeMediaBackend() -> MediaBackend { AVMediaBackend() }
+
+/// Loads the playback frameworks once, off the main thread, so the first video
+/// does not pay for it there (making the first AVPlayerLayer initialises
+/// AVFoundation and QuartzCore: about 100 ms on the main thread otherwise).
+func prewarmMediaBackend() {
+    Task.detached(priority: .utility) {
+        _ = AVPlayerLayer()
+        _ = AVURLAsset(url: URL(fileURLWithPath: "/dev/null"))
+    }
+}
 #endif

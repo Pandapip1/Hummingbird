@@ -59,6 +59,8 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
     /// Tests only: turns an option into local playback without a plugin, so
     /// load generations, switching and confirmation can be driven by a fake
     /// backend. Nil in the app.
+    /// Makes the playback engine for each load (the platform's; tests supply their own).
+    @ObservationIgnored var makeBackend: @MainActor () -> any MediaBackend = { makeMediaBackend() }
     @ObservationIgnored var localPlaybackForTesting: (@MainActor (PlaybackOption) async throws -> LocalPlayback)?
     private(set) var errorMessage: String?
     private(set) var isPreparing = false
@@ -417,7 +419,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         defer { isPreparing = false; preparationMessage = nil }
 
         let maxHeight = preferences.defaults.object(forKey: PlaybackPreferenceKey.maxVideoHeight) as? Int ?? 1080
-        let engine = backend ?? makeMediaBackend()
+        let engine = backend ?? makeBackend()
         backend = engine
         attach(engine)
         startup = PlaybackStartupTrace()

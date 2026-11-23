@@ -324,6 +324,9 @@ final class GTKMediaBackend: MediaBackend {
 @MainActor
 func makeMediaBackend() -> MediaBackend { GTKMediaBackend() }
 
+/// Nothing to load ahead: GStreamer starts with the first pipeline.
+func prewarmMediaBackend() {}
+
 @MainActor
 struct PlayerSurface: View {
     let model: PlayerModel

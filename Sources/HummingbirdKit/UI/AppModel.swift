@@ -244,6 +244,8 @@ final class AppModel {
         )
         let downloadsModel = DownloadsModel(downloads: stores.mediaDownloads)
         downloadsModel.start()
+        // The first video should not initialise the playback frameworks on the main thread.
+        prewarmMediaBackend()
         // Downloads keep going while the app is suspended (iOS and friends).
         let mediaDownloads = stores.mediaDownloads
         Task { await mediaDownloads.useTransport(BackgroundTransport()) }

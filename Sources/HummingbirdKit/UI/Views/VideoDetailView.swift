@@ -654,7 +654,7 @@ struct DownloadHealthSection: View {
     var body: some View {
         let rows = model.downloadHealth
         if !rows.isEmpty {
-            DisclosureGroup("Download health") {
+            CollapsibleSection("Download health") {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(rows) { row in
                         VStack(alignment: .leading, spacing: 2) {

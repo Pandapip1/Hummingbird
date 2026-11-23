@@ -121,9 +121,6 @@ final class AVMediaBackend: MediaBackend {
     private var committedLoadGeneration: Int?
     private var invalidatedThroughGeneration = 0
     private var loadCompletionWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
-    #if os(macOS)
-    private var playbackActivity: NSObjectProtocol?
-    #endif
 
     var currentTime: Double { player?.currentTime().seconds ?? 0 }
     var duration: Double {
@@ -516,27 +513,12 @@ final class AVMediaBackend: MediaBackend {
         SystemMediaSession.activateForPlayback { [weak self] message in
             self?.onFailure?("Could not activate background audio: \(message)")
         }
-        #if os(iOS)
-        UIApplication.shared.isIdleTimerDisabled = true
-        #elseif os(macOS)
-        guard playbackActivity == nil else { return }
-        playbackActivity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .idleDisplaySleepDisabled],
-            reason: "Hummingbird is playing video"
-        )
-        #endif
+        SystemMediaSession.keepDisplayAwake(true)
     }
 
     private func deactivatePlaybackEnvironment() {
         SystemMediaSession.deactivate()
-        #if os(iOS)
-        UIApplication.shared.isIdleTimerDisabled = false
-        #elseif os(macOS)
-        if let playbackActivity {
-            ProcessInfo.processInfo.endActivity(playbackActivity)
-            self.playbackActivity = nil
-        }
-        #endif
+        SystemMediaSession.keepDisplayAwake(false)
     }
 
     private func canCommitLoad(_ generation: Int) -> Bool {
@@ -706,7 +688,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         let controller = AVPlayerViewController()
         controller.showsPlaybackControls = false
         // The app publishes Now Playing and handles the remote commands itself.
-        controller.updatesNowPlayingInfoCenter = false
+        controller.leaveNowPlayingToTheApp()
         controller.allowsPictureInPicturePlayback = true
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
@@ -785,7 +767,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
 
             let playerController = AVPlayerViewController()
             playerController.showsPlaybackControls = false
-            playerController.updatesNowPlayingInfoCenter = false
+            playerController.leaveNowPlayingToTheApp()
             playerController.allowsPictureInPicturePlayback = true
             // A container holds the player and, above it, our controls: inside
             // AVPlayerViewController's own view the controls would be outside
@@ -883,6 +865,16 @@ struct PlayerSurface: UIViewControllerRepresentable {
             while let presented = presenter?.presentedViewController { presenter = presented }
             return presenter
         }
+    }
+}
+
+extension AVPlayerViewController {
+    /// The app publishes Now Playing and handles the remote commands itself
+    /// (`SystemMediaSession`); tvOS players never update Now Playing.
+    func leaveNowPlayingToTheApp() {
+        #if !os(tvOS)
+        updatesNowPlayingInfoCenter = false
+        #endif
     }
 }
 

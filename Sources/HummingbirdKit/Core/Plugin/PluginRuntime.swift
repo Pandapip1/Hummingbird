@@ -866,7 +866,7 @@ final class PluginWorker: @unchecked Sendable {
                 }
                 let runDeadline = Date().addingTimeInterval(timeout)
                 self.deadline = runDeadline
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + self.watchdogGrace) {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + self.watchdogGrace(for: timeout)) {
                     // Atomically: the call fails, and the worker is taken out of service, before
                     // the script can return. So exactly one of the two sides cleans up.
                     let stuck: Bool = job.state.withLock {
@@ -897,7 +897,7 @@ final class PluginWorker: @unchecked Sendable {
     private func guarded(timeout: TimeInterval, _ work: () -> Void) {
         let tripwire = Tripwire()
         deadline = Date().addingTimeInterval(timeout)
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + watchdogGrace) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + watchdogGrace(for: timeout)) {
             tripwire.state.withLock {
                 guard $0 == .running else { return }
                 $0 = .finished
@@ -1199,11 +1199,14 @@ final class PluginWorker: @unchecked Sendable {
         return context
     }
 
-    /// How long the watchdog waits past a deadline: a moment for an in-process engine that stops
-    /// scripts itself to do so, so the context returns rather than being abandoned.
-    private var watchdogGrace: TimeInterval {
+    /// How long the watchdog waits past a deadline of `timeout`. Where an in-process engine stops
+    /// scripts itself (JavaScriptCore's time limit, set to the call's remaining time), the
+    /// watchdog is only a backstop: it waits as long again, so the engine's limit wins by a whole
+    /// timeout even on an overloaded machine and the context returns rather than being abandoned.
+    /// Callers still get their timeout at the deadline, when the engine stops the script.
+    private func watchdogGrace(for timeout: TimeInterval) -> TimeInterval {
         guard PluginExecutionLimits.engineTimeLimit != nil, !(runtime?.engine is RemoteJSEngine) else { return 0 }
-        return 0.5
+        return timeout
     }
     private func eval(_ code: String, name: String) throws {
         guard let ctx = context else { throw PluginError.execution("Runtime is not running") }

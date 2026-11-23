@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Synchronization
 import XCTest
 import AdvancedVideoPlayerKit
 @testable import HummingbirdKit
@@ -65,11 +66,10 @@ final class PlayerRedrawTests: XCTestCase {
     }
 }
 
-private final class Flag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var raised = false
-    var value: Bool { lock.withLock { raised } }
-    func set() { lock.withLock { raised = true } }
+private final class Flag: Sendable {
+    private let raised = Mutex(false)
+    var value: Bool { raised.withLock { $0 } }
+    func set() { raised.withLock { $0 = true } }
 }
 
 private final class TickingBackend: MediaBackend {

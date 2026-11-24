@@ -57,7 +57,7 @@ actor PluginMediaProxy {
     /// The port the player's URLs name: kept when the listener is bound again.
     private var boundPort: Int?
     /// Accepted connections, so a suspension (and its simulation) can close them.
-    private let connections = Mutex<[ObjectIdentifier: any Channel]>([:])
+    private let connections = OpenConnections()
     private var starting: Task<Channel, Error>?
     private var foregroundRequests = 0
     private var lastForegroundRequest: Date?
@@ -303,8 +303,7 @@ actor PluginMediaProxy {
             .serverChannelOption(ChannelOptions.backlog, value: 16)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { child in
-                connections.withLock { $0[ObjectIdentifier(child)] = child }
-                child.closeFuture.whenComplete { _ in connections.withLock { $0[ObjectIdentifier(child)] = nil } }
+                connections.add(child)
                 return child.pipeline.configureHTTPServerPipeline().flatMap {
                     child.pipeline.addHandler(HTTPHandler(proxy: self))
                 }
@@ -742,7 +741,7 @@ extension PluginMediaProxy: SuspendedResource {
     }
 
     func reclaimAsSuspensionWould() async {
-        let open = connections.withLock { open in defer { open = [:] }; return Array(open.values) }
+        let open = connections.takeAll()
         try? await channel?.close()
         for child in open { try? await child.close() }
     }

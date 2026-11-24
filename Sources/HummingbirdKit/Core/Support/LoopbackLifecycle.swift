@@ -120,3 +120,21 @@ final class LoopbackLifecycle: Sendable {
         for resource in resources { await resource.reclaimAsSuspensionWould() }
     }
 }
+
+/// A listener's accepted connections, so a suspension (and its simulation)
+/// can close them. A class, so a channel initializer can capture it.
+final class OpenConnections: Sendable {
+    private let channels = Mutex<[ObjectIdentifier: any Channel]>([:])
+
+    /// Tracks `channel` until it closes.
+    func add(_ channel: any Channel) {
+        let key = ObjectIdentifier(channel)
+        channels.withLock { $0[key] = channel }
+        channel.closeFuture.whenComplete { [self] _ in channels.withLock { $0[key] = nil } }
+    }
+
+    /// Every open connection, forgotten here (the caller closes them).
+    func takeAll() -> [any Channel] {
+        channels.withLock { open in defer { open = [:] }; return Array(open.values) }
+    }
+}

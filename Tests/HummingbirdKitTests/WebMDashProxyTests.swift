@@ -102,7 +102,8 @@ final class WebMDashProxyTests: XCTestCase {
         // Keyed by the manifest text (no identity), the same session misses.
         let (third, thirdRuntime) = try await WebMDashFixture.register(
             directory: Self.fixture, proxy: proxy, useCache: true, manifestSuffix: "<!-- session 3 -->", failing: true)
-        let firstSegment = try XCTUnwrap(try await mediaURIs(third).first)
+        let thirdURIs = try await mediaURIs(third)
+        let firstSegment = try XCTUnwrap(thirdURIs.first)
         let missed = await status(of: try XCTUnwrap(URL(string: firstSegment)))
         XCTAssertNotEqual(missed, 200, "without the identity nothing is found")
         await proxy.release(third)

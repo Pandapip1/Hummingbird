@@ -736,11 +736,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.showsPlaybackControls = false
-        // The app publishes Now Playing and handles the remote commands itself.
-        controller.leaveNowPlayingToTheApp()
-        controller.allowsPictureInPicturePlayback = true
+        let controller = AVPlayerViewController.pictureOnly()
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
         context.coordinator.environment = context.environment
@@ -921,6 +917,19 @@ struct PlayerSurface: UIViewControllerRepresentable {
 }
 
 extension AVPlayerViewController {
+    /// The player as a picture only, the one way the app makes one
+    /// (`PlayerSurfaceConstructionTests`): our controls, drawn over it, take
+    /// every touch, click and remote press. Interactive, AVKit's view took
+    /// the remote's focus and kept it, so no control could be reached (tvOS).
+    static func pictureOnly() -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.showsPlaybackControls = false
+        controller.view.isUserInteractionEnabled = false
+        controller.leaveNowPlayingToTheApp()
+        controller.allowsPictureInPicturePlayback = true
+        return controller
+    }
+
     /// The app publishes Now Playing and handles the remote commands itself
     /// (`SystemMediaSession`); tvOS players never update Now Playing.
     func leaveNowPlayingToTheApp() {
@@ -957,10 +966,7 @@ private final class FullscreenStage {
 
     private init(model: PlayerModel, environment: EnvironmentValues?) {
         self.model = model
-        let playerController = AVPlayerViewController()
-        playerController.showsPlaybackControls = false
-        playerController.leaveNowPlayingToTheApp()
-        playerController.allowsPictureInPicturePlayback = true
+        let playerController = AVPlayerViewController.pictureOnly()
         // A container holds the player and, above it, our controls: inside
         // AVPlayerViewController's own view the controls would be outside
         // its accessibility (and, on tvOS, focus) hierarchy.

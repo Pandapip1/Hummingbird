@@ -19,7 +19,7 @@ final class ProgressRecoveryTests: XCTestCase {
 
     private func makeProfile() throws -> Profile {
         let directory = makeTestDirectory("ProgressRecovery")
-        let log = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("journal.json"))
+        let log = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("journal.json"), sealer: testAtRestSealer)
         let changes = ProfileChangeStore(mutationLog: log)
         let writes = WriteCounter()
         changes.setMutationHandler { writes.increment() }
@@ -32,7 +32,7 @@ final class ProgressRecoveryTests: XCTestCase {
         var snapshot = LibraryPersistenceSnapshot.empty
         snapshot.history = history
         // Each launch opens the queue afresh, as a relaunch does.
-        let queue = PendingWriteQueue(fileURL: profile.recoveryURL, availability: UnprotectedDataAvailability())
+        let queue = PendingWriteQueue(fileURL: profile.recoveryURL, availability: UnprotectedDataAvailability(), sealer: testAtRestSealer)
         let recovery = ProgressRecovery(queue: queue, profile: profile.id)
         let library = LibraryStore(snapshot: snapshot, profileChanges: profile.changes,
                                    storage: makeTestStores().storage, recovery: recovery)
@@ -100,7 +100,7 @@ final class ProgressRecoveryTests: XCTestCase {
         let video = try makeVideo()
         let stale = HistoryEntry(video: video, position: 10, date: Date(timeIntervalSince1970: 1_000))
         let crashed = ProgressRecovery(
-            queue: PendingWriteQueue(fileURL: profile.recoveryURL, availability: UnprotectedDataAvailability()),
+            queue: PendingWriteQueue(fileURL: profile.recoveryURL, availability: UnprotectedDataAvailability(), sealer: testAtRestSealer),
             profile: profile.id
         )
         crashed.record(stale)

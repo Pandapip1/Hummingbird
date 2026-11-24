@@ -52,11 +52,16 @@ public final class AppDataStores: Sendable {
     /// passes `SystemProtectedData`): stores protected until unlock queue
     /// their writes while the device is locked.
     public convenience init(dataDirectory: URL, cachesDirectory: URL, preferences: PreferencesDomain,
-                            credentialStore: any CredentialStore, protectedData: any ProtectedDataAvailability) {
+                            credentialStore: any CredentialStore, atRestVault: any CredentialDataVault,
+                            protectedData: any ProtectedDataAvailability) {
         self.init(dataDirectory: dataDirectory, cachesDirectory: cachesDirectory, preferences: preferences,
                   credentialStore: credentialStore,
-                  storage: Storage(directory: dataDirectory, protectedData: protectedData))
+                  storage: Storage(directory: dataDirectory, protectedData: protectedData,
+                                   atRest: AtRestKeyring(vault: atRestVault)))
     }
+
+    /// The keys the stored data and profile journals are sealed with.
+    var atRest: AtRestKeyring { storage.atRest }
 
     /// `storage` replaces `storage.sqlite3` in `dataDirectory`; tests pass an
     /// in-memory database.
@@ -160,6 +165,23 @@ public final class AppDataStores: Sendable {
     /// `credentialServiceNamespace` separates the keychain items of a build
     /// that is not the provisioned app (the GTK development executable).
     /// In a test process this stops the process: tests make their own stores.
+    /// Where the at-rest keys live: the keychain (the Secret Service on
+    /// Linux) with after-first-unlock, this-device-only accessibility, so
+    /// background work can read the data while the device is locked once it
+    /// has been unlocked since boot. Never backed up, never synced. It follows
+    /// the credential store's own login-keychain decision on macOS.
+    private static func atRestVault(credentialServiceNamespace: String?) -> KeychainCredentialStore {
+        KeychainCredentialStore(
+            serviceNamespace: (credentialServiceNamespace.map { $0 + "." } ?? "") + "at-rest",
+            accessibility: .afterFirstUnlock,
+            consentStore: UserDefaultsLoginKeychainFallbackConsentStore(
+                key: "\(KeychainCredentialStore.service(namespace: credentialServiceNamespace)).loginKeychainFallback",
+                preferences: .standard
+            ),
+            preferences: .standard
+        )
+    }
+
     public static func live(credentialServiceNamespace: String? = nil,
                             protectedData: any ProtectedDataAvailability) -> AppDataStores {
         LiveData.require("AppDataStores.live (the user's real data)")
@@ -201,6 +223,7 @@ public final class AppDataStores: Sendable {
                 credentialStore: KeychainCredentialStore.shared(
                     serviceNamespace: credentialServiceNamespace, preferences: .standard
                 ),
+                atRestVault: atRestVault(credentialServiceNamespace: credentialServiceNamespace),
                 protectedData: protectedData
             )
             stores[key] = created
@@ -221,6 +244,7 @@ public final class AppDataStores: Sendable {
             cachesDirectory: root.appendingPathComponent("Caches", isDirectory: true),
             preferences: .suite(root.appendingPathComponent("preferences", isDirectory: false).path),
             credentialStore: EphemeralCredentialStore(),
+            atRestVault: EphemeralCredentialStore(),
             protectedData: protectedData
         )
     }

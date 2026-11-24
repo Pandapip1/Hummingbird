@@ -164,11 +164,14 @@ final class ProfileChangeStore: @unchecked Sendable {
     private var storedError: (any Error)?
     private var mutationHandler: (@Sendable () -> Void)?
     private let signer: AppSyncMutationSigner?
+    /// Profile journals are sealed at rest with the profile's key.
+    private let atRest: AtRestKeyring?
 
     /// Creates the local profile change store. A profile is activated during app
     /// startup and remains active whether or not it has any synchronization target.
-    init(storageDirectory: URL, signer: AppSyncMutationSigner? = nil) {
+    init(storageDirectory: URL, atRest: AtRestKeyring, signer: AppSyncMutationSigner? = nil) {
         self.storageDirectory = storageDirectory
+        self.atRest = atRest
         self.signer = signer
     }
 
@@ -176,6 +179,7 @@ final class ProfileChangeStore: @unchecked Sendable {
     init(mutationLog: AppSyncMutationLog) {
         storageDirectory = nil
         signer = nil
+        atRest = nil
         active = mutationLog
     }
 
@@ -186,13 +190,14 @@ final class ProfileChangeStore: @unchecked Sendable {
         if let mutationLog = lock.withLock({ activeProfileID == localProfileID ? active : nil }) {
             return mutationLog
         }
-        guard let storageDirectory else {
+        guard let storageDirectory, let atRest else {
             throw CocoaError(.fileNoSuchFile)
         }
         let created = try AppSyncMutationLog(
             fileURL: storageDirectory.appendingPathComponent(
                 "\(localProfileID.uuidString.lowercased()).json"
-            ), signer: signer, retention: HummingbirdProfileSchema.retention
+            ), sealer: atRest.sealer(profile: localProfileID, purpose: "journal"),
+            signer: signer, retention: HummingbirdProfileSchema.retention
         )
         lock.withLock {
             active = created

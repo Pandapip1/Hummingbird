@@ -504,23 +504,34 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     private let decoder = JSONDecoder()
     private let signer: JournalEventSigner?
     private let retention: [NSID: JournalRetention]
+    /// Every record is sealed at rest with the profile's key.
+    private let sealer: AtRestSealer
 
     /// `retention` caps how many records a collection keeps: beyond it the
     /// lowest-ranked are dropped without tombstones, the same on every
     /// device, so a journal of an ever-growing collection (playback
     /// history) stays bounded.
-    public init(fileURL: URL, deviceID: UUID = UUID(), signer: JournalEventSigner? = nil,
+    /// `sealer` is required: the journal is never written in the clear.
+    /// A journal from before sealing is read once and sealed; a record that
+    /// doesn't open is quarantined (`AtRestQuarantine`), never dropped silently.
+    public init(fileURL: URL, sealer: AtRestSealer, deviceID: UUID = UUID(), signer: JournalEventSigner? = nil,
                 retention: [NSID: JournalRetention] = [:]) throws {
         self.fileURL = fileURL
         self.signer = signer
         self.retention = retention
+        self.sealer = sealer
+        var reseal = false
         if let data = try? Data(contentsOf: fileURL) {
-            snapshot = try decoder.decode(JournalSnapshot.self, from: data)
+            let read = try SealedJournalFile.read(data, sealer: sealer, file: fileURL, deviceID: deviceID)
+            snapshot = read.snapshot
+            reseal = read.needsReseal
         } else {
             snapshot = JournalSnapshot(clock: HybridLogicalClock(deviceID: deviceID))
         }
         _ = snapshot.enforce(retention)
         knownEventIDs = Set(snapshot.events.map(\.id))
+        // Migrated (or salvaged): written back sealed now, once.
+        if reseal { try persist(snapshot) }
     }
 
     @discardableResult
@@ -744,7 +755,7 @@ public final class OfflineMutationJournal: @unchecked Sendable {
     private func persist(_ value: JournalSnapshot) throws {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try encoder.encode(value).write(to: fileURL, options: [.atomic])
+        try SealedJournalFile.write(value, sealer: sealer, to: fileURL)
     }
 
     public func signedBatch(type: NSID, mutations: [JournalMutation]) throws -> ReplicatedJournalBatch {

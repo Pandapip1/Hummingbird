@@ -10,7 +10,7 @@ final class PendingWriteQueueTests: XCTestCase {
         let file = try temporaryFile()
         let device = FakeDevice(unlocked: false)
         do {
-            let queue = PendingWriteQueue(fileURL: file, availability: device)
+            let queue = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
             try queue.append(key: "storage/history", payload: Data("h1".utf8))
             try queue.append(key: "storage/playlists", payload: Data("p1".utf8))
             try queue.append(key: "storage/history", payload: Data("h2".utf8))
@@ -18,7 +18,7 @@ final class PendingWriteQueueTests: XCTestCase {
             XCTAssertEqual(queue.apply { _ in XCTFail("applied while locked"); return true }, 0)
         }
         // Killed and relaunched, still locked: the queue is intact.
-        let reopened = PendingWriteQueue(fileURL: file, availability: device)
+        let reopened = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
         XCTAssertEqual(reopened.latest(key: "storage/history")?.payload, Data("h2".utf8))
 
         device.unlocked = true
@@ -29,13 +29,13 @@ final class PendingWriteQueueTests: XCTestCase {
         }, 2)
         XCTAssertEqual(landed, ["storage/playlists=p1", "storage/history=h2"])
         XCTAssertEqual(reopened.apply { _ in XCTFail("applied twice"); return true }, 0)
-        XCTAssertTrue(PendingWriteQueue(fileURL: file, availability: device).pending().isEmpty)
+        XCTAssertTrue(PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer).pending().isEmpty)
         XCTAssertEqual(try Data(contentsOf: file), Data(), "compacted once unlocked")
     }
 
     /// A store that can't take a value yet keeps it queued.
     func testValuesTheStoreRejectsStayQueued() throws {
-        let queue = PendingWriteQueue(fileURL: try temporaryFile(), availability: FakeDevice(unlocked: true))
+        let queue = PendingWriteQueue(fileURL: try temporaryFile(), availability: FakeDevice(unlocked: true), sealer: testAtRestSealer)
         try queue.append(key: "a", payload: Data("1".utf8))
         XCTAssertEqual(queue.apply { _ in false }, 0)
         XCTAssertEqual(queue.pending().map(\.key), ["a"])
@@ -46,7 +46,7 @@ final class PendingWriteQueueTests: XCTestCase {
     func testClearKeepsLaterValuesAndOnlyAppendsWhileLocked() throws {
         let file = try temporaryFile()
         let device = FakeDevice(unlocked: false)
-        let queue = PendingWriteQueue(fileURL: file, availability: device)
+        let queue = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
         let first = try queue.append(key: "progress/p", payload: Data("10".utf8))
         try queue.clear(key: "progress/p", through: first)
         XCTAssertNil(queue.latest(key: "progress/p"))
@@ -62,24 +62,24 @@ final class PendingWriteQueueTests: XCTestCase {
     func testPartialLastLineFromACrashIsDropped() throws {
         let file = try temporaryFile()
         let device = FakeDevice(unlocked: true)
-        try PendingWriteQueue(fileURL: file, availability: device).append(key: "a", payload: Data("1".utf8))
+        try PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer).append(key: "a", payload: Data("1".utf8))
         let handle = try FileHandle(forWritingTo: file)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(#"{"sequence":2,"key":"b","ki"#.utf8))
         try handle.close()
 
-        let reopened = PendingWriteQueue(fileURL: file, availability: device)
+        let reopened = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
         try reopened.append(key: "c", payload: Data("3".utf8))
-        let again = PendingWriteQueue(fileURL: file, availability: device)
+        let again = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
         XCTAssertEqual(again.pending().map(\.key), ["a", "c"])
     }
 
-    /// The queue asks the host to protect it `completeUnlessOpen`.
-    func testQueueFileIsCompleteUnlessOpen() throws {
+    /// The queue asks the host to protect it `completeUntilFirstUserAuthentication` (readable while locked after the first unlock; its values are sealed).
+    func testQueueFileIsReadableAfterFirstUnlock() throws {
         let file = try temporaryFile()
         let device = FakeDevice(unlocked: true)
-        _ = PendingWriteQueue(fileURL: file, availability: device)
-        XCTAssertEqual(device.protection(of: file), .completeUnlessOpen)
+        _ = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
+        XCTAssertEqual(device.protection(of: file), .completeUntilFirstUserAuthentication)
     }
 
     /// A record rewritten every few seconds doesn't grow the file without
@@ -88,17 +88,17 @@ final class PendingWriteQueueTests: XCTestCase {
     func testReplacedValuesAreCompactedWhileUnlocked() throws {
         let file = try temporaryFile()
         let device = FakeDevice(unlocked: true)
-        let queue = PendingWriteQueue(fileURL: file, availability: device)
+        let queue = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
         try queue.append(key: "storage/history", payload: Data("h".utf8))
         for tick in 0..<300 { try queue.append(key: "progress/p", payload: Data("\(tick)".utf8)) }
         let lines = String(decoding: try Data(contentsOf: file), as: UTF8.self).split(separator: "\n")
         XCTAssertLessThan(lines.count, 70)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.appendingPathExtension("compacting").path))
-        XCTAssertEqual(device.protection(of: file.appendingPathExtension("compacting")), .completeUnlessOpen,
+        XCTAssertEqual(device.protection(of: file.appendingPathExtension("compacting")), .completeUntilFirstUserAuthentication,
                        "the replacement is protected before it is written")
         try queue.append(key: "progress/p", payload: Data("last".utf8))
 
-        let reopened = PendingWriteQueue(fileURL: file, availability: device)
+        let reopened = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)
         XCTAssertEqual(reopened.pending().map(\.key), ["storage/history", "progress/p"])
         XCTAssertEqual(reopened.latest(key: "progress/p")?.payload, Data("last".utf8))
     }
@@ -106,7 +106,7 @@ final class PendingWriteQueueTests: XCTestCase {
     /// While locked the file is only ever appended to.
     func testNoCompactionWhileLocked() throws {
         let file = try temporaryFile()
-        let queue = PendingWriteQueue(fileURL: file, availability: FakeDevice(unlocked: false))
+        let queue = PendingWriteQueue(fileURL: file, availability: FakeDevice(unlocked: false), sealer: testAtRestSealer)
         for tick in 0..<100 { try queue.append(key: "progress/p", payload: Data("\(tick)".utf8)) }
         let lines = String(decoding: try Data(contentsOf: file), as: UTF8.self).split(separator: "\n")
         XCTAssertEqual(lines.count, 100)
@@ -170,3 +170,7 @@ final class FakeDevice: ProtectedDataAvailability {
         state.withLock { $0.classes[url.standardizedFileURL.path] }
     }
 }
+
+/// One at-rest sealer for the whole test run, so files reopened by later
+/// instances (a simulated relaunch) open with the same key.
+let testAtRestSealer = AtRestSealer.ephemeral(purpose: "tests")

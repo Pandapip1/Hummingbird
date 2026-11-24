@@ -19,6 +19,9 @@ final class FakeKeychainBackend: KeychainItemBackend {
 
     private struct State {
         var items: [Key: Data] = [:]
+        /// Each item's accessibility class, as the vault asked for it.
+        var accessibility: [Key: String] = [:]
+        var device = DeviceLock.unlocked
         var dataProtectionStatus: OSStatus?
         var accesses = KeychainAccessCounts()
     }
@@ -31,6 +34,22 @@ final class FakeKeychainBackend: KeychainItemBackend {
 
     func setDataProtectionStatus(_ status: OSStatus?) {
         state.withLock { $0.dataProtectionStatus = status }
+    }
+
+    /// The device's lock state, as the keychain sees it.
+    enum DeviceLock: Sendable { case unlocked, lockedAfterFirstUnlock, beforeFirstUnlock }
+
+    func setDevice(_ lock: DeviceLock) { state.withLock { $0.device = lock } }
+
+    /// Whether an item of `accessibility` can be read in the current state,
+    /// as the system keychain decides it.
+    private static func readable(_ accessibility: String?, device: DeviceLock) -> Bool {
+        switch device {
+        case .unlocked: true
+        case .lockedAfterFirstUnlock: accessibility == (kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+            || accessibility == (kSecAttrAccessibleAfterFirstUnlock as String)
+        case .beforeFirstUnlock: false
+        }
     }
 
     func accounts(dataProtection: Bool) -> [String] {
@@ -63,6 +82,10 @@ final class FakeKeychainBackend: KeychainItemBackend {
                 return rows.isEmpty ? (errSecItemNotFound, nil) : (errSecSuccess, rows as NSArray)
             }
             guard let key = Self.key(query), let value = state.items[key] else { return (errSecItemNotFound, nil) }
+            // Locked: an item whose class doesn't allow reading now is refused.
+            guard !Self.isDataProtection(query) || Self.readable(state.accessibility[key], device: state.device) else {
+                return (CredentialVaultError.interactionNotAllowedStatus, nil)
+            }
             return (errSecSuccess, value as NSData)
         }
     }
@@ -76,6 +99,7 @@ final class FakeKeychainBackend: KeychainItemBackend {
             }
             guard state.items[key] == nil else { return errSecDuplicateItem }
             state.items[key] = value
+            state.accessibility[key] = attributes[kSecAttrAccessible] as? String
             return errSecSuccess
         }
     }

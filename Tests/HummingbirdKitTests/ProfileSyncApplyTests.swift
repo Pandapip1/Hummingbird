@@ -128,7 +128,7 @@ final class ProfileSyncApplyTests: XCTestCase {
     func testRecordsMergedButNeverAppliedAreRecovered() async throws {
         let host = FakePluginHost()
         let alpha = host.serve(id: "alpha", name: "Alpha")
-        let source = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("source.json"))
+        let source = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("source.json"), sealer: testAtRestSealer)
         try source.appendPut(collection: HummingbirdProfileSchema.history,
                              key: HummingbirdProfileSchema.key(for: video(1).id),
                              value: try ProfileEntity.history(HistoryEntry(video: video(1), position: 9, date: Date())).json())
@@ -277,7 +277,7 @@ final class ProfileSyncApplyTests: XCTestCase {
     /// would remove those entries from every device. And a removal never
     /// takes away a watch that happened after it.
     func testHistoryLimitDoesNotDeleteAndRemovalsKeepNewerWatches() async throws {
-        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"))
+        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"), sealer: testAtRestSealer)
         let changes = ProfileChangeStore(mutationLog: log)
         let start = Date(timeIntervalSince1970: 1_000_000)
         var snapshot = LibraryPersistenceSnapshot.empty
@@ -315,7 +315,7 @@ final class ProfileSyncApplyTests: XCTestCase {
     /// peer snapshot) gets a record only every `historySyncInterval` and at
     /// flush points.
     func testProgressTicksAreCoalescedInTheJournal() async throws {
-        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"))
+        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"), sealer: testAtRestSealer)
         let changes = ProfileChangeStore(mutationLog: log)
         let writes = Counter()
         changes.setMutationHandler { writes.increment() }
@@ -342,7 +342,7 @@ final class ProfileSyncApplyTests: XCTestCase {
     func testMergeOutcomeIsIndependentOfArrivalOrder() throws {
         let directory = makeTestDirectory()
         let devices = try (0..<3).map {
-            try AppSyncMutationLog(fileURL: directory.appendingPathComponent("device\($0).json"))
+            try AppSyncMutationLog(fileURL: directory.appendingPathComponent("device\($0).json"), sealer: testAtRestSealer)
         }
         let collection = HummingbirdProfileSchema.history
         let keys = (0..<8).map { RecordKey(rawValue: "k\($0)")! }
@@ -364,7 +364,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         var outcomes: [[String: JournalEventVersion]] = []
         var eventSets: [Set<UUID>] = []
         for trial in 0..<12 {
-            let replica = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("replica\(trial).json"))
+            let replica = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("replica\(trial).json"), sealer: testAtRestSealer)
             var shuffled = all
             shuffled.shuffle(using: &generator)
             var remaining = shuffled[...]
@@ -391,7 +391,7 @@ final class ProfileSyncApplyTests: XCTestCase {
     /// what brings back what the old apply lost. Superseded events go.
     func testLegacyJournalReappliesEverythingOnceAfterUpgrade() throws {
         let file = makeTestDirectory().appendingPathComponent("legacy.json")
-        let log = try AppSyncMutationLog(fileURL: file)
+        let log = try AppSyncMutationLog(fileURL: file, sealer: testAtRestSealer)
         let collection = HummingbirdProfileSchema.history
         try log.appendPut(collection: collection, key: RecordKey(rawValue: "a")!, value: .string("1"))
         try log.appendPut(collection: collection, key: RecordKey(rawValue: "b")!, value: .string("1"))
@@ -400,7 +400,7 @@ final class ProfileSyncApplyTests: XCTestCase {
 
         // Rewrite the file as the old version wrote it: no applied, arrivals
         // or epoch, and every event ever appended still listed.
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var object = try plaintextJournalObject(at: file)
         for key in ["applied", "arrivals", "lastArrival", "epoch"] { object[key] = nil }
         var events = try XCTUnwrap(object["events"] as? [Any])
         let superseded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(JournalMutation(
@@ -411,19 +411,19 @@ final class ProfileSyncApplyTests: XCTestCase {
         object["events"] = events
         try JSONSerialization.data(withJSONObject: object).write(to: file)
 
-        let upgraded = try AppSyncMutationLog(fileURL: file)
+        let upgraded = try AppSyncMutationLog(fileURL: file, sealer: testAtRestSealer)
         XCTAssertEqual(upgraded.events().count, 2)
         let unapplied = upgraded.unappliedWinners()
         XCTAssertEqual(Set(unapplied.map(\.recordKey.rawValue)), ["a", "b"])
         XCTAssertTrue(unapplied.contains(latest))
         try upgraded.markApplied(unapplied)
-        XCTAssertTrue(try AppSyncMutationLog(fileURL: file).unappliedWinners().isEmpty)
+        XCTAssertTrue(try AppSyncMutationLog(fileURL: file, sealer: testAtRestSealer).unappliedWinners().isEmpty)
     }
 
     /// A reader that says where it got up to gets only what arrived since;
     /// a cursor from another journal gets everything.
     func testIncrementalEventsSinceCursor() throws {
-        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"))
+        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"), sealer: testAtRestSealer)
         let collection = HummingbirdProfileSchema.history
         try log.appendPut(collection: collection, key: RecordKey(rawValue: "a")!, value: .string("1"))
         try log.appendPut(collection: collection, key: RecordKey(rawValue: "b")!, value: .string("1"))
@@ -444,7 +444,7 @@ final class ProfileSyncApplyTests: XCTestCase {
     func testHistoryRetentionIsDeterministicAndDroppedRecordsStayDropped() throws {
         let directory = makeTestDirectory()
         let collection = HummingbirdProfileSchema.history
-        let source = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("source.json"))
+        let source = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("source.json"), sealer: testAtRestSealer)
         let base = Date(timeIntervalSince1970: 3_000_000)
         let events = try (0..<6).map {
             try source.appendPut(collection: collection, key: RecordKey(rawValue: "h\($0)")!,
@@ -454,7 +454,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         var kept: [Set<String>] = []
         for trial in 0..<5 {
             let replica = try AppSyncMutationLog(
-                fileURL: directory.appendingPathComponent("replica\(trial).json"), retention: [collection: JournalRetention(limit: 3) { _ in nil }]
+                fileURL: directory.appendingPathComponent("replica\(trial).json"), sealer: testAtRestSealer, retention: [collection: JournalRetention(limit: 3) { _ in nil }]
             )
             for event in events.shuffled(using: &generator) { try replica.merge([event], needsUpload: false) }
             // The full set again, as an old peer would send it.
@@ -467,7 +467,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         }
         XCTAssertTrue(kept.allSatisfy { $0 == kept[0] })
         // A new watch of a dropped video is newer than the floor and stays.
-        let rewatch = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("replica0.json"),
+        let rewatch = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("replica0.json"), sealer: testAtRestSealer,
                                              retention: [collection: JournalRetention(limit: 3) { _ in nil }])
         try rewatch.appendPut(collection: collection, key: RecordKey(rawValue: "h0")!, value: .string("again"))
         XCTAssertTrue(rewatch.events().contains { $0.recordKey.rawValue == "h0" })
@@ -490,7 +490,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         snapshot.history = entries.reversed()
 
         func device(_ name: String) throws -> (AppSyncMutationLog, ProfileChangeStore, LibraryStore) {
-            let log = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("\(name).json"),
+            let log = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("\(name).json"), sealer: testAtRestSealer,
                                              retention: retention)
             let changes = ProfileChangeStore(mutationLog: log)
             return (log, changes, LibraryStore(snapshot: snapshot, profileChanges: changes,
@@ -535,7 +535,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         let mine = host.serve(id: "alpha", name: "Alpha")
         let theirs = host.serve(id: "alpha", name: "Alpha Fork")
         let stores = makeTestStores()
-        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"))
+        let log = try AppSyncMutationLog(fileURL: makeTestDirectory().appendingPathComponent("log.json"), sealer: testAtRestSealer)
         let changes = ProfileChangeStore(mutationLog: log)
         let manager = PluginManager(installed: [try host.installed(mine)], profileChanges: changes,
                                     storage: stores.storage, credentialStore: stores.credentialStore,
@@ -560,17 +560,17 @@ final class ProfileSyncApplyTests: XCTestCase {
     /// every record reapplied once.
     func testTimestampOnlyLegacyJournalIsReappliedToo() throws {
         let file = makeTestDirectory().appendingPathComponent("legacy.json")
-        let log = try AppSyncMutationLog(fileURL: file)
+        let log = try AppSyncMutationLog(fileURL: file, sealer: testAtRestSealer)
         let collection = HummingbirdProfileSchema.history
         let event = try log.appendPut(collection: collection, key: RecordKey(rawValue: "a")!, value: .string("1"))
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var object = try plaintextJournalObject(at: file)
         for key in ["applied", "arrivals", "lastArrival", "epoch", "floors"] { object[key] = nil }
         let timestamp = try JSONSerialization.jsonObject(with: JSONEncoder().encode(event.timestamp))
         object["versions"] = ["\(collection.rawValue)/a": timestamp]
         object["tombstones"] = [String: Any]()
         try JSONSerialization.data(withJSONObject: object).write(to: file)
 
-        let upgraded = try AppSyncMutationLog(fileURL: file)
+        let upgraded = try AppSyncMutationLog(fileURL: file, sealer: testAtRestSealer)
         XCTAssertEqual(upgraded.version(collection: collection, key: RecordKey(rawValue: "a")!), event.version)
         XCTAssertEqual(upgraded.unappliedWinners(), [event])
     }
@@ -719,7 +719,7 @@ private final class SyncDevice {
             credentialStore: TestCredentialStore(), storageDirectory: directory.appendingPathComponent("appsync")
         )
         let mutationLog = try AppSyncMutationLog(
-            fileURL: directory.appendingPathComponent("profile.json"), signer: peerService.peer.mutationSigner()
+            fileURL: directory.appendingPathComponent("profile.json"), sealer: testAtRestSealer, signer: peerService.peer.mutationSigner()
         )
         let changes = ProfileChangeStore(mutationLog: mutationLog)
         var snapshot = LibraryPersistenceSnapshot.empty

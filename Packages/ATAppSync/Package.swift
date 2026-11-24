@@ -46,6 +46,7 @@ let package = Package(
         .testTarget(name: "ATAppSyncTests", dependencies: [
             "ATAppSync", .product(name: "Crypto", package: "swift-crypto"),
             .product(name: "PlatformSupport", package: "SwiftOpenUI"),
+            .product(name: "CredentialStorage", package: "SwiftOpenUI"),
         ]),
     ],
     swiftLanguageModes: [.v6]

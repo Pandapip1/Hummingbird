@@ -319,6 +319,9 @@ actor PluginMediaProxy {
         defer { signposter.endInterval("ProxyRequest", signpost, "status=\(status.code)") }
         let result = await route(uri)
         status = result.0
+        if status != .ok {
+            Logger.mediaProxy.error("proxy_response status=\(status.code) path=\(URLComponents(string: uri)?.path ?? "", privacy: .public)")
+        }
         return result
     }
 

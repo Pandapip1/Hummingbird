@@ -80,6 +80,14 @@ final class AVMediaBackend: MediaBackend {
             let atEnd = duration > 0 && currentTime >= duration - 0.5
             commandedRate = 0
             guard !atEnd else { return }
+            // An item that never became ready, stopped by AVFoundation before its
+            // first frame, is one it cannot play (VP9 on the iOS simulator: no
+            // failure, only a pause). Said so, not taken for the user's pause.
+            if player.currentItem?.status != .readyToPlay, currentTime == 0 {
+                Logger.avPlayer.error("stopped_before_ready")
+                onUnplayableMedia?("")
+                return
+            }
             if ApplicationActivity.isActive || pictureInPictureState == .active {
                 Logger.avPlayer.notice("external_pause")
                 onExternalEvent?(.pause)

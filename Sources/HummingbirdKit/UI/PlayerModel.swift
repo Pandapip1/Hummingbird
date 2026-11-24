@@ -1158,6 +1158,12 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             confirmationFailure = message
             return
         }
+        // The engine stopped before the first frame without naming a codec: while
+        // the download waits for the network that is a stall, not a format.
+        if message.isEmpty, pipeline.waitingForNetwork {
+            playerFailed("Playback stopped before it started")
+            return
+        }
         unplayable = true
         // The source names its codec; failing that, the engine's four-letter code (`vp09`).
         let declared = selected.map { MediaFormatNames.describe(codec: $0.video.codec, container: $0.video.container) }

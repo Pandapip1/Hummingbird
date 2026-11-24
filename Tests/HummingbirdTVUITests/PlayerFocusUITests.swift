@@ -34,6 +34,8 @@ final class PlayerFocusUITests: XCTestCase {
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: enterFullscreen)
         waitForExpectations(timeout: 15)
 
+        // Focus starts on the seek bar; the transport row is below it.
+        XCUIRemote.shared.press(.down)
         for _ in 0..<8 where !enterFullscreen.hasFocus {
             XCUIRemote.shared.press(.right)
         }
@@ -47,7 +49,8 @@ final class PlayerFocusUITests: XCTestCase {
         XCUIRemote.shared.press(.left)
         XCTAssertNotNil(focusedButton(label: "Back 10 seconds", in: app))
         XCUIRemote.shared.press(.right)
-        XCTAssertNotNil(focusedButton(label: "Play", in: app))
+        // The clip plays, so the button reads Pause.
+        XCTAssertNotNil(focusedButton(label: "Pause", in: app))
         XCUIRemote.shared.press(.right)
         XCTAssertNotNil(focusedButton(label: "Forward 10 seconds", in: app))
 
@@ -135,7 +138,7 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     private func playerControlHasFocus(in app: XCUIApplication) -> Bool {
-        let labels = Set(["Back 10 seconds", "Play", "Forward 10 seconds", "Exit Full Screen", "Speed"])
+        let labels = Set(["Back 10 seconds", "Play", "Pause", "Forward 10 seconds", "Exit Full Screen", "Speed"])
         return app.buttons.allElementsBoundByIndex.contains { labels.contains($0.label) && $0.hasFocus }
     }
 

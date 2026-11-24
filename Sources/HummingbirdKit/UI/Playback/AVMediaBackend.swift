@@ -1084,6 +1084,9 @@ private struct FullscreenPlayerControls: View {
 
     private var controls: some View {
         PlayerControls(model: model, isFullscreen: true)
+            // Built ahead of time (FullscreenStage): each entry starts afresh, so
+            // the controls show and focus starts on play/pause.
+            .id(model.isFullscreen)
             .frame(maxHeight: .infinity, alignment: .bottom)
             #if os(tvOS)
             .onExitCommand { model.toggleFullscreen() }

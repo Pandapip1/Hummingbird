@@ -77,7 +77,8 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         }
         .onRemoteMove { interacted() }
         .onContinuousHover { if case .active = $0 { interacted() } }
-        .remoteFocusScope()
+        // Full screen, focus starts on play/pause whenever the controls show.
+        .remoteFocusScope(focusingDefault: isFullscreen && showingControls)
         .task { interacted() }
         .onAppear { model.controlsVisibilityChanged(showingControls) }
         .onChange(of: showingControls) { _, visible in model.controlsVisibilityChanged(visible) }

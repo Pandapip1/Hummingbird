@@ -3,6 +3,7 @@ import ATAppSync
 import Foundation
 import os
 import Observation
+import SwiftOpenUI
 
 @MainActor
 @Observable
@@ -26,7 +27,9 @@ final class ProfileAccountService {
     @ObservationIgnored private let authenticator: ATProtoOAuthAuthenticator
     @ObservationIgnored private let credentialStore: OAuthCredentialStore
     @ObservationIgnored private let changes: ProfileChangeStore
-    @ObservationIgnored private var retryTask: Task<Void, Never>?
+    /// The periodic pass that catches other devices' changes.
+    @ObservationIgnored private var periodicSync: PeriodicSync?
+    @ObservationIgnored private var presenceWatch: Task<Void, Never>?
     @ObservationIgnored private var restoreTask: Task<Void, Never>?
     @ObservationIgnored private let peerService: AppSyncPeerService?
     @ObservationIgnored private var localNetworkEnabled: Bool
@@ -69,6 +72,7 @@ final class ProfileAccountService {
          changes: ProfileChangeStore, library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
          localNetworkEnabled: Bool = false,
+         defersBulkWork: @escaping @Sendable () -> Bool,
          oauthPresenter: any ATProtoOAuthPresenter,
          authenticator: ATProtoOAuthAuthenticator? = nil) {
         let oauth = ATProtoOAuthClient(configuration: Self.configuration)
@@ -88,16 +92,32 @@ final class ProfileAccountService {
                 changes: changes, mutationLog: mutationLog,
                 library: library, plugins: plugins,
                 peerService: peerService, peerServiceFailure: peerServiceFailure,
-                localNetworkEnabled: localNetworkEnabled
+                localNetworkEnabled: localNetworkEnabled, defersBulkWork: defersBulkWork
             )
             syncService?.bootstrapCurrentProfile()
             changes.setMutationHandler { [weak self] in
-                Task { @MainActor in await self?.sync() }
-            }
-            retryTask = Task { [weak self] in
-                while !Task.isCancelled {
+                Task { @MainActor in
+                    self?.periodicSync?.nudge()
                     await self?.sync()
-                    try? await Task.sleep(for: .seconds(30))
+                }
+            }
+            let periodic = PeriodicSync(pass: { [weak self] in
+                guard let self, let syncService = self.syncService else { return false }
+                await syncService.sync(.scheduled)
+                return syncService.lastPassReceived
+            }, defers: defersBulkWork)
+            periodicSync = periodic
+            periodic.start()
+            // Only while the app is in front (SwiftOpenUI's ApplicationActivity,
+            // reported by every backend); background sync is the system's
+            // background-refresh window.
+            ApplicationActivity.observe { [weak self] active in
+                Task { @MainActor in self?.setApplicationActive(active) }
+            }
+            // A device appearing or leaving is worth a pass soon.
+            if let peerService {
+                presenceWatch = Task { [weak self] in
+                    for await _ in peerService.changes() { self?.periodicSync?.nudge() }
                 }
             }
         }
@@ -172,7 +192,16 @@ final class ProfileAccountService {
         reply?.resume(returning: proceed)
     }
 
-    func sync() async { await syncService?.sync() }
+    func sync(_ trigger: ProfileSyncService.Trigger = .requested) async { await syncService?.sync(trigger) }
+
+    /// Refills the synced cache from trusted devices (see ProfileSyncService).
+    func pullCache(into cache: CacheJournal) async -> AppSyncCachePullReport? {
+        await syncService?.pullCache(into: cache)
+    }
+
+    /// The app came to the front (true) or went inactive or to the
+    /// background (false): the periodic pass runs only while it is in front.
+    private func setApplicationActive(_ active: Bool) { periodicSync?.setActive(active) }
 
     func setLocalNetworkEnabled(_ enabled: Bool) {
         localNetworkEnabled = enabled

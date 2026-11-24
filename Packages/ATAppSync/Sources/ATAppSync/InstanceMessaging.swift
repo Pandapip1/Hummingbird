@@ -342,6 +342,7 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
     private var registration: AppSyncInstanceRegistration?
     private var journal: OfflineMutationJournal?
     private var verifier: AppSyncPeerVerifier?
+    private var cache: CacheJournal?
 
     public init(identity: InstanceIdentity, inbox: InstanceInbox, trustStore: AppSyncTrustStore) {
         self.identity = identity
@@ -355,6 +356,11 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
 
     public func attach(journal: OfflineMutationJournal) {
         lock.withLock { self.journal = journal }
+    }
+
+    /// Serves the profile's synced cache to trusted peers.
+    public func attach(cache: CacheJournal) {
+        lock.withLock { self.cache = cache }
     }
 
     func attach(verifier: AppSyncPeerVerifier) {
@@ -404,6 +410,9 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
                         if head.method == .POST, head.uri == "/appsync/v1/sync" {
                             return self.syncResponse(data, appIDs: appIDs)
                         }
+                        if head.method == .POST, head.uri == CacheSyncRoute.path {
+                            return self.cacheResponse(data, appIDs: appIDs)
+                        }
                         guard head.method == .POST, head.uri == "/inbox",
                               let envelope = try? JSONDecoder().decode(InstanceInboxEnvelope.self, from: data),
                               appIDs.contains(envelope.appID),
@@ -443,6 +452,24 @@ public final class InstanceInboxLANServer: @unchecked Sendable {
             AppSyncDiagnostics.lan.notice("lan_sync_refused status=\(response.status.code)")
         }
         return response
+    }
+
+    /// A trusted peer's cache request, answered sealed to it. Requests
+    /// from anyone else, or not sealed to this instance, are refused.
+    private func cacheResponse(_ data: Data, appIDs: Set<AppSyncAppID>) -> LANHTTPResponse {
+        guard let envelope = try? JSONDecoder().decode(InstanceInboxEnvelope.self, from: data),
+              appIDs.contains(envelope.appID), trustStore.trusts(envelope.sender.stableID),
+              let request = try? inbox.open(envelope, as: CacheSyncRequest.self),
+              request.appID == envelope.appID,
+              let cache = lock.withLock({ self.cache }) else { return .init(status: .forbidden) }
+        do {
+            let response = try cache.respond(to: request, from: envelope.sender.stableID)
+            let sealed = try InstanceInboxEnvelope.seal(response, appID: request.appID, from: identity,
+                                                        to: envelope.sender)
+            return .init(status: .ok, body: try JSONEncoder().encode(sealed), contentType: "application/json")
+        } catch {
+            return .init(status: .conflict)
+        }
     }
 
     private func makeSyncResponse(_ data: Data, appIDs: Set<AppSyncAppID>) -> LANHTTPResponse {
@@ -607,6 +634,9 @@ public final class InstanceMessagingService: @unchecked Sendable {
 
     public func attach(journal: OfflineMutationJournal) { server.attach(journal: journal) }
 
+    /// Serves `cache` to trusted peers over the local network.
+    public func attach(cache: CacheJournal) { server.attach(cache: cache) }
+
     /// Peers with a trust relationship or a compatible registration nearby.
     /// Trusted peers that aren't reachable now are included without a
     /// registration.
@@ -676,6 +706,9 @@ public final class InstanceMessagingService: @unchecked Sendable {
     }
 
     public func trusts(_ peer: AppSyncPeer) -> Bool { trustStore.trusts(peer.stableID) }
+
+    /// Every instance this one trusts now.
+    public func trustedPeers() -> Set<AppSyncPeerID> { trustStore.trustedPeers() }
 }
 
 struct LANHTTPResponse {

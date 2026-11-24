@@ -16,7 +16,7 @@ final class TVVisualAuditUITests: XCTestCase {
     private func launchApp() {
         continueAfterFailure = true
         app = IsolatedApp.make()
-        app.launch()
+        IsolatedApp.start(app)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     }
 
@@ -83,7 +83,7 @@ final class TVVisualAuditUITests: XCTestCase {
         app?.terminate()
         app = IsolatedApp.make()
         app.launchEnvironment["HUMMINGBIRD_VISUAL_AUDIT_ROUTE"] = route
-        app.launch()
+        IsolatedApp.start(app)
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     }
 

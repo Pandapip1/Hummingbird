@@ -540,6 +540,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             return
         }
         let position = backend?.currentTime
+        recordProgressNow(at: position)
         let autoplay = backend?.isPlaying ?? true
         var choice = option
         if choice.audio != nil, let selectedAudioSource { choice.audio = selectedAudioSource }
@@ -562,6 +563,7 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
         }
         guard var choice = selected else { return }
         let position = backend?.currentTime
+        recordProgressNow(at: position)
         let autoplay = backend?.isPlaying ?? true
         guard choice.audio != nil else { return }
         choice.audio = source

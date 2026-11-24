@@ -19,6 +19,11 @@ final class AppModel {
     /// This window's view of every download in the media cache.
     let downloads: DownloadsModel
     let subscriptionFeed: SubscriptionFeed
+    /// Checks subscribed channels for new videos in background windows.
+    let subscriptionPoller: SubscriptionPoller
+    /// The profile's synced data cache; nil without an instance identity.
+    let syncedCache: CacheJournal?
+    @ObservationIgnored private let backgroundSession: BackgroundSession
     let homeFeed: FeedModel
     let searchHistory: SearchHistory
     let profileChanges: ProfileChangeStore
@@ -256,7 +261,8 @@ final class AppModel {
         )
         let library = LibraryStore(
             snapshot: persistence.library, profileChanges: profileChanges,
-            storage: storage, storagePrefix: storagePrefix
+            storage: storage, storagePrefix: storagePrefix,
+            recovery: stores.storage.pendingWrites.map { ProgressRecovery(queue: $0, profile: localProfileID) }
         )
         let platform = PlatformService(
             plugins: plugins, storage: storage, detailsCacheStorageName: storagePrefix + "details_cache"
@@ -309,6 +315,9 @@ final class AppModel {
             // Off until this instance may use the local network; the
             // controller below turns it on once the gate has passed.
             localNetworkEnabled: false,
+            // Timer-driven local-network pulls wait while energy is being
+            // saved (Low Power Mode, a power-saver profile, a hot device).
+            defersBulkWork: { [backgroundWork = stores.backgroundWork] in backgroundWork.defersNonUrgentWork },
             oauthPresenter: oauthPresenter
         )
         let profileAccount = self.profileAccount
@@ -360,6 +369,31 @@ final class AppModel {
         self.subscriptionFeed = SubscriptionFeed(
             library: library, plugins: plugins, platform: platform, preferences: stores.preferences
         )
+        // The profile's synced data cache, and the channel checks that run in
+        // background windows (first window of the profile only).
+        let syncedCache = SyncedCache.shared(stores: stores, profileID: localProfileID, peerService: peerService)
+        self.syncedCache = syncedCache
+        let feed = self.subscriptionFeed
+        let poller = SubscriptionPoller(
+            library: library, storage: storage, storagePrefix: storagePrefix, notifier: SystemNewVideoNotifier(),
+            // The profile's age policy, asked fresh for every check.
+            approve: { [plugins] pluginID in
+                guard let plugin = plugins.plugin(pluginID), plugin.enabled,
+                      case .success(let approval) = await plugins.policy.approveLoad(plugin.config) else { return nil }
+                return approval
+            },
+            fetch: { subscription in try await feed.fetchChannel(subscription) },
+            cache: syncedCache,
+            context: { [plugins] pluginID, approval in
+                plugins.plugin(pluginID).flatMap {
+                    SyncedCache.context(for: $0, approval: approval, signedIn: plugins.isLoggedIn(pluginID))
+                }
+            }
+        )
+        self.subscriptionPoller = poller
+        let backgroundSession = BackgroundSession(stores: stores, profileAccount: profileAccount,
+                                                  poller: poller, cache: syncedCache)
+        self.backgroundSession = backgroundSession
         self.homeFeed = FeedModel(
             initialItems: library.homeCache.map(ContentItem.init(saved:)),
             report: { [platform] error, runtime in
@@ -389,6 +423,10 @@ final class AppModel {
         // network here: the gate explains it before the system can prompt.
         let localNetworkSync = self.localNetworkSync
         Task { await localNetworkSync.applyStoredSetting() }
+        // Progress a crash kept out of the history comes back now, once.
+        Task { [library] in await library.recoverInterruptedProgress() }
+        // Background windows work for the first window of a profile.
+        backgroundSession.claim()
         HummingbirdDebug.register(self)
         #if DEBUG
         MainThreadWatchdog.shared.start(log: PerformanceReports.store(for: stores).stallLog) { [weak self] in

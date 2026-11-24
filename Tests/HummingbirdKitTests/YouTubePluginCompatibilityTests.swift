@@ -1,3 +1,4 @@
+import ATAppSync
 import Foundation
 import Synchronization
 import XCTest
@@ -377,7 +378,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             return try configuredRuntime(config: config, script: script, settings: settingsOverride)
         }
         if let path = ProcessInfo.processInfo.environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE"],
-           let data = StorageDatabase(url: URL(fileURLWithPath: path)).load(name: "plugins"),
+           let data = StorageDatabase(url: URL(fileURLWithPath: path), protectedData: UnprotectedDataAvailability()).load(name: "plugins"),
            let plugin = try JSONDecoder().decode([InstalledPlugin].self, from: data)
                .first(where: { $0.config.name.caseInsensitiveCompare("YouTube") == .orderedSame }) {
             return try configuredRuntime(

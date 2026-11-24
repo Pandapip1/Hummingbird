@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import ATAppSync
 import ATProtoKit
 
@@ -21,6 +22,8 @@ final class LibraryStore {
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
     @ObservationIgnored private let storage: Storage
     @ObservationIgnored private let storagePrefix: String
+    /// The playing item's progress on every tick, for recovery after a crash.
+    @ObservationIgnored private let recovery: ProgressRecovery?
     @ObservationIgnored private var watchLaterPositions: [String: Int] = [:]
     @ObservationIgnored private var revisions = LibraryRevisions()
     @ObservationIgnored private var bookkeeping = false
@@ -37,8 +40,9 @@ final class LibraryStore {
     nonisolated static let historySyncInterval: TimeInterval = 60
 
     init(snapshot: LibraryPersistenceSnapshot = .empty, profileChanges: ProfileChangeStore? = nil,
-         storage: Storage, storagePrefix: String = "") {
+         storage: Storage, storagePrefix: String = "", recovery: ProgressRecovery? = nil) {
         self.profileChanges = profileChanges
+        self.recovery = recovery
         self.storage = storage
         self.storagePrefix = storagePrefix
         subscriptions = snapshot.subscriptions
@@ -73,6 +77,19 @@ final class LibraryStore {
         subscriptions.append(subscription)
         save(subscriptions, name: "subscriptions")
         profileChanges?.put(.subscription(subscription))
+    }
+
+    /// Turns new-video notifications for a subscribed channel on or off, on
+    /// every device (the subscription is synced).
+    func setNotifyOnNewVideos(_ notify: Bool, channelURL: String) {
+        guard let i = subscriptions.firstIndex(where: { $0.channelURL == channelURL }) else { return }
+        subscriptions[i].notifyOnNewVideos = notify
+        save(subscriptions, name: "subscriptions")
+        profileChanges?.put(.subscription(subscriptions[i]))
+    }
+
+    func notifiesOnNewVideos(_ channelURL: String) -> Bool {
+        subscriptions.first { $0.channelURL == channelURL }?.notifyOnNewVideos == true
     }
 
     func unsubscribe(_ channelURL: String) {
@@ -212,6 +229,9 @@ final class LibraryStore {
         if updated.count > Self.historyLimit { updated.removeLast(updated.count - Self.historyLimit) }
         if updated != history { history = updated }
         unsyncedHistory[entry.id] = entry
+        // A tiny file write per tick, never a journal write: a crash loses
+        // seconds of progress, not the minute until the next history write.
+        recovery?.record(entry)
         if now.timeIntervalSince(lastHistorySync) >= Self.historySyncInterval { syncHistory(now: now) }
     }
 
@@ -227,6 +247,46 @@ final class LibraryStore {
     func flushHistory() {
         save(history, name: "history")
         syncHistory()
+        clearRecovery(upTo: history.first?.date ?? Date())
+    }
+
+    /// Drops the recovery record once the history it holds is stored and in
+    /// the journal; a record written for a later tick stays.
+    private func clearRecovery(upTo date: Date) {
+        guard let recovery else { return }
+        let storage = storage
+        let changes = profileChanges
+        Task {
+            await storage.flush()
+            await changes?.flush()
+            recovery.clear(upTo: date)
+        }
+    }
+
+    /// Applies progress a crash kept out of the library: if the recovery
+    /// record is newer than the library's entry for its item, it becomes the
+    /// entry, goes into the journal once, and the record is cleared. Runs
+    /// at launch and whenever a profile opens.
+    func recoverInterruptedProgress() async {
+        guard let recovery, let entry = await recovery.load() else { return }
+        if let existing = history.first(where: { $0.id == entry.id }), existing.date >= entry.date {
+            recovery.clear(upTo: entry.date)
+            return
+        }
+        var updated = history
+        updated.removeAll { $0.id == entry.id }
+        updated.insert(entry, at: updated.firstIndex { $0.date < entry.date } ?? updated.endIndex)
+        if updated.count > Self.historyLimit { updated.removeLast(updated.count - Self.historyLimit) }
+        history = updated
+        // The journal first: a crash before the library is saved applies the
+        // record again next launch (a second identical put), rather than
+        // never syncing it.
+        profileChanges?.put(.history(entry))
+        await profileChanges?.flush()
+        save(history, name: "history")
+        await storage.flush()
+        recovery.clear(upTo: entry.date)
+        Logger.player.notice("progress_recovered position=\(entry.position)")
     }
 
     func removeHistory(at offsets: IndexSet) {

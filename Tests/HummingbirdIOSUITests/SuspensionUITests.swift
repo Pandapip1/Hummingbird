@@ -10,7 +10,7 @@ final class SuspensionUITests: XCTestCase {
     func testPlaybackContinuesAfterTheSystemReclaimsSocketsInSuspension() throws {
         let app = IsolatedApp.make(scene: .playerFullscreen)
         app.launchEnvironment["HUMMINGBIRD_DEBUG_RECLAIM_ON_SUSPEND"] = "1"
-        app.launch()
+        IsolatedApp.start(app)
         let state = app.staticTexts["debug-playback-state"]
         let time = app.staticTexts["debug-playback-time"]
         XCTAssertTrue(state.waitForExistence(timeout: 60))

@@ -35,7 +35,12 @@ let manifest = AppManifest(
         // Expanded by team-signed (Xcode) builds only; see teamEntitlements.
         "ATProtoKeychainAccessGroup": "$(AppIdentifierPrefix)com.eightybps.hummingbird.shared",
         "UILaunchScreen": [:],
-        "UIBackgroundModes": ["audio"],
+        // fetch and processing: background windows for sync, new-video
+        // checks and cache upkeep (HummingbirdBackgroundWork).
+        "UIBackgroundModes": ["audio", "fetch", "processing"],
+        "BGTaskSchedulerPermittedIdentifiers": [
+            "com.eightybps.hummingbird.refresh", "com.eightybps.hummingbird.maintenance",
+        ],
         "UISupportedInterfaceOrientations": [
             "UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown",
             "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight",

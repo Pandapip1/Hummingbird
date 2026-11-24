@@ -11,6 +11,8 @@ struct HummingbirdApp: App {
         // How runaway plugin scripts are stopped: the strongest this build and platform allow
         // (DirectDistribution.swift, PluginExecutionLimits). Cheap: no process starts until a plugin runs.
         PluginExecutionSetup.install()
+        // Background windows must be registered before launch finishes.
+        HummingbirdBackgroundWork.registerAtLaunch()
         #if DEBUG && os(iOS)
         // Measurement only: launched with HUMMINGBIRD_BACKGROUND_BENCH=1 (scripts/measure-background-calls).
         BackgroundCallBench.startIfRequested()
@@ -71,8 +73,8 @@ private struct LaunchGate: View {
     }
 
     @concurrent
-    private static func open() async -> Opened {
-        let stores = AppDataStores.live()
+    private static func open(protectedData: SystemProtectedData) async -> Opened {
+        let stores = AppDataStores.live(protectedData: protectedData)
         #if os(macOS)
         // Probes the credential store before anything is written to it.
         let decision = stores.keychain.flatMap(CredentialStorageDecision.pending(for:))
@@ -135,7 +137,15 @@ private struct LaunchGate: View {
             .onAppear { DispatchQueue.main.async { LaunchTiming.mark(.splashVisible) } }
             .task(id: "\(stores != nil):\(awaitingStorageDecision):\(credentialsLocked):\(selectedProfileID?.uuidString ?? "default")") {
                 guard let stores else {
-                    let opened = await Self.open()
+                    let protectedData = SystemProtectedData()
+                    // Launched while the device is locked (and nothing yet
+                    // queued): the databases can't be read, so opening them
+                    // now would start the library empty and later writes
+                    // would replace what is stored. The splash stays until
+                    // the first unlock.
+                    await protectedData.waitUntilAvailable()
+                    guard !Task.isCancelled else { return }
+                    let opened = await Self.open(protectedData: protectedData)
                     #if os(macOS)
                     storageDecision = opened.storageDecision
                     #endif

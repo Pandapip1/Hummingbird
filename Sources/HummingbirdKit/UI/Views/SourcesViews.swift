@@ -642,6 +642,7 @@ private struct AppSettingsForm: View {
     @AppStorage private var fetchLimit: Int
     @AppStorage private var mediaCacheLimitGigabytes: Int
     @Environment(\.openRoute) private var openRoute
+    @Environment(AppModel.self) private var app
     private let stores: AppDataStores
     let browserToolbar: BrowserToolbarContext?
 
@@ -692,6 +693,9 @@ private struct AppSettingsForm: View {
                     ForEach([2, 5, 10, 20, 50, 100], id: \.self) { Text("\($0) GB").tag($0) }
                 }
                 MediaCacheUsageRows(cache: stores.mediaCache, limitGigabytes: mediaCacheLimitGigabytes)
+            }
+            if let cache = app.syncedCache {
+                SyncedCacheSection(cache: cache, defaults: stores.defaults)
             }
             Section(footer: Text("Off by default. Finished downloads are re-encoded with the hardware encoder in the background, only while the device is cool, not in Low Power Mode and, on iPhone and iPad, charging. The original is deleted only once the smaller copy is stored.")) {
                 TranscodeToggle(stage: stores.transcoding, defaults: stores.defaults)

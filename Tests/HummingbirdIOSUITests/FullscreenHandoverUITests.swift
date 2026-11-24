@@ -7,7 +7,7 @@ final class FullscreenHandoverUITests: XCTestCase {
     @MainActor
     func testFullscreenInAndOutKeepsOneSurfaceAndContinuousPlayback() throws {
         let app = IsolatedApp.make(scene: .playerFullscreen)
-        app.launch()
+        IsolatedApp.start(app)
         let state = app.staticTexts["debug-playback-state"]
         XCTAssertTrue(state.waitForExistence(timeout: 60))
         XCTAssertTrue(waitUntil(60) { state.label == "playing" }, "the clip plays (state: \(state.label))")
@@ -41,7 +41,7 @@ final class FullscreenHandoverUITests: XCTestCase {
     @MainActor
     func testBackgroundAndReturnKeepsPlaying() throws {
         let app = IsolatedApp.make(scene: .playerFullscreen)
-        app.launch()
+        IsolatedApp.start(app)
         let state = app.staticTexts["debug-playback-state"]
         let time = app.staticTexts["debug-playback-time"]
         XCTAssertTrue(state.waitForExistence(timeout: 60))
@@ -67,7 +67,7 @@ final class FullscreenHandoverUITests: XCTestCase {
         for (shade, name) in [(255, "white"), (0, "black")] {
             let app = IsolatedApp.make(scene: .playerFullscreen)
             app.launchEnvironment["HUMMINGBIRD_DEBUG_CLIP_SHADE"] = String(shade)
-            app.launch()
+            IsolatedApp.start(app)
             let state = app.staticTexts["debug-playback-state"]
             XCTAssertTrue(state.waitForExistence(timeout: 60))
             XCTAssertTrue(waitUntil(60) { state.label == "playing" })

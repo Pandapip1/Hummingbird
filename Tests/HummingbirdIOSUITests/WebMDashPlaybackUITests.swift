@@ -11,7 +11,7 @@ final class WebMDashPlaybackUITests: XCTestCase {
             .appendingPathComponent("Fixtures/webm-dash").path
         let app = IsolatedApp.make(scene: .playerWebMDash)
         app.launchEnvironment["HUMMINGBIRD_DEBUG_WEBM_DASH_DIR"] = fixture
-        app.launch()
+        IsolatedApp.start(app)
         let state = app.staticTexts["debug-playback-state"]
         let time = app.staticTexts["debug-playback-time"]
         XCTAssertTrue(state.waitForExistence(timeout: 60))

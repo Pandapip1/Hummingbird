@@ -27,11 +27,21 @@ final class ProfileSyncService {
     @ObservationIgnored private var localNetworkEnabled: Bool
     @ObservationIgnored private var running: Task<Void, Never>?
     @ObservationIgnored private var passRequested = false
+    /// Whether the next pass was asked for by someone (not only the timer).
+    @ObservationIgnored private var requestedPass = false
+    /// True while non-urgent work should wait (Low Power Mode and the like):
+    /// timer-driven passes then skip the local-network pull, which reads
+    /// every trusted device's changes.
+    @ObservationIgnored private let defersBulkWork: @Sendable () -> Bool
+    /// Whether the last pass brought anything from another device; the
+    /// periodic pass backs off while it doesn't.
+    @ObservationIgnored private(set) var lastPassReceived = false
 
     init(changes: ProfileChangeStore, mutationLog: AppSyncMutationLog,
          library: LibraryStore, plugins: PluginManager,
          peerService: AppSyncPeerService?, peerServiceFailure: (any Error)? = nil,
-         localNetworkEnabled: Bool = false) {
+         localNetworkEnabled: Bool = false, defersBulkWork: @escaping @Sendable () -> Bool) {
+        self.defersBulkWork = defersBulkWork
         lanSync = peerService.map {
             AppSyncLANClient(
                 messaging: $0, journal: mutationLog, appID: HummingbirdProfileSchema.appID
@@ -92,8 +102,13 @@ final class ProfileSyncService {
     /// pass after it (changes made meanwhile are not left for the timer)
     /// and returns when that one has finished. The state is `.syncing` from
     /// the moment this is called.
-    func sync() async {
+    /// Why a pass runs: the periodic timer, or anything else (a control, a
+    /// local edit, sign-in), which never waits for energy saving.
+    enum Trigger { case scheduled, requested }
+
+    func sync(_ trigger: Trigger = .requested) async {
         state = .syncing
+        if trigger == .requested { requestedPass = true }
         if let running {
             passRequested = true
             await running.value
@@ -103,7 +118,9 @@ final class ProfileSyncService {
             guard let self else { return }
             repeat {
                 passRequested = false
-                await pass()
+                let requested = requestedPass
+                requestedPass = false
+                await pass(requested: requested)
             } while passRequested
             // Cleared here, in the same main-actor step that saw no further
             // request: a request arriving after this starts a new task.
@@ -125,15 +142,19 @@ final class ProfileSyncService {
     /// the journal holds that this device hasn't applied is applied in one
     /// batch. Merging is order independent, so the result doesn't depend
     /// on which transport (or peer) answered first.
-    private func pass() async {
+    private func pass(requested: Bool) async {
         state = .syncing
         let signposter = OSSignposter.sync
         let pass = signposter.beginInterval("SyncPass", id: signposter.makeSignpostID())
         defer { signposter.endInterval("SyncPass", pass, "\(String(describing: self.state), privacy: .private(mask: .hash))") }
 
-        async let lanOutcome = pullLocalNetwork()
+        // The timer's pull waits while energy is being saved; one anyone
+        // asked for (or a local edit) doesn't.
+        let skipLocalNetwork = !requested && defersBulkWork()
+        async let lanOutcome = skipLocalNetwork ? nil : pullLocalNetwork()
         async let accountOutcome = syncAccount()
         let transports = [await lanOutcome, await accountOutcome].compactMap { $0 }
+        lastPassReceived = transports.contains { $0.received > 0 }
 
         let applyIssues = await applyUnapplied()
         var problems = transports.flatMap(\.issues)
@@ -161,8 +182,21 @@ final class ProfileSyncService {
 
     private struct TransportOutcome {
         var succeeded = false
+        /// Records this transport brought in.
+        var received = 0
         var failure: State?
         var issues: [String] = []
+    }
+
+    /// Refills `cache` from trusted devices on the local network: only what
+    /// this device lacks, end to end encrypted. Nil when local network sync
+    /// is off. Runs in background windows and scheduled passes only, never
+    /// per item, so the traffic says nothing about what was viewed.
+    func pullCache(into cache: CacheJournal) async -> AppSyncCachePullReport? {
+        guard localNetworkEnabled, let lanSync else { return nil }
+        // Signed-in results are never shared (SyncedCache.context), so no
+        // account hashes need recognising.
+        return await lanSync.pullCache(into: cache, accounts: [])
     }
 
     /// Pulls every reachable trusted device at once (see AppSyncLANClient).
@@ -173,7 +207,7 @@ final class ProfileSyncService {
         let interval = signposter.beginInterval("LANPull", id: signposter.makeSignpostID())
         let report = await lanSync.pullAndMerge(needsUpload: true)
         signposter.endInterval("LANPull", interval, "peers=\(report.peersAsked) merged=\(report.merged.count) failed=\(report.failures.count)")
-        var outcome = TransportOutcome()
+        var outcome = TransportOutcome(received: report.merged.count)
         if let mergeFailure = report.mergeFailure {
             outcome.failure = .failed("Changes from your other devices couldn’t be saved: \(mergeFailure)")
             return outcome
@@ -208,6 +242,7 @@ final class ProfileSyncService {
             let remote = try await appSync.pullMutations()
             signposter.endInterval("PDSPull", pdsPull, "mutations=\(remote.count)")
             try await Self.merge(remote, into: mutationLog, needsUpload: false)
+            outcome.received = remote.count
             try await appSync.pushMutations()
             let messages = try await appSync.syncMessages()
             try await applyMessages(messages, appSync: appSync)

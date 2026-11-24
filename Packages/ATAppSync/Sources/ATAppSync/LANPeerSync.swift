@@ -211,3 +211,97 @@ public final class AppSyncLANClient: Sendable {
         return snapshot
     }
 }
+
+/// The path cache-sync requests are posted to.
+enum CacheSyncRoute {
+    static let path = "/appsync/v1/cache"
+}
+
+/// The outcome of one cache pull.
+public struct AppSyncCachePullReport: Sendable {
+    public var peersAsked = 0
+    /// Records taken in.
+    public var received = 0
+    /// Whether a peer's newer key epoch was adopted (the cache then re-keys
+    /// in the background).
+    public var adoptedEpoch = false
+    public var failures = 0
+
+    public init() {}
+}
+
+extension AppSyncLANClient {
+    /// Refills `cache` from every reachable trusted peer: follows the
+    /// trusted set (rotating the key epoch if a device left it), then per
+    /// peer asks for its manifest and fetches only what this device lacks.
+    /// A peer on another epoch hands over its keys if it wins; one on an
+    /// older epoch catches up at its own next pull. `accounts` are the
+    /// accounts this device is signed in with, to recognise their hashes.
+    public func pullCache(into cache: CacheJournal, accounts: [String]) async -> AppSyncCachePullReport {
+        var report = AppSyncCachePullReport()
+        let trusted = messaging.trustedPeers()
+        do { try cache.follow(trusted: trusted) } catch {
+            report.failures += 1
+            return report
+        }
+        let registrations = messaging.discoveredRegistrations().filter {
+            $0.recognizes(appID) && messaging.trusts($0.peer)
+        }
+        for registration in registrations {
+            guard !Task.isCancelled else { break }
+            report.peersAsked += 1
+            do {
+                var response = try await cacheRequest(.manifest, epoch: cache.epoch, to: registration)
+                if let offer = response.offer {
+                    if try cache.consider(offer, trusted: trusted) {
+                        report.adoptedEpoch = true
+                        response = try await cacheRequest(.manifest, epoch: cache.epoch, to: registration)
+                    } else {
+                        continue
+                    }
+                }
+                guard let manifest = response.manifest else { continue }
+                let want = try cache.want(from: manifest)
+                guard !want.isEmpty else { continue }
+                let fetched = try await cacheRequest(.fetch(want), epoch: cache.epoch, to: registration)
+                guard let transfer = fetched.transfer else { continue }
+                report.received += try cache.apply(transfer, accounts: accounts)
+            } catch {
+                report.failures += 1
+                AppSyncDiagnostics.lan.notice("lan_cache_pull_failed error=\(String(describing: error), privacy: .private(mask: .hash))")
+            }
+        }
+        cache.persist()
+        return report
+    }
+
+    private func cacheRequest(_ step: CacheSyncRequest.Step, epoch: CacheEpochID?,
+                              to registration: AppSyncInstanceRegistration) async throws -> CacheSyncResponse {
+        guard (try? registration.verify()) != nil, var endpoint = registration.lanEndpoint else {
+            throw InstanceMessagingError.serverUnavailable
+        }
+        endpoint.deleteLastPathComponent()
+        endpoint.append(path: String(CacheSyncRoute.path.dropFirst()))
+        let nonce = UUID()
+        var payload = CacheSyncRequest(nonce: nonce, appID: appID, epoch: epoch, step: step)
+        try payload.pad()
+        let envelope = try InstanceInboxEnvelope.seal(payload, appID: appID, from: messaging.identity,
+                                                      to: registration.peer)
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder().encode(envelope)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = Self.peerTimeout
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw InstanceMessagingError.serverUnavailable
+        }
+        let sealed = try JSONDecoder().decode(InstanceInboxEnvelope.self, from: data)
+        guard sealed.sender == registration.peer, sealed.appID == appID else {
+            throw InstanceMessagingError.invalidSignature
+        }
+        let opened = try messaging.inbox.open(sealed, as: CacheSyncResponse.self)
+        guard opened.nonce == nonce else { throw InstanceMessagingError.conflictingReplay }
+        return opened
+    }
+}

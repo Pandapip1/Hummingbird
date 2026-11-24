@@ -12,14 +12,14 @@ struct MobileBrowserToolbar: View {
     var body: some View {
         HStack {
             BrowserBackButton(tab: app.activeTab)
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 44, minHeight: 44)
             BrowserForwardButton(tab: app.activeTab)
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 44, minHeight: 44)
             Spacer()
             AppSectionMenu()
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 44, minHeight: 44)
             BrowserTabOverviewButton { showingTabOverview = true }
-                .frame(width: 44, height: 44)
+                .frame(minWidth: 44, minHeight: 44)
         }
         .font(.headline)
         .buttonStyle(.plain)

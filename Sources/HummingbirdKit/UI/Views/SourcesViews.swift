@@ -359,7 +359,7 @@ struct PreviewView: View {
                         FocusableReadOnlyValue(
                             text: url,
                             monospaced: true,
-                            accessibilityIdentifier: "install-preview-url-\(index)"
+                            accessibilityIdentifier: UITestIdentifier.installPreviewURL(index)
                         )
                     }
                 }

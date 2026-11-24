@@ -6,8 +6,7 @@ import XCTest
 final class FullscreenHandoverUITests: XCTestCase {
     @MainActor
     func testFullscreenInAndOutKeepsOneSurfaceAndContinuousPlayback() throws {
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-fullscreen"
+        let app = IsolatedApp.make(scene: .playerFullscreen)
         app.launch()
         let state = app.staticTexts["debug-playback-state"]
         XCTAssertTrue(state.waitForExistence(timeout: 60))
@@ -41,8 +40,7 @@ final class FullscreenHandoverUITests: XCTestCase {
     /// and one surface shows it again.
     @MainActor
     func testBackgroundAndReturnKeepsPlaying() throws {
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-fullscreen"
+        let app = IsolatedApp.make(scene: .playerFullscreen)
         app.launch()
         let state = app.staticTexts["debug-playback-state"]
         let time = app.staticTexts["debug-playback-time"]
@@ -67,8 +65,7 @@ final class FullscreenHandoverUITests: XCTestCase {
     @MainActor
     func testControlsOverLightAndDarkFrames() throws {
         for (shade, name) in [(255, "white"), (0, "black")] {
-            let app = IsolatedApp.make()
-            app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-fullscreen"
+            let app = IsolatedApp.make(scene: .playerFullscreen)
             app.launchEnvironment["HUMMINGBIRD_DEBUG_CLIP_SHADE"] = String(shade)
             app.launch()
             let state = app.staticTexts["debug-playback-state"]

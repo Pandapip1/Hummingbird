@@ -77,7 +77,8 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         }
         .onRemoteMove { interacted() }
         .onContinuousHover { if case .active = $0 { interacted() } }
-        .remoteFocusScope()
+        // Full screen, focus starts on play/pause whenever the controls show.
+        .remoteFocusScope(focusingDefault: isFullscreen && showingControls)
         .task { interacted() }
         .onAppear { model.controlsVisibilityChanged(showingControls) }
         .onChange(of: showingControls) { _, visible in model.controlsVisibilityChanged(visible) }
@@ -227,27 +228,6 @@ public struct AdvancedVideoPlayerControls<Model: AdvancedVideoPlayerControlling,
         } else {
             interacted()
         }
-    }
-}
-
-/// The player timeline's slider on every platform. tvOS uses an explicit
-/// focus/adjust mode for the Siri Remote; pointer and touch platforms retain
-/// continuous native slider interaction behind the same component API.
-@MainActor
-public struct AdvancedVideoPlayerSlider: View {
-    public let value: Double
-    public let range: ClosedRange<Double>
-    public let onChange: (Double) -> Void
-
-    public init(value: Double, range: ClosedRange<Double>, onChange: @escaping (Double) -> Void) {
-        self.value = value
-        self.range = range
-        self.onChange = onChange
-    }
-
-    @ViewBuilder
-    public var body: some View {
-        ScrubSlider(value: value, range: range, onChange: onChange)
     }
 }
 

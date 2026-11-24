@@ -70,31 +70,6 @@ public struct HummingbirdRoot: View {
 // UI on its own, on every platform. The player uses the platform's own
 // media backend.
 @MainActor
-struct PlayerDebugScene: View {
-    @State private var player: PlayerModel
-
-    init(stores: AppDataStores) {
-        _player = State(wrappedValue: PlayerModel(stores: stores))
-    }
-
-    var body: some View {
-        ZStack {
-            Color(red: 0.12, green: 0.12, blue: 0.12).ignoresSafeArea()
-            ZStack {
-                Color.black
-                PlayerSurface(model: player)
-                PlayerControls(model: player, isFullscreen: false)
-            }
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .frame(maxWidth: 1_280)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(radius: 24)
-        }
-        .task { HummingbirdDebug.standalonePlayer = player }
-    }
-}
-
-@MainActor
 struct SeekDebugScene: View {
     @State private var player = SeekDebugModel()
 
@@ -199,7 +174,10 @@ struct FullscreenHandoverDebugScene: View {
                 .accessibilityIdentifier("debug-playback-state")
         }
         .padding()
-        .task { await start() }
+        .task {
+            HummingbirdDebug.standalonePlayer = player
+            await start()
+        }
     }
 
     private func start() async {

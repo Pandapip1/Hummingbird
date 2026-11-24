@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 
 /// AdvancedVideoPlayerKit expresses one behaviour; platform differences live
-/// in SwiftOpenUI's backends (ScrubSlider, PresentationMenu, the remote focus
+/// in SwiftOpenUI's backends (MediaScrubber, PresentationMenu, the remote focus
 /// modifiers, CheckableMenuItem).
 final class PlayerKitPortabilityTests: XCTestCase {
     func testPlayerKitHasNoPlatformBranches() throws {

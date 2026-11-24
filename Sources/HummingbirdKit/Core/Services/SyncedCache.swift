@@ -26,7 +26,8 @@ enum SyncedCache {
         if let cache = opened[key] { return cache }
         let megabytes = stores.defaults.object(forKey: budgetKey) as? Int ?? defaultBudgetMegabytes
         let profileFolder = profileID.uuidString.lowercased()
-        let kept = KeptDirectory(named: "SyncedCache/" + profileFolder, inDataDirectory: stores.dataDirectory)
+        let dataDirectory = stores.dataDirectory
+        let kept = KeptDirectory(named: "SyncedCache/" + profileFolder, inDataDirectory: dataDirectory)
         moveFromCaches(stores.cachesDirectory.appendingPathComponent("SyncedCache", isDirectory: true)
             .appendingPathComponent(profileFolder, isDirectory: true), to: kept)
         let cache = CacheJournal(

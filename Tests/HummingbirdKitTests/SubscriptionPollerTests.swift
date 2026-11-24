@@ -12,6 +12,7 @@ final class SubscriptionPollerTests: XCTestCase {
 
     func testAVideoIsAnnouncedOnceAndAChannelsFirstCheckOnlyRecords() async throws {
         let setup = makeSetup(notify: true)
+        await poll(setup.poller, at: 0)   // starts tracking: first checks are spread over the first interval
         setup.channel.items = [video("old", age: 3_600)]
         await poll(setup.poller, at: 4)               // first check: records only
         XCTAssertTrue(setup.notifier.posted.isEmpty)
@@ -32,6 +33,7 @@ final class SubscriptionPollerTests: XCTestCase {
 
     func testNothingIsAnnouncedForAChannelThatDidNotAsk() async {
         let setup = makeSetup(notify: false)
+        await poll(setup.poller, at: 0)   // starts tracking: first checks are spread over the first interval
         setup.channel.items = [video("old", age: 3_600)]
         await poll(setup.poller, at: 4)
         setup.channel.items = [video("new", age: 60)]
@@ -45,6 +47,7 @@ final class SubscriptionPollerTests: XCTestCase {
 
     func testNothingIsAnnouncedWithoutPermissionOrForAPluginTheAgePolicyRefuses() async {
         let denied = makeSetup(notify: true, authorization: .denied)
+        await poll(denied.poller, at: 0)   // starts tracking: first checks are spread over the first interval
         denied.channel.items = [video("old", age: 3_600)]
         await poll(denied.poller, at: 4)
         denied.channel.items = [video("new", age: 60)]
@@ -52,6 +55,7 @@ final class SubscriptionPollerTests: XCTestCase {
         XCTAssertTrue(denied.notifier.posted.isEmpty)
 
         let blocked = makeSetup(notify: true, allowed: false)
+        await poll(blocked.poller, at: 0)   // starts tracking: first checks are spread over the first interval
         blocked.channel.items = [video("old", age: 3_600)]
         await poll(blocked.poller, at: 4)
         blocked.channel.items = [video("new", age: 60)]
@@ -66,6 +70,7 @@ final class SubscriptionPollerTests: XCTestCase {
                                  instance: AppSyncPeerID(signingKey: Data([1])), credentialStore: TestCredentialStore(),
                                  availability: UnprotectedDataAvailability())
         let first = makeSetup(notify: false, cache: cache)
+        await poll(first.poller, at: 0)
         first.channel.items = [video("a", age: 60)]
         await poll(first.poller, at: 4)
         XCTAssertEqual(first.channel.fetches, 1)
@@ -73,6 +78,7 @@ final class SubscriptionPollerTests: XCTestCase {
         // Another profile window on this device (standing in for a peer):
         // the channel's result is in the cache, fresh, in the same context.
         let second = makeSetup(notify: false, cache: cache)
+        await poll(second.poller, at: 0)
         await poll(second.poller, at: 4.01)
         XCTAssertEqual(second.channel.fetches, 0, "served from the synced cache")
         XCTAssertEqual(second.library.feedCache["https://example.com/c/1"]?.map(\.name), ["Video a"])

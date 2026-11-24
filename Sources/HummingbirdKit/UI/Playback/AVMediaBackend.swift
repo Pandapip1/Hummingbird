@@ -97,6 +97,26 @@ final class AVMediaBackend: MediaBackend {
     var onUnplayableMedia: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
 
+    /// AVFoundation pauses, without failing, an item whose video it cannot
+    /// decode (VP9 or AV1 where the device has no decoder): said by name
+    /// instead of a silent pause.
+    private func reportUndecodableVideo() async {
+        guard let item = player?.currentItem else { return }
+        for track in item.tracks {
+            guard let asset = track.assetTrack, asset.mediaType == .video,
+                  let decodable = try? await asset.load(.isDecodable), !decodable else { continue }
+            let descriptions = (try? await asset.load(.formatDescriptions)) ?? []
+            let codec = descriptions.first.map { description in
+                let code = CMFormatDescriptionGetMediaSubType(description).bigEndian
+                return String(decoding: withUnsafeBytes(of: code) { Array($0) }, as: UTF8.self)
+            } ?? "this"
+            guard player?.currentItem === item else { return }
+            Logger.avPlayer.error("video_not_decodable codec=\(codec, privacy: .public)")
+            onUnplayableMedia?(codec)
+            return
+        }
+    }
+
     /// No decoder for the media's format on this device (AV1 without
     /// hardware support, VP9 where the system has none): reloading cannot help.
     private nonisolated static func isUnplayable(_ error: NSError) -> Bool {
@@ -466,6 +486,9 @@ final class AVMediaBackend: MediaBackend {
                 Task { @MainActor in
                     if unplayable { self?.onUnplayableMedia?(message) } else { self?.onFailure?(message) }
                 }
+            }
+            if status == .readyToPlay {
+                Task { @MainActor in await self?.reportUndecodableVideo() }
             }
         }
         itemFailureObserver = NotificationCenter.default.addObserver(

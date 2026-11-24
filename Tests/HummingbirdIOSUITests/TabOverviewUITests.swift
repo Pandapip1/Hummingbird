@@ -104,6 +104,17 @@ final class TabOverviewUITests: XCTestCase {
         let done = app.buttons["Done"]
         let deadline = Date().addingTimeInterval(5)
         while done.exists && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+        if done.exists {
+            // Keep what the app showed, so a failure says why.
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "overview after the tap"
+            shot.lifetime = .keepAlways
+            add(shot)
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "hierarchy after the tap"
+            tree.lifetime = .keepAlways
+            add(tree)
+        }
         XCTAssertFalse(done.exists, "tapping a card didn't leave the overview")
         openOverview(in: app)
         XCTAssertEqual(titles(in: app).count, before.count, "tapping a card closed or added a tab")
@@ -114,8 +125,21 @@ final class TabOverviewUITests: XCTestCase {
         XCTAssertTrue(tabs.waitForExistence(timeout: 15))
         tabs.tap()
         XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 10))
-        // Let the zoom into the overview finish.
-        RunLoop.current.run(until: Date().addingTimeInterval(1))
+        // Let the zoom into the overview finish: the cards stop moving (a fixed
+        // wait assumed how fast the zoom runs).
+        waitUntilCardsSettle(in: app)
+    }
+
+    @MainActor private func waitUntilCardsSettle(in app: XCUIApplication) {
+        var previous: [CGRect] = []
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let frames = app.buttons.matching(identifier: "browser-tab-overview-card").allElementsBoundByIndex.map(\.frame)
+            if !frames.isEmpty, frames == previous { return }
+            previous = frames
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        XCTFail("the overview's cards kept moving: \(previous)")
     }
 
     @MainActor private func card(_ label: String, in app: XCUIApplication) -> XCUIElement {

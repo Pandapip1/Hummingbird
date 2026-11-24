@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates the WebM DASH fixture (6 s, 320x180 VP9 and stereo Opus, 2 s
 # segments) in the layout plugin-generated sources use: the manifest names
-# https://grayjay.internal/{video,audio}/init.webm and /$Number$.webm.
+# https://grayjay.internal/{video,audio}/internal/init.webm and /$Number$.webm.
 set -euo pipefail
 cd "$(dirname "$0")"
 work=$(mktemp -d)
@@ -18,5 +18,5 @@ for f in "$work"/chunk-0-*.webm; do n=${f##*-}; cp "$f" "video/$n"; done
 for f in "$work"/chunk-1-*.webm; do n=${f##*-}; cp "$f" "audio/$n"; done
 awk 'BEGIN{k=""} /contentType="video"/{k="video"} /contentType="audio"/{k="audio"}
   {gsub(/initialization="init-\$RepresentationID\$\.webm" media="chunk-\$RepresentationID\$-\$Number\$\.webm"/,
-        "initialization=\"https://grayjay.internal/" k "/init.webm\" media=\"https://grayjay.internal/" k "/$Number$.webm\""); print}' \
+        "initialization=\"https://grayjay.internal/" k "/internal/init.webm\" media=\"https://grayjay.internal/" k "/internal/$Number$.webm\""); print}' \
   "$work/manifest.mpd" > manifest.mpd

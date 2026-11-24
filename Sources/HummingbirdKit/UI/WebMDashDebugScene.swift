@@ -20,7 +20,7 @@ enum WebMDashFixture {
         for kind in ["video", "audio"] {
             let folder = directory.appendingPathComponent(kind)
             for name in try FileManager.default.contentsOfDirectory(atPath: folder.path) where name.hasSuffix(".webm") {
-                segments["/\(kind)/\(name)"] = try Data(contentsOf: folder.appendingPathComponent(name)).base64EncodedString()
+                segments["/\(kind)/internal/\(name)"] = try Data(contentsOf: folder.appendingPathComponent(name)).base64EncodedString()
             }
         }
         let table = String(decoding: try JSONSerialization.data(withJSONObject: segments), as: UTF8.self)

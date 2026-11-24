@@ -8,8 +8,7 @@ import XCTest
 final class SuspensionUITests: XCTestCase {
     @MainActor
     func testPlaybackContinuesAfterTheSystemReclaimsSocketsInSuspension() throws {
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-fullscreen"
+        let app = IsolatedApp.make(scene: .playerFullscreen)
         app.launchEnvironment["HUMMINGBIRD_DEBUG_RECLAIM_ON_SUSPEND"] = "1"
         app.launch()
         let state = app.staticTexts["debug-playback-state"]

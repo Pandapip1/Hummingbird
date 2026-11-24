@@ -9,8 +9,7 @@ final class WebMDashPlaybackUITests: XCTestCase {
         let fixture = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Fixtures/webm-dash").path
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-webm-dash"
+        let app = IsolatedApp.make(scene: .playerWebMDash)
         app.launchEnvironment["HUMMINGBIRD_DEBUG_WEBM_DASH_DIR"] = fixture
         app.launch()
         let state = app.staticTexts["debug-playback-state"]

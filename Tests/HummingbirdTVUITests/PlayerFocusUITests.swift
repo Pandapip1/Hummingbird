@@ -8,9 +8,11 @@ final class PlayerFocusUITests: XCTestCase {
 
         let newTab = app.buttons["Open section in new tab"]
         XCTAssertTrue(newTab.waitForExistence(timeout: 10))
-        XCUIRemote.shared.press(.up)
+        // The tab bar is the top row, above the page's own toolbar; the
+        // new-tab menu sits left of the tab overview button at its end.
+        for _ in 0..<3 { XCUIRemote.shared.press(.up) }
         for _ in 0..<4 where !newTab.hasFocus {
-            XCUIRemote.shared.press(.right)
+            XCUIRemote.shared.press(.left)
             RunLoop.current.run(until: Date().addingTimeInterval(0.35))
         }
         let focusedButtons = app.buttons.allElementsBoundByIndex
@@ -24,12 +26,13 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testFullscreenKeepsFocusAndCanExit() throws {
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player"
+        let app = IsolatedApp.make(scene: .playerFullscreen)
         app.launch()
 
         let enterFullscreen = app.buttons["Enter Full Screen"]
-        XCTAssertTrue(enterFullscreen.waitForExistence(timeout: 5))
+        // The controls are enabled once the clip is ready.
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: enterFullscreen)
+        waitForExpectations(timeout: 15)
 
         for _ in 0..<8 where !enterFullscreen.hasFocus {
             XCUIRemote.shared.press(.right)
@@ -57,8 +60,7 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testRemoteSeekControlAdjustsThenReleasesNavigation() throws {
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-seek"
+        let app = IsolatedApp.make(scene: .playerSeek)
         app.launch()
 
         let slider = app.descendants(matching: .any)["playback-seek-control"]
@@ -90,8 +92,7 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testPlaybackMenuSurvivesControlsAutoHideDeadline() throws {
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "player-seek"
+        let app = IsolatedApp.make(scene: .playerSeek)
         app.launch()
 
         let play = app.buttons["Play"]
@@ -117,18 +118,18 @@ final class PlayerFocusUITests: XCTestCase {
 
     @MainActor
     func testInstallPreviewCanFocusLastAllowedURL() throws {
-        let app = IsolatedApp.make()
-        app.launchEnvironment["HUMMINGBIRD_DEBUG_SCENE"] = "install-preview"
+        let app = IsolatedApp.make(scene: .installPreview)
         app.launch()
 
-        let firstURL = app.buttons["https://audit-0.example.com/path"]
+        // Read-only values: focusable text, not buttons.
+        let firstURL = app.staticTexts[UITestIdentifier.installPreviewURL(0)]
         XCTAssertTrue(firstURL.waitForExistence(timeout: 5))
-        let lastURL = app.buttons["https://audit-29.example.com/path"]
-        for _ in 0..<50 where !lastURL.isHittable {
+        let lastURL = app.staticTexts[UITestIdentifier.installPreviewURL(29)]
+        for _ in 0..<50 where !lastURL.hasFocus {
             XCUIRemote.shared.press(.down)
             Thread.sleep(forTimeInterval: 0.08)
         }
-        XCTAssertTrue(lastURL.exists && lastURL.isHittable,
+        XCTAssertTrue(lastURL.hasFocus && lastURL.isHittable,
                       "Every allowed URL must be reachable by moving focus through the preview")
     }
 

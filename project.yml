@@ -106,6 +106,7 @@ targets:
     sources:
       - path: Tests/HummingbirdTVUITests
       - path: Tests/UITestSupport
+      - path: Sources/HummingbirdKit/UI/UITestContract.swift
     dependencies:
       - target: Hummingbird-App
     settings:
@@ -120,6 +121,7 @@ targets:
     sources:
       - path: Tests/HummingbirdIOSUITests
       - path: Tests/UITestSupport
+      - path: Sources/HummingbirdKit/UI/UITestContract.swift
     dependencies:
       - target: Hummingbird-App
     settings:

@@ -15,7 +15,7 @@ public enum HummingbirdDebug {
     }
 
     private static var models: [WeakModel] = []
-    /// The player of a standalone debug scene (`HUMMINGBIRD_DEBUG_SCENE=player`), when one is showing.
+    /// The player of a standalone debug scene (`HUMMINGBIRD_DEBUG_SCENE=player-fullscreen`), when one is showing.
     static weak var standalonePlayer: PlayerModel?
     /// Set by the root view: its tab overview is view state.
     static var toggleTabOverviewAction: (@MainActor () -> Void)?

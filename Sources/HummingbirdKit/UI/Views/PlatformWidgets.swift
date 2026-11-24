@@ -151,15 +151,17 @@ struct DebugSceneSelection<Content: View>: View {
 
     @ViewBuilder
     var body: some View {
-        switch ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_SCENE"] {
-        case "player": PlayerDebugScene(stores: stores)
-        case "player-fullscreen": FullscreenHandoverDebugScene(stores: stores)
-        #if DEBUG
-        case "player-webm-dash": WebMDashDebugScene(stores: stores)
-        #endif
-        case "player-seek": SeekDebugScene()
-        case "install-preview": InstallPreviewDebugScene()
-        default: content
+        switch ProcessInfo.processInfo.environment[DebugScene.environmentKey].flatMap(DebugScene.init(rawValue:)) {
+        case .playerFullscreen: FullscreenHandoverDebugScene(stores: stores)
+        case .playerWebMDash:
+            #if DEBUG
+            WebMDashDebugScene(stores: stores)
+            #else
+            content
+            #endif
+        case .playerSeek: SeekDebugScene()
+        case .installPreview: InstallPreviewDebugScene()
+        case nil: content
         }
     }
 }

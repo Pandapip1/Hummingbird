@@ -400,7 +400,7 @@ final class ProfileSyncApplyTests: XCTestCase {
 
         // Rewrite the file as the old version wrote it: no applied, arrivals
         // or epoch, and every event ever appended still listed.
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var object = try plaintextJournalObject(at: file)
         for key in ["applied", "arrivals", "lastArrival", "epoch"] { object[key] = nil }
         var events = try XCTUnwrap(object["events"] as? [Any])
         let superseded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(JournalMutation(
@@ -563,7 +563,7 @@ final class ProfileSyncApplyTests: XCTestCase {
         let log = try AppSyncMutationLog(fileURL: file, sealer: testAtRestSealer)
         let collection = HummingbirdProfileSchema.history
         let event = try log.appendPut(collection: collection, key: RecordKey(rawValue: "a")!, value: .string("1"))
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var object = try plaintextJournalObject(at: file)
         for key in ["applied", "arrivals", "lastArrival", "epoch", "floors"] { object[key] = nil }
         let timestamp = try JSONSerialization.jsonObject(with: JSONEncoder().encode(event.timestamp))
         object["versions"] = ["\(collection.rawValue)/a": timestamp]

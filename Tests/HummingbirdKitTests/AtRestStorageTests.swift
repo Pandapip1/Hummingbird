@@ -36,6 +36,7 @@ final class AtRestStorageTests: XCTestCase {
     /// of the database is untouched.
     func testLegacyValuesAreSealedAndDamagedOnesQuarantined() throws {
         let directory = makeTestDirectory("AtRest")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try JSONEncoder().encode(["old title"]).write(to: directory.appendingPathComponent(historyName + ".json"))
         let backend = StorageBackend(directory: directory, queue: nil, protectedData: UnprotectedDataAvailability(),
                                      atRest: testAtRestKeyring)

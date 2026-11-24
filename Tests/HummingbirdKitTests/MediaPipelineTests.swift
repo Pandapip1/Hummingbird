@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import XCTest
 @testable import HummingbirdKit
 
@@ -18,7 +19,7 @@ final class MediaPipelineTests: XCTestCase {
     private func temporaryCache() -> MediaCache {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-media-\(UUID().uuidString)")
         directories.append(directory)
-        return MediaCache(directory: directory)
+        return MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory))
     }
 
     private let fastRetry = TrackDownloader.Configuration(
@@ -174,6 +175,31 @@ final class MediaPipelineTests: XCTestCase {
     }
 
     // MARK: downloader
+
+    /// A file with boxes after its last indexed segment (an `mfra`): its index
+    /// is shorter than the file. That is the same file, so nothing is reset
+    /// and nothing is downloaded twice.
+    func testATrackWithDataAfterItsIndexIsNotDownloadedTwice() async throws {
+        var file = FakeMedia.fragmentedMP4(segmentSizes: [300_000, 700_000], segmentMilliseconds: 4_000)
+        let indexedBytes = Int64(file.data.count)
+        file.data.append(FakeMedia.box("mfra", Data(count: 200)))
+        let upstream = FakeUpstream(file: file.data, failures: 0)
+        let cache = temporaryCache()
+        let track = try await cache.open(identity: "trailing")
+        let downloader = TrackDownloader(role: .video, cache: cache, track: track,
+                                         signer: .plain(try XCTUnwrap(URL(string: "https://media.test/t.mp4"))),
+                                         transport: upstream, configuration: fastRetry)
+        await downloader.start()
+        let layout = try await bounded { try await downloader.trackLayout() }
+        guard case .indexed = layout else {
+            return XCTFail("expected an indexed layout")
+        }
+        try await bounded { try await downloader.waitUntilAvailable(0..<indexedBytes) }
+        let served = await upstream.bytesServed
+        XCTAssertLessThan(served, Int64(file.data.count) + fastRetry.headerProbeBytes / 2,
+                          "the header was not downloaded again after a reset (served \(served) of \(file.data.count))")
+        await downloader.stop()
+    }
 
     func testDownloaderFetchesWholeTrackThroughNetworkFailures() async throws {
         let file = FakeMedia.fragmentedMP4(segmentSizes: [300_000, 700_000, 1_200_000], segmentMilliseconds: 4_000)
@@ -735,6 +761,8 @@ private actor FakeUpstream: MediaTransport {
     private var failures: Int
     private let refusedPath: String?
     private(set) var requestCount = 0
+    /// Body bytes returned, to tell when something is downloaded twice.
+    private(set) var bytesServed: Int64 = 0
 
     init(file: Data, failures: Int, refusedPath: String? = nil) {
         files = ["*": file]
@@ -762,9 +790,11 @@ private actor FakeUpstream: MediaTransport {
         let total = Int64(file.count)
         guard let header = request.value(forHTTPHeaderField: "Range"),
               let range = LocalMediaServer.parseRange(header, total: total) else {
+            bytesServed += Int64(file.count)
             return (file, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])))
         }
         let body = file.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
+        bytesServed += Int64(body.count)
         let headers = ["Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)"]
         return (body, try XCTUnwrap(HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1", headerFields: headers)))
     }
@@ -871,7 +901,7 @@ final class LiveRecordingTests: XCTestCase {
     func testLiveRecordingKeepsEverySegmentPastUpstreamsWindowAndEndsWithTheStream() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-live-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let cache = MediaCache(directory: directory)
+        let cache = MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory))
         let recorder = LiveHLSRecorder(role: .muxed, cache: cache, identity: "live-test",
                                        playlistURL: try XCTUnwrap(URL(string: "https://live.test/live.m3u8")),
                                        signer: .plain(), refresh: nil, transport: FakeLiveUpstream())
@@ -932,7 +962,7 @@ final class LowLatencyRecordingTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-ll-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let upstream = FakeLowLatencyUpstream()
-        let recorder = LiveHLSRecorder(role: .muxed, cache: MediaCache(directory: directory), identity: "ll-test",
+        let recorder = LiveHLSRecorder(role: .muxed, cache: MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory)), identity: "ll-test",
                                        playlistURL: try XCTUnwrap(URL(string: "https://live.test/ll.m3u8")),
                                        signer: .plain(), refresh: nil, transport: upstream)
         await recorder.start()

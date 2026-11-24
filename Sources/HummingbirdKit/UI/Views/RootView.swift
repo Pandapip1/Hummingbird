@@ -164,6 +164,8 @@ struct BrowserTabContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .environment(\.openRoute, OpenRouteAction { route, title in tab.push(route, title: title) })
+        // The page's queue is its tab's, wherever the page is shown (the overview too).
+        .environment(app.queue(forTab: tab.id))
     }
 }
 

@@ -1,6 +1,7 @@
 import ATAppSync
 import CredentialStorage
 import Foundation
+import os
 import PlatformSupport
 import Synchronization
 
@@ -19,18 +20,23 @@ public final class AppDataStores: Sendable {
     /// pairing inboxes (`peer-messages/`) and the permission record
     /// (`permissions/`).
     public let dataDirectory: URL
-    /// Disposable data: the media cache (`Media-v1/`, `UMP-v2/`) and MetricKit
-    /// reports (`MetricKit/`).
+    /// Disposable data the system may purge: MetricKit reports (`MetricKit/`)
+    /// and transcoding scratch. Never the media cache (`mediaDirectory`).
     public let cachesDirectory: URL
+    /// The media cache (`Media-v1/`, `UMP-v2/`): expensive to download again, so
+    /// kept with the app's data, never in Caches (which the system purges when
+    /// storage runs low), and excluded from backups. tvOS has only Caches
+    /// (`ApplicationStorage.durableDataLocation`), so there it can be purged.
+    let mediaDirectory: KeptDirectory
     /// Device-local settings that are not synced.
     public let preferences: PreferencesDomain
     /// Plugin sign-ins, atproto sessions and AppSync instance identities.
     public let credentialStore: any CredentialStore
 
     let storage: Storage
-    /// Serves generated media to the player, caching it in `cachesDirectory`.
+    /// Serves generated media to the player, caching it in `mediaDirectory`.
     let mediaProxy: PluginMediaProxy
-    /// Every downloaded on-demand track (`Media-v1/` in `cachesDirectory`),
+    /// Every downloaded on-demand track (`Media-v1/` in `mediaDirectory`),
     /// with the generated-media cache counted toward the same limit.
     let mediaCache: MediaCache
     /// Serves `mediaCache` to the player over loopback HTTP.
@@ -57,10 +63,13 @@ public final class AppDataStores: Sendable {
         self.preferences = preferences
         self.credentialStore = credentialStore
         self.storage = storage
-        let generatedCache = UMPMediaCache(directory: cachesDirectory)
+        let media = KeptDirectory(named: "Media", inDataDirectory: dataDirectory)
+        Self.moveMediaCache(from: cachesDirectory, to: media)
+        mediaDirectory = media
+        let generatedCache = UMPMediaCache(directory: media)
         mediaProxy = PluginMediaProxy(cache: generatedCache)
         let limitGigabytes = preferences.defaults.object(forKey: PlaybackPreferenceKey.mediaCacheLimitGigabytes) as? Int
-        mediaCache = MediaCache(directory: cachesDirectory,
+        mediaCache = MediaCache(directory: media,
                                 limitBytes: MediaCache.bytes(gigabytes: limitGigabytes ?? MediaCache.defaultLimitGigabytes),
                                 sharing: [generatedCache])
         mediaDownloads = MediaDownloads(cache: mediaCache)
@@ -72,6 +81,36 @@ public final class AppDataStores: Sendable {
         // Downloads nobody watches pause while energy is saved.
         let downloads = mediaDownloads
         Task { await downloads.follow(policy) }
+    }
+
+    /// Builds before this one kept the media cache in Caches: it is moved (a
+    /// rename on the same volume), never copied or downloaded again. Entries
+    /// already in the new place win; the old folder goes once it is empty.
+    private static func moveMediaCache(from caches: URL, to media: KeptDirectory) {
+        let files = FileManager.default
+        for name in [MediaCache.directoryName, UMPMediaCache.directoryName] {
+            let old = caches.appendingPathComponent(name, isDirectory: true)
+            let new = media.url.appendingPathComponent(name, isDirectory: true)
+            guard files.fileExists(atPath: old.path) else { continue }
+            do {
+                if !files.fileExists(atPath: new.path) {
+                    try files.moveItem(at: old, to: new)
+                    Logger.mediaCache.notice("cache_moved name=\(name, privacy: .public)")
+                    continue
+                }
+                var moved = 0
+                for entry in try files.contentsOfDirectory(atPath: old.path) {
+                    let target = new.appendingPathComponent(entry)
+                    guard !files.fileExists(atPath: target.path) else { continue }
+                    try files.moveItem(at: old.appendingPathComponent(entry), to: target)
+                    moved += 1
+                }
+                if (try? files.contentsOfDirectory(atPath: old.path).isEmpty) == true { try? files.removeItem(at: old) }
+                Logger.mediaCache.notice("cache_merged name=\(name, privacy: .public) entries=\(moved)")
+            } catch {
+                Logger.mediaCache.error("cache_move_failed name=\(name, privacy: .public) message=\(error.localizedDescription)")
+            }
+        }
     }
 
     var defaults: UserDefaults { preferences.defaults }

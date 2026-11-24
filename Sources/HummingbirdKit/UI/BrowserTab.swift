@@ -16,6 +16,8 @@ struct PersistedBrowserSession: Codable, Sendable {
         let title: String
         let history: [PersistedRoute]
         let historyIndex: Int
+        /// The tab's playback queue (absent in sessions saved before tabs had their own).
+        var queue: PersistedPlaybackQueue? = nil
     }
     let tabs: [Tab]
     let activeTabID: UUID

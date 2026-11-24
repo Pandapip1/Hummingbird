@@ -115,7 +115,7 @@ final class PlaybackStallTests: XCTestCase {
     /// Background -> active: a playing video keeps playing with no reload or
     /// seek; one the system paused while away resumes in place; one the user
     /// paused stays paused.
-    func testReturningToTheAppKeepsPlaybackAsTheUserLeftIt() {
+    func testReturningToTheAppKeepsPlaybackAsTheUserLeftIt() async {
         let app = makeTestAppModel()
         let backend = ActivityBackend()
         app.makePlayer = { stores in PlayerModel(stores: stores, backend: backend) }
@@ -123,18 +123,18 @@ final class PlaybackStallTests: XCTestCase {
         model.togglePlayback()
         backend.calls.removeAll()
 
-        app.applicationBecameActive()
+        await model.resumeAfterBackground()
         XCTAssertEqual(backend.calls, [], "still playing: untouched (no reload, seek or rate change)")
         XCTAssertEqual(backend.activity, .playing)
 
         backend.report(.paused)  // the system paused it while away
-        app.applicationBecameActive()
+        await model.resumeAfterBackground()
         XCTAssertEqual(backend.calls, ["play"], "resumed in place")
         XCTAssertTrue(model.isPlaying)
 
         model.togglePlayback()  // the user pauses
         backend.calls.removeAll()
-        app.applicationBecameActive()
+        await model.resumeAfterBackground()
         XCTAssertEqual(backend.calls, [], "a video the user paused stays paused")
         XCTAssertFalse(model.isPlaying)
         app.closeWindow()
@@ -143,7 +143,7 @@ final class PlaybackStallTests: XCTestCase {
     /// Calls, remote commands, unplugged headphones and the system's own
     /// controls go through the same intent as the app's: the UI state, the
     /// intent (what returning to the app resumes) and the engine agree.
-    func testExternalEventsKeepStateIntentAndEngineInStep() {
+    func testExternalEventsKeepStateIntentAndEngineInStep() async {
         let backend = ActivityBackend()
         let model = makeTestPlayerModel(backend: backend)
         model.togglePlayback()
@@ -155,7 +155,7 @@ final class PlaybackStallTests: XCTestCase {
         XCTAssertFalse(model.isPlaying)
         XCTAssertTrue(model.isInterrupted)
         backend.calls.removeAll()
-        model.applicationBecameActive()
+        await model.resumeAfterBackground()
         XCTAssertEqual(backend.calls, [], "returning to the app during a call does not resume")
         backend.calls.removeAll()
         // Hung up, the system says it may resume: it resumes.
@@ -169,7 +169,7 @@ final class PlaybackStallTests: XCTestCase {
         backend.external(.interruptionEnded(shouldResume: false))
         XCTAssertFalse(model.isPlaying)
         backend.calls.removeAll()
-        model.applicationBecameActive()
+        await model.resumeAfterBackground()
         XCTAssertEqual(backend.calls, [], "the user's intent is now paused: returning does not resume")
 
         // The lock screen plays, then pauses.
@@ -180,7 +180,7 @@ final class PlaybackStallTests: XCTestCase {
         XCTAssertFalse(model.isPlaying)
         XCTAssertEqual(backend.calls.last, "pause")
         backend.calls.removeAll()
-        model.applicationBecameActive()
+        await model.resumeAfterBackground()
         XCTAssertEqual(backend.calls, [], "paused from the lock screen stays paused")
 
         // Headphones unplugged while playing: the user's pause.
@@ -190,7 +190,7 @@ final class PlaybackStallTests: XCTestCase {
         backend.external(.outputLost)
         XCTAssertFalse(model.isPlaying)
         backend.calls.removeAll()
-        model.applicationBecameActive()
+        await model.resumeAfterBackground()
         XCTAssertEqual(backend.calls, [])
 
         // A remote seek.

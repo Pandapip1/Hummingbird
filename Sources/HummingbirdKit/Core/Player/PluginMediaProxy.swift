@@ -3,6 +3,7 @@ import NIOCore
 import NIOHTTP1
 import NIOPosix
 import os
+import Synchronization
 
 /// Exposes plugin-generated DASH media as a loopback fMP4 HLS presentation.
 /// The player requests ordinary HLS URLs while segment bytes remain owned by
@@ -53,6 +54,10 @@ actor PluginMediaProxy {
     private var order: [String] = []
     private var group: MultiThreadedEventLoopGroup?
     private var channel: Channel?
+    /// The port the player's URLs name: kept when the listener is bound again.
+    private var boundPort: Int?
+    /// Accepted connections, so a suspension (and its simulation) can close them.
+    private let connections = OpenConnections()
     private var starting: Task<Channel, Error>?
     private var foregroundRequests = 0
     private var lastForegroundRequest: Date?
@@ -62,10 +67,12 @@ actor PluginMediaProxy {
     /// caching media in their caches directory.
     init(cache: UMPMediaCache) {
         mediaCache = cache
+        LoopbackLifecycle.shared.register(self)
     }
 
     func register(manifest: String, runtime: PluginRuntime, executor: Int, prefetch: Bool = true,
                   useCache: Bool = true,
+                  identity: String? = nil,
                   subtitles: [LocalSubtitle] = [],
                   cacheAllocationBytes: Int64? = nil,
                   prefetchExecutorFactory: PrefetchExecutorFactory? = nil,
@@ -79,7 +86,10 @@ actor PluginMediaProxy {
         let playlists = try DashToHLS.convert(manifest, baseURL: base)
         // v2 invalidates entries that may have been populated by an isolated
         // executor belonging to a different generated source rendition.
-        let cacheKey = "generated-dash-v2:\(manifest)" + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
+        // Generated manifests embed per-session URLs: keyed by them, a video
+        // never found its cached bytes again. The stable identity (content and
+        // format) keys the cache when the caller has one.
+        let cacheKey = "generated-dash-v2:" + (identity ?? manifest) + (cacheAllocationBytes.map { ":test-allocation:\($0)" } ?? "")
         let cache = try await useCache ? mediaCache.open(.init(
             key: cacheKey,
             allocationBytes: cacheAllocationBytes ?? playlists.estimatedBytes,
@@ -262,33 +272,44 @@ actor PluginMediaProxy {
         webmTracks = webmTracks.filter { !$0.key.hasPrefix("\(id)/") }
     }
 
+    /// The listening channel, bound again if it died (a suspended app's
+    /// socket is closed by iOS) on the port its playlists already name.
     private func serverChannel() async throws -> Channel {
-        if let channel { return channel }
+        if let channel, channel.isActive { return channel }
         if let starting { return try await starting.value }
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let group = self.group ?? MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.group = group
+        let wanted = boundPort
         let task = Task<Channel, Error> {
-            let channel = try await ServerBootstrap(group: group)
-                .serverChannelOption(ChannelOptions.backlog, value: 16)
-                .childChannelInitializer { child in
-                    child.pipeline.configureHTTPServerPipeline().flatMap {
-                        child.pipeline.addHandler(HTTPHandler(proxy: self))
-                    }
-                }
-                .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                .bind(host: "127.0.0.1", port: 0).get()
-            return channel
+            if let wanted, let channel = try? await self.bind(group: group, port: wanted) { return channel }
+            return try await self.bind(group: group, port: 0)
         }
         starting = task
         do {
             let result = try await task.value
             channel = result
+            boundPort = result.localAddress?.port
             starting = nil
             return result
         } catch {
             starting = nil
             throw error
         }
+    }
+
+    private nonisolated func bind(group: MultiThreadedEventLoopGroup, port: Int) async throws -> Channel {
+        let connections = self.connections
+        return try await ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.backlog, value: 16)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { child in
+                connections.add(child)
+                return child.pipeline.configureHTTPServerPipeline().flatMap {
+                    child.pipeline.addHandler(HTTPHandler(proxy: self))
+                }
+            }
+            .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .bind(host: "127.0.0.1", port: port).get()
     }
 
     private func response(for uri: String) async -> (HTTPResponseStatus, String, Data) {
@@ -697,5 +718,31 @@ struct WebMDashTrack: Sendable {
                                        bytes: 0..<Int64(bytes.count))
         return try Matroska.fragment(clusters: bytes, file: file, track: track, segment: segment,
                                      sequence: UInt32(index + 1))
+    }
+}
+
+extension PluginMediaProxy: SuspendedResource {
+    /// Binds again on the same port: the presentations' playlists name it.
+    func resumeAfterSuspension() async -> PortMove? {
+        guard let before = boundPort else { return nil }
+        let reachable = await LoopbackLifecycle.accepts(port: before)
+        if let open = channel, !(open.isActive && reachable) {
+            Logger.mediaProxy.notice("proxy_unreachable port=\(before)")
+            open.close(promise: nil)
+            channel = nil
+        }
+        guard let after = try? await serverChannel().localAddress?.port else {
+            Logger.mediaProxy.error("proxy_resume_failed")
+            return nil
+        }
+        guard after != before else { return nil }
+        Logger.mediaProxy.fault("proxy_port_moved from=\(before) to=\(after)")
+        return PortMove(from: before, to: after)
+    }
+
+    func reclaimAsSuspensionWould() async {
+        let open = connections.takeAll()
+        try? await channel?.close()
+        for child in open { try? await child.close() }
     }
 }

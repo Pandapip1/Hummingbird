@@ -20,7 +20,6 @@ final class AppModel {
     let downloads: DownloadsModel
     let subscriptionFeed: SubscriptionFeed
     let homeFeed: FeedModel
-    let playbackQueue: PlaybackQueue
     let searchHistory: SearchHistory
     let profileChanges: ProfileChangeStore
     let profileAccount: ProfileAccountService
@@ -39,6 +38,8 @@ final class AppModel {
     var activeTabID: BrowserTab.ID { didSet { persistBrowserSession() } }
 
     @ObservationIgnored private var tabPlayers: [BrowserTab.ID: PlayerModel] = [:]
+    /// Each tab's playback queue (`queue(forTab:)`), saved with its tab.
+    @ObservationIgnored private(set) var tabQueues: [BrowserTab.ID: PlaybackQueue] = [:]
     private struct WeakPlayer { weak var player: PlayerModel? }
     /// Every tab player alive in the process, by tab (see `player(forTab:)`).
     private static var livePlayers: [BrowserTab.ID: WeakPlayer] = [:]
@@ -109,6 +110,7 @@ final class AppModel {
             }
         }
         tabPlayers.removeValue(forKey: id)?.close()
+        tabQueues[id] = nil
         Self.livePlayers[id] = nil
         contentTabs.remove(at: index)
         persistBrowserSession()
@@ -156,6 +158,23 @@ final class AppModel {
         return player
     }
 
+    /// The playback queue of tab `id`: every tab has its own, saved with it.
+    /// Pages reach their tab's queue through the environment
+    /// (`@Environment(PlaybackQueue.self)`, set by `BrowserTabContentView`).
+    func queue(forTab id: BrowserTab.ID) -> PlaybackQueue {
+        if let queue = tabQueues[id] { return queue }
+        let queue = makeQueue(restored: nil)
+        tabQueues[id] = queue
+        return queue
+    }
+
+    /// The queue of the tab in front (menus and commands that act on it).
+    var activeTabQueue: PlaybackQueue { queue(forTab: activeTabID) }
+
+    private func makeQueue(restored: PersistedPlaybackQueue?) -> PlaybackQueue {
+        PlaybackQueue(restored: restored, didChange: { [weak self] in self?.persistBrowserSession() })
+    }
+
     var activePlayerForDebug: PlayerModel? { tabPlayers[activeTabID] }
 
     /// The window showing this model closed: every tab's player stops now
@@ -176,12 +195,6 @@ final class AppModel {
         for player in tabPlayers.values { player.recordProgressNow() }
     }
 
-    /// The app is back in front: each tab's player continues as the user left
-    /// it (see `PlayerModel.applicationBecameActive`).
-    func applicationBecameActive() {
-        for player in tabPlayers.values { player.applicationBecameActive() }
-    }
-
     /// Players this window still owns (tests, debugging).
     var openPlayerCount: Int { tabPlayers.count }
 
@@ -195,7 +208,8 @@ final class AppModel {
         let tabs: [PersistedBrowserSession.Tab] = contentTabs.compactMap { tab in
             let history = tab.history.compactMap(PersistedRoute.init)
             guard history.count == tab.history.count else { return nil }
-            return .init(id: tab.id, title: tab.title, history: history, historyIndex: tab.historyIndex)
+            return .init(id: tab.id, title: tab.title, history: history, historyIndex: tab.historyIndex,
+                         queue: tabQueues[tab.id]?.persisted)
         }
         guard let firstTab = tabs.first else { return }
         let activeTabID = tabs.contains { $0.id == activeTabID } ? activeTabID : firstTab.id
@@ -269,9 +283,6 @@ final class AppModel {
         self.localProfileID = localProfileID
         self.library = library
         self.platform = platform
-        self.playbackQueue = PlaybackQueue(
-            storage: storage, storageName: storagePrefix + "playback_queue", restored: persistence.playbackQueue
-        )
         self.searchHistory = SearchHistory(
             load: { persistence.searchHistory },
             save: { storage.save($0, name: storagePrefix + "search_history") }
@@ -357,6 +368,22 @@ final class AppModel {
             didUpdate: { [weak library] items in library?.updateHomeCache(items) }
         )
         for tab in contentTabs { tab.onChange { [weak self] in self?.persistBrowserSession() } }
+        // Each tab's queue, as it was saved with the tab.
+        for saved in persistence.browserSession?.tabs ?? [] where contentTabs.contains(where: { $0.id == saved.id }) {
+            if let queue = saved.queue { tabQueues[saved.id] = makeQueue(restored: queue) }
+        }
+        // The profile's queue from before each tab had its own goes to the
+        // active tab, once: saved there, then its old store is deleted.
+        if let legacy = persistence.legacyPlaybackQueue {
+            let active = queue(forTab: activeTabID)
+            if active.items.isEmpty {
+                tabQueues[activeTabID] = makeQueue(restored: legacy.queue)
+            } else {
+                for video in legacy.queue.items { active.enqueue(video) }
+            }
+            persistBrowserSession()
+            stores.storage.remove(name: legacy.storeName)
+        }
         oauthTabPresenter?.host = self
         // A restored or synced setting is applied without touching the
         // network here: the gate explains it before the system can prompt.
@@ -451,15 +478,22 @@ struct LibraryPersistenceSnapshot: Sendable {
                             feedCache: [:], homeCache: [])
 }
 
+struct LegacyPlaybackQueue: Sendable {
+    var queue: PersistedPlaybackQueue
+    var storeName: String
+}
+
 struct AppPersistenceSnapshot: Sendable {
     var plugins: [InstalledPlugin]
     var library: LibraryPersistenceSnapshot
-    var playbackQueue: PersistedPlaybackQueue?
+    /// The queue the profile kept before each tab had its own, and its store:
+    /// given to the active tab once (`AppModel.init`), then deleted.
+    var legacyPlaybackQueue: LegacyPlaybackQueue?
     var searchHistory: [String]
     var browserSession: PersistedBrowserSession?
 
     static let empty = Self(
-        plugins: [], library: .empty, playbackQueue: nil,
+        plugins: [], library: .empty, legacyPlaybackQueue: nil,
         searchHistory: [], browserSession: nil
     )
 
@@ -492,7 +526,10 @@ struct AppPersistenceSnapshot: Sendable {
                     feedCache: load([String: [SavedVideo]].self, "feed_cache") ?? [:],
                     homeCache: load([SavedVideo].self, "home_cache") ?? []
                 ),
-                playbackQueue: load(PersistedPlaybackQueue.self, "playback_queue"),
+                legacyPlaybackQueue: storage.load(PersistedPlaybackQueue.self, name: prefix + "playback_queue")
+                    .map { LegacyPlaybackQueue(queue: $0, storeName: prefix + "playback_queue") }
+                    ?? (mayLoadLegacy ? storage.load(PersistedPlaybackQueue.self, name: "playback_queue")
+                        .map { LegacyPlaybackQueue(queue: $0, storeName: "playback_queue") } : nil),
                 searchHistory: load([String].self, "search_history") ?? [],
                 browserSession: resolvedProfileID.flatMap {
                     storage.load(

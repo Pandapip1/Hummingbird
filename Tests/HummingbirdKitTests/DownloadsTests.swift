@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import XCTest
 import SwiftOpenUI
 @testable import HummingbirdKit
@@ -17,7 +18,7 @@ final class DownloadsTests: XCTestCase {
     private func makeDownloads(file: Data, failures: Int = 0, delay: Duration = .milliseconds(20)) -> (MediaDownloads, MediaCache) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hb-downloads-\(UUID().uuidString)")
         directories.append(directory)
-        let cache = MediaCache(directory: directory)
+        let cache = MediaCache(directory: KeptDirectory(named: "Media", inDataDirectory: directory))
         return (MediaDownloads(cache: cache, transport: SlowUpstream(file: file, delay: delay)), cache)
     }
 

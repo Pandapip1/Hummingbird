@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import Crypto
 #if canImport(Darwin)
 import Darwin
@@ -10,12 +11,13 @@ import Glibc
 /// video and selected formats. Media is stored in one preallocated file and
 /// addressed by an atomic sidecar index.
 actor UMPMediaCache {
-    private static let cacheDirectoryName = "UMP-v2"
-    /// The app's caches directory; the cache lives in its `UMP-v2` folder.
+    static let directoryName = "UMP-v2"
+    /// The media directory; the cache lives in its `UMP-v2` folder. A
+    /// `KeptDirectory`, never Caches (see `MediaCache`).
     private let parent: URL
 
-    init(directory parent: URL) {
-        self.parent = parent
+    init(directory: KeptDirectory) {
+        parent = directory.url
     }
 
     struct Handle: Hashable, Sendable { fileprivate let id: String }
@@ -110,8 +112,8 @@ actor UMPMediaCache {
 
     private func cacheRoot() throws -> URL {
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        try Self.removeObsoleteCacheDirectories(in: parent, keeping: Self.cacheDirectoryName)
-        let root = parent.appendingPathComponent(Self.cacheDirectoryName, isDirectory: true)
+        try Self.removeObsoleteCacheDirectories(in: parent, keeping: Self.directoryName)
+        let root = parent.appendingPathComponent(Self.directoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }

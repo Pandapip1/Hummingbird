@@ -668,7 +668,7 @@ struct OpenedLocalProfile: Sendable {
             peerServiceFailure = error
         }
         let changes = ProfileChangeStore(
-            storageDirectory: stores.profileSyncDirectory,
+            storageDirectory: stores.profileSyncDirectory, atRest: stores.atRest,
             signer: try? peerService?.peer.mutationSigner()
         )
         do {

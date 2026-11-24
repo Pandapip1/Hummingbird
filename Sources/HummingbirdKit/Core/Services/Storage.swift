@@ -10,12 +10,16 @@ import os
 /// Writes are encoded and committed in submission order on a background
 /// queue, so the main actor never waits for JSON or SQLite.
 ///
-/// The database and legacy files are protected `complete`: unreadable while
-/// the device is locked. A write that can't reach them then (or that fails)
-/// goes to ATAppSync's `PendingWriteQueue` (`pending-writes.queue`, kept open,
-/// `completeUnlessOpen`), never nowhere; reads see queued values first; the
-/// queue is applied, in order and once, at launch and when protected data
-/// becomes available again.
+/// Every value is sealed at rest (ATAppSync's `AtRestSealer`, a profile's
+/// key for its own data, the device's for the rest): the database, legacy
+/// files and the pending-write queue hold nothing readable without the key.
+/// Files are `completeUntilFirstUserAuthentication`, so background work can
+/// read and write them while the device is locked once it has been unlocked
+/// since boot; the keys are readable under the same condition. A write that
+/// can't land (locked before that, or failing) goes to the pending-write
+/// queue, never nowhere; reads see queued values first; the queue is
+/// applied, in order and once, at launch and when protected data becomes
+/// available again.
 final class Storage: Sendable {
     private let backend: StorageBackend
     private let writer = DispatchQueue(label: "app.hummingbird.storage", qos: .utility)
@@ -26,13 +30,19 @@ final class Storage: Sendable {
     /// stores kept beside this one (the synced cache).
     let protectedData: any ProtectedDataAvailability
 
-    init(directory: URL, protectedData: any ProtectedDataAvailability) {
+    /// The keys everything here is sealed with; stores kept beside this one
+    /// (the profile journals) use them too.
+    let atRest: AtRestKeyring
+
+    init(directory: URL, protectedData: any ProtectedDataAvailability, atRest: AtRestKeyring) {
         self.protectedData = protectedData
+        self.atRest = atRest
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let queue = PendingWriteQueue(fileURL: directory.appendingPathComponent("pending-writes.queue"),
-                                      availability: protectedData)
+                                      availability: protectedData,
+                                      sealer: atRest.sealer(profile: nil, purpose: "pending-writes"))
         pendingWrites = queue
-        backend = StorageBackend(directory: directory, queue: queue, protectedData: protectedData)
+        backend = StorageBackend(directory: directory, queue: queue, protectedData: protectedData, atRest: atRest)
         // Whatever a locked device or a killed process left queued lands now,
         // and again whenever the device unlocks.
         let backend = backend
@@ -44,15 +54,18 @@ final class Storage: Sendable {
         }
     }
 
-    private init(backend: StorageBackend) {
+    private init(backend: StorageBackend, atRest: AtRestKeyring) {
         self.backend = backend
+        self.atRest = atRest
         pendingWrites = nil
         protectedData = UnprotectedDataAvailability()
     }
 
     /// A private in-memory database with no files at all, for tests.
     static func inMemory() -> Storage {
-        Storage(backend: StorageBackend(directory: nil, queue: nil, protectedData: UnprotectedDataAvailability()))
+        let atRest = AtRestKeyring.ephemeral()
+        return Storage(backend: StorageBackend(directory: nil, queue: nil, protectedData: UnprotectedDataAvailability(),
+                                               atRest: atRest), atRest: atRest)
     }
 
     func load<T: Decodable>(_ type: T.Type, name: String) -> T? {
@@ -101,18 +114,20 @@ final class StorageBackend: @unchecked Sendable {
     private let database: StorageDatabase
     private let queue: PendingWriteQueue?
     private let protectedData: any ProtectedDataAvailability
+    private let atRest: AtRestKeyring
     private static let queuePrefix = "storage/"
 
-    init(directory: URL?, queue: PendingWriteQueue?, protectedData: any ProtectedDataAvailability) {
+    init(directory: URL?, queue: PendingWriteQueue?, protectedData: any ProtectedDataAvailability, atRest: AtRestKeyring) {
+        self.atRest = atRest
         self.directory = directory
         self.queue = queue
         self.protectedData = protectedData
         if let directory {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             database = StorageDatabase(url: directory.appendingPathComponent("storage.sqlite3"),
-                                       protectedData: protectedData)
+                                       protectedData: protectedData, atRest: atRest)
         } else {
-            database = StorageDatabase(path: ":memory:")
+            database = StorageDatabase(path: ":memory:", atRest: atRest)
         }
     }
 
@@ -128,7 +143,7 @@ final class StorageBackend: @unchecked Sendable {
             return database.load(name: name).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
         }
         let legacyURL = directory.appendingPathComponent(name + ".json")
-        if let data = try? Data(contentsOf: legacyURL),
+        if let stored = try? Data(contentsOf: legacyURL), let data = openLegacy(stored, name: name, file: legacyURL),
            let value = try? JSONDecoder().decode(T.self, from: data) {
             if database.save(data, name: name) { try? FileManager.default.removeItem(at: legacyURL) }
             return value
@@ -214,41 +229,83 @@ final class StorageBackend: @unchecked Sendable {
         if let directory { try? FileManager.default.removeItem(at: directory.appendingPathComponent(name + ".json")) }
     }
 
+    /// The fallback file is sealed like the database.
     private func saveLegacy(_ data: Data, to url: URL) -> Bool {
+        let name = url.deletingPathExtension().lastPathComponent
         do {
-            try data.write(to: url, options: [.atomic])
-            try protectedData.setProtection(.complete, for: url)
+            let sealed = try StorageSealing.sealer(for: name, in: atRest).seal(data, context: name)
+            try sealed.write(to: url, options: [.atomic])
+            try protectedData.setProtection(.completeUntilFirstUserAuthentication, for: url)
             return true
         } catch {
             return false
         }
     }
+
+    /// A legacy file's contents: written before sealing (plain JSON) or
+    /// sealed by `saveLegacy`. One that doesn't open is quarantined, not read.
+    private func openLegacy(_ stored: Data, name: String, file: URL) -> Data? {
+        switch StorageSealing.sealer(for: name, in: atRest).open(stored, context: name) {
+        case .opened(let data), .legacyPlaintext(let data): return data
+        case .damaged:
+            AtRestQuarantine.keep(stored, label: name, near: file)
+            try? FileManager.default.removeItem(at: file)
+            return nil
+        case .unavailable: return nil
+        }
+    }
+}
+
+/// Which key seals a stored value: the profile's for names of its data
+/// (`profile.<id>.…`), the device's for everything else.
+enum StorageSealing {
+    static func sealer(for name: String, in keyring: AtRestKeyring) -> AtRestSealer {
+        keyring.sealer(profile: profile(of: name), purpose: "storage")
+    }
+
+    static func profile(of name: String) -> UUID? {
+        guard name.hasPrefix("profile.") else { return nil }
+        let rest = name.dropFirst("profile.".count)
+        guard let end = rest.firstIndex(of: ".") else { return nil }
+        return UUID(uuidString: String(rest[..<end]))
+    }
 }
 
 /// Synchronized key/value database. Values remain JSON blobs so persisted model
 /// compatibility stays independent of the SQL schema.
+///
+/// Every value is sealed at rest (`StorageSealing`): `save` seals, `load`
+/// opens, and there is no way to reach the table around them. A value
+/// written before sealing is read once and sealed in place; one that doesn't
+/// open is moved to the `quarantine` table, never deleted. The sealed-value
+/// approach (rather than an encrypted page layer such as SQLCipher) keeps
+/// the system SQLite every platform ships, and keeps salvage per value.
 final class StorageDatabase: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: OpaquePointer?
+    private let atRest: AtRestKeyring
 
-    /// Protected `complete`: unreadable while the device is locked.
-    convenience init(url: URL, protectedData: any ProtectedDataAvailability) {
-        self.init(path: url.path)
+    /// Protected `completeUntilFirstUserAuthentication`: readable by work done
+    /// while the device is locked, once it has been unlocked since boot.
+    convenience init(url: URL, protectedData: any ProtectedDataAvailability, atRest: AtRestKeyring) {
+        self.init(path: url.path, atRest: atRest)
         for path in [url.path, url.path + "-wal", url.path + "-shm"] where FileManager.default.fileExists(atPath: path) {
-            do { try protectedData.setProtection(.complete, for: URL(fileURLWithPath: path)) }
+            do { try protectedData.setProtection(.completeUntilFirstUserAuthentication, for: URL(fileURLWithPath: path)) }
             catch { Logger.performance.error("storage_protection_failed error=\(String(describing: error), privacy: .public)") }
         }
     }
 
     /// `":memory:"` opens a private in-memory database.
-    init(path: String) {
+    init(path: String, atRest: AtRestKeyring) {
+        self.atRest = atRest
         var opened: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         if sqlite3_open_v2(path, &opened, flags, nil) == SQLITE_OK {
             handle = opened
             sqlite3_busy_timeout(opened, 2_000)
             if sqlite3_exec(opened, "PRAGMA journal_mode=WAL", nil, nil, nil) != SQLITE_OK ||
-               sqlite3_exec(opened, "CREATE TABLE IF NOT EXISTS storage (name TEXT PRIMARY KEY, payload BLOB NOT NULL, updated REAL NOT NULL)", nil, nil, nil) != SQLITE_OK {
+               sqlite3_exec(opened, "CREATE TABLE IF NOT EXISTS storage (name TEXT PRIMARY KEY, payload BLOB NOT NULL, updated REAL NOT NULL)", nil, nil, nil) != SQLITE_OK ||
+               sqlite3_exec(opened, "CREATE TABLE IF NOT EXISTS quarantine (name TEXT NOT NULL, payload BLOB NOT NULL, quarantined REAL NOT NULL)", nil, nil, nil) != SQLITE_OK {
                 sqlite3_close(opened)
                 handle = nil
             }
@@ -259,9 +316,51 @@ final class StorageDatabase: @unchecked Sendable {
 
     deinit { if let handle { sqlite3_close(handle) } }
 
+    /// The value stored for `name`, unsealed. Nil when there is none, when
+    /// the key can't be read now, or when it didn't open (then quarantined).
     func load(name: String) -> Data? {
         lock.lock()
         defer { lock.unlock() }
+        guard let stored = loadStored(name: name) else { return nil }
+        switch StorageSealing.sealer(for: name, in: atRest).open(stored, context: name) {
+        case .opened(let data):
+            return data
+        case .legacyPlaintext(let data):
+            // Written before sealing: sealed in place now, once.
+            _ = saveStored(data, name: name)
+            return data
+        case .damaged:
+            quarantine(stored, name: name)
+            return nil
+        case .unavailable:
+            return nil
+        }
+    }
+
+    /// Whether `name` has a value that didn't open and was quarantined
+    /// (tests and diagnostics).
+    func quarantinedCount(name: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let handle else { return 0 }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "SELECT COUNT(*) FROM quarantine WHERE name = ?1", -1, &statement, nil) == SQLITE_OK,
+              let statement else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK,
+              sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
+    /// Seals `data` for `name` and stores it.
+    @discardableResult
+    func save(_ data: Data, name: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return saveStored(data, name: name)
+    }
+
+    private func loadStored(name: String) -> Data? {
         guard let handle else { return nil }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, "SELECT payload FROM storage WHERE name = ?1", -1, &statement, nil) == SQLITE_OK,
@@ -274,11 +373,34 @@ final class StorageDatabase: @unchecked Sendable {
         return Data(bytes: bytes, count: count)
     }
 
-    @discardableResult
-    func save(_ data: Data, name: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let handle else { return false }
+    /// Moves a value that didn't open out of the way, keeping it.
+    private func quarantine(_ stored: Data, name: String) {
+        guard let handle else { return }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "INSERT INTO quarantine(name, payload, quarantined) VALUES(?1, ?2, ?3)",
+                                 -1, &statement, nil) == SQLITE_OK, let statement else { return }
+        defer { sqlite3_finalize(statement) }
+        let bound = sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK
+            && stored.withUnsafeBytes { sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32($0.count), sqliteTransient) } == SQLITE_OK
+            && sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970) == SQLITE_OK
+        guard bound, sqlite3_step(statement) == SQLITE_DONE else { return }
+        removeStored(name: name)
+        Logger.performance.error("storage_value_quarantined bytes=\(stored.count)")
+    }
+
+    private func removeStored(name: String) {
+        guard let handle else { return }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "DELETE FROM storage WHERE name = ?1", -1, &statement, nil) == SQLITE_OK,
+              let statement else { return }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK else { return }
+        _ = sqlite3_step(statement)
+    }
+
+    private func saveStored(_ plaintext: Data, name: String) -> Bool {
+        guard let handle,
+              let data = try? StorageSealing.sealer(for: name, in: atRest).seal(plaintext, context: name) else { return false }
         var statement: OpaquePointer?
         let sql = "INSERT INTO storage(name, payload, updated) VALUES(?1, ?2, ?3) ON CONFLICT(name) DO UPDATE SET payload=excluded.payload, updated=excluded.updated"
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
@@ -298,13 +420,7 @@ extension StorageDatabase {
     func remove(name: String) {
         lock.lock()
         defer { lock.unlock() }
-        guard let handle else { return }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, "DELETE FROM storage WHERE name = ?1", -1, &statement, nil) == SQLITE_OK,
-              let statement else { return }
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK else { return }
-        _ = sqlite3_step(statement)
+        removeStored(name: name)
     }
 }
 

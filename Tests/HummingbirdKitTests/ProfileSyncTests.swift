@@ -32,7 +32,7 @@ final class ProfileSyncTests: XCTestCase {
     @MainActor
     func testPluginSettingsAreReplicatedButCredentialsAreNot() async throws {
         let directory = makeTestDirectory()
-        let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
+        let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"), sealer: testAtRestSealer)
         let recorder = ProfileChangeStore(mutationLog: mutationLog)
         let stores = makeTestStores()
         let configJSON = #"{"name":"Example","id":"example","sourceUrl":"https://plugins.example/config.json"}"#
@@ -60,7 +60,7 @@ final class ProfileSyncTests: XCTestCase {
     @MainActor
     func testLibraryDeletionLeavesDurableTombstone() async throws {
         let directory = makeTestDirectory()
-        let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"))
+        let mutationLog = try AppSyncMutationLog(fileURL: directory.appendingPathComponent("changes.json"), sealer: testAtRestSealer)
         let changes = ProfileChangeStore(mutationLog: mutationLog)
         let library = LibraryStore(profileChanges: changes, storage: makeTestStores().storage)
         let playlist = library.createPlaylist(name: "Offline")
@@ -74,7 +74,7 @@ final class ProfileSyncTests: XCTestCase {
 
     func testLocalProfileChangesPersistWithoutAnAccount() throws {
         let directory = makeTestDirectory()
-        let recorder = ProfileChangeStore(storageDirectory: directory)
+        let recorder = ProfileChangeStore(storageDirectory: directory, atRest: testAtRestKeyring)
         let profileID = UUID()
         let first = try recorder.activate(localProfileID: profileID)
         try first.appendPut(

@@ -25,18 +25,14 @@ public struct SystemProtectedData: ProtectedDataAvailability {
 
     public func protection(of url: URL) -> AppSyncFileProtection? {
         switch FileProtection.current(of: url) {
-        case .complete?: .complete
-        case .completeUnlessOpen?: .completeUnlessOpen
         case .completeUntilFirstUserAuthentication?: .completeUntilFirstUserAuthentication
         case .unprotected?: .unprotected
-        case nil: nil
+        case .complete?, .completeUnlessOpen?, nil: nil
         }
     }
 
     private static func fileProtection(_ protection: AppSyncFileProtection) -> FileProtection.Class {
         switch protection {
-        case .complete: .complete
-        case .completeUnlessOpen: .completeUnlessOpen
         case .completeUntilFirstUserAuthentication: .completeUntilFirstUserAuthentication
         case .unprotected: .unprotected
         }

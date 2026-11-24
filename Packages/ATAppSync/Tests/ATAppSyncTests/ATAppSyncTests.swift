@@ -50,10 +50,10 @@ final class ATAppSyncTests: XCTestCase {
         let collection = try XCTUnwrap(NSID(rawValue: "com.eightybps.hummingbird.subscription"))
         let key = try XCTUnwrap(RecordKey(rawValue: "channel"))
         let device = UUID()
-        let first = try OfflineMutationJournal(fileURL: file, deviceID: device)
+        let first = try OfflineMutationJournal(fileURL: file, sealer: testAtRestSealer, deviceID: device)
         let mutation = try first.appendPut(collection: collection, key: key, value: .string("saved"))
 
-        let reopened = try OfflineMutationJournal(fileURL: file)
+        let reopened = try OfflineMutationJournal(fileURL: file, sealer: testAtRestSealer)
         let pendingBeforeAcknowledgement = reopened.pending()
         XCTAssertEqual(pendingBeforeAcknowledgement, [mutation])
         try reopened.acknowledge([mutation.id])
@@ -86,8 +86,8 @@ final class ATAppSyncTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let collection = NSID(rawValue: "com.example.items")!
         let key = RecordKey(rawValue: "one")!
-        let a = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("a.json"))
-        let b = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("b.json"))
+        let a = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("a.json"), sealer: testAtRestSealer)
+        let b = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("b.json"), sealer: testAtRestSealer)
         let event = try a.appendPut(collection: collection, key: key, value: .string("value"))
 
         XCTAssertTrue(try b.merge(event, needsUpload: true))
@@ -114,8 +114,8 @@ final class ATAppSyncTests: XCTestCase {
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, collection: collection,
             recordKey: key, operation: .put, value: .string("second"), timestamp: timestamp
         )
-        let left = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("left.json"))
-        let right = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("right.json"))
+        let left = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("left.json"), sealer: testAtRestSealer)
+        let right = try OfflineMutationJournal(fileURL: directory.appendingPathComponent("right.json"), sealer: testAtRestSealer)
 
         _ = try left.merge(first, needsUpload: false)
         _ = try left.merge(second, needsUpload: false)
@@ -501,11 +501,11 @@ final class ATAppSyncTests: XCTestCase {
         try b.trust(a.peer.publicIdentity)
 
         let aJournal = try OfflineMutationJournal(
-            fileURL: root.appendingPathComponent("a-journal.json"),
+            fileURL: root.appendingPathComponent("a-journal.json"), sealer: testAtRestSealer,
             signer: a.peer.mutationSigner()
         )
         let bJournal = try OfflineMutationJournal(
-            fileURL: root.appendingPathComponent("b-journal.json"),
+            fileURL: root.appendingPathComponent("b-journal.json"), sealer: testAtRestSealer,
             signer: b.peer.mutationSigner()
         )
         let event = try aJournal.appendPut(

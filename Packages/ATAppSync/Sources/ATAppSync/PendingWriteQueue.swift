@@ -2,13 +2,11 @@ import Foundation
 import os
 import Synchronization
 
-/// A file's data-protection class: when its contents can be read.
+/// A file's data-protection class: when its contents can be read. Only the
+/// classes app data may use: everything it keeps is read and written by
+/// work done while the device is locked, and is sealed at rest
+/// (`AtRestSealer`) rather than locked away by a stricter class.
 public enum AppSyncFileProtection: String, Codable, Sendable, CaseIterable {
-    /// Readable only while the device is unlocked.
-    case complete
-    /// Can be created and, once open, written and read while locked; closed,
-    /// readable only while unlocked.
-    case completeUnlessOpen
     /// Readable after the first unlock since boot.
     case completeUntilFirstUserAuthentication
     /// Always readable.
@@ -26,7 +24,8 @@ public protocol ProtectedDataAvailability: Sendable {
     func observeProtectedDataAvailability(_ handler: @escaping @Sendable (Bool) -> Void)
     /// Sets a file's protection class.
     func setProtection(_ protection: AppSyncFileProtection, for url: URL) throws
-    /// A file's protection class, when the platform has one.
+    /// A file's protection class: nil without data protection, or for a
+    /// class app data never uses (a file from before at-rest sealing).
     func protection(of url: URL) -> AppSyncFileProtection?
 }
 
@@ -89,7 +88,8 @@ public struct PendingWrite: Codable, Hashable, Sendable {
 /// the process may die before a slower write lands. Each append is one line
 /// written through a handle opened at launch and kept open, then fsync'd,
 /// so it works while the device is locked (the file's class is
-/// `completeUnlessOpen`: unreadable at rest once closed while locked) and
+/// `completeUntilFirstUserAuthentication`; every value is sealed with the
+/// device's at-rest key, so nothing in it is readable without that) and
 /// survives a crash or the app being killed. A partly written last line
 /// (a crash mid-append) is ignored.
 ///
@@ -102,6 +102,8 @@ public struct PendingWrite: Codable, Hashable, Sendable {
 public final class PendingWriteQueue: Sendable {
     public let fileURL: URL
     private let availability: any ProtectedDataAvailability
+    /// Every value is sealed at rest.
+    private let sealer: AtRestSealer
     private let state: Mutex<State>
     private static let log = Logger(subsystem: "com.eightybps.appsync", category: "pending-writes")
 
@@ -112,11 +114,12 @@ public final class PendingWriteQueue: Sendable {
     }
 
     /// Opens (or creates) the queue at `fileURL` with protection
-    /// `completeUnlessOpen`, and keeps it open. Call while protected data is
-    /// available (at launch) so it stays usable while locked.
-    public init(fileURL: URL, availability: any ProtectedDataAvailability) {
+    /// `completeUntilFirstUserAuthentication`, and keeps it open. Values are
+    /// sealed with `sealer`; there is no way to queue one in the clear.
+    public init(fileURL: URL, availability: any ProtectedDataAvailability, sealer: AtRestSealer) {
         self.fileURL = fileURL
         self.availability = availability
+        self.sealer = sealer
         var records: [PendingWrite] = []
         var handle: FileHandle?
         do {
@@ -127,7 +130,7 @@ public final class PendingWriteQueue: Sendable {
                     throw CocoaError(.fileWriteUnknown)
                 }
             }
-            try availability.setProtection(.completeUnlessOpen, for: fileURL)
+            try availability.setProtection(.completeUntilFirstUserAuthentication, for: fileURL)
             let opened = try FileHandle(forUpdating: fileURL)
             let contents = try opened.readToEnd() ?? Data()
             // A crash mid-append leaves a partial last line; drop it so the
@@ -153,8 +156,9 @@ public final class PendingWriteQueue: Sendable {
     /// must then report the write as lost.
     @discardableResult
     public func append(key: String, payload: Data) throws -> UInt64 {
+        let sealed = try sealer.seal(payload, context: key)
         let sequence = try append { sequence in
-            PendingWrite(sequence: sequence, key: key, kind: .value, payload: payload, through: nil)
+            PendingWrite(sequence: sequence, key: key, kind: .value, payload: sealed, through: nil)
         }
         // A value rewritten every few seconds (the progress record) leaves
         // replaced lines behind; drop them once enough have built up.
@@ -182,14 +186,34 @@ public final class PendingWriteQueue: Sendable {
     public func latest(key: String) -> (sequence: UInt64, payload: Data)? {
         state.withLock { state in
             guard let write = Self.pendingUnlocked(state.records).last(where: { $0.key == key }),
-                  let payload = write.payload else { return nil }
+                  let payload = opened(write) else { return nil }
             return (write.sequence, payload)
         }
     }
 
     /// Every key's latest pending value, in the order they were queued.
     public func pending(keyPrefix: String = "") -> [PendingWrite] {
-        state.withLock { Self.pendingUnlocked($0.records).filter { $0.key.hasPrefix(keyPrefix) } }
+        state.withLock { state in
+            Self.pendingUnlocked(state.records).filter { $0.key.hasPrefix(keyPrefix) }.compactMap { write in
+                guard write.payload != nil else { return write }
+                guard let payload = opened(write) else { return nil }
+                return PendingWrite(sequence: write.sequence, key: write.key, kind: write.kind,
+                                    payload: payload, through: write.through)
+            }
+        }
+    }
+
+    /// A value's payload, unsealed; nil when it doesn't open (kept in the file).
+    private func opened(_ write: PendingWrite) -> Data? {
+        guard let payload = write.payload else { return nil }
+        switch sealer.open(payload, context: write.key) {
+        case .opened(let data), .legacyPlaintext(let data): return data
+        case .damaged:
+            Self.log.error("pending_queue_value_unreadable")
+            return nil
+        case .unavailable:
+            return nil
+        }
     }
 
     /// Hands each pending value under `keyPrefix` to `store`, in queue order,
@@ -226,7 +250,7 @@ public final class PendingWriteQueue: Sendable {
     }
 
     /// Rewrites the file with only what is still pending. The new contents
-    /// go to a sibling file (protected `completeUnlessOpen`, fsync'd) that
+    /// go to a sibling file (same protection, fsync'd) that
     /// then replaces the queue in one rename, so a crash mid-compaction
     /// leaves the old file or the new one, never part of either; the kept
     /// handle moves to the new file. Only while protected data is
@@ -250,7 +274,7 @@ public final class PendingWriteQueue: Sendable {
                 guard FileManager.default.createFile(atPath: replacement.path, contents: nil) else {
                     throw CocoaError(.fileWriteUnknown)
                 }
-                try availability.setProtection(.completeUnlessOpen, for: replacement)
+                try availability.setProtection(.completeUntilFirstUserAuthentication, for: replacement)
                 let newHandle = try FileHandle(forUpdating: replacement)
                 do {
                     try newHandle.write(contentsOf: data)

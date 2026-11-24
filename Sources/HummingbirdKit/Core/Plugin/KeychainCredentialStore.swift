@@ -142,12 +142,16 @@ public final class KeychainCredentialStore: CredentialStore {
     /// opted in with `HUMMINGBIRD_SYSTEM_KEYCHAIN_TESTS=1`, and then only
     /// under a per-test service namespace (`tests.<unique>`); anything else
     /// stops the process (see `LiveData`). Tests otherwise pass a fake backend.
-    public init(serviceNamespace: String? = nil, backend: any KeychainItemBackend = SystemKeychainBackend(),
+    /// `accessibility` `.afterFirstUnlock` is for keys work done while the
+    /// device is locked needs (the at-rest keys); everything else stays
+    /// readable only while unlocked.
+    public init(serviceNamespace: String? = nil, accessibility: CredentialAccessibility = .whenUnlocked,
+                backend: any KeychainItemBackend = SystemKeychainBackend(),
                 consentStore: (any LoginKeychainFallbackConsentStore)? = nil,
                 preferences: PreferencesDomain) {
         let service = Self.service(namespace: serviceNamespace)
         if backend is SystemKeychainBackend { LiveData.requireTestKeychainAccess(serviceNamespace: serviceNamespace) }
-        preferred = PlatformCredentialVault(service: service, backend: backend)
+        preferred = PlatformCredentialVault(service: service, accessibility: accessibility, backend: backend)
         fallback = CredentialStorageMode.optInFallback.map {
             PlatformCredentialVault(service: service, mode: $0, backend: backend)
         }
@@ -158,7 +162,7 @@ public final class KeychainCredentialStore: CredentialStore {
             )
     }
 
-    private static func service(namespace: String?) -> String {
+    static func service(namespace: String?) -> String {
         "app.hummingbird\(namespace.map { ".\($0)" } ?? "").credentials.v3"
     }
 

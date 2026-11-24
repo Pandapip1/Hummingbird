@@ -331,7 +331,9 @@ public final class CacheJournal: Sendable {
             }
             if rewrite {
                 try data.write(to: url, options: .atomic)
-                try availability.setProtection(.complete, for: url)
+                // Background windows read and refill it while the device is locked;
+                // every frame is sealed, which is what keeps it private.
+                try availability.setProtection(.completeUntilFirstUserAuthentication, for: url)
                 partition.garbage = 0
             } else {
                 let handle = try FileHandle(forWritingTo: url)

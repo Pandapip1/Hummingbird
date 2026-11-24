@@ -14,14 +14,14 @@ final class LockedStorageTests: XCTestCase {
         let device = LockableDevice(unlocked: true)
         do {
             // Unlocked first launch creates the database.
-            let storage = Storage(directory: directory, protectedData: device)
+            let storage = Storage(directory: directory, protectedData: device, atRest: testAtRestKeyring)
             storage.save(["first"], name: "history")
             await storage.flush()
         }
         device.processEnded()
         device.unlocked = false
         do {
-            let storage = Storage(directory: directory, protectedData: device)
+            let storage = Storage(directory: directory, protectedData: device, atRest: testAtRestKeyring)
             storage.save(["second"], name: "history")
             storage.save(["queued"], name: "playlists")
             storage.save(["third"], name: "history")
@@ -31,7 +31,7 @@ final class LockedStorageTests: XCTestCase {
         }
         // Killed while locked; relaunched, still locked.
         device.processEnded()
-        let storage = Storage(directory: directory, protectedData: device)
+        let storage = Storage(directory: directory, protectedData: device, atRest: testAtRestKeyring)
         await storage.flush()
         XCTAssertEqual(storage.load([String].self, name: "history"), ["third"])
         XCTAssertEqual(storage.pendingWrites?.pending(keyPrefix: "storage/").map(\.key),
@@ -53,7 +53,7 @@ final class LockedStorageTests: XCTestCase {
     func testSaveAfterUnlockIsNotOverwrittenByAnOlderQueuedValue() async throws {
         let directory = makeTestDirectory("LockedStorage")
         let device = LockableDevice(unlocked: false)
-        let storage = Storage(directory: directory, protectedData: device)
+        let storage = Storage(directory: directory, protectedData: device, atRest: testAtRestKeyring)
         storage.save(["while locked"], name: "history")
         await storage.flush()
         device.unlocked = true   // unlocked; the notification hasn't arrived yet
@@ -65,17 +65,20 @@ final class LockedStorageTests: XCTestCase {
         XCTAssertEqual(storage.pendingWrites?.pending().isEmpty, true)
     }
 
-    /// Protection classes are set explicitly, per file.
-    func testDatabaseIsCompleteAndQueueIsCompleteUnlessOpen() async throws {
+    /// Protection classes are set explicitly, per file: readable while
+    /// locked once the device has been unlocked since boot (the data itself
+    /// is sealed; see AtRestStorageTests).
+    func testDatabaseAndQueueAreReadableAfterFirstUnlock() async throws {
         let directory = makeTestDirectory("LockedStorage")
         let device = LockableDevice(unlocked: true)
-        let storage = Storage(directory: directory, protectedData: device)
+        let storage = Storage(directory: directory, protectedData: device, atRest: testAtRestKeyring)
         storage.save(["x"], name: "history")
         await storage.flush()
-        _ = Storage(directory: directory, protectedData: device)   // reopening protects existing files
-        XCTAssertEqual(device.protection(of: directory.appendingPathComponent("storage.sqlite3")), .complete)
+        _ = Storage(directory: directory, protectedData: device, atRest: testAtRestKeyring)   // reopening protects existing files
+        XCTAssertEqual(device.protection(of: directory.appendingPathComponent("storage.sqlite3")),
+                       .completeUntilFirstUserAuthentication)
         XCTAssertEqual(device.protection(of: directory.appendingPathComponent("pending-writes.queue")),
-                       .completeUnlessOpen)
+                       .completeUntilFirstUserAuthentication)
     }
 }
 

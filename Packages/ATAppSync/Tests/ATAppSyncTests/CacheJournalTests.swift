@@ -160,7 +160,7 @@ final class CacheJournalTests: XCTestCase {
         let bytes = try Data(contentsOf: file)
         XCTAssertNil(bytes.range(of: Data("secret".utf8)))
         XCTAssertNil(bytes.range(of: Data("Very private".utf8)))
-        XCTAssertEqual(made.device.protection(of: file), .complete)
+        XCTAssertEqual(made.device.protection(of: file), .completeUntilFirstUserAuthentication)
     }
 
     func testAnotherProfileCannotReadTheCache() throws {

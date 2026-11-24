@@ -201,9 +201,10 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
     /// stay minimal: it only hosts scripts.
     func testHiddenPluginBrowserLoadsYouTubeBotGuard() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DIR"] != nil
-                || environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE"] != nil else {
-            throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_PLUGIN_DIR or HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE")
+        // The app's database is sealed at rest; tests read plugins from a
+        // directory, never from it.
+        guard environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DIR"] != nil else {
+            throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_PLUGIN_DIR")
         }
         final class Results: Sendable {
             private let values = Mutex<[String: String]>([:])
@@ -377,17 +378,7 @@ final class YouTubePluginCompatibilityTests: XCTestCase {
             let script = try String(contentsOf: root.appendingPathComponent("YoutubeScript.js"), encoding: .utf8)
             return try configuredRuntime(config: config, script: script, settings: settingsOverride)
         }
-        if let path = ProcessInfo.processInfo.environment["HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE"],
-           let data = StorageDatabase(url: URL(fileURLWithPath: path), protectedData: UnprotectedDataAvailability()).load(name: "plugins"),
-           let plugin = try JSONDecoder().decode([InstalledPlugin].self, from: data)
-               .first(where: { $0.config.name.caseInsensitiveCompare("YouTube") == .orderedSame }) {
-            return try configuredRuntime(
-                config: plugin.config,
-                script: plugin.script,
-                settings: plugin.settings.merging(settingsOverride) { _, override in override }
-            )
-        }
-        throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_PLUGIN_DIR or HUMMINGBIRD_YOUTUBE_PLUGIN_DATABASE")
+        throw XCTSkip("Set HUMMINGBIRD_YOUTUBE_PLUGIN_DIR")
     }
 
     private func configuredRuntime(config: PluginConfig, script: String,

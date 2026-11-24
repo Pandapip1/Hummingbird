@@ -48,7 +48,7 @@ final class InstanceIdentityStoreErrorTests: XCTestCase {
             AppSyncClient(
                 spaces: SpacesClient(xrpc: XRPCClient(service: try XCTUnwrap(URL(string: "https://pds.invalid")))),
                 mutationLog: try OfflineMutationJournal(
-                    fileURL: root.appendingPathComponent("\(UUID()).json")
+                    fileURL: root.appendingPathComponent, sealer: testAtRestSealer("\(UUID()).json")
                 ),
                 repo: did, space: space, appID: appID, messaging: nil, messagingFailure: failure
             )

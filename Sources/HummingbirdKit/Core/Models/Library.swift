@@ -59,6 +59,10 @@ struct Subscription: Codable, Hashable, Identifiable, Sendable {
     var lastFetched: Date?
     /// Epoch seconds of the newest item seen; used to decide which channels to refresh first.
     var lastItemDate: Int?
+    /// Whether this profile wants a notification for this channel's new
+    /// videos. Synced: every device then notifies on its own (never twice
+    /// for one video on one device). Nil (older records) means no.
+    var notifyOnNewVideos: Bool?
     var id: String { channelURL }
 }
 

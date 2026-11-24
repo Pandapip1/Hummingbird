@@ -4,6 +4,11 @@
 <dict>
 	<key>ATProtoKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)com.eightybps.hummingbird.shared</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.eightybps.hummingbird.refresh</string>
+		<string>com.eightybps.hummingbird.maintenance</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
@@ -71,6 +76,8 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>fetch</string>
+		<string>processing</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

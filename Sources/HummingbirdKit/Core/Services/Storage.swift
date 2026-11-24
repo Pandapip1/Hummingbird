@@ -22,8 +22,12 @@ final class Storage: Sendable {
     /// Writes waiting for protected data; also where crash-safe progress is
     /// kept (`ProgressRecovery`). Nil for an in-memory database.
     let pendingWrites: PendingWriteQueue?
+    /// The platform's data protection (unavailable while locked), for
+    /// stores kept beside this one (the synced cache).
+    let protectedData: any ProtectedDataAvailability
 
     init(directory: URL, protectedData: any ProtectedDataAvailability) {
+        self.protectedData = protectedData
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let queue = PendingWriteQueue(fileURL: directory.appendingPathComponent("pending-writes.queue"),
                                       availability: protectedData)
@@ -43,6 +47,7 @@ final class Storage: Sendable {
     private init(backend: StorageBackend) {
         self.backend = backend
         pendingWrites = nil
+        protectedData = UnprotectedDataAvailability()
     }
 
     /// A private in-memory database with no files at all, for tests.

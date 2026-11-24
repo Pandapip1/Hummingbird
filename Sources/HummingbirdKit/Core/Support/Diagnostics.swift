@@ -48,6 +48,9 @@ extension Logger {
     /// Age assurance, parental controls and source-access decisions. Never
     /// logs an age or a birthday bound.
     static let policy = Logger(subsystem: Diagnostics.subsystem, category: "policy")
+    /// Background windows: subscription polls, notifications, cache upkeep.
+    /// Never logs a channel, video or URL; counts only.
+    static let background = Logger(subsystem: Diagnostics.subsystem, category: "background")
 }
 
 extension OSSignposter {

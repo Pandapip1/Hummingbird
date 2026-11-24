@@ -19,6 +19,11 @@ final class AppModel {
     /// This window's view of every download in the media cache.
     let downloads: DownloadsModel
     let subscriptionFeed: SubscriptionFeed
+    /// Checks subscribed channels for new videos in background windows.
+    let subscriptionPoller: SubscriptionPoller
+    /// The profile's synced data cache; nil without an instance identity.
+    let syncedCache: CacheJournal?
+    @ObservationIgnored private let backgroundSession: BackgroundSession
     let homeFeed: FeedModel
     let searchHistory: SearchHistory
     let profileChanges: ProfileChangeStore
@@ -364,6 +369,24 @@ final class AppModel {
         self.subscriptionFeed = SubscriptionFeed(
             library: library, plugins: plugins, platform: platform, preferences: stores.preferences
         )
+        // The profile's synced data cache, and the channel checks that run in
+        // background windows (first window of the profile only).
+        let syncedCache = SyncedCache.shared(stores: stores, profileID: localProfileID, peerService: peerService)
+        self.syncedCache = syncedCache
+        let feed = self.subscriptionFeed
+        let poller = SubscriptionPoller(
+            library: library, storage: storage, storagePrefix: storagePrefix, notifier: SystemNewVideoNotifier(),
+            canOpen: { [plugins] video in plugins.plugin(video.pluginId)?.enabled == true },
+            fetch: { subscription in try await feed.fetchChannel(subscription) },
+            cache: syncedCache,
+            context: { [plugins] pluginID in
+                plugins.plugin(pluginID).flatMap { SyncedCache.context(for: $0, signedIn: plugins.isLoggedIn(pluginID)) }
+            }
+        )
+        self.subscriptionPoller = poller
+        let backgroundSession = BackgroundSession(stores: stores, profileAccount: profileAccount,
+                                                  poller: poller, cache: syncedCache)
+        self.backgroundSession = backgroundSession
         self.homeFeed = FeedModel(
             initialItems: library.homeCache.map(ContentItem.init(saved:)),
             report: { [platform] error, runtime in
@@ -395,6 +418,8 @@ final class AppModel {
         Task { await localNetworkSync.applyStoredSetting() }
         // Progress a crash kept out of the history comes back now, once.
         Task { [library] in await library.recoverInterruptedProgress() }
+        // Background windows work for the first window of a profile.
+        backgroundSession.claim()
         HummingbirdDebug.register(self)
         #if DEBUG
         MainThreadWatchdog.shared.start(log: PerformanceReports.store(for: stores).stallLog) { [weak self] in

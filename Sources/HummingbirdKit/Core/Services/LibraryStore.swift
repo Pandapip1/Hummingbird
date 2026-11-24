@@ -79,6 +79,19 @@ final class LibraryStore {
         profileChanges?.put(.subscription(subscription))
     }
 
+    /// Turns new-video notifications for a subscribed channel on or off, on
+    /// every device (the subscription is synced).
+    func setNotifyOnNewVideos(_ notify: Bool, channelURL: String) {
+        guard let i = subscriptions.firstIndex(where: { $0.channelURL == channelURL }) else { return }
+        subscriptions[i].notifyOnNewVideos = notify
+        save(subscriptions, name: "subscriptions")
+        profileChanges?.put(.subscription(subscriptions[i]))
+    }
+
+    func notifiesOnNewVideos(_ channelURL: String) -> Bool {
+        subscriptions.first { $0.channelURL == channelURL }?.notifyOnNewVideos == true
+    }
+
     func unsubscribe(_ channelURL: String) {
         let key = HummingbirdProfileSchema.key(for: channelURL)
         subscriptions.removeAll { $0.channelURL == channelURL }

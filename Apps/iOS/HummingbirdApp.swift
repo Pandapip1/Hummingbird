@@ -11,6 +11,8 @@ struct HummingbirdApp: App {
         // How runaway plugin scripts are stopped: the strongest this build and platform allow
         // (DirectDistribution.swift, PluginExecutionLimits). Cheap: no process starts until a plugin runs.
         PluginExecutionSetup.install()
+        // Background windows must be registered before launch finishes.
+        HummingbirdBackgroundWork.registerAtLaunch()
         #if DEBUG && os(iOS)
         // Measurement only: launched with HUMMINGBIRD_BACKGROUND_BENCH=1 (scripts/measure-background-calls).
         BackgroundCallBench.startIfRequested()

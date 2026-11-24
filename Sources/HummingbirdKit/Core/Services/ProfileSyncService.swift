@@ -188,6 +188,17 @@ final class ProfileSyncService {
         var issues: [String] = []
     }
 
+    /// Refills `cache` from trusted devices on the local network: only what
+    /// this device lacks, end to end encrypted. Nil when local network sync
+    /// is off. Runs in background windows and scheduled passes only, never
+    /// per item, so the traffic says nothing about what was viewed.
+    func pullCache(into cache: CacheJournal) async -> AppSyncCachePullReport? {
+        guard localNetworkEnabled, let lanSync else { return nil }
+        // Signed-in results are never shared (SyncedCache.context), so no
+        // account hashes need recognising.
+        return await lanSync.pullCache(into: cache, accounts: [])
+    }
+
     /// Pulls every reachable trusted device at once (see AppSyncLANClient).
     /// Nil when local network sync is off.
     private func pullLocalNetwork() async -> TransportOutcome? {

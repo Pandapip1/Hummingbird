@@ -50,6 +50,7 @@ if CommandLine.arguments.dropFirst().first == "--plugin-host" { PluginHostServer
 
 MainActor.assumeIsolated {
     PluginExecutionLimits.installPlatformIsolation()
+    HummingbirdBackgroundWork.registerAtLaunch()
     liveStores().registerCredentialVault()
     // Crashes recorded by systemd-coredump since the last run arrive as
     // MetricKit diagnostics (SwiftOpenUI's MetricKit on Linux).

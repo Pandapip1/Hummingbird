@@ -114,6 +114,9 @@ struct ChannelView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(app.library.isSubscribed(channelURL) ? .gray : .accentColor)
+                if app.library.isSubscribed(channelURL) {
+                    NewVideoNotificationButton(channelURL: channelURL)
+                }
             }
             .padding(.horizontal)
             if let d = info.description, !d.isEmpty {

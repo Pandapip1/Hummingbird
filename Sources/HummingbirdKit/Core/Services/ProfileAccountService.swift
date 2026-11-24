@@ -194,6 +194,11 @@ final class ProfileAccountService {
 
     func sync(_ trigger: ProfileSyncService.Trigger = .requested) async { await syncService?.sync(trigger) }
 
+    /// Refills the synced cache from trusted devices (see ProfileSyncService).
+    func pullCache(into cache: CacheJournal) async -> AppSyncCachePullReport? {
+        await syncService?.pullCache(into: cache)
+    }
+
     /// The app came to the front (true) or went inactive or to the
     /// background (false): the periodic pass runs only while it is in front.
     private func setApplicationActive(_ active: Bool) { periodicSync?.setActive(active) }

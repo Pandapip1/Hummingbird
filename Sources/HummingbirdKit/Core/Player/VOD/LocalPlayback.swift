@@ -30,4 +30,20 @@ struct LocalPlayback: Sendable {
         case .generatedMedia: .generatedMedia
         }
     }
+
+    /// The same media at the ports `moves` gave its servers, or nil when none moved.
+    func moved(_ moves: [PortMove]) -> LocalPlayback? {
+        func rebased(_ url: URL) -> URL? {
+            guard let port = url.port, let move = moves.first(where: { $0.from == port }),
+                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+            components.port = move.to
+            return components.url
+        }
+        let video = rebased(request.video.url)
+        let audio = request.audio.flatMap { rebased($0.url) }
+        guard video != nil || audio != nil else { return nil }
+        return try? LocalPlayback(video: video ?? request.video.url, audio: audio ?? request.audio?.url,
+                                  servedBy: origin == .mediaCache ? .mediaCache : .generatedMedia,
+                                  isLive: request.isLive)
+    }
 }

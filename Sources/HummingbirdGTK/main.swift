@@ -49,7 +49,7 @@ private func liveStores() -> AppDataStores {
 if CommandLine.arguments.dropFirst().first == "--plugin-host" { PluginHostServer.runAsProcess() }
 
 MainActor.assumeIsolated {
-    PluginExecutionLimits.installPlatformIsolation(appBundleIdentifier: nil)
+    PluginExecutionLimits.installPlatformIsolation()
     liveStores().registerCredentialVault()
     // Crashes recorded by systemd-coredump since the last run arrive as
     // MetricKit diagnostics (SwiftOpenUI's MetricKit on Linux).

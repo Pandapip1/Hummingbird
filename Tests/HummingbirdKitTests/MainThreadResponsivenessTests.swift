@@ -30,19 +30,28 @@ final class MainThreadResponsivenessTests: XCTestCase {
         let selectionStart = clock.now
         let options = PlaybackSelector.options(for: details, preferredLanguage: "en")
         print("[responsiveness] options=\(options.count) selection=\(selectionStart.duration(to: clock.now))")
+        // Outcomes are asserted after the probe stops: XCTest's first assertion
+        // does one-off work on the main thread (a sampled 102 ms stall under load
+        // was inside XCTAssertNotNil), which is not the player's.
+        var failures: [String] = []
         for round in 0..<3 {
             let started = clock.now
             await model.load(details: details, runtime: runtime, library: library, sourceURL: "https://example.test/v/\(round)")
             print("[responsiveness] load \(round) took \(started.duration(to: clock.now)) worst so far \(probe.worstSoFar)")
-            XCTAssertNotNil(model.selected, "a source was chosen (\(model.errorMessage ?? "no error"))")
+            if model.selected == nil { failures.append("load \(round): \(model.errorMessage ?? "no error")") }
             // Let the seek bar's content be built (off the main actor).
             try await Task.sleep(for: .milliseconds(50))
         }
         let worst = probe.stop()
         model.teardown()
         await runtime.stop()
+        XCTAssertEqual(failures, [], "a source was chosen every time")
         XCTAssertGreaterThan(probe.samples, 5, "the probe ran")
-        XCTAssertLessThan(worst, Self.budget, "the main thread was busy for \(worst) at once while preparing")
+        let stack = probe.worstStack
+        if !stack.isEmpty { print("[responsiveness] main thread during the longest wait (\(worst)):\n  " + stack.joined(separator: "\n  ")) }
+        XCTAssertLessThan(worst, Self.budget,
+                          "the main thread was busy for \(worst) at once while preparing; it was running:\n"
+                          + stack.prefix(16).joined(separator: "\n"))
     }
 
     /// The seek bar's lanes for a long video (thousands of downloaded ranges)
@@ -102,18 +111,26 @@ final class MainThreadResponsivenessTests: XCTestCase {
 
 /// Measures, from another thread, how long the main thread takes to run a
 /// block it is sent: the longest such wait is the longest stretch it was busy.
+/// A wait that passes `sampleAfter` samples what the main thread is running
+/// (its stack), so a failure says what kept it busy instead of only how long.
 private final class MainThreadProbe: Sendable {
     private struct State {
         var running = false
         var worst: Duration = .zero
+        var worstStack: [String] = []
         var count = 0
     }
     private let state = Mutex(State())
+    private static let sampleAfter: Duration = .milliseconds(30)
 
     var samples: Int { state.withLock { $0.count } }
     var worstSoFar: Duration { state.withLock { $0.worst } }
+    /// The main thread's stack during the longest wait that passed `sampleAfter`.
+    var worstStack: [String] { state.withLock { $0.worstStack } }
 
+    /// Call on the main thread (it names the thread to sample).
     func start() {
+        let main = MainThreadSampler.currentThread()
         state.withLock { $0.running = true }
         Thread.detachNewThread { [self] in
             let clock = ContinuousClock()
@@ -121,13 +138,20 @@ private final class MainThreadProbe: Sendable {
                 let sent = clock.now
                 let answered = DispatchSemaphore(value: 0)
                 DispatchQueue.main.async { answered.signal() }
-                // Waits as long as it takes: a busy main thread is what is measured.
-                while answered.wait(timeout: .now() + 0.1) == .timedOut {
-                    if !state.withLock({ $0.running }) { return }
+                var stack: [String] = []
+                if answered.wait(timeout: .now() + 0.03) == .timedOut {
+                    stack = MainThreadSampler.stack(of: main)
+                    // Waits as long as it takes: a busy main thread is what is measured.
+                    while answered.wait(timeout: .now() + 0.1) == .timedOut {
+                        if !state.withLock({ $0.running }) { return }
+                    }
                 }
                 let waited = sent.duration(to: clock.now)
                 state.withLock {
-                    $0.worst = max($0.worst, waited)
+                    if waited > $0.worst {
+                        $0.worst = waited
+                        if waited >= Self.sampleAfter { $0.worstStack = stack }
+                    }
                     $0.count += 1
                 }
                 Thread.sleep(forTimeInterval: 0.005)
@@ -142,6 +166,59 @@ private final class MainThreadProbe: Sendable {
             return $0.worst
         }
     }
+}
+
+/// Samples another thread's stack: suspends it, walks its frame pointers,
+/// resumes it, and only then symbolizes (symbol lookup takes locks the
+/// suspended thread may hold).
+private enum MainThreadSampler {
+    #if canImport(Darwin) && arch(arm64)
+    typealias ThreadPort = thread_act_t
+
+    static func currentThread() -> ThreadPort { pthread_mach_thread_np(pthread_self()) }
+
+    static func stack(of thread: ThreadPort, depth: Int = 32) -> [String] {
+        var addresses: [UInt] = []
+        guard thread_suspend(thread) == KERN_SUCCESS else { return [] }
+        var registers = arm_thread_state64_t()
+        var count = mach_msg_type_number_t(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &registers) { pointer in
+            pointer.withMemoryRebound(to: natural_t.self, capacity: Int(count)) {
+                thread_get_state(thread, thread_state_flavor_t(ARM_THREAD_STATE64), $0, &count)
+            }
+        }
+        if result == KERN_SUCCESS {
+            // Return addresses can carry pointer-authentication bits above 47.
+            let mask: UInt = 0x0000_7FFF_FFFF_FFFF
+            addresses = [UInt(registers.__pc) & mask, UInt(registers.__lr) & mask]
+            var frame = UInt(registers.__fp)
+            while frame != 0, frame & 7 == 0, addresses.count < depth,
+                  let pointer = UnsafePointer<UInt>(bitPattern: frame) {
+                let next = pointer[0], returnAddress = pointer[1] & mask
+                guard returnAddress != 0 else { break }
+                addresses.append(returnAddress)
+                guard next > frame else { break }
+                frame = next
+            }
+        }
+        thread_resume(thread)
+        return addresses.map(symbol)
+    }
+
+    private static func symbol(_ address: UInt) -> String {
+        var info = Dl_info()
+        guard let pointer = UnsafeRawPointer(bitPattern: address), dladdr(pointer, &info) != 0 else {
+            return String(address, radix: 16)
+        }
+        let image = info.dli_fname.map { String(cString: $0).split(separator: "/").last.map(String.init) ?? "" } ?? ""
+        let name = info.dli_sname.map { String(cString: $0) } ?? "?"
+        return "\(image) \(name)"
+    }
+    #else
+    typealias ThreadPort = Int
+    static func currentThread() -> ThreadPort { 0 }
+    static func stack(of thread: ThreadPort) -> [String] { [] }
+    #endif
 }
 
 private final class QuietBackend: MediaBackend {

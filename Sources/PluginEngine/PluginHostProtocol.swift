@@ -41,10 +41,6 @@ public final class PluginHostChannel: Sendable {
     public init(readFD: Int32, writeFD: Int32) {
         self.readFD = readFD
         self.writeFD = writeFD
-        #if canImport(Darwin)
-        var on: Int32 = 1
-        _ = setsockopt(writeFD, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-        #endif
     }
 
     public func send(_ message: PluginHostMessage) throws {

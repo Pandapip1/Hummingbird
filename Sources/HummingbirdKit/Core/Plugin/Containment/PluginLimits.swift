@@ -21,6 +21,9 @@ enum PluginLimits {
 
     // MARK: concurrency
 
+    /// Idle JavaScript virtual machines kept per plugin for the next calls' fresh contexts (their
+    /// code cache makes the plugin's script cheap to set up again). Each serves one call at a time.
+    static let maximumIdleMachines = 2
     /// Pending timers per context.
     static let maximumTimers = 256
 

@@ -13,11 +13,11 @@ struct PolicyDenialSection: View {
 
     var body: some View {
         Section {
-            Label {
+            // Icon and text side by side (a view-built Label has no portable form).
+            HStack(spacing: 12) {
+                Image(systemName: "lock.fill")
                 Text(refusal.denial.errorDescription ?? "Not available")
                     .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "lock.fill")
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Locked. \(refusal.denial.errorDescription ?? "")")

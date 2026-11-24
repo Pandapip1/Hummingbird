@@ -80,6 +80,14 @@ final class AVMediaBackend: MediaBackend {
             let atEnd = duration > 0 && currentTime >= duration - 0.5
             commandedRate = 0
             guard !atEnd else { return }
+            // An item that never became ready, stopped by AVFoundation before its
+            // first frame, is one it cannot play (VP9 on the iOS simulator: no
+            // failure, only a pause). Said so, not taken for the user's pause.
+            if player.currentItem?.status != .readyToPlay, currentTime == 0 {
+                Logger.avPlayer.error("stopped_before_ready")
+                onUnplayableMedia?("")
+                return
+            }
             if ApplicationActivity.isActive || pictureInPictureState == .active {
                 Logger.avPlayer.notice("external_pause")
                 onExternalEvent?(.pause)
@@ -96,6 +104,26 @@ final class AVMediaBackend: MediaBackend {
     var onFailure: (@MainActor (String) -> Void)?
     var onUnplayableMedia: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
+
+    /// AVFoundation pauses, without failing, an item whose video it cannot
+    /// decode (VP9 or AV1 where the device has no decoder): said by name
+    /// instead of a silent pause.
+    private func reportUndecodableVideo() async {
+        guard let item = player?.currentItem else { return }
+        for track in item.tracks {
+            guard let asset = track.assetTrack, asset.mediaType == .video,
+                  let decodable = try? await asset.load(.isDecodable), !decodable else { continue }
+            let descriptions = (try? await asset.load(.formatDescriptions)) ?? []
+            let codec = descriptions.first.map { description in
+                let code = CMFormatDescriptionGetMediaSubType(description).bigEndian
+                return String(decoding: withUnsafeBytes(of: code) { Array($0) }, as: UTF8.self)
+            } ?? "this"
+            guard player?.currentItem === item else { return }
+            Logger.avPlayer.error("video_not_decodable codec=\(codec, privacy: .public)")
+            onUnplayableMedia?(codec)
+            return
+        }
+    }
 
     /// No decoder for the media's format on this device (AV1 without
     /// hardware support, VP9 where the system has none): reloading cannot help.
@@ -138,6 +166,7 @@ final class AVMediaBackend: MediaBackend {
     private var loadCompletionWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     var currentTime: Double { player?.currentTime().seconds ?? 0 }
+    var hasFailedItem: Bool { player?.currentItem?.status == .failed }
     var duration: Double {
         guard let seconds = player?.currentItem?.duration.seconds, seconds.isFinite else { return 0 }
         return seconds
@@ -466,6 +495,9 @@ final class AVMediaBackend: MediaBackend {
                     if unplayable { self?.onUnplayableMedia?(message) } else { self?.onFailure?(message) }
                 }
             }
+            if status == .readyToPlay {
+                Task { @MainActor in await self?.reportUndecodableVideo() }
+            }
         }
         itemFailureObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime,
@@ -704,13 +736,10 @@ struct PlayerSurface: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.showsPlaybackControls = false
-        // The app publishes Now Playing and handles the remote commands itself.
-        controller.leaveNowPlayingToTheApp()
-        controller.allowsPictureInPicturePlayback = true
+        let controller = AVPlayerViewController.pictureOnly()
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter()
+        context.coordinator.environment = context.environment
         // Only the owner of the player is attached to it (see
         // PlayerSurfaceOwnership): this surface claims it now.
         context.coordinator.claimInline(controller)
@@ -726,6 +755,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
         // ownership's job, so updates cannot pause it or attach a second copy.
         context.coordinator.inlineController = controller
         context.coordinator.installPresenter(replacing: false)
+        context.coordinator.environmentChanged(context.environment)
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
@@ -747,6 +777,13 @@ struct PlayerSurface: UIViewControllerRepresentable {
         private var fullscreenClaim: PlayerSurfaceOwnership.Claim?
         private var inlineHost: PictureInPictureHostView?
         private var preparationScheduled = false
+        /// The page's environment, carried into the full-screen controls.
+        var environment: EnvironmentValues?
+
+        func environmentChanged(_ environment: EnvironmentValues) {
+            self.environment = environment
+            (model?.preparedFullscreen as? FullscreenStage)?.update(environment: environment)
+        }
 
         private var backend: AVMediaBackend? { model?.backend as? AVMediaBackend }
 
@@ -795,7 +832,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
             preparationScheduled = true
             MainRunLoopIdle.perform(after: .milliseconds(500)) { [weak self] in
                 guard let self, let model = self.model else { return }
-                _ = FullscreenStage.prepared(for: model)
+                _ = FullscreenStage.prepared(for: model, environment: self.environment)
             }
         }
 
@@ -813,7 +850,7 @@ struct PlayerSurface: UIViewControllerRepresentable {
                 Logger.player.notice("fullscreen_present main_ms=\(ms, format: .fixed(precision: 1))")
             }
             // Normally built already; if the tap came first it is built now, once.
-            let stage = FullscreenStage.prepared(for: model)
+            let stage = FullscreenStage.prepared(for: model, environment: environment)
             let controller = stage.controller
             fullscreenController = controller
             // The full-screen controller takes the player (attached before the
@@ -880,6 +917,19 @@ struct PlayerSurface: UIViewControllerRepresentable {
 }
 
 extension AVPlayerViewController {
+    /// The player as a picture only, the one way the app makes one
+    /// (`PlayerSurfaceConstructionTests`): our controls, drawn over it, take
+    /// every touch, click and remote press. Interactive, AVKit's view took
+    /// the remote's focus and kept it, so no control could be reached (tvOS).
+    static func pictureOnly() -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.showsPlaybackControls = false
+        controller.view.isUserInteractionEnabled = false
+        controller.leaveNowPlayingToTheApp()
+        controller.allowsPictureInPicturePlayback = true
+        return controller
+    }
+
     /// The app publishes Now Playing and handles the remote commands itself
     /// (`SystemMediaSession`); tvOS players never update Now Playing.
     func leaveNowPlayingToTheApp() {
@@ -895,22 +945,28 @@ extension AVPlayerViewController {
 private final class FullscreenStage {
     let controller: FullscreenPlayerViewController
     let host: PictureInPictureHostView
+    private let overlay: UIHostingController<FullscreenPlayerControls>
+    private let model: PlayerModel
 
-    static func prepared(for model: PlayerModel) -> FullscreenStage {
+    static func prepared(for model: PlayerModel, environment: EnvironmentValues?) -> FullscreenStage {
         if let stage = model.preparedFullscreen as? FullscreenStage { return stage }
         let start = ContinuousClock.now
-        let stage = FullscreenStage(model: model)
+        let stage = FullscreenStage(model: model, environment: environment)
         model.preparedFullscreen = stage
         let ms = start.duration(to: .now) / .milliseconds(1)
         Logger.player.notice("fullscreen_prepared main_ms=\(ms, format: .fixed(precision: 1))")
         return stage
     }
 
-    private init(model: PlayerModel) {
-        let playerController = AVPlayerViewController()
-        playerController.showsPlaybackControls = false
-        playerController.leaveNowPlayingToTheApp()
-        playerController.allowsPictureInPicturePlayback = true
+    /// The page's environment changed (the inline surface updated): the
+    /// full-screen controls follow it.
+    func update(environment: EnvironmentValues) {
+        overlay.rootView = FullscreenPlayerControls(model: model, inherited: environment)
+    }
+
+    private init(model: PlayerModel, environment: EnvironmentValues?) {
+        self.model = model
+        let playerController = AVPlayerViewController.pictureOnly()
         // A container holds the player and, above it, our controls: inside
         // AVPlayerViewController's own view the controls would be outside
         // its accessibility (and, on tvOS, focus) hierarchy.
@@ -920,7 +976,8 @@ private final class FullscreenStage {
         controller.modalPresentationCapturesStatusBarAppearance = true
         #endif
 
-        let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model))
+        let overlay = UIHostingController(rootView: FullscreenPlayerControls(model: model, inherited: environment))
+        self.overlay = overlay
         overlay.view.backgroundColor = .clear
         controller.addChild(overlay)
         overlay.view.translatesAutoresizingMaskIntoConstraints = false
@@ -1001,11 +1058,35 @@ private final class FullscreenPlayerViewController: UIViewController {
 
 }
 
+/// The full-screen controls, hosted by their own UIHostingController, which
+/// inherits nothing from the page: the inline surface's whole environment is
+/// carried in (so a control the page provides, such as Watch Later, can't go
+/// missing here), except what describes this screen (size classes, scale).
 @MainActor
 private struct FullscreenPlayerControls: View {
     let model: PlayerModel
+    let inherited: EnvironmentValues?
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.displayScale) private var displayScale
+
     var body: some View {
+        if let inherited {
+            controls
+                .environment(\.horizontalSizeClass, horizontalSizeClass)
+                .environment(\.verticalSizeClass, verticalSizeClass)
+                .environment(\.displayScale, displayScale)
+                .environment(\.self, inherited)
+        } else {
+            controls
+        }
+    }
+
+    private var controls: some View {
         PlayerControls(model: model, isFullscreen: true)
+            // Built ahead of time (FullscreenStage): each entry starts afresh, so
+            // the controls show and focus starts on play/pause.
+            .id(model.isFullscreen)
             .frame(maxHeight: .infinity, alignment: .bottom)
             #if os(tvOS)
             .onExitCommand { model.toggleFullscreen() }

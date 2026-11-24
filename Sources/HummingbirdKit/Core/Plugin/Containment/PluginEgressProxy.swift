@@ -1,4 +1,5 @@
 import Foundation
+import os
 import NIOCore
 import NIOPosix
 import Synchronization
@@ -27,6 +28,8 @@ final class PluginEgressProxy: Sendable {
         let denials = Mutex<[String: NetworkDenial]>([:])
         let connected = Mutex<[CheckedDestination]>([])
         let active = Mutex(0)
+        /// Accepted connections, so a suspension (and its simulation) can close them.
+        let connections = Mutex<[ObjectIdentifier: any Channel]>([:])
 
         init(policy: PluginNetworkPolicy, maximumConnections: Int) {
             self.policy = policy
@@ -45,37 +48,45 @@ final class PluginEgressProxy: Sendable {
         }
     }
 
+    /// The proxy's port, kept for its life: the plugin's URL sessions are
+    /// configured with it, so after a suspension the same port is bound again.
     let port: Int
-    private let server: any Channel
+    private let server: Mutex<any Channel>
     let shared: Shared
 
     private init(port: Int, server: any Channel, shared: Shared) {
         self.port = port
-        self.server = server
+        self.server = Mutex(server)
         self.shared = shared
     }
 
     /// Binds a new proxy for `policy`. Blocks briefly; never call on the main thread.
     static func start(policy: PluginNetworkPolicy, maximumConnections: Int = PluginLimits.maximumConcurrentConnections) throws -> PluginEgressProxy {
         let shared = Shared(policy: policy, maximumConnections: maximumConnections)
-        let server = try ServerBootstrap(group: group)
-            .serverChannelOption(ChannelOptions.backlog, value: 64)
-            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .childChannelInitializer { child in
-                child.eventLoop.makeCompletedFuture {
-                    try child.pipeline.syncOperations.addHandler(ConnectHandler(shared: shared))
-                }
-            }
-            .bind(host: "127.0.0.1", port: 0)
-            .wait()
+        let server = try bootstrap(shared: shared).bind(host: "127.0.0.1", port: 0).wait()
         guard let port = server.localAddress?.port else {
             server.close(promise: nil)
             throw NetworkDenial.invalid
         }
-        return PluginEgressProxy(port: port, server: server, shared: shared)
+        let proxy = PluginEgressProxy(port: port, server: server, shared: shared)
+        LoopbackLifecycle.shared.register(proxy)
+        return proxy
     }
 
-    func close() { server.close(promise: nil) }
+    private static func bootstrap(shared: Shared) -> ServerBootstrap {
+        ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.backlog, value: 64)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { child in
+                shared.connections.withLock { $0[ObjectIdentifier(child)] = child }
+                child.closeFuture.whenComplete { _ in shared.connections.withLock { $0[ObjectIdentifier(child)] = nil } }
+                return child.eventLoop.makeCompletedFuture {
+                    try child.pipeline.syncOperations.addHandler(ConnectHandler(shared: shared))
+                }
+            }
+    }
+
+    func close() { server.withLock { $0 }.close(promise: nil) }
 
     /// Why the proxy last refused `host:port`, if it did.
     func denial(host: String, port: Int) -> NetworkDenial? {
@@ -312,4 +323,31 @@ final class RefusingURLProtocol: URLProtocol {
         client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
     }
     override func stopLoading() {}
+}
+
+extension PluginEgressProxy: SuspendedResource {
+    /// Binds the same port again if its socket died: the plugin's sessions name it.
+    func resumeAfterSuspension() async -> PortMove? {
+        let current = server.withLock { $0 }
+        if current.isActive, await LoopbackLifecycle.accepts(port: port) { return nil }
+        current.close(promise: nil)
+        var delay = Duration.milliseconds(50)
+        for _ in 0..<8 {
+            if let rebound = try? await Self.bootstrap(shared: shared).bind(host: "127.0.0.1", port: port).get() {
+                server.withLock { $0 = rebound }
+                Logger.plugin.notice("egress_rebound port=\(self.port)")
+                return nil
+            }
+            try? await Task.sleep(for: delay)
+            delay = delay * 2
+        }
+        Logger.plugin.fault("egress_rebind_failed port=\(self.port)")
+        return nil
+    }
+
+    func reclaimAsSuspensionWould() async {
+        let open = shared.connections.withLock { open in defer { open = [:] }; return Array(open.values) }
+        try? await server.withLock { $0 }.close()
+        for child in open { try? await child.close() }
+    }
 }

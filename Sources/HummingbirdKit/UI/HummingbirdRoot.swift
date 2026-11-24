@@ -70,31 +70,6 @@ public struct HummingbirdRoot: View {
 // UI on its own, on every platform. The player uses the platform's own
 // media backend.
 @MainActor
-struct PlayerDebugScene: View {
-    @State private var player: PlayerModel
-
-    init(stores: AppDataStores) {
-        _player = State(wrappedValue: PlayerModel(stores: stores))
-    }
-
-    var body: some View {
-        ZStack {
-            Color(red: 0.12, green: 0.12, blue: 0.12).ignoresSafeArea()
-            ZStack {
-                Color.black
-                PlayerSurface(model: player)
-                PlayerControls(model: player, isFullscreen: false)
-            }
-            .aspectRatio(16 / 9, contentMode: .fit)
-            .frame(maxWidth: 1_280)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(radius: 24)
-        }
-        .task { HummingbirdDebug.standalonePlayer = player }
-    }
-}
-
-@MainActor
 struct SeekDebugScene: View {
     @State private var player = SeekDebugModel()
 
@@ -166,13 +141,19 @@ struct InstallPreviewDebugScene: View {
 }
 /// UI tests of the surface handover (`HUMMINGBIRD_DEBUG_SCENE=player-fullscreen`):
 /// a real player with the real surfaces and controls, playing a clip
-/// generated on the device, so no plugin or network is involved.
+/// generated on the device, so no plugin or network is involved. The clip
+/// goes the way every video does: downloaded into the media cache (from the
+/// file, through `DebugFileTransport`) and served by the loopback server, so
+/// suspension and resume are exercised as in the app.
 @MainActor
 struct FullscreenHandoverDebugScene: View {
     @State private var player: PlayerModel
     @State private var status = "preparing"
+    @State private var session: VODSession?
+    private let stores: AppDataStores
 
     init(stores: AppDataStores) {
+        self.stores = stores
         _player = State(wrappedValue: PlayerModel(stores: stores, backend: makeMediaBackend()))
     }
 
@@ -193,14 +174,27 @@ struct FullscreenHandoverDebugScene: View {
                 .accessibilityIdentifier("debug-playback-state")
         }
         .padding()
-        .task { await start() }
+        .task {
+            HummingbirdDebug.standalonePlayer = player
+            await start()
+        }
     }
 
     private func start() async {
         do {
             let shade = ProcessInfo.processInfo.environment["HUMMINGBIRD_DEBUG_CLIP_SHADE"].flatMap(Int.init)
             let clip = try await DebugMediaClip.make(shade: shade)
-            player.localPlaybackForTesting = { _ in try LocalPlayback(video: clip, servedBy: .mediaCache) }
+            let data = try Data(contentsOf: clip, options: .mappedIfSafe)
+            guard let upstream = URL(string: "https://debug.invalid/clip-\(shade ?? -1).mp4") else { return }
+            let spec = VODTrackSpec(role: .video, identity: "debug-clip-\(shade ?? -1)-\(data.count)",
+                                    signer: .plain(upstream), refresh: nil, indexHint: nil,
+                                    container: "video/mp4", codec: "", bandwidth: 1_000_000,
+                                    width: 320, height: 180, declaredDuration: nil,
+                                    transport: DebugFileTransport(data: data))
+            let (session, playback) = try await VODSession.start(video: spec, audio: nil, downloads: stores.mediaDownloads,
+                                                                 server: stores.mediaServer)
+            self.session = session
+            player.localPlaybackForTesting = { _ in playback }
             let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://debug.invalid/clip.mp4"}"#.utf8))
             await player.select(PlaybackOption(id: "debug-clip", label: "Clip", kind: .hls, video: source, audio: nil, height: 180))
             if !player.isPlaying { player.togglePlayback() }
@@ -208,6 +202,26 @@ struct FullscreenHandoverDebugScene: View {
         } catch {
             status = "failed: \(error.localizedDescription)"
         }
+    }
+}
+
+/// Serves a file's bytes as an upstream would, ranges included (debug scenes).
+struct DebugFileTransport: MediaTransport {
+    let data: Data
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard let url = request.url else { throw URLError(.badURL) }
+        let total = Int64(data.count)
+        guard let header = request.value(forHTTPHeaderField: "Range"),
+              let range = LocalMediaServer.parseRange(header, total: total) else {
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                           headerFields: ["Content-Length": String(total)])
+            return (data, response ?? URLResponse())
+        }
+        let body = data.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
+        let response = HTTPURLResponse(url: url, statusCode: 206, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(total)"])
+        return (body, response ?? URLResponse())
     }
 }
 

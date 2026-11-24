@@ -8,6 +8,9 @@ struct VideoDetailView: View {
     let shouldKeepPlaybackWhenHidden: () -> Bool
 
     @Environment(AppModel.self) private var app
+    /// The queue of the tab this page is in: playback advances through it even
+    /// while another tab is in front (background audio, Picture in Picture).
+    @Environment(PlaybackQueue.self) private var queue
     @State private var player: PlayerModel
     @State private var state: LoadState = .loading
     @State private var tab: DetailTab = .about
@@ -62,7 +65,12 @@ struct VideoDetailView: View {
         }
         .immersiveVideoDetailStyle()
         // The queue advances from whichever tab is playing, visible or not.
-        .task(id: activeURL) { player.onPlaybackEnded = advanceQueue }
+        .task(id: activeURL) {
+            // This tab's queue, captured: the end of playback advances it even
+            // when another tab is in front or the app is in the background.
+            let queue = queue
+            player.onPlaybackEnded = { advanceQueue(queue) }
+        }
         // Loading waits until the page is first on screen, so restored
         // background tabs don't all load their videos at launch.
         .browserTaskOnceVisible(id: activeURL) { await load() }
@@ -123,7 +131,7 @@ struct VideoDetailView: View {
         switch details {
         case .video(let video):
             state = .video(runtime, video)
-            app.playbackQueue.beginPlaying(SavedVideo(video.item))
+            queue.beginPlaying(SavedVideo(video.item))
             if loadPlayer {
                 await player.load(details: video, runtime: runtime, library: app.library, sourceURL: activeURL)
             }
@@ -132,8 +140,8 @@ struct VideoDetailView: View {
         }
     }
 
-    private func advanceQueue() {
-        guard let next = app.playbackQueue.advanceAfterPlayback() else { return }
+    private func advanceQueue(_ queue: PlaybackQueue) {
+        guard let next = queue.advanceAfterPlayback() else { return }
         if next.url == activeURL {
             player.replay()
             return

@@ -50,6 +50,8 @@ struct RemoteImage: View {
 struct ContentRow: View {
     let item: ContentItem
     @Environment(AppModel.self) private var app
+    /// The queue of the tab this row is in.
+    @Environment(PlaybackQueue.self) private var queue
     @Environment(\.openRoute) private var openRoute
 
     var body: some View {
@@ -72,8 +74,8 @@ struct ContentRow: View {
                     } label: { card }
                     if item.kind == .video {
                         Menu {
-                            Button("Play next") { app.playbackQueue.playNext(SavedVideo(item)) }
-                            Button("Add to queue") { app.playbackQueue.enqueue(SavedVideo(item)) }
+                            Button("Play next") { queue.playNext(SavedVideo(item)) }
+                            Button("Add to queue") { queue.enqueue(SavedVideo(item)) }
                         } label: {
                             Image(systemName: "ellipsis.circle.fill")
                                 .font(.title2)

@@ -3,6 +3,7 @@ import ATAppSync
 import Foundation
 import os
 import Observation
+import SwiftOpenUI
 
 @MainActor
 @Observable
@@ -107,6 +108,12 @@ final class ProfileAccountService {
             }, defers: defersBulkWork)
             periodicSync = periodic
             periodic.start()
+            // Only while the app is in front (SwiftOpenUI's ApplicationActivity,
+            // reported by every backend); background sync is the system's
+            // background-refresh window.
+            ApplicationActivity.observe { [weak self] active in
+                Task { @MainActor in self?.setApplicationActive(active) }
+            }
             // A device appearing or leaving is worth a pass soon.
             if let peerService {
                 presenceWatch = Task { [weak self] in
@@ -189,7 +196,7 @@ final class ProfileAccountService {
 
     /// The app came to the front (true) or went inactive or to the
     /// background (false): the periodic pass runs only while it is in front.
-    func setApplicationActive(_ active: Bool) { periodicSync?.setActive(active) }
+    private func setApplicationActive(_ active: Bool) { periodicSync?.setActive(active) }
 
     func setLocalNetworkEnabled(_ enabled: Bool) {
         localNetworkEnabled = enabled

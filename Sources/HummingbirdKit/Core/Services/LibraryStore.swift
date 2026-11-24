@@ -204,12 +204,17 @@ final class LibraryStore {
         bookkeeping = true
         defer { bookkeeping = false }
         progressSinceBase[entry.id] = entry
-        if let i = history.firstIndex(where: { $0.id == v.id }) { history.remove(at: i) }
-        history.insert(entry, at: 0)
+        // Built aside and written once, only if it differs: each write of the
+        // observed history redraws whatever shows it (this runs every few
+        // seconds while a video plays).
+        var updated = history
+        if let i = updated.firstIndex(where: { $0.id == v.id }) { updated.remove(at: i) }
+        updated.insert(entry, at: 0)
         // The limit only bounds what this device keeps. Trimming is not a
         // deletion: every device trims the same merged history the same
         // way, and a delete here would remove the entry everywhere.
-        if history.count > Self.historyLimit { history.removeLast(history.count - Self.historyLimit) }
+        if updated.count > Self.historyLimit { updated.removeLast(updated.count - Self.historyLimit) }
+        if updated != history { history = updated }
         unsyncedHistory[entry.id] = entry
         // A tiny file write per tick, never a journal write: a crash loses
         // seconds of progress, not the minute until the next history write.

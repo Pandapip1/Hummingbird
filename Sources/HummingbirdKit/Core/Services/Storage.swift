@@ -68,6 +68,11 @@ final class Storage: Sendable {
         }
     }
 
+    /// Deletes `name` (a store whose data moved elsewhere), in order with the writes.
+    func remove(name: String) {
+        writer.async { [backend] in backend.remove(name: name) }
+    }
+
     /// Waits for every write submitted so far.
     func flush() async {
         await withCheckedContinuation { continuation in
@@ -196,6 +201,14 @@ final class StorageBackend: @unchecked Sendable {
         }
     }
 
+    func remove(name: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        database.remove(name: name)
+        discardQueued(name: name)
+        if let directory { try? FileManager.default.removeItem(at: directory.appendingPathComponent(name + ".json")) }
+    }
+
     private func saveLegacy(_ data: Data, to url: URL) -> Bool {
         do {
             try data.write(to: url, options: [.atomic])
@@ -273,6 +286,20 @@ final class StorageDatabase: @unchecked Sendable {
         guard blobResult == SQLITE_OK,
               sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970) == SQLITE_OK else { return false }
         return sqlite3_step(statement) == SQLITE_DONE
+    }
+}
+
+extension StorageDatabase {
+    func remove(name: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let handle else { return }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "DELETE FROM storage WHERE name = ?1", -1, &statement, nil) == SQLITE_OK,
+              let statement else { return }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK else { return }
+        _ = sqlite3_step(statement)
     }
 }
 

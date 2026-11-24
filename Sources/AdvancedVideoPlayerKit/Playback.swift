@@ -181,6 +181,9 @@ public protocol MediaBackend: AnyObject {
     /// A failure retrying cannot fix: this system has no decoder for the
     /// media's format. The host shows it instead of reloading.
     var onUnplayableMedia: (@MainActor (String) -> Void)? { get set }
+    /// The loaded item failed (it can be loaded again: `load`). Checked when
+    /// the app comes back, as a failure may have happened while it was away.
+    var hasFailedItem: Bool { get }
     var tracks: [MediaTrack] { get }
     func selectTrack(_ track: MediaTrack?)
     func selectedTrack(ofKind kind: MediaTrack.Kind) -> MediaTrack?
@@ -207,6 +210,7 @@ public extension MediaBackend {
     var onActivityChange: (@MainActor (PlaybackActivity) -> Void)? { get { nil } set {} }
     var onExternalEvent: (@MainActor (ExternalPlaybackEvent) -> Void)? { get { nil } set {} }
     var onUnplayableMedia: (@MainActor (String) -> Void)? { get { nil } set {} }
+    var hasFailedItem: Bool { false }
     func updateNowPlaying(_: NowPlaying?) {}
     var tracks: [MediaTrack] { [] }
     func selectTrack(_: MediaTrack?) {}

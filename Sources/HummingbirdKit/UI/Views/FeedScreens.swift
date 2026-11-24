@@ -271,6 +271,7 @@ struct ManageSubscriptionsView: View {
 @MainActor
 struct LibraryView: View {
     @Environment(AppModel.self) private var app
+    @Environment(PlaybackQueue.self) private var queue
     @State private var newPlaylistName = ""
     @State private var showNewPlaylist = false
     @State private var showImporter = false
@@ -283,7 +284,7 @@ struct LibraryView: View {
             List {
                 Section {
                     NavigationLink { PlaybackQueueView() } label: {
-                        Label("Queue (\(app.playbackQueue.items.count))", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        Label("Queue (\(queue.items.count))", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                     NavigationLink { WatchLaterView() } label: { Label("Watch later (\(app.library.watchLater.count))", systemImage: "clock") }
                     NavigationLink { HistoryView() } label: { Label("History", systemImage: "clock.arrow.circlepath") }
@@ -358,16 +359,17 @@ struct LibraryView: View {
 
 @MainActor
 struct PlaybackQueueView: View {
-    @Environment(AppModel.self) private var app
+    /// The queue of the tab this page is in.
+    @Environment(PlaybackQueue.self) private var queue
     @Environment(\.openRoute) private var openRoute
 
     var body: some View {
         List {
-            ForEach(app.playbackQueue.items) { video in
+            ForEach(queue.items) { video in
                 HStack(spacing: 8) {
                     Button { openRoute(.item(ContentItem(saved: video)), title: video.name) } label: {
                         HStack(spacing: 8) {
-                        if video.id == app.playbackQueue.currentID {
+                        if video.id == queue.currentID {
                             Image(systemName: "play.fill").foregroundStyle(Color.accentColor)
                         }
                         VStack(alignment: .leading, spacing: 2) {
@@ -377,30 +379,30 @@ struct PlaybackQueueView: View {
                         }
                     }
                     Spacer()
-                    Button { app.playbackQueue.moveUp(video) } label: { Image(systemName: "chevron.up") }
-                    Button { app.playbackQueue.moveDown(video) } label: { Image(systemName: "chevron.down") }
-                    Button { app.playbackQueue.remove(video) } label: { Image(systemName: "trash") }
+                    Button { queue.moveUp(video) } label: { Image(systemName: "chevron.up") }
+                    Button { queue.moveDown(video) } label: { Image(systemName: "chevron.down") }
+                    Button { queue.remove(video) } label: { Image(systemName: "trash") }
                 }
                 .buttonStyle(.plain)
             }
-            .onDelete { app.playbackQueue.remove(at: $0) }
-            .onMove { app.playbackQueue.move(from: $0, to: $1) }
+            .onDelete { queue.remove(at: $0) }
+            .onMove { queue.move(from: $0, to: $1) }
         }
         .listStyle(.plain)
         .navigationTitle("Queue")
         .browserPageToolbarItem(id: "queue.shuffle", placement: .trailing) {
-            Button { app.playbackQueue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
-                .disabled(app.playbackQueue.items.count < 2)
+            Button { queue.shuffleUpcoming() } label: { Image(systemName: "shuffle") }
+                .disabled(queue.items.count < 2)
         }
         .browserPageToolbarItem(id: "queue.repeat", placement: .trailing) {
-            Button { app.playbackQueue.cycleRepeatMode() } label: {
-                Image(systemName: app.playbackQueue.repeatMode.systemImage)
+            Button { queue.cycleRepeatMode() } label: {
+                Image(systemName: queue.repeatMode.systemImage)
             }
-            .accessibilityLabel(app.playbackQueue.repeatMode.label)
+            .accessibilityLabel(queue.repeatMode.label)
         }
         .editableCollectionToolbar(id: "queue.edit")
         .overlay {
-            if app.playbackQueue.items.isEmpty {
+            if queue.items.isEmpty {
                 ContentUnavailableView("Queue is empty", systemImage: "text.line.first.and.arrowtriangle.forward",
                                        description: Text("Add videos with Play next or Queue."))
             }

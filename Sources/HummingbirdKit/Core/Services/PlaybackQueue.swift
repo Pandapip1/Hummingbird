@@ -22,6 +22,8 @@ struct PersistedPlaybackQueue: Codable, Sendable {
     var nextIndexHint: Int?
 }
 
+/// One browser tab's playback queue (`AppModel.queue(forTab:)`): it is saved
+/// with its tab, so it has no store of its own and tells its tab when it changes.
 @MainActor
 @Observable
 final class PlaybackQueue {
@@ -29,15 +31,10 @@ final class PlaybackQueue {
     private(set) var currentID: String?
     private(set) var repeatMode: QueueRepeatMode
     @ObservationIgnored private var nextIndexHint: Int?
+    @ObservationIgnored private let didChange: @MainActor () -> Void
 
-    @ObservationIgnored private let storage: Storage
-    @ObservationIgnored private let storageName: String
-
-    init(storage: Storage, storageName: String = "playback_queue",
-         restored: PersistedPlaybackQueue? = nil) {
-        self.storage = storage
-        self.storageName = storageName
-        let saved = restored ?? storage.load(PersistedPlaybackQueue.self, name: storageName)
+    init(restored saved: PersistedPlaybackQueue? = nil, didChange: @escaping @MainActor () -> Void = {}) {
+        self.didChange = didChange
         items = saved?.items ?? []
         currentID = saved?.currentID
         repeatMode = saved?.repeatMode ?? .off
@@ -151,9 +148,10 @@ final class PlaybackQueue {
         persist()
     }
 
-    private func persist() {
-        let value = PersistedPlaybackQueue(items: items, currentID: currentID, repeatMode: repeatMode,
-                                           nextIndexHint: nextIndexHint)
-        storage.save(value, name: storageName)
+    /// What its tab saves.
+    var persisted: PersistedPlaybackQueue {
+        PersistedPlaybackQueue(items: items, currentID: currentID, repeatMode: repeatMode, nextIndexHint: nextIndexHint)
     }
+
+    private func persist() { didChange() }
 }

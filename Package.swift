@@ -57,17 +57,16 @@ var targets: [Target] = [
     ),
     sqliteTarget,
     // The plugin JavaScript engine and the plugin host process it can run in (process isolation:
-    // Documentation/PluginSecurity.md). Foundation and JavaScriptCore only, so the host process
-    // carries nothing else of the app.
+    // Documentation/PluginSecurity.md). Foundation, JavaScriptCore and SwiftOpenUI's PlatformSupport
+    // (helper processes) only, so the host process carries nothing else of the app.
     .target(
         name: "PluginEngine",
         dependencies: [
-            "CPluginHostSandbox",
+            .product(name: "PlatformSupport", package: "SwiftOpenUI"),
             .target(name: "CJavaScriptCoreGTK", condition: .when(platforms: [.linux])),
         ],
         path: "Sources/PluginEngine"
     ),
-    .target(name: "CPluginHostSandbox", path: "Sources/CPluginHostSandbox"),
     .executableTarget(
         name: "HummingbirdPluginHost",
         dependencies: ["PluginEngine"],
@@ -125,6 +124,7 @@ var targets: [Target] = [
             .product(name: "ATProtoKit", package: "ATProtoKit"),
             .product(name: "ATAppSync", package: "ATAppSync"),
             .product(name: "CredentialStorage", package: "SwiftOpenUI"),
+            .product(name: "PlatformSupport", package: "SwiftOpenUI"),
             .product(name: "SwiftOpenUI", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
             .product(name: "WebKit", package: "SwiftOpenUI", condition: .when(platforms: nonApple)),
             .product(name: "BackendGTK4", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),

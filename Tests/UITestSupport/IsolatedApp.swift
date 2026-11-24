@@ -10,10 +10,12 @@ enum IsolatedApp {
     /// directory in the app's own temporary directory, so it works on
     /// simulators and devices alike. Add further launch settings, then
     /// launch it; relaunching the same instance keeps the same data.
+    /// With a `scene`, the app shows that one piece of UI instead.
     @MainActor
-    static func make() -> XCUIApplication {
+    static func make(scene: DebugScene? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["HUMMINGBIRD_DEBUG_DATA_ROOT"] = "ui-tests/\(UUID().uuidString)"
+        if let scene { app.launchEnvironment[DebugScene.environmentKey] = scene.rawValue }
         return app
     }
 

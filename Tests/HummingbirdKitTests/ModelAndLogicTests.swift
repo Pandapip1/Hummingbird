@@ -87,7 +87,7 @@ final class ModelAndLogicTests: XCTestCase {
     func testBrowserSessionRestoresEveryTabAndItsHistoryPosition() {
         let firstID = UUID(), secondID = UUID()
         let snapshot = AppPersistenceSnapshot(
-            plugins: [], library: .empty, playbackQueue: nil, searchHistory: [],
+            plugins: [], library: .empty, legacyPlaybackQueue: nil, searchHistory: [],
             browserSession: PersistedBrowserSession(
                 tabs: [
                     .init(
@@ -238,8 +238,9 @@ final class ModelAndLogicTests: XCTestCase {
                 subscriptions: [], playlists: [], watchLater: [video], history: [],
                 feedCache: [:], homeCache: [video]
             ),
-            playbackQueue: PersistedPlaybackQueue(
-                items: [video], currentID: video.id, repeatMode: .all, nextIndexHint: nil
+            legacyPlaybackQueue: LegacyPlaybackQueue(
+                queue: PersistedPlaybackQueue(items: [video], currentID: video.id, repeatMode: .all, nextIndexHint: nil),
+                storeName: "playback_queue"
             ),
             searchHistory: ["prepared query"],
             browserSession: nil
@@ -249,21 +250,20 @@ final class ModelAndLogicTests: XCTestCase {
 
         XCTAssertEqual(model.library.watchLater, [video])
         XCTAssertEqual(model.library.homeCache, [video])
-        XCTAssertEqual(model.playbackQueue.current, video)
-        XCTAssertEqual(model.playbackQueue.repeatMode, .all)
+        XCTAssertEqual(model.activeTabQueue.current, video, "the profile's old queue went to the active tab")
+        XCTAssertEqual(model.activeTabQueue.repeatMode, .all)
         XCTAssertEqual(model.searchHistory.queries, ["prepared query"])
     }
 
     @MainActor
     func testPlaybackQueuePersistsOrderingAndRepeatState() async throws {
-        let storage = Storage.inMemory()
         func video(_ name: String) throws -> SavedVideo {
             SavedVideo(try decode(ContentItem.self,
                 #"{"contentType":1,"id":{"pluginId":"test","value":"\#(name)"},"name":"\#(name)","url":"https://test/\#(name)"}"#))
         }
         let one = try video("one"), two = try video("two"), three = try video("three")
 
-        let queue = PlaybackQueue(storage: storage)
+        let queue = PlaybackQueue()
         queue.beginPlaying(one)
         queue.enqueue(three)
         queue.playNext(two)
@@ -272,14 +272,13 @@ final class ModelAndLogicTests: XCTestCase {
         queue.moveDown(two)
         queue.cycleRepeatMode()
 
-        await storage.flush()
-        let restored = PlaybackQueue(storage: storage)
+        let restored = PlaybackQueue(restored: queue.persisted)
         XCTAssertEqual(restored.items.map(\.name), ["one", "three", "two"])
         XCTAssertEqual(restored.current?.name, "two")
         XCTAssertEqual(restored.repeatMode, .all)
         XCTAssertEqual(restored.advanceAfterPlayback()?.name, "one")
 
-        let removalQueue = PlaybackQueue(storage: storage, storageName: "removal_queue")
+        let removalQueue = PlaybackQueue()
         removalQueue.beginPlaying(one)
         removalQueue.enqueue(two)
         removalQueue.enqueue(three)
@@ -289,23 +288,22 @@ final class ModelAndLogicTests: XCTestCase {
         removalQueue.remove(three)
         XCTAssertNil(removalQueue.advanceAfterPlayback())
 
-        let firstRemoval = PlaybackQueue(storage: storage, storageName: "first_removal_queue")
+        let firstRemoval = PlaybackQueue()
         firstRemoval.beginPlaying(one)
         firstRemoval.enqueue(two)
         firstRemoval.remove(one)
         XCTAssertEqual(firstRemoval.advanceAfterPlayback()?.name, "two")
 
-        let multipleRemoval = PlaybackQueue(storage: storage, storageName: "multiple_removal_queue")
+        let multipleRemoval = PlaybackQueue()
         multipleRemoval.beginPlaying(one)
         multipleRemoval.enqueue(two)
         multipleRemoval.enqueue(three)
         multipleRemoval.beginPlaying(two)
         multipleRemoval.remove(at: IndexSet([0, 1]))
-        await storage.flush()
-        let restoredRemoval = PlaybackQueue(storage: storage, storageName: "multiple_removal_queue")
+        let restoredRemoval = PlaybackQueue(restored: multipleRemoval.persisted)
         XCTAssertEqual(restoredRemoval.advanceAfterPlayback()?.name, "three")
 
-        let subsequentRemoval = PlaybackQueue(storage: storage, storageName: "subsequent_removal_queue")
+        let subsequentRemoval = PlaybackQueue()
         subsequentRemoval.beginPlaying(one)
         subsequentRemoval.enqueue(two)
         subsequentRemoval.enqueue(three)
@@ -407,7 +405,7 @@ final class ModelAndLogicTests: XCTestCase {
         XCTAssertEqual(PlaybackSelector.best(hlsOnly, maxHeight: 1080)?.kind, .hls)
     }
 
-    func testGeneratedPlaybackSelectionKeepsMP4QualitiesOnly() throws {
+    func testGeneratedPlaybackSelectionOffersWebMAndPrefersMP4() throws {
         let d = try decode(VideoDetails.self, """
         {"contentType":1,"name":"V","url":"u","id":{"pluginId":"p","value":"v"},"description":"",
          "video":{"isUnMuxed":true,"videoSources":[
@@ -417,10 +415,10 @@ final class ModelAndLogicTests: XCTestCase {
             {"plugin_type":"DashManifestRawSource","__handle":4,"hasGenerate":true,"height":2160,"container":"video/webm","codec":"vp9"}]}}
         """)
         let options = PlaybackSelector.options(for: d)
-        XCTAssertEqual(options.map(\.height).sorted(), [720, 1080])
+        XCTAssertEqual(options.map(\.height).sorted(), [720, 1080, 2160], "generated WebM is offered (remuxed as it is served)")
         XCTAssertTrue(options.allSatisfy { $0.kind == .generated })
         XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 720)?.height, 720)
-        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 1080)?.height, 1080)
+        XCTAssertEqual(PlaybackSelector.best(options, maxHeight: 4320)?.height, 1080, "MP4 stays the default")
     }
 
     func testGeneratedPlaybackPairsSeparateGeneratedAudio() throws {

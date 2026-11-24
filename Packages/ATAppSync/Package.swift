@@ -19,12 +19,23 @@ let package = Package(
                 .brew(["avahi"]),
             ]
         ),
+        // zlib, for the cache journal's compression at rest: in the Apple
+        // SDKs, and zlib's development package on Linux.
+        .systemLibrary(
+            name: "CZlib",
+            providers: [
+                .apt(["zlib1g-dev"]),
+            ]
+        ),
         .target(
             name: "ATAppSync",
             dependencies: [
                 "CDNSService",
+                "CZlib",
                 .product(name: "ATProtoKit", package: "ATProtoKit"),
                 .product(name: "CredentialStorage", package: "SwiftOpenUI"),
+                // KeptDirectory: where the cache journal lives (never Caches).
+                .product(name: "PlatformSupport", package: "SwiftOpenUI"),
                 .product(name: "os", package: "SwiftOpenUI", condition: .when(platforms: [.linux])),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -32,7 +43,10 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
             ]
         ),
-        .testTarget(name: "ATAppSyncTests", dependencies: ["ATAppSync", .product(name: "Crypto", package: "swift-crypto")]),
+        .testTarget(name: "ATAppSyncTests", dependencies: [
+            "ATAppSync", .product(name: "Crypto", package: "swift-crypto"),
+            .product(name: "PlatformSupport", package: "SwiftOpenUI"),
+        ]),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -229,6 +229,12 @@ public final class AppSyncTrustStore: @unchecked Sendable {
         lock.withLock { evaluate(factsByID.values, boundary: boundary).trusted.contains(peer) }
     }
 
+    /// Every peer this instance trusts now: the trusted set the cache's key
+    /// epochs follow.
+    public func trustedPeers() -> Set<AppSyncPeerID> {
+        lock.withLock { evaluate(factsByID.values, boundary: nil).trusted.subtracting([observer.stableID]) }
+    }
+
     public func state(of peer: AppSyncPeerID) -> AppSyncPeerTrustState {
         lock.withLock { stateUnlocked(of: peer) }
     }

@@ -1,6 +1,6 @@
 import Foundation
 import Synchronization
-import CPluginHostSandbox
+import PlatformSupport
 
 /// The plugin host process's side: holds JavaScript contexts and nothing else. Each context lives on
 /// a thread of its own, which owns the context outright; messages reach it through its inbox. A host
@@ -127,9 +127,9 @@ public extension PluginHostServer {
     /// Runs this process as a plugin host on stdin/stdout, then exits. Called first thing by the
     /// host executable (and by the Linux app binary started with `--plugin-host`).
     static func runAsProcess() -> Never {
-        // Nothing the parent had open reaches plugin code, only the two frame streams.
-        for fd in Int32(3)..<Int32(1024) { _ = closeDescriptor(fd) }
-        _ = hb_plugin_host_sandbox()
+        // Nothing the parent had open reaches plugin code, only the two frame streams; and where the
+        // platform can confine a process, plugin code can open, write or start nothing.
+        HelperProcess.confineCurrentProcess()
         PluginHostServer(channel: PluginHostChannel(readFD: 0, writeFD: 1), engine: JSEngines.makeInProcess()).run()
         exit(0)
     }

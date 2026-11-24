@@ -22,6 +22,7 @@ final class FakeAuthorizationServer: Sendable {
         var authorizeRequests = 0
         var boundDevice: String?
         var nextDevice = 0
+        var log: [String] = []
     }
 
     static let requestURI = "urn:ietf:params:oauth:request_uri:req-test"
@@ -40,20 +41,40 @@ final class FakeAuthorizationServer: Sendable {
     /// How many times /oauth/authorize was requested.
     var authorizeRequests: Int { state.withLock { $0.authorizeRequests } }
 
-    /// Starts listening and returns the authorization URL to load.
-    func start() async throws -> URL {
-        let port = await withCheckedContinuation { continuation in
+    /// Every request's path, in order, and what it was answered with (failure diagnostics).
+    var requestLog: [String] { state.withLock { $0.log } }
+
+    struct StartFailure: Error, CustomStringConvertible { let description: String }
+
+    /// Starts listening and returns the authorization URL to load. Throws if the listener fails,
+    /// is cancelled, or is not ready within `timeout`, rather than waiting forever.
+    func start(timeout: TimeInterval = 10) async throws -> URL {
+        let port: UInt16 = try await withCheckedThrowingContinuation { continuation in
             let resumed = Mutex(false)
-            listener.stateUpdateHandler = { [listener] state in
-                guard case .ready = state, let port = listener.port?.rawValue else { return }
+            let resume: @Sendable (Result<UInt16, any Error>) -> Void = { result in
                 let first = resumed.withLock { done in
                     defer { done = true }
                     return !done
                 }
-                if first { continuation.resume(returning: port) }
+                if first { continuation.resume(with: result) }
+            }
+            listener.stateUpdateHandler = { [listener] state in
+                switch state {
+                case .ready:
+                    if let port = listener.port?.rawValue { resume(.success(port)) }
+                case .failed(let error):
+                    resume(.failure(StartFailure(description: "the listener failed: \(error)")))
+                case .cancelled:
+                    resume(.failure(StartFailure(description: "the listener was cancelled")))
+                default:
+                    break
+                }
             }
             listener.newConnectionHandler = { [weak self] connection in self?.serve(connection) }
             listener.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + timeout) {
+                resume(.failure(StartFailure(description: "the listener was not ready within \(timeout) s")))
+            }
         }
         let query = "client_id=https%3A%2F%2Fapp.example%2Fclient.json&request_uri="
             + (Self.requestURI.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")
@@ -95,6 +116,7 @@ final class FakeAuthorizationServer: Sendable {
                     .map { String($0.dropFirst("dev-id=".count)) }
             }
         let path = String(target.split(separator: "?").first ?? "")
+        state.withLock { $0.log.append(path + (cookie == nil ? "" : " (cookie)")) }
         let refusal = callback + "?error=access_denied&error_description=This+request+was+initiated+from+another+device"
             + "&state=test-state"
 

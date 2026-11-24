@@ -222,7 +222,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
         let executable = try XCTUnwrap(MaliciousPluginTests.hostExecutable, "build hummingbird-plugin-host")
         for plugin in try plugins {
             let started = Date()
-            let engine = RemoteJSEngine(launcher: SubprocessPluginHostLauncher(executable: executable))
+            let engine = RemoteJSEngine(launcher: try XCTUnwrap(HelperPluginHostLauncher.executable(executable)))
             let probe = try engine.makeContext { _, _, _ in "" }
             let launch = Date().timeIntervalSince(started)
             probe.close()
@@ -247,7 +247,7 @@ final class PluginCallCostBenchmarks: XCTestCase {
                                      "in_process_us": local / Double(calls) * 1_000_000]
         #if os(macOS) || os(Linux)
         if let executable = MaliciousPluginTests.hostExecutable {
-            let engine = RemoteJSEngine(launcher: SubprocessPluginHostLauncher(executable: executable))
+            let engine = RemoteJSEngine(launcher: try XCTUnwrap(HelperPluginHostLauncher.executable(executable)))
             let remote = try engine.makeContext { _, _, _ in "pong" }
             let (_, time) = try await Self.time { try remote.evaluate(script, name: "ping") }
             record["host_process_us"] = time / Double(calls) * 1_000_000

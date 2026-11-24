@@ -62,6 +62,11 @@ final class PluginRuntime: @unchecked Sendable {
     private var savedState: String?
     private var reloadData: String?
     private var capabilitiesSnapshot: [String: Bool] = [:]
+    /// Virtual machines whose calls all ended cleanly, ready for another call's fresh context (script
+    /// caching: the plugin's script is already compiled in them). At most
+    /// `PluginLimits.maximumIdleMachines`; a machine serves one call (and its continuations) at a time.
+    private var idleMachines: [JSMachine] = []
+    private var machineCounts = (reused: 0, dropped: 0)
     private var callbacks: (toast: (@Sendable (String) -> Void)?, log: (@Sendable (String) -> Void)?) = (nil, nil)
 
     var onToast: (@Sendable (String) -> Void)? {
@@ -83,6 +88,35 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Contexts alive now: running calls and retained sessions.
     var liveContextCountForTesting: Int { lock.withLock { workers.count } }
+
+    /// Idle pooled machines, how many calls reused one, and how many were dropped after a call that
+    /// threw or was stopped.
+    var machinePoolForTesting: (idle: Int, reused: Int, dropped: Int) {
+        lock.withLock { (idleMachines.count, machineCounts.reused, machineCounts.dropped) }
+    }
+
+    /// A machine for a new context: an idle one when there is one, else a new one (nil where the
+    /// engine has none, as a host process's).
+    fileprivate func takeMachine() -> JSMachine? {
+        let idle: JSMachine? = lock.withLock {
+            guard let machine = idleMachines.popLast() else { return nil }
+            machineCounts.reused += 1
+            return machine
+        }
+        return idle ?? engine.makeMachine()
+    }
+
+    /// A context's machine once the context has closed: back to the pool only if every call in it
+    /// ended cleanly, so nothing a failed or stopped script left in it reaches another call.
+    fileprivate func returnMachine(_ machine: JSMachine, reusable: Bool) {
+        lock.withLock {
+            if !reusable {
+                machineCounts.dropped += 1
+            } else if idleMachines.count < PluginLimits.maximumIdleMachines {
+                idleMachines.append(machine)
+            }
+        }
+    }
 
     /// Where a fresh context's startup time goes, and how many host calls the plugin made: read by
     /// the call-cost measurements (PluginCallCostBenchmarks), never by the app.
@@ -378,8 +412,13 @@ final class PluginRuntime: @unchecked Sendable {
         } catch let missed as PluginWorker.DeadlineMissed {
             // A running overrun was already taken out of service by the watchdog.
             _ = missed.whileRunning
+            worker.markNotReusable()
             Logger.plugin.error("call_timeout plugin=\(pluginLogID(self.config.id), privacy: .public) seconds=\(timeout)")
             throw PluginError.timeout("\(config.name) took too long to respond")
+        } catch {
+            // A call that threw keeps its machine out of the pool.
+            worker.markNotReusable()
+            throw error
         }
     }
 
@@ -405,6 +444,16 @@ final class PluginRuntime: @unchecked Sendable {
 
     /// Polls a pending promise on its worker until it settles or `deadline` passes.
     private func settle(_ initial: String?, on handleOrNil: Int?, worker serial: Int, deadline: Date) async throws -> Data {
+        do {
+            return try await settleResult(initial, worker: serial, deadline: deadline)
+        } catch {
+            // A call that threw (or whose promise failed) keeps its machine out of the pool.
+            lock.withLock { workers.first { $0.serial == serial } }?.markNotReusable()
+            throw error
+        }
+    }
+
+    private func settleResult(_ initial: String?, worker serial: Int, deadline: Date) async throws -> Data {
         var result = initial
         while let id = PluginWorker.pendingPromise(in: result) {
             guard Date() < deadline else { throw PluginError.timeout("\(config.name)’s asynchronous operation timed out") }
@@ -454,7 +503,7 @@ final class PluginRuntime: @unchecked Sendable {
 
     func stop() async {
         let (current, http): ([PluginWorker], HostHTTP?) = lock.withLock {
-            defer { workers.removeAll(); self.http = nil }
+            defer { workers.removeAll(); self.http = nil; idleMachines.removeAll() }
             return (workers, self.http)
         }
         for worker in current { await worker.stop() }
@@ -746,6 +795,11 @@ final class PluginWorker: @unchecked Sendable {
     var lastUsed = Date()
 
     private var context: JSContextHost?
+    /// The machine `context` lives in (queue only); returned to the runtime's pool when the context
+    /// closes, unless `reusable` was cleared.
+    private var machine: JSMachine?
+    /// False once a call in this context threw, missed its deadline or was stopped.
+    private let reusable = Mutex(true)
     private let dom = DOMStore()
     private var browser: PluginBrowserPackage?
     private var started = false
@@ -822,7 +876,7 @@ final class PluginWorker: @unchecked Sendable {
                 }
                 let runDeadline = Date().addingTimeInterval(timeout)
                 self.deadline = runDeadline
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + self.watchdogGrace) {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + self.watchdogGrace(for: timeout)) {
                     // Atomically: the call fails, and the worker is taken out of service, before
                     // the script can return. So exactly one of the two sides cleans up.
                     let stuck: Bool = job.state.withLock {
@@ -853,7 +907,7 @@ final class PluginWorker: @unchecked Sendable {
     private func guarded(timeout: TimeInterval, _ work: () -> Void) {
         let tripwire = Tripwire()
         deadline = Date().addingTimeInterval(timeout)
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + watchdogGrace) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout + watchdogGrace(for: timeout)) {
             tripwire.state.withLock {
                 guard $0 == .running else { return }
                 $0 = .finished
@@ -874,6 +928,7 @@ final class PluginWorker: @unchecked Sendable {
     /// counts it as hung until `retireAfterStuck` runs.
     private func markStuck() {
         abandoned.withLock { $0 = true }
+        markNotReusable()
         runtime?.abandon(self)
     }
 
@@ -888,6 +943,12 @@ final class PluginWorker: @unchecked Sendable {
     /// script returns.
     func abandon() {
         abandoned.withLock { $0 = true }
+        markNotReusable()
+    }
+
+    /// Keeps this context's machine out of the pool when the context closes.
+    func markNotReusable() {
+        reusable.withLock { $0 = false }
     }
 
     func stop() async {
@@ -906,9 +967,17 @@ final class PluginWorker: @unchecked Sendable {
         let ctx: JSContextHost
         do {
             let began = Date()
-            ctx = try runtime.engine.makeContext { [weak self] name, a, b in self?.handleHostCall(name, a, b) ?? "" }
+            let hostCall: (String, String, String) -> String = { [weak self] name, a, b in self?.handleHostCall(name, a, b) ?? "" }
+            if let pooled = runtime.takeMachine() {
+                machine = pooled
+                ctx = try runtime.engine.makeContext(in: pooled, hostCall: hostCall)
+            } else {
+                ctx = try runtime.engine.makeContext(hostCall: hostCall)
+            }
             runtime.recordStartup { $0.context = Date().timeIntervalSince(began) }
         } catch let e as JSEngineError {
+            markNotReusable()
+            releaseMachine()
             throw PluginError.execution(e.message)
         }
         context = ctx
@@ -964,8 +1033,17 @@ final class PluginWorker: @unchecked Sendable {
         } catch {
             ctx.close()
             context = nil
+            markNotReusable()
+            releaseMachine()
             throw error
         }
+    }
+
+    /// Gives the closed context's machine back to the runtime (which pools it only if reusable).
+    private func releaseMachine() {
+        guard let machine else { return }
+        self.machine = nil
+        runtime?.returnMachine(machine, reusable: reusable.withLock { $0 })
     }
 
     func enableLocked() throws {
@@ -984,6 +1062,7 @@ final class PluginWorker: @unchecked Sendable {
         contextGeneration &+= 1
         context?.close()
         context = nil
+        releaseMachine()
         browser?.close()
         browser = nil
         dom.removeAll()
@@ -1130,11 +1209,14 @@ final class PluginWorker: @unchecked Sendable {
         return context
     }
 
-    /// How long the watchdog waits past a deadline: a moment for an in-process engine that stops
-    /// scripts itself to do so, so the context returns rather than being abandoned.
-    private var watchdogGrace: TimeInterval {
+    /// How long the watchdog waits past a deadline of `timeout`. Where an in-process engine stops
+    /// scripts itself (JavaScriptCore's time limit, set to the call's remaining time), the
+    /// watchdog is only a backstop: it waits as long again, so the engine's limit wins by a whole
+    /// timeout even on an overloaded machine and the context returns rather than being abandoned.
+    /// Callers still get their timeout at the deadline, when the engine stops the script.
+    private func watchdogGrace(for timeout: TimeInterval) -> TimeInterval {
         guard PluginExecutionLimits.engineTimeLimit != nil, !(runtime?.engine is RemoteJSEngine) else { return 0 }
-        return 0.5
+        return timeout
     }
     private func eval(_ code: String, name: String) throws {
         guard let ctx = context else { throw PluginError.execution("Runtime is not running") }

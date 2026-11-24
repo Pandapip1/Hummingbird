@@ -6,6 +6,7 @@ source.spin = function (ms) {            // a pure CPU loop: nothing in-process 
   return "finished";
 };
 source.quick = function () { return 42; };
+source.fail = function () { throw new Error("boom"); };  // a call that throws: its machine is not reused
 source.hostCallSpin = function (ms) {     // a loop of HTTP calls: after its deadline every call fails at once
   var end = Date.now() + ms, n = 0;
   while (Date.now() < end) {

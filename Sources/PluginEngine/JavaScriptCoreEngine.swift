@@ -7,6 +7,22 @@ public struct JavaScriptCoreEngine: JSEngine, Sendable {
     public init() {}
     public func makeContext(hostCall: @escaping (String, String, String) -> String) throws -> JSContextHost {
         guard let ctx = JSContext() else { throw JSEngineError(message: "Could not create a JavaScript context") }
+        return Self.host(ctx, hostCall: hostCall)
+    }
+
+    public func makeMachine() -> JSMachine? {
+        JSVirtualMachine().map { JSMachine($0) }
+    }
+
+    public func makeContext(in machine: JSMachine, hostCall: @escaping (String, String, String) -> String) throws -> JSContextHost {
+        guard let virtualMachine = machine.storage as? JSVirtualMachine,
+              let ctx = JSContext(virtualMachine: virtualMachine) else {
+            throw JSEngineError(message: "Could not create a JavaScript context")
+        }
+        return Self.host(ctx, hostCall: hostCall)
+    }
+
+    private static func host(_ ctx: JSContext, hostCall: @escaping (String, String, String) -> String) -> JSContextHost {
         let block: @convention(block) (String, String, String) -> String = { n, a, b in hostCall(n, a, b) }
         ctx.setObject(block, forKeyedSubscript: "__hostCall" as NSString)
         return JavaScriptCoreContextHost(ctx)
@@ -14,6 +30,8 @@ public struct JavaScriptCoreEngine: JSEngine, Sendable {
 }
 
 final class JavaScriptCoreContextHost: JSContextHost {
+    /// What JavaScriptCore's termination exception (a script stopped at its time limit) says.
+    static let terminationMessage = "JavaScript execution terminated."
     private var context: JSContext?
     private var deadline: Date?
     init(_ context: JSContext) { self.context = context }
@@ -34,7 +52,9 @@ final class JavaScriptCoreContextHost: JSContextHost {
         let value = ctx.evaluateScript(code, withSourceURL: URL(string: "hummingbird://plugin/\(name.replacingOccurrences(of: " ", with: "_"))"))
         if let ex = ctx.exception {
             ctx.exception = nil
-            if let deadline, Date() >= deadline {
+            // JavaScriptCore stops a script at the time limit with its termination exception; only
+            // the limit set here asks for one. Past the deadline, any failure is the deadline's.
+            if let deadline, Date() >= deadline || (limiter != nil && ex.toString() == Self.terminationMessage) {
                 throw JSEngineError(message: JSEngineError.terminatedAtDeadline)
             }
             throw JSEngineError(message: ex.toString() ?? "Script error", line: ex.objectForKeyedSubscript("line")?.toString())

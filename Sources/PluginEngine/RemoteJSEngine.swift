@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import PlatformSupport
 #if canImport(Glibc)
 import Glibc
 #endif
@@ -216,41 +217,27 @@ final class RemoteJSContextHost: JSContextHost {
     }
 }
 
-#if os(macOS) || os(Linux) || os(Windows)
-/// Launches the plugin host as a child process (Linux, and macOS outside the App Store sandbox, such
-/// as tests): stdin/stdout carry the frames, and the process is killed with SIGKILL.
-public struct SubprocessPluginHostLauncher: PluginHostLauncher {
-    public let executable: URL
+/// Starts the plugin host as a helper process (SwiftOpenUI `HelperProcess`: the app's XPC service
+/// on macOS, the app's own binary on Linux, or a given executable for tests), speaking the plugin
+/// host protocol on its stream; killed with SIGKILL.
+public struct HelperPluginHostLauncher: PluginHostLauncher {
+    /// What the app's binary is run with to serve as a plugin host (`PluginHostServer.runAsProcess`).
+    public static let hostArguments = ["--plugin-host"]
 
-    public init(executable: URL) { self.executable = executable }
+    private let launcher: HelperProcess.Launcher
+
+    public init(_ launcher: HelperProcess.Launcher) { self.launcher = launcher }
+
+    /// The plugin host executable `executable` (hummingbird-plugin-host) as a child process, where
+    /// the platform can start processes.
+    public static func executable(_ executable: URL) -> HelperPluginHostLauncher? {
+        HelperProcess.Launcher.executable(executable, arguments: hostArguments).map(HelperPluginHostLauncher.init)
+    }
 
     public func launch() throws -> PluginHostProcess {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = ["--plugin-host"]
-        // Nothing of the app's environment: the host needs none, and secrets must not leak into it.
-        process.environment = [:]
-        let toHost = Pipe(), fromHost = Pipe()
-        process.standardInput = toHost
-        process.standardOutput = fromHost
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { throw PluginHostError.unavailable("\(error)") }
-        // The channel owns duplicates of the app's two pipe ends; the Pipe and Process objects
-        // (and the child's ends, which only the child needs) go away with this scope.
-        let readFD = dup(fromHost.fileHandleForReading.fileDescriptor)
-        let writeFD = dup(toHost.fileHandleForWriting.fileDescriptor)
-        guard readFD >= 0, writeFD >= 0 else { throw PluginHostError.unavailable("dup failed (\(errno))") }
-        let pid = process.processIdentifier
-        let once = Mutex(false)
-        return PluginHostProcess(channel: PluginHostChannel(readFD: readFD, writeFD: writeFD), pid: pid) {
-            guard once.withLock({ done in defer { done = true }; return !done }) else { return }
-            _ = Foundation.kill(pid, SIGKILL)
-            // Reap it, so a killed host never lingers as a zombie.
-            DispatchQueue.global(qos: .utility).async {
-                var status: Int32 = 0
-                _ = waitpid(pid, &status, 0)
-            }
-        }
+        let connection: HelperProcess.Connection
+        do { connection = try launcher.launch() } catch { throw PluginHostError.unavailable("\(error)") }
+        return PluginHostProcess(channel: PluginHostChannel(readFD: connection.readFD, writeFD: connection.writeFD),
+                                 pid: connection.pid, kill: connection.kill)
     }
 }
-#endif

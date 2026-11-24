@@ -24,7 +24,7 @@ extension MaliciousPluginTests {
 
     func hostEngine() throws -> RemoteJSEngine {
         let executable = try XCTUnwrap(Self.hostExecutable, "build hummingbird-plugin-host (swift build --build-tests builds it)")
-        let engine = RemoteJSEngine(launcher: SubprocessPluginHostLauncher(executable: executable))
+        let engine = RemoteJSEngine(launcher: try XCTUnwrap(HelperPluginHostLauncher.executable(executable)))
         addTeardownBlock { engine.terminate() }
         return engine
     }
@@ -106,6 +106,10 @@ extension MaliciousPluginTests {
         }
         // The engine stopped each loop, so no context was abandoned still running.
         XCTAssertFalse(rt.isSuspended)
+        // No machine that ran a stopped script goes back into the pool.
+        let deadline = Date().addingTimeInterval(3)
+        while rt.machinePoolForTesting.dropped < 3, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertGreaterThanOrEqual(rt.machinePoolForTesting.dropped, 3)
         let quick = try await rt.call("quick", as: Int.self)
         XCTAssertEqual(quick, 42)
     }
@@ -116,7 +120,7 @@ extension MaliciousPluginTests {
         addTeardownBlock { PluginExecutionLimits.reset() }
         XCTAssertEqual(PluginExecutionLimits.enforcement, .abandonment)
         let executable = try XCTUnwrap(Self.hostExecutable)
-        PluginExecutionLimits.installProcessIsolation(SubprocessPluginHostLauncher(executable: executable))
+        PluginExecutionLimits.installProcessIsolation(try XCTUnwrap(HelperPluginHostLauncher.executable(executable)))
         XCTAssertEqual(PluginExecutionLimits.enforcement, .processTermination)
         XCTAssertTrue(PluginExecutionLimits.makeEngine() is RemoteJSEngine)
     }

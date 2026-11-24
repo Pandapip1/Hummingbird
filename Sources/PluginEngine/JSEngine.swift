@@ -21,11 +21,33 @@ public protocol JSContextHost: AnyObject {
     func close()
 }
 
+/// A JavaScript virtual machine: the heap and code cache that contexts created in it share. A
+/// context in a machine that already ran a script skips parsing and compiling it again. Contexts
+/// in one machine cannot see each other's globals, but they do run one at a time, so a caller
+/// gives a machine to one call at a time (PluginRuntime's pool), and never back after a call
+/// that threw or was stopped.
+public final class JSMachine {
+    let storage: AnyObject
+    init(_ storage: AnyObject) { self.storage = storage }
+}
+
 /// A JavaScript engine backed by a JavaScriptCore implementation provided by the platform.
 public protocol JSEngine {
     /// Creates a context whose global scope has `__hostCall(name, a, b) -> string`, the only door from plugin
     /// code into the host. The prelude builds the plugin-facing API on top of it.
     func makeContext(hostCall: @escaping (_ name: String, _ a: String, _ b: String) -> String) throws -> JSContextHost
+    /// A new machine for `makeContext(in:hostCall:)`, or nil where the engine has none (every
+    /// context then gets a machine of its own).
+    func makeMachine() -> JSMachine?
+    /// Creates a fresh context, as `makeContext(hostCall:)` does, in `machine`.
+    func makeContext(in machine: JSMachine, hostCall: @escaping (_ name: String, _ a: String, _ b: String) -> String) throws -> JSContextHost
+}
+
+public extension JSEngine {
+    func makeMachine() -> JSMachine? { nil }
+    func makeContext(in machine: JSMachine, hostCall: @escaping (_ name: String, _ a: String, _ b: String) -> String) throws -> JSContextHost {
+        try makeContext(hostCall: hostCall)
+    }
 }
 
 public enum JSEngines {

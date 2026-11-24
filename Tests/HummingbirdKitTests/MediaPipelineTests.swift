@@ -190,7 +190,8 @@ final class MediaPipelineTests: XCTestCase {
                                          signer: .plain(try XCTUnwrap(URL(string: "https://media.test/t.mp4"))),
                                          transport: upstream, configuration: fastRetry)
         await downloader.start()
-        guard case .indexed = try await bounded({ try await downloader.trackLayout() }) else {
+        let layout = try await bounded { try await downloader.trackLayout() }
+        guard case .indexed = layout else {
             return XCTFail("expected an indexed layout")
         }
         try await bounded { try await downloader.waitUntilAvailable(0..<indexedBytes) }

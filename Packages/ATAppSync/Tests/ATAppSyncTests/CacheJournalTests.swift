@@ -37,11 +37,10 @@ final class CacheJournalTests: XCTestCase {
     func testATransferCarriesEachEntityAndBlobOnce() throws {
         let (a, b) = try pairedCaches()
         let shared = Data(String(repeating: "x", count: 4_000).utf8)
-        a.put(listKey("channel/a"), context: anonymous, entities: [
-            (key("v1"), Data("1".utf8), ["description": shared]),
-            (key("v2"), Data("2".utf8), ["description": shared]),
-        ])
-        a.put(listKey("feed/home"), context: anonymous, entities: [(key("v1"), Data("1".utf8), ["description": shared])])
+        let first: (key: CacheEntityKey, payload: Data, fields: [String: Data]) = (key("v1"), Data("1".utf8), ["description": shared])
+        let second: (key: CacheEntityKey, payload: Data, fields: [String: Data]) = (key("v2"), Data("2".utf8), ["description": shared])
+        a.put(listKey("channel/a"), context: anonymous, entities: [first, second])
+        a.put(listKey("feed/home"), context: anonymous, entities: [first])
         let manifest = try XCTUnwrap(a.manifest())
         let want = try b.want(from: manifest)
         let transfer = try a.transfer(for: want)
@@ -135,9 +134,12 @@ final class CacheJournalTests: XCTestCase {
     func testEvictionKeepsReferencesConsistent() throws {
         let cache = makeCache().cache
         let shared = Data(repeating: 7, count: 2_000)
-        cache.put(listKey("channel/a"), context: anonymous, entities: (0..<6).map {
-            (key("v\($0)"), Data(repeating: UInt8($0), count: 500), ["description": $0 % 2 == 0 ? shared : Data([UInt8($0)])])
-        })
+        var entities: [(key: CacheEntityKey, payload: Data, fields: [String: Data])] = []
+        for index in 0..<6 {
+            let description: Data = index % 2 == 0 ? shared : Data([UInt8(index)])
+            entities.append((key("v\(index)"), Data(repeating: UInt8(index), count: 500), ["description": description]))
+        }
+        cache.put(listKey("channel/a"), context: anonymous, entities: entities)
         cache.evict(toBytes: cache.usage.bytes / 2, limit: 3)
         let violations = cache.integrityViolations
         XCTAssertEqual(violations.dangling, 0)

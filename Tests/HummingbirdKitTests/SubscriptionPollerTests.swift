@@ -43,7 +43,7 @@ final class SubscriptionPollerTests: XCTestCase {
         XCTAssertTrue(setup.notifier.posted.isEmpty)
     }
 
-    func testNothingIsAnnouncedWithoutPermissionOrWhatTheProfileCannotOpen() async {
+    func testNothingIsAnnouncedWithoutPermissionOrForAPluginTheAgePolicyRefuses() async {
         let denied = makeSetup(notify: true, authorization: .denied)
         denied.channel.items = [video("old", age: 3_600)]
         await poll(denied.poller, at: 4)
@@ -51,12 +51,14 @@ final class SubscriptionPollerTests: XCTestCase {
         await poll(denied.poller, at: 30)
         XCTAssertTrue(denied.notifier.posted.isEmpty)
 
-        let blocked = makeSetup(notify: true, canOpen: false)
+        let blocked = makeSetup(notify: true, allowed: false)
         blocked.channel.items = [video("old", age: 3_600)]
         await poll(blocked.poller, at: 4)
         blocked.channel.items = [video("new", age: 60)]
         await poll(blocked.poller, at: 30)
         XCTAssertTrue(blocked.notifier.posted.isEmpty)
+        // A plugin the profile's age policy doesn't let it run isn't even checked.
+        XCTAssertEqual(blocked.channel.fetches, 0)
     }
 
     func testAResultAnotherDeviceSharedIsUsedInsteadOfFetching() async throws {
@@ -98,12 +100,12 @@ final class SubscriptionPollerTests: XCTestCase {
         let channel: Channel
         let notifier: RecordingNotifier
         let poller: SubscriptionPoller
-        let canOpen: Bool
+        let allowed: Bool
         let cache: CacheJournal?
     }
 
     private func makeSetup(notify: Bool, authorization: NotificationAuthorization = .authorized,
-                           canOpen: Bool = true, cache: CacheJournal? = nil) -> Setup {
+                           allowed: Bool = true, cache: CacheJournal? = nil) -> Setup {
         var snapshot = LibraryPersistenceSnapshot.empty
         var subscription = Subscription(channelURL: "https://example.com/c/1", pluginId: "alpha", name: "Channel")
         subscription.notifyOnNewVideos = notify
@@ -113,24 +115,24 @@ final class SubscriptionPollerTests: XCTestCase {
         let channel = Channel()
         let notifier = RecordingNotifier(authorization: authorization)
         let poller = makePoller(library: library, storage: storage, channel: channel, notifier: notifier,
-                                canOpen: canOpen, cache: cache)
+                                allowed: allowed, cache: cache)
         return Setup(library: library, storage: storage, channel: channel, notifier: notifier,
-                     poller: poller, canOpen: canOpen, cache: cache)
+                     poller: poller, allowed: allowed, cache: cache)
     }
 
     private func makePoller(_ setup: Setup, notifier: RecordingNotifier) -> SubscriptionPoller {
         makePoller(library: setup.library, storage: setup.storage, channel: setup.channel, notifier: notifier,
-                   canOpen: setup.canOpen, cache: setup.cache)
+                   allowed: setup.allowed, cache: setup.cache)
     }
 
     private func makePoller(library: LibraryStore, storage: Storage, channel: Channel, notifier: RecordingNotifier,
-                            canOpen: Bool, cache: CacheJournal?) -> SubscriptionPoller {
+                            allowed: Bool, cache: CacheJournal?) -> SubscriptionPoller {
         SubscriptionPoller(
             library: library, storage: storage, storagePrefix: "", notifier: notifier,
-            canOpen: { _ in canOpen },
+            approve: { _ in allowed ? testLoadApproval(Self.alpha) : nil },
             fetch: { _ in channel.fetches += 1; return channel.items },
             cache: cache,
-            context: { _ in CacheFetchContext(sourceVersion: "1", locale: "en-GB") }
+            context: { _, _ in CacheFetchContext(sourceVersion: "1", locale: "en-GB") }
         )
     }
 
@@ -139,6 +141,10 @@ final class SubscriptionPollerTests: XCTestCase {
         let now = start.addingTimeInterval(hours * 3_600)
         await poller.poll(budget: BackgroundBudget(duration: .seconds(30)), now: { now })
     }
+
+    private static let alpha = try! JSONDecoder().decode(
+        PluginConfig.self, from: Data(#"{"name":"Alpha","id":"alpha","scriptUrl":"x.js","version":1}"#.utf8)
+    )
 
     private func video(_ name: String, age: TimeInterval) -> ContentItem {
         let datetime = Int(start.timeIntervalSince1970 - age)

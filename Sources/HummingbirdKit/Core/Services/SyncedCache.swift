@@ -65,14 +65,19 @@ enum SyncedCache {
     /// mustn't be shared: while signed in to the plugin, this device can't
     /// tell which account a result belongs to, so it neither shares nor
     /// uses shared results for that plugin.
-    static func context(for plugin: InstalledPlugin, signedIn: Bool) -> CacheFetchContext? {
+    /// The settings are the ones the plugin runs with for this profile: the
+    /// user's, with whatever the age policy forces (restricted modes) on top,
+    /// so a result fetched without a restriction never counts as this
+    /// profile's own.
+    static func context(for plugin: InstalledPlugin, approval: LoadApproval, signedIn: Bool) -> CacheFetchContext? {
         guard !signedIn else { return nil }
+        let settings = plugin.settings.merging(approval.forcedSettings) { _, forced in forced }
         var hasher = SHA256()
-        for (name, value) in plugin.settings.sorted(by: { $0.key < $1.key }) {
+        for (name, value) in settings.sorted(by: { $0.key < $1.key }) {
             hasher.update(data: Data("\(name)=\(value)\u{0}".utf8))
         }
-        let settings = plugin.settings.isEmpty ? "" : hasher.finalize().prefix(8).map { String(format: "%02x", $0) }.joined()
-        return CacheFetchContext(sourceVersion: String(plugin.config.version), settings: settings,
+        let digest = settings.isEmpty ? "" : hasher.finalize().prefix(8).map { String(format: "%02x", $0) }.joined()
+        return CacheFetchContext(sourceVersion: String(plugin.config.version), settings: digest,
                                  locale: Locale.current.identifier)
     }
 }

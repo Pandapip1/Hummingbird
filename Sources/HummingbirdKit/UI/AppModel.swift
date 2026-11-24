@@ -376,11 +376,18 @@ final class AppModel {
         let feed = self.subscriptionFeed
         let poller = SubscriptionPoller(
             library: library, storage: storage, storagePrefix: storagePrefix, notifier: SystemNewVideoNotifier(),
-            canOpen: { [plugins] video in plugins.plugin(video.pluginId)?.enabled == true },
+            // The profile's age policy, asked fresh for every check.
+            approve: { [plugins] pluginID in
+                guard let plugin = plugins.plugin(pluginID), plugin.enabled,
+                      case .success(let approval) = await plugins.policy.approveLoad(plugin.config) else { return nil }
+                return approval
+            },
             fetch: { subscription in try await feed.fetchChannel(subscription) },
             cache: syncedCache,
-            context: { [plugins] pluginID in
-                plugins.plugin(pluginID).flatMap { SyncedCache.context(for: $0, signedIn: plugins.isLoggedIn(pluginID)) }
+            context: { [plugins] pluginID, approval in
+                plugins.plugin(pluginID).flatMap {
+                    SyncedCache.context(for: $0, approval: approval, signedIn: plugins.isLoggedIn(pluginID))
+                }
             }
         )
         self.subscriptionPoller = poller

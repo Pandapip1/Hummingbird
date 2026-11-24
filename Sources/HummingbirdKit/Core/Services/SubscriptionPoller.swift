@@ -25,8 +25,13 @@ struct SystemNewVideoNotifier: NewVideoNotifier {
 ///   again: one device's refresh serves the others.
 /// - A video is announced at most once on this device, and only for a
 ///   channel whose "notify on new videos" is on, when the system allows
-///   notifications and this profile may open the video. A channel's first
-///   check only records what is already there. Every device does this
+///   notifications. A channel's first check only records what is already
+///   there.
+/// - Age gating: every check first asks the profile's policy, fresh, whether
+///   the plugin may run (`SourceAccessPolicy.approveLoad`). A plugin it may
+///   not run is neither checked nor announced; announcing needs the
+///   `LoadApproval` in hand, which only the policy can make, and results are
+///   shared or reused only in the context its forced settings give. Every device does this
 ///   independently: there is no cross-device deduplication.
 @MainActor
 final class SubscriptionPoller {
@@ -50,24 +55,27 @@ final class SubscriptionPoller {
     private let storage: Storage
     private let storageName: String
     private let notifier: any NewVideoNotifier
-    private let canOpen: @MainActor (SavedVideo) -> Bool
+    /// The policy's fresh answer for a plugin: its LoadApproval, or nil when
+    /// this profile may not run it now.
+    private let approve: @MainActor (String) async -> LoadApproval?
     private let fetch: @MainActor (Subscription) async throws -> [ContentItem]
     private let cache: CacheJournal?
-    /// The fetch context for a plugin's results, or nil when they must not
-    /// be shared (signed in: this device can't name the account safely).
-    private let context: @MainActor (String) -> CacheFetchContext?
+    /// The fetch context for a plugin's results under an approval (its
+    /// forced settings included), or nil when they must not be shared
+    /// (signed in: this device can't name the account safely).
+    private let context: @MainActor (String, LoadApproval) -> CacheFetchContext?
     private(set) var state: State
     private var authorization: NotificationAuthorization?
 
     init(library: LibraryStore, storage: Storage, storagePrefix: String, notifier: any NewVideoNotifier,
-         canOpen: @escaping @MainActor (SavedVideo) -> Bool,
+         approve: @escaping @MainActor (String) async -> LoadApproval?,
          fetch: @escaping @MainActor (Subscription) async throws -> [ContentItem],
-         cache: CacheJournal?, context: @escaping @MainActor (String) -> CacheFetchContext?) {
+         cache: CacheJournal?, context: @escaping @MainActor (String, LoadApproval) -> CacheFetchContext?) {
         self.library = library
         self.storage = storage
         storageName = storagePrefix + "subscription_poll"
         self.notifier = notifier
-        self.canOpen = canOpen
+        self.approve = approve
         self.fetch = fetch
         self.cache = cache
         self.context = context
@@ -98,8 +106,14 @@ final class SubscriptionPoller {
     private func check(_ channelURL: String, now: @Sendable () -> Date) async throws {
         guard let subscription = library.subscriptions.first(where: { $0.channelURL == channelURL }),
               let item = state.scheduler.items[channelURL] else { return }
+        // Asked fresh each time: an age range or parental approval may have
+        // changed since the last check.
+        guard let approval = await approve(subscription.pluginId) else {
+            state.scheduler.recordSuccess(key: channelURL, updates: [], now: now())
+            return
+        }
         let items: [ContentItem]
-        if let shared = sharedResult(for: subscription, interval: item.interval, now: now()) {
+        if let shared = sharedResult(for: subscription, approval: approval, interval: item.interval, now: now()) {
             items = shared
         } else {
             guard let slot = state.scheduler.nextSlot(for: subscription.pluginId, now: now()) else {
@@ -114,27 +128,28 @@ final class SubscriptionPoller {
                 state.scheduler.recordFailure(key: channelURL, now: now())
                 throw error
             }
-            share(items, for: subscription, fetchedAt: now())
+            share(items, for: subscription, approval: approval, fetchedAt: now())
         }
         let updates = items.compactMap(\.datetime).map { Date(timeIntervalSince1970: TimeInterval($0)) }
         state.scheduler.recordSuccess(key: channelURL, updates: updates, now: now())
         library.updateSubscription(channelURL, fetched: now(), newest: items.compactMap(\.datetime).max(),
                                    cache: Array(items.prefix(30).map(SavedVideo.init)))
-        await announce(items, for: subscription)
+        await announce(items, for: subscription, approval: approval)
     }
 
     /// A trusted device's result for this channel, fetched in exactly this
     /// device's context and recently enough. Nil means fetch it here.
-    private func sharedResult(for subscription: Subscription, interval: TimeInterval, now: Date) -> [ContentItem]? {
-        guard let cache, let context = context(subscription.pluginId),
+    private func sharedResult(for subscription: Subscription, approval: LoadApproval, interval: TimeInterval, now: Date) -> [ContentItem]? {
+        guard let cache, let context = context(subscription.pluginId, approval),
               let list = cache.list(listKey(subscription), for: CacheViewer(contexts: [subscription.pluginId: context]), now: now),
               list.fit == .fresh, !list.isPartial, now.timeIntervalSince(list.fetchedAt) < interval else { return nil }
         let decoder = JSONDecoder()
         return list.entities.compactMap { try? decoder.decode(SavedVideo.self, from: $0.payload) }.map { ContentItem(saved: $0) }
     }
 
-    private func share(_ items: [ContentItem], for subscription: Subscription, fetchedAt: Date) {
-        guard let cache, let context = context(subscription.pluginId) else { return }
+    private func share(_ items: [ContentItem], for subscription: Subscription, approval: LoadApproval,
+                       fetchedAt: Date) {
+        guard let cache, let context = context(subscription.pluginId, approval) else { return }
         let encoder = JSONEncoder()
         let entities: [(key: CacheEntityKey, payload: Data, fields: [String: Data])] = items.prefix(30).compactMap { item in
             guard let payload = try? encoder.encode(SavedVideo(item)) else { return nil }
@@ -147,8 +162,10 @@ final class SubscriptionPoller {
         CacheListKey(kind: "channel-latest", source: subscription.pluginId, url: subscription.channelURL)
     }
 
-    /// Announces what this device hasn't seen yet, once.
-    private func announce(_ items: [ContentItem], for subscription: Subscription) async {
+    /// Announces what this device hasn't seen yet, once. Only with the
+    /// policy's approval for the plugin: there is no way to announce without it.
+    private func announce(_ items: [ContentItem], for subscription: Subscription, approval: LoadApproval) async {
+        guard approval.pluginID == subscription.pluginId else { return }
         let ids = items.map(\.id)
         guard state.seeded.contains(subscription.channelURL) else {
             // First check of this channel: what's there now isn't new.
@@ -163,7 +180,7 @@ final class SubscriptionPoller {
         guard subscription.notifyOnNewVideos == true else { return }
         if authorization == nil { authorization = await notifier.authorization() }
         guard authorization == .authorized else { return }
-        for item in fresh where canOpen(SavedVideo(item)) {
+        for item in fresh {
             do {
                 try await notifier.post(LocalNotification(
                     identifier: "new-video|" + item.id, title: subscription.name, body: item.name,

@@ -100,7 +100,7 @@ struct WebMDashDebugScene: View {
         do {
             let (url, _) = try await WebMDashFixture.register(directory: URL(fileURLWithPath: path), proxy: proxy)
             player.localPlaybackForTesting = { _ in try LocalPlayback(video: url, servedBy: .generatedMedia) }
-            let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://debug.invalid/webm.mpd"}"#.utf8))
+            let source = try JSONDecoder().decode(MediaSource.self, from: Data(#"{"url":"https://debug.invalid/webm.mpd","codec":"vp09.00.11.08","container":"video/webm"}"#.utf8))
             await player.select(PlaybackOption(id: "webm-dash", label: "WebM", kind: .hls, video: source, audio: nil, height: 180))
             if !player.isPlaying { player.togglePlayback() }
             status = "paused"

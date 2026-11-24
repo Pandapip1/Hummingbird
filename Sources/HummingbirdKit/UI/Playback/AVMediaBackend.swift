@@ -80,6 +80,14 @@ final class AVMediaBackend: MediaBackend {
             let atEnd = duration > 0 && currentTime >= duration - 0.5
             commandedRate = 0
             guard !atEnd else { return }
+            // An item that never became ready, stopped by AVFoundation before its
+            // first frame, is one it cannot play (VP9 on the iOS simulator: no
+            // failure, only a pause). Said so, not taken for the user's pause.
+            if player.currentItem?.status != .readyToPlay, currentTime == 0 {
+                Logger.avPlayer.error("stopped_before_ready")
+                onUnplayableMedia?("")
+                return
+            }
             if ApplicationActivity.isActive || pictureInPictureState == .active {
                 Logger.avPlayer.notice("external_pause")
                 onExternalEvent?(.pause)
@@ -96,6 +104,26 @@ final class AVMediaBackend: MediaBackend {
     var onFailure: (@MainActor (String) -> Void)?
     var onUnplayableMedia: (@MainActor (String) -> Void)?
     private var timeObserver: Any?
+
+    /// AVFoundation pauses, without failing, an item whose video it cannot
+    /// decode (VP9 or AV1 where the device has no decoder): said by name
+    /// instead of a silent pause.
+    private func reportUndecodableVideo() async {
+        guard let item = player?.currentItem else { return }
+        for track in item.tracks {
+            guard let asset = track.assetTrack, asset.mediaType == .video,
+                  let decodable = try? await asset.load(.isDecodable), !decodable else { continue }
+            let descriptions = (try? await asset.load(.formatDescriptions)) ?? []
+            let codec = descriptions.first.map { description in
+                let code = CMFormatDescriptionGetMediaSubType(description).bigEndian
+                return String(decoding: withUnsafeBytes(of: code) { Array($0) }, as: UTF8.self)
+            } ?? "this"
+            guard player?.currentItem === item else { return }
+            Logger.avPlayer.error("video_not_decodable codec=\(codec, privacy: .public)")
+            onUnplayableMedia?(codec)
+            return
+        }
+    }
 
     /// No decoder for the media's format on this device (AV1 without
     /// hardware support, VP9 where the system has none): reloading cannot help.
@@ -466,6 +494,9 @@ final class AVMediaBackend: MediaBackend {
                 Task { @MainActor in
                     if unplayable { self?.onUnplayableMedia?(message) } else { self?.onFailure?(message) }
                 }
+            }
+            if status == .readyToPlay {
+                Task { @MainActor in await self?.reportUndecodableVideo() }
             }
         }
         itemFailureObserver = NotificationCenter.default.addObserver(

@@ -1158,8 +1158,17 @@ final class PlayerModel: AdvancedVideoPlayerControlling {
             confirmationFailure = message
             return
         }
+        // The engine stopped before the first frame without naming a codec: while
+        // the download waits for the network that is a stall, not a format.
+        if message.isEmpty, pipeline.waitingForNetwork {
+            playerFailed("Playback stopped before it started")
+            return
+        }
         unplayable = true
-        let codec = selected.map { MediaFormatNames.describe(codec: $0.video.codec, container: $0.video.container) } ?? "this format"
+        // The source names its codec; failing that, the engine's four-letter code (`vp09`).
+        let declared = selected.map { MediaFormatNames.describe(codec: $0.video.codec, container: $0.video.container) }
+        let codec = declared.flatMap { $0 == "this format" ? nil : $0 }
+            ?? (message.count == 4 ? MediaFormatNames.describe(codec: message, container: "") : "this format")
         Logger.player.error("media_unplayable codec=\(codec, privacy: .public) message=\(message)")
         errorMessage = "This device can't play \(codec). Choose another quality from the player's menu."
     }

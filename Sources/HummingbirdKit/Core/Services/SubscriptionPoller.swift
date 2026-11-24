@@ -177,6 +177,10 @@ final class SubscriptionPoller {
         let fresh = items.filter { !known.contains($0.id) }
         guard !fresh.isEmpty else { return }
         state.remember(fresh.map(\.id))
+        // Durable before anything is posted: a crash or relaunch after this
+        // can miss a notification, never repeat one.
+        storage.save(state, name: storageName)
+        await storage.flush()
         guard subscription.notifyOnNewVideos == true else { return }
         if authorization == nil { authorization = await notifier.authorization() }
         guard authorization == .authorized else { return }

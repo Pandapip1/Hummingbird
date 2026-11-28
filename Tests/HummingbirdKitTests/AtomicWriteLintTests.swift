@@ -9,7 +9,8 @@ import XCTest
 /// atomic another way, each with its reason.
 final class AtomicWriteLintTests: XCTestCase {
     private static let banned: [(name: String, pattern: String)] = [
-        ("Data/String write", #"\.write\(to:"#),
+        // AtomicFile.write(to:) { stream in } is the API itself.
+        ("Data/String write", #"(?<!AtomicFile)\.write\(to:"#),
         ("write(toFile:)", #"write\(toFile:"#),
         ("atomically:", #"atomically:"#),
         ("createFile", #"\bcreateFile\(atPath:"#),
@@ -42,7 +43,7 @@ final class AtomicWriteLintTests: XCTestCase {
     func testPersistedStateIsOnlyWrittenAtomically() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let rules = try Self.banned.map { ($0.name, try NSRegularExpression(pattern: $0.pattern)) }
+        let rules = try Self.rules()
         var violations: [String] = []
         for directory in ["Sources", "Apps", "Packages/ATAppSync/Sources"] {
             let base = root.appendingPathComponent(directory)
@@ -56,15 +57,48 @@ final class AtomicWriteLintTests: XCTestCase {
                 for (index, line) in lines.enumerated() {
                     let code = line.trimmingCharacters(in: .whitespaces)
                     guard !code.hasPrefix("//") else { continue }
-                    let range = NSRange(code.startIndex..., in: code)
-                    for (name, rule) in rules where !exemptions.contains(name)
-                        && rule.firstMatch(in: code, range: range) != nil {
+                    for name in Self.matches(in: code, rules: rules) where !exemptions.contains(name) {
                         violations.append("\(relative):\(index + 1): \(name)")
                     }
                 }
             }
         }
         XCTAssertEqual(violations, [], "Write persisted state with AtomicFile or AppendLog (PlatformSupport)")
+    }
+
+    /// The rules flag raw writes and never the atomic API, whole-value or
+    /// streaming.
+    func testTheLintTellsTheAtomicAPIFromRawWrites() throws {
+        let rules = try Self.rules()
+        for allowed in [
+            "try AtomicFile.write(to: url) { stream in",
+            "try AtomicFile.write(to: exportURL, protection: .complete) { stream in try stream.append(chunk) }",
+            "try AtomicFile.write(data, to: url)",
+            "try AtomicFile.move(source, to: destination, replacing: false)",
+            "try AppendLog(url: url).append(data)",
+            "try log.replace(with: data)",
+        ] {
+            XCTAssertEqual(Self.matches(in: allowed, rules: rules), [], allowed)
+        }
+        for banned in [
+            "try data.write(to: url)",
+            "try data.write(to: url, options: .atomic)",
+            "try JSONEncoder().encode(value).write(to: url, options: .atomic)",
+            "try text.write(to: url, atomically: true, encoding: .utf8)",
+            "try FileManager.default.moveItem(at: a, to: b)",
+            "let handle = try FileHandle(forWritingTo: url)",
+        ] {
+            XCTAssertNotEqual(Self.matches(in: banned, rules: rules), [], banned)
+        }
+    }
+
+    private static func rules() throws -> [(name: String, rule: NSRegularExpression)] {
+        try banned.map { ($0.name, try NSRegularExpression(pattern: $0.pattern)) }
+    }
+
+    private static func matches(in code: String, rules: [(name: String, rule: NSRegularExpression)]) -> [String] {
+        let range = NSRange(code.startIndex..., in: code)
+        return rules.filter { $0.rule.firstMatch(in: code, range: range) != nil }.map(\.name)
     }
 
     /// The allowlist names only places that still need it.

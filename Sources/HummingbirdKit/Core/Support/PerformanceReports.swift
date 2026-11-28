@@ -115,31 +115,48 @@ public struct PerformanceReportStore: Sendable {
     /// sharing: `{"reports": [{"file": name, "payload": {...}}, ...],
     /// "stalls": [{"date": ..., "milliseconds": ..., "context": {...}}, ...]}`.
     /// Reads and writes files, so it runs off the caller's actor.
+    ///
+    /// Each payload's bytes are copied in as they are, never parsed: a crash
+    /// report's call stack nests one level per frame, so a stack overflow's
+    /// report is hundreds of levels deep, and re-serialising it recursed
+    /// until it overflowed the 512 KB stack of the thread doing the export
+    /// (whose crash then left another such report). The file appears whole
+    /// or not at all.
     @concurrent
     public func exportBundle(to destination: URL) async throws -> URL? {
-        let reports = reports()
+        let reports = reports().filter { ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 }
         let stalls = await stallLog.records()
         guard !reports.isEmpty || !stalls.isEmpty else { return nil }
-        var entries: [[String: Any]] = []
-        for url in reports {
-            guard let data = try? Data(contentsOf: url),
-                  let payload = try? JSONSerialization.jsonObject(with: data) else { continue }
-            entries.append(["file": url.lastPathComponent, "payload": payload])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let formatter = ISO8601DateFormatter()
+        let stallEntries = stalls.map { record in
+            StallExport(date: formatter.string(from: record.date), milliseconds: record.milliseconds,
+                        context: record.context)
         }
-        let stallEntries: [[String: Any]] = stalls.map { record in
-            [
-                "date": ISO8601DateFormatter().string(from: record.date),
-                "milliseconds": record.milliseconds,
-                "context": record.context,
-            ]
-        }
-        let data = try JSONSerialization.data(
-            withJSONObject: ["reports": entries, "stalls": stallEntries], options: [.prettyPrinted, .sortedKeys]
-        )
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         let url = destination.appendingPathComponent("Hummingbird performance reports.json")
-        try AtomicFile.write(data, to: url)
+        try AtomicFile.write(to: url) { stream in
+            try stream.append(Data(#"{"reports":["#.utf8))
+            for (index, report) in reports.enumerated() {
+                try stream.append(Data((index == 0 ? #"{"file":"# : #",{"file":"#).utf8)
+                                  + encoder.encode(report.lastPathComponent) + Data(#","payload":"#.utf8))
+                let input = try FileHandle(forReadingFrom: report)
+                defer { try? input.close() }
+                while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+                    try stream.append(chunk)
+                }
+                try stream.append(Data("}".utf8))
+            }
+            try stream.append(Data(#"],"stalls":"#.utf8) + encoder.encode(stallEntries) + Data("}".utf8))
+        }
         return url
+    }
+
+    private struct StallExport: Encodable {
+        let date: String
+        let milliseconds: Int
+        let context: [String: String]
     }
 
     /// Deletes every stored payload, the recorded stalls and the export built

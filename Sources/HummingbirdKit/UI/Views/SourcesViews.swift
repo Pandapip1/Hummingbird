@@ -732,17 +732,36 @@ private struct PerformanceReportsSection: View {
     @State private var exportURL: URL?
     @State private var reportCount = 0
     @State private var stallCount = 0
+    @State private var preparing = false
+    @State private var exportFailure: String?
     @State private var confirmingClear = false
     @State private var clearing = false
     @State private var clearFailure: String?
 
     var body: some View {
         Section("Diagnostics") {
-            if let exportURL {
-                ShareContentAction(item: exportURL) {
-                    Label("Export performance reports (\(reportCount))", systemImage: "square.and.arrow.up")
+            if reportCount + stallCount > 0 {
+                // The file is built only when asked for (it copies every
+                // report), shown building with a spinner, then shared.
+                if let exportURL {
+                    ShareContentAction(item: exportURL) {
+                        Label("Share performance reports (\(reportCount))", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(clearing)
+                } else {
+                    HStack(spacing: 8) {
+                        Button {
+                            startExport()
+                        } label: {
+                            Label("Export performance reports (\(reportCount))", systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(preparing || clearing)
+                        if preparing { ProgressView() }
+                    }
                 }
-                .disabled(clearing)
+                if let exportFailure {
+                    Text(exportFailure).font(.footnote).foregroundStyle(.red)
+                }
                 if stallCount > 0 {
                     Text("Includes \(stallCount) recorded main-thread stall\(stallCount == 1 ? "" : "s").")
                         .font(.footnote)
@@ -752,7 +771,7 @@ private struct PerformanceReportsSection: View {
                 // disabled with a spinner, and the counts then show what is left.
                 HStack(spacing: 8) {
                     Button("Clear performance reports", role: .destructive) { confirmingClear = true }
-                        .disabled(clearing)
+                        .disabled(clearing || preparing)
                     if clearing { ProgressView() }
                 }
                 if let clearFailure {
@@ -773,22 +792,35 @@ private struct PerformanceReportsSection: View {
             Text("Deletes the crash, hang and stall reports kept on this device. This can't be undone.")
         }
         // Every time the page comes on screen, not once: tabs stay mounted, so
-        // a count and export made when Settings was first shown missed every
-        // stall and report recorded since.
+        // counts taken when Settings was first shown missed every stall and
+        // report recorded since. Only counts: the export waits to be asked for.
         .browserTaskWhileVisible { await refresh() }
     }
 
     private var destination: URL { exportDirectory.appendingPathComponent("Export", isDirectory: true) }
 
+    /// Counts what is kept; an export built before anything changed stays shareable.
     private func refresh() async {
         let store = store
-        let destination = destination
-        let result = await Task.detached(priority: .utility) {
-            (store.reports().count, await store.stallLog.records().count, try? await store.exportBundle(to: destination))
+        let counts = await Task.detached(priority: .utility) {
+            (store.reports().count, await store.stallLog.records().count)
         }.value
-        reportCount = result.0
-        stallCount = result.1
-        exportURL = result.2 ?? nil
+        if counts != (reportCount, stallCount) { exportURL = nil }
+        reportCount = counts.0
+        stallCount = counts.1
+    }
+
+    private func startExport() {
+        guard !preparing else { return }
+        preparing = true
+        exportFailure = nil
+        let store = store
+        let destination = destination
+        Task {
+            do { exportURL = try await store.exportBundle(to: destination) }
+            catch { exportFailure = "Couldn't export the reports: \(error.localizedDescription)" }
+            preparing = false
+        }
     }
 
     /// Deletes everything off the main thread; the section then shows what
@@ -802,6 +834,7 @@ private struct PerformanceReportsSection: View {
         Task {
             do { try await store.clear(exportDirectory: destination) }
             catch { clearFailure = "Couldn't clear the reports: \(error.localizedDescription)" }
+            exportURL = nil
             await refresh()
             clearing = false
         }

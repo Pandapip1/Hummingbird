@@ -297,7 +297,7 @@ final class FilePermissionLedger: PermissionLedger {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
             )
-            try JSONEncoder().encode(record).write(to: fileURL, options: .atomic)
+            try AtomicFile.write(JSONEncoder().encode(record), to: fileURL)
             try FileProtection.excludeFromDeviceBackup(fileURL)
         } catch {
             // Losing the record costs one extra explanation, never a silent prompt.

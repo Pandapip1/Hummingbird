@@ -52,7 +52,7 @@ enum SyncedCache {
             let target = kept.url.appendingPathComponent(name)
             guard !files.fileExists(atPath: target.path) else { continue }
             do {
-                try files.moveItem(at: old.appendingPathComponent(name), to: target)
+                try AtomicFile.move(old.appendingPathComponent(name), to: target, replacing: false)
                 moved += 1
             } catch {
                 Logger.background.error("synced_cache_move_failed error=\(String(describing: error), privacy: .public)")

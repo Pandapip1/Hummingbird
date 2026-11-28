@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 import os
 import SwiftOpenUI
 
@@ -336,7 +337,7 @@ struct LibraryView: View {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             guard let data = try? encoder.encode(backup) else { return nil }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("Hummingbird Library.json")
-            do { try data.write(to: url, options: .atomic); return url }
+            do { try AtomicFile.write(data, to: url); return url }
             catch { return nil }
         }.value
     }

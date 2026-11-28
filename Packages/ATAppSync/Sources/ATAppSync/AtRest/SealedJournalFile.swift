@@ -34,10 +34,9 @@ enum SealedJournalFile {
         object["pending"] = nil
         let meta = try sealer.seal(try JSONSerialization.data(withJSONObject: object), context: "meta")
         let stored = Stored(format: format, meta: meta, events: events, pending: pending)
-        try JSONEncoder().encode(stored).write(to: url, options: [.atomic])
         // Readable while locked after the first unlock: background sync
         // reads and writes it then. The seal is what keeps it private.
-        try FileProtection.set(.completeUntilFirstUserAuthentication, for: url)
+        try AtomicFile.write(JSONEncoder().encode(stored), to: url, protection: .completeUntilFirstUserAuthentication)
     }
 
     static func read(_ data: Data, sealer: AtRestSealer, file: URL,
@@ -52,11 +51,11 @@ enum SealedJournalFile {
         case .opened(let meta), .legacyPlaintext(let meta):
             object = (try? JSONSerialization.jsonObject(with: meta) as? [String: Any]) ?? [:]
             if object.isEmpty {
-                AtRestQuarantine.keep(stored.meta, label: "meta", near: file)
+                try AtRestQuarantine.keep(stored.meta, label: "meta", near: file)
                 needsReseal = true
             }
         case .damaged:
-            AtRestQuarantine.keep(stored.meta, label: "meta", near: file)
+            try AtRestQuarantine.keep(stored.meta, label: "meta", near: file)
             object = [:]
             needsReseal = true
         case .unavailable:
@@ -101,11 +100,11 @@ enum SealedJournalFile {
                 if let value = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
                     values.append(value)
                 } else {
-                    AtRestQuarantine.keep(item, label: context, near: file)
+                    try AtRestQuarantine.keep(item, label: context, near: file)
                     needsReseal = true
                 }
             case .damaged:
-                AtRestQuarantine.keep(item, label: context, near: file)
+                try AtRestQuarantine.keep(item, label: context, near: file)
                 needsReseal = true
             case .unavailable:
                 throw KeyUnavailable()

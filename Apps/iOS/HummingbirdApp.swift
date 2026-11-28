@@ -166,7 +166,7 @@ private struct LaunchGate: View {
                 #if os(iOS) || os(tvOS)
                 prewarmAVKit()
                 #endif
-                let root = await HummingbirdRoot.prepared(stores: stores, profileID: selectedProfileID)
+                guard let root = await HummingbirdRoot.prepared(stores: stores, profileID: selectedProfileID) else { return }
                 LaunchTiming.mark(.rootPrepared)
                 preparedRoot = root
             }

@@ -64,7 +64,10 @@ final class SubscriptionPoller {
     /// forced settings included), or nil when they must not be shared
     /// (signed in: this device can't name the account safely).
     private let context: @MainActor (String, LoadApproval) -> CacheFetchContext?
-    private(set) var state: State
+    private(set) var state = State()
+    /// False while the stored state couldn't be read: no poll runs, and
+    /// nothing is saved over it, until it can be.
+    private var stateRead = false
     private var authorization: NotificationAuthorization?
 
     init(library: LibraryStore, storage: Storage, storagePrefix: String, notifier: any NewVideoNotifier,
@@ -79,13 +82,29 @@ final class SubscriptionPoller {
         self.fetch = fetch
         self.cache = cache
         self.context = context
-        state = storage.load(State.self, name: storageName) ?? State()
+        readState()
+    }
+
+    private func readState() {
+        switch storage.read(State.self, name: storageName) {
+        case .value(let stored):
+            state = stored
+            stateRead = true
+        case .missing:
+            stateRead = true
+        case .unavailable:
+            Logger.background.notice("subscription_poll_state_unavailable")
+        }
     }
 
     /// Checks the channels that are due, within `budget`. What doesn't fit
     /// stays due for the next window.
     @discardableResult
     func poll(budget: BackgroundBudget, now: @escaping @Sendable () -> Date = { Date() }) async -> BackgroundRunReport<String> {
+        if !stateRead { readState() }
+        // Unreadable now (before the first unlock): checking without it would
+        // save an empty state over the real one.
+        guard stateRead else { return BackgroundRunReport() }
         authorization = nil
         state.scheduler.track(library.subscriptions.map { ($0.channelURL, $0.pluginId) }, now: now())
         let due = state.scheduler.due(now: now()).map(\.key)

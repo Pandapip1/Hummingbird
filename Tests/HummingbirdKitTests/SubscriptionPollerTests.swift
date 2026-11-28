@@ -31,6 +31,45 @@ final class SubscriptionPollerTests: XCTestCase {
         XCTAssertEqual(setup.notifier.posted.count, 1)
     }
 
+    /// Relaunched while its stored state can't be read (the keychain still
+    /// locked): it neither checks nor saves, so the state survives whole,
+    /// and once readable nothing already announced is announced again.
+    func testAPollWhileTheStoreIsLockedLeavesItsStateIntact() async throws {
+        let directory = makeTestDirectory("LockedPoll")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let vault = LockableVault()
+        func storage() -> Storage {
+            Storage(directory: directory, protectedData: UnprotectedDataAvailability(), atRest: AtRestKeyring(vault: vault))
+        }
+        let setup = makeSetup(notify: true, storage: storage())
+        await poll(setup.poller, at: 0)
+        setup.channel.items = [video("old", age: 3_600)]
+        await poll(setup.poller, at: 4)
+        setup.channel.items = [video("new", age: 60), video("old", age: 3_600)]
+        await poll(setup.poller, at: 30)
+        XCTAssertEqual(setup.notifier.posted.count, 1)
+        await setup.storage.flush()
+        let before = try XCTUnwrap(setup.storage.load(SubscriptionPoller.State.self, name: "subscription_poll"))
+        let fetches = setup.channel.fetches
+
+        vault.locked = true
+        let locked = storage()
+        guard case .unavailable = locked.read(SubscriptionPoller.State.self, name: "subscription_poll") else {
+            return XCTFail("a locked store must read as unavailable, never as missing")
+        }
+        let relaunched = makePoller(library: setup.library, storage: locked, channel: setup.channel,
+                                    notifier: setup.notifier, allowed: true, cache: nil)
+        await poll(relaunched, at: 60)
+        await locked.flush()
+        XCTAssertEqual(setup.channel.fetches, fetches, "nothing checked without its state")
+
+        vault.locked = false
+        XCTAssertEqual(storage().load(SubscriptionPoller.State.self, name: "subscription_poll"), before,
+                       "the stored state is intact")
+        await poll(relaunched, at: 90)
+        XCTAssertEqual(setup.notifier.posted.count, 1, "and nothing is announced twice")
+    }
+
     func testNothingIsAnnouncedForAChannelThatDidNotAsk() async {
         let setup = makeSetup(notify: false)
         await poll(setup.poller, at: 0)   // starts tracking: first checks are spread over the first interval
@@ -111,12 +150,12 @@ final class SubscriptionPollerTests: XCTestCase {
     }
 
     private func makeSetup(notify: Bool, authorization: NotificationAuthorization = .authorized,
-                           allowed: Bool = true, cache: CacheJournal? = nil) -> Setup {
+                           allowed: Bool = true, cache: CacheJournal? = nil, storage: Storage? = nil) -> Setup {
         var snapshot = LibraryPersistenceSnapshot.empty
         var subscription = Subscription(channelURL: "https://example.com/c/1", pluginId: "alpha", name: "Channel")
         subscription.notifyOnNewVideos = notify
         snapshot.subscriptions = [subscription]
-        let storage = makeTestStores().storage
+        let storage = storage ?? makeTestStores().storage
         let library = LibraryStore(snapshot: snapshot, storage: storage)
         let channel = Channel()
         let notifier = RecordingNotifier(authorization: authorization)

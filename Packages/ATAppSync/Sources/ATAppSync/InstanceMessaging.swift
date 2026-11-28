@@ -3,6 +3,7 @@ import ATProtoKit
 import Foundation
 import CredentialStorage
 import NIOCore
+import PlatformSupport
 import NIOHTTP1
 import NIOPosix
 import os
@@ -276,8 +277,11 @@ public final class InstanceInbox: @unchecked Sendable {
     public init(identity: InstanceIdentity, fileURL: URL? = nil) throws {
         self.identity = identity
         self.fileURL = fileURL
-        let stored = fileURL.flatMap { try? Data(contentsOf: $0) }
-            .flatMap { try? JSONDecoder.appSyncInbox.decode(Snapshot.self, from: $0) }
+        // A file that can't be read now throws (never taken for an empty
+        // inbox and written over); one that doesn't decode is kept aside.
+        let data = try fileURL.flatMap { try AtomicFile.contents(of: $0) }
+        let stored = data.flatMap { try? JSONDecoder.appSyncInbox.decode(Snapshot.self, from: $0) }
+        if let data, stored == nil, let fileURL { try AtRestQuarantine.keep(data, label: "inbox", near: fileURL) }
         envelopes = Dictionary(uniqueKeysWithValues: (stored?.envelopes ?? []).map { ($0.id, $0) })
     }
 
@@ -327,7 +331,7 @@ public final class InstanceInbox: @unchecked Sendable {
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         let snapshot = Snapshot(envelopes: value.values.sorted { $0.createdAt < $1.createdAt })
-        try JSONEncoder.appSyncInbox.encode(snapshot).write(to: fileURL, options: [.atomic])
+        try AtomicFile.write(JSONEncoder.appSyncInbox.encode(snapshot), to: fileURL)
     }
 }
 

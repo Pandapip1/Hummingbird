@@ -22,7 +22,7 @@ final class TabPlaybackQueueTests: XCTestCase {
     private func relaunch(_ stores: AppDataStores, profile: UUID) async -> AppModel {
         await stores.storage.flush()
         let snapshot = await AppPersistenceSnapshot.load(stores: stores, profileID: profile)
-        return app(stores, profile: profile, persistence: snapshot)
+        return app(stores, profile: profile, persistence: snapshot ?? .empty)
     }
 
     func testEachTabHasItsOwnQueueAndItSurvivesARelaunch() async throws {

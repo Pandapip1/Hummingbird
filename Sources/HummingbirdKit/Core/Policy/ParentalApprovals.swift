@@ -1,3 +1,4 @@
+import ATAppSync
 import Foundation
 import Observation
 import SwiftOpenUI
@@ -35,7 +36,7 @@ final class ParentalApprovals {
     private(set) var approved: [String: SyncedParentalApproval] = [:]
     private(set) var pending: [PendingParentRequest] = []
     @ObservationIgnored private var loaded = false
-    @ObservationIgnored private var loading: Task<Stored?, Never>?
+    @ObservationIgnored private var loading: Task<StoredRead<Stored>, Never>?
     private let storage: Storage
     private let storageName: String
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
@@ -64,7 +65,7 @@ final class ParentalApprovals {
     }
 
     func recordRequest(id: UUID, pluginID: String, name: String, sourceURL: String, now: Date = Date()) async {
-        await load()
+        guard await load() else { return }
         pending.removeAll { $0.pluginID == pluginID }
         pending.append(PendingParentRequest(id: id, pluginID: pluginID, name: name, sourceURL: sourceURL, askedAt: now))
         save()
@@ -72,7 +73,7 @@ final class ParentalApprovals {
 
     /// The system delivered a parent's answer.
     func resolve(_ response: SystemParentalControls.ParentResponse, now: Date = Date()) async {
-        await load()
+        guard await load() else { return }
         guard let request = pending.first(where: { $0.id == response.requestID }) else { return }
         pending.removeAll { $0.id == response.requestID }
         if response.approved {
@@ -89,7 +90,7 @@ final class ParentalApprovals {
 
     /// An approval from another instance of this profile.
     func applyRemote(_ approval: SyncedParentalApproval) async {
-        await load()
+        guard await load() else { return }
         guard approved[approval.pluginID] != approval else { return }
         approved[approval.pluginID] = approval
         save()
@@ -98,7 +99,7 @@ final class ParentalApprovals {
 
     /// Withdrawing an approval only restricts, so any instance may do it.
     func applyRemoteDelete(key: RecordKey) async {
-        await load()
+        guard await load() else { return }
         guard let id = approved.keys.first(where: { HummingbirdProfileSchema.key(for: $0) == key }) else { return }
         approved[id] = nil
         save()
@@ -107,7 +108,7 @@ final class ParentalApprovals {
 
     /// Withdraws an approval here and on the profile's other devices.
     func withdraw(_ pluginID: String) async {
-        await load()
+        guard await load() else { return }
         guard approved.removeValue(forKey: pluginID) != nil else { return }
         profileChanges?.delete(collection: HummingbirdProfileSchema.parentalApproval,
                                key: HummingbirdProfileSchema.key(for: pluginID))
@@ -117,15 +118,32 @@ final class ParentalApprovals {
 
     var syncedRecords: [SyncedParentalApproval] { Array(approved.values) }
 
-    private func load() async {
-        if loaded { return }
-        let task = loading ?? Task.detached(priority: .userInitiated) { [storage, storageName] in
-            storage.load(Stored.self, name: storageName)
+    /// Reads the stored approvals once. While they can't be read (before the
+    /// first unlock) it waits until they can: a parent's answer or a
+    /// withdrawal applied to approvals it hasn't seen would be lost or
+    /// undone. Cancelled meanwhile, nothing is loaded and nothing is saved.
+    @discardableResult
+    private func load() async -> Bool {
+        while !loaded, !Task.isCancelled {
+            let task = loading ?? Task.detached(priority: .userInitiated) { [storage, storageName] in
+                storage.read(Stored.self, name: storageName)
+            }
+            loading = task
+            let read = await task.value
+            loading = nil
+            guard !loaded else { return true }
+            switch read {
+            case .value(let stored): merge(stored)
+            case .missing: merge(nil)
+            case .unavailable:
+                await storage.protectedData.waitUntilAvailable()
+                try? await Task.sleep(for: .seconds(5))
+            }
         }
-        loading = task
-        let stored = await task.value
-        loading = nil
-        guard !loaded else { return }
+        return loaded
+    }
+
+    private func merge(_ stored: Stored?) {
         loaded = true
         for approval in stored?.approved ?? [] where approved[approval.pluginID] == nil {
             approved[approval.pluginID] = approval
@@ -136,6 +154,7 @@ final class ParentalApprovals {
     }
 
     private func save() {
+        guard loaded else { return }
         storage.save(Stored(approved: Array(approved.values), pending: pending), name: storageName)
     }
 }

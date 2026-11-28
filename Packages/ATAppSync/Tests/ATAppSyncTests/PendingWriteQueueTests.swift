@@ -93,9 +93,9 @@ final class PendingWriteQueueTests: XCTestCase {
         for tick in 0..<300 { try queue.append(key: "progress/p", payload: Data("\(tick)".utf8)) }
         let lines = String(decoding: try Data(contentsOf: file), as: UTF8.self).split(separator: "\n")
         XCTAssertLessThan(lines.count, 70)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.appendingPathExtension("compacting").path))
-        XCTAssertEqual(device.protection(of: file.appendingPathExtension("compacting")), .completeUntilFirstUserAuthentication,
-                       "the replacement is protected before it is written")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path),
+                       [file.lastPathComponent], "no temporary file left behind")
+        XCTAssertEqual(device.protection(of: file), .completeUntilFirstUserAuthentication)
         try queue.append(key: "progress/p", payload: Data("last".utf8))
 
         let reopened = PendingWriteQueue(fileURL: file, availability: device, sealer: testAtRestSealer)

@@ -129,6 +129,9 @@ enum CacheFrame: Codable, Sendable {
 /// re-keyed.
 struct CachePartition: Sendable {
     var epoch: CacheEpoch
+    /// Its file is there but couldn't be read at launch: only appended to,
+    /// never rewritten from what is in memory, which is not all of it.
+    var unreadable = false
     var entities: [CacheSlot: CacheEntityRecord] = [:]
     var lists: [CacheListSlot: CacheListRecord] = [:]
     var blobs: [CacheBlobID: Data] = [:]

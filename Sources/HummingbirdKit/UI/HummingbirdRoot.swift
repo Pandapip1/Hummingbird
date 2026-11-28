@@ -21,9 +21,17 @@ public struct HummingbirdRoot: View {
 
     /// Loads and decodes persisted state, and opens the local profile, away
     /// from the main actor before any observable model is constructed. Without a `profileID`, opens the
-    /// profile `stores` last selected.
-    public static func prepared(stores: AppDataStores, profileID: UUID? = nil) async -> HummingbirdRoot {
-        let persistence = await AppPersistenceSnapshot.load(stores: stores, profileID: profileID)
+    /// profile `stores` last selected. While the stored state can't be read
+    /// (before the first unlock) it waits until it can, never starting on
+    /// an empty library; nil only when cancelled meanwhile.
+    public static func prepared(stores: AppDataStores, profileID: UUID? = nil) async -> HummingbirdRoot? {
+        var loaded = await AppPersistenceSnapshot.load(stores: stores, profileID: profileID)
+        while loaded == nil, !Task.isCancelled {
+            await stores.storage.protectedData.waitUntilAvailable()
+            try? await Task.sleep(for: .seconds(2))
+            loaded = await AppPersistenceSnapshot.load(stores: stores, profileID: profileID)
+        }
+        guard let persistence = loaded else { return nil }
         // Identity keys and the change journal are read away from the main
         // actor too; keychain reads can take a while. After the snapshot, as
         // before, since opening may create the first profile.

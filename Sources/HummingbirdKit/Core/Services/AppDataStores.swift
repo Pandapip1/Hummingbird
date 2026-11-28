@@ -103,7 +103,7 @@ public final class AppDataStores: Sendable {
             guard files.fileExists(atPath: old.path) else { continue }
             do {
                 if !files.fileExists(atPath: new.path) {
-                    try files.moveItem(at: old, to: new)
+                    try AtomicFile.move(old, to: new, replacing: false)
                     Logger.mediaCache.notice("cache_moved name=\(name, privacy: .public)")
                     continue
                 }
@@ -111,7 +111,7 @@ public final class AppDataStores: Sendable {
                 for entry in try files.contentsOfDirectory(atPath: old.path) {
                     let target = new.appendingPathComponent(entry)
                     guard !files.fileExists(atPath: target.path) else { continue }
-                    try files.moveItem(at: old.appendingPathComponent(entry), to: target)
+                    try AtomicFile.move(old.appendingPathComponent(entry), to: target, replacing: false)
                     moved += 1
                 }
                 if (try? files.contentsOfDirectory(atPath: old.path).isEmpty) == true { try? files.removeItem(at: old) }

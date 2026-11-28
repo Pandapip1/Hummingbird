@@ -2,6 +2,7 @@ import CredentialStorage
 import Crypto
 import Foundation
 import os
+import PlatformSupport
 import Synchronization
 
 /// Seals data at rest with a device key (AES-GCM), bound to what it is: a
@@ -75,6 +76,28 @@ public struct AtRestSealer: Sendable {
         Data("com.eightybps.atrest.v1|\(purpose)|\(context)".utf8)
     }
 }
+
+/// A stored value as read: there, not there, or there but unreadable now
+/// (the at-rest key or the file can't be read yet: before the first
+/// unlock, a locked keychain, an I/O error). `unavailable` is never
+/// "empty": whoever reads it must not save over what it couldn't read, and
+/// there is deliberately no way to fold it into an optional.
+public enum StoredRead<Value> {
+    case value(Value)
+    case missing
+    case unavailable
+
+    public func map<Other>(_ transform: (Value) throws -> Other) rethrows -> StoredRead<Other> {
+        switch self {
+        case .value(let value): .value(try transform(value))
+        case .missing: .missing
+        case .unavailable: .unavailable
+        }
+    }
+}
+
+extension StoredRead: Sendable where Value: Sendable {}
+extension StoredRead: Equatable where Value: Equatable {}
 
 public enum AtRestContent: Sendable, Equatable {
     case opened(Data)
@@ -153,15 +176,18 @@ private final class EphemeralAtRestVault: CredentialDataVault {
 public enum AtRestQuarantine {
     static let log = Logger(subsystem: AppSyncDiagnostics.subsystem, category: "appsync.at-rest")
 
-    public static func keep(_ data: Data, label: String, near file: URL) {
+    /// Throws when the copy couldn't be made (a full disk): the caller then
+    /// leaves the data where it is rather than lose it.
+    public static func keep(_ data: Data, label: String, near file: URL) throws {
         let directory = file.deletingLastPathComponent().appendingPathComponent("quarantine", isDirectory: true)
         let name = "\(file.lastPathComponent).\(label).\(UUID().uuidString.lowercased()).bin"
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+            try AtomicFile.write(data, to: directory.appendingPathComponent(name))
             log.error("at_rest_quarantined label=\(label, privacy: .public) bytes=\(data.count)")
         } catch {
             log.error("at_rest_quarantine_failed error=\(String(describing: error), privacy: .public)")
+            throw error
         }
     }
 }

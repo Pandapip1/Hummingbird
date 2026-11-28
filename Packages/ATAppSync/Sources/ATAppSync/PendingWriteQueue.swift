@@ -1,5 +1,6 @@
 import Foundation
 import os
+import PlatformSupport
 import Synchronization
 
 /// A file's data-protection class: when its contents can be read. Only the
@@ -86,12 +87,13 @@ public struct PendingWrite: Codable, Hashable, Sendable {
 /// A durable, append-only queue of writes for stores that can't take them
 /// now: the device is locked and their files are protected until unlock, or
 /// the process may die before a slower write lands. Each append is one line
-/// written through a handle opened at launch and kept open, then fsync'd,
+/// appended through an `AppendLog` opened at launch and kept open, synced,
 /// so it works while the device is locked (the file's class is
 /// `completeUntilFirstUserAuthentication`; every value is sealed with the
 /// device's at-rest key, so nothing in it is readable without that) and
-/// survives a crash or the app being killed. A partly written last line
-/// (a crash mid-append) is ignored.
+/// survives a crash or the app being killed. An append that fails part way
+/// (a full disk) is cut back off at once; a partly written last line left
+/// by a crash is cut off when the queue is next opened.
 ///
 /// Readers get the latest uncleared value per key (`latest`, `pending`).
 /// `apply` hands the pending values, in the order they were queued, to the
@@ -108,7 +110,7 @@ public final class PendingWriteQueue: Sendable {
     private static let log = Logger(subsystem: "com.eightybps.appsync", category: "pending-writes")
 
     private struct State {
-        var handle: FileHandle?
+        var log: AppendLog?
         var records: [PendingWrite]
         var nextSequence: UInt64
     }
@@ -121,33 +123,27 @@ public final class PendingWriteQueue: Sendable {
         self.availability = availability
         self.sealer = sealer
         var records: [PendingWrite] = []
-        var handle: FileHandle?
+        var log: AppendLog?
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
-            if !FileManager.default.fileExists(atPath: fileURL.path) {
-                guard FileManager.default.createFile(atPath: fileURL.path, contents: nil) else {
-                    throw CocoaError(.fileWriteUnknown)
-                }
-            }
+            let opened = try AppendLog(url: fileURL, protection: .completeUntilFirstUserAuthentication)
             try availability.setProtection(.completeUntilFirstUserAuthentication, for: fileURL)
-            let opened = try FileHandle(forUpdating: fileURL)
-            let contents = try opened.readToEnd() ?? Data()
+            let contents = try opened.contents()
             // A crash mid-append leaves a partial last line; drop it so the
             // next append starts on a line of its own.
             if let last = contents.last, last != 0x0A {
                 let end = contents.lastIndex(of: 0x0A).map { $0 + 1 } ?? contents.startIndex
-                try opened.truncate(atOffset: UInt64(end - contents.startIndex))
+                try opened.truncate(to: end - contents.startIndex)
                 records = Self.decode(contents[contents.startIndex..<end])
             } else {
                 records = Self.decode(contents)
             }
-            try opened.seekToEnd()
-            handle = opened
+            log = opened
         } catch {
             Self.log.error("pending_queue_open_failed error=\(String(describing: error), privacy: .public)")
         }
-        state = Mutex(State(handle: handle, records: records,
+        state = Mutex(State(log: log, records: records,
                             nextSequence: (records.map(\.sequence).max() ?? 0) + 1))
     }
 
@@ -183,6 +179,34 @@ public final class PendingWriteQueue: Sendable {
     }
 
     /// The latest pending value for `key`, with its sequence.
+    /// The latest uncleared value for `key`, telling apart nothing queued
+    /// (`missing`, also for a value that is damaged: logged, kept in the
+    /// file) from a value that can't be opened now (`unavailable`): a store
+    /// reading through the queue must not take that for "nothing newer".
+    public func read(key: String) -> StoredRead<Data> {
+        state.withLock { state in
+            guard let write = Self.pendingUnlocked(state.records).last(where: { $0.key == key }),
+                  let payload = write.payload else { return .missing }
+            switch sealer.open(payload, context: write.key) {
+            case .opened(let data), .legacyPlaintext(let data): return .value(data)
+            case .damaged:
+                Self.log.error("pending_queue_value_unreadable")
+                return .missing
+            case .unavailable: return .unavailable
+            }
+        }
+    }
+
+    /// The sequence of the latest uncleared value for `key`, opened or not:
+    /// for clearing what a newer write supersedes, even while it can't be read.
+    public func latestSequence(key: String) -> UInt64? {
+        state.withLock { state in
+            Self.pendingUnlocked(state.records).last(where: { $0.key == key })?.sequence
+        }
+    }
+
+    /// `read(key:)` with its sequence; nil when nothing is queued or it
+    /// can't be opened now.
     public func latest(key: String) -> (sequence: UInt64, payload: Data)? {
         state.withLock { state in
             guard let write = Self.pendingUnlocked(state.records).last(where: { $0.key == key }),
@@ -236,64 +260,38 @@ public final class PendingWriteQueue: Sendable {
 
     private func append(_ make: (UInt64) -> PendingWrite) throws -> UInt64 {
         try state.withLock { state in
-            guard let handle = state.handle else { throw CocoaError(.fileWriteNoPermission) }
+            guard let log = state.log else { throw CocoaError(.fileWriteNoPermission) }
             let write = make(state.nextSequence)
             var line = try JSONEncoder().encode(write)
             line.append(0x0A)
-            try handle.seekToEnd()
-            try handle.write(contentsOf: line)
-            try handle.synchronize()
+            try log.append(line)
             state.records.append(write)
             state.nextSequence += 1
             return write.sequence
         }
     }
 
-    /// Rewrites the file with only what is still pending. The new contents
-    /// go to a sibling file (same protection, fsync'd) that
-    /// then replaces the queue in one rename, so a crash mid-compaction
-    /// leaves the old file or the new one, never part of either; the kept
-    /// handle moves to the new file. Only while protected data is
-    /// available, so a rewrite is never what a locked device has to survive.
+    /// Rewrites the file with only what is still pending, in one atomic
+    /// step (`AppendLog.replace`): a crash or a full disk mid-compaction
+    /// leaves the old file or the new one, never part of either. Only while
+    /// protected data is available, so a rewrite is never what a locked
+    /// device has to survive.
     private func compactIfAvailable() {
         guard availability.isProtectedDataAvailable else { return }
         state.withLock { state in
-            guard let handle = state.handle else { return }
+            guard let log = state.log else { return }
             let kept = Self.pendingUnlocked(state.records)
             guard kept.count < state.records.count else { return }
-            let replacement = fileURL.appendingPathExtension("compacting")
             do {
                 var data = Data()
                 for write in kept {
                     data.append(try JSONEncoder().encode(write))
                     data.append(0x0A)
                 }
-                if FileManager.default.fileExists(atPath: replacement.path) {
-                    try FileManager.default.removeItem(at: replacement)
-                }
-                guard FileManager.default.createFile(atPath: replacement.path, contents: nil) else {
-                    throw CocoaError(.fileWriteUnknown)
-                }
-                try availability.setProtection(.completeUntilFirstUserAuthentication, for: replacement)
-                let newHandle = try FileHandle(forUpdating: replacement)
-                do {
-                    try newHandle.write(contentsOf: data)
-                    try newHandle.synchronize()
-                    // rename(2): atomic, and the new handle stays on the file.
-                    guard rename(replacement.path, fileURL.path) == 0 else {
-                        throw CocoaError(.fileWriteUnknown)
-                    }
-                } catch {
-                    try? newHandle.close()
-                    throw error
-                }
-                try? handle.close()
-                state.handle = newHandle
+                try log.replace(with: data)
+                try availability.setProtection(.completeUntilFirstUserAuthentication, for: fileURL)
                 state.records = kept
             } catch {
-                if FileManager.default.fileExists(atPath: replacement.path) {
-                    try? FileManager.default.removeItem(at: replacement)
-                }
                 Self.log.error("pending_queue_compact_failed error=\(String(describing: error), privacy: .public)")
             }
         }

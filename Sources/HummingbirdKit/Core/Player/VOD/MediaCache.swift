@@ -125,6 +125,8 @@ actor MediaCache {
         do {
             try track.handle.seek(toOffset: UInt64(offset))
             try track.handle.write(contentsOf: data)
+            // On disk before the metadata says the range is there.
+            try AtomicFile.sync(track.handle)
         } catch {
             Logger.mediaCache.error("write_failed bytes=\(data.count) message=\(error.localizedDescription)")
             throw error
@@ -192,11 +194,23 @@ actor MediaCache {
         guard openTracks[digest] == nil else { throw CocoaError(.fileWriteFileExists) }
         let directory = try root()
         let media = directory.appendingPathComponent("\(digest).media")
-        try? FileManager.default.removeItem(at: media)
-        try FileManager.default.moveItem(at: file, to: media)
+        let metadataURL = directory.appendingPathComponent("\(digest).json")
+        // Each step leaves a track that is right: the old metadata stops
+        // vouching for the old file, the new file replaces it in one rename,
+        // then the new metadata vouches for all of it.
+        let empty = Metadata(identity: identity, totalBytes: nil, completed: MediaRangeSet(), lastAccess: Date())
+        let previous = try AtomicFile.contents(of: metadataURL)
+        try AtomicFile.write(JSONEncoder().encode(empty), to: metadataURL)
+        do {
+            try AtomicFile.move(file, to: media, replacing: true)
+        } catch {
+            // The old file is still there: so is what vouched for it.
+            if let previous { try? AtomicFile.write(previous, to: metadataURL) }
+            throw error
+        }
         let size = (try? FileManager.default.attributesOfItem(atPath: media.path)[.size] as? NSNumber)?.int64Value ?? 0
         let metadata = Metadata(identity: identity, totalBytes: size, completed: MediaRangeSet([0..<size]), lastAccess: Date())
-        try JSONEncoder().encode(metadata).write(to: directory.appendingPathComponent("\(digest).json"), options: .atomic)
+        try AtomicFile.write(JSONEncoder().encode(metadata), to: metadataURL)
     }
 
     /// A track's metadata, salvaged field by field when it does not decode as a
@@ -213,7 +227,7 @@ actor MediaCache {
                             lastAccess: partial.lastAccess ?? Date())
         }
         let aside = url.appendingPathExtension("unreadable")
-        if !FileManager.default.fileExists(atPath: aside.path) { try? FileManager.default.copyItem(at: url, to: aside) }
+        if !FileManager.default.fileExists(atPath: aside.path) { try? AtomicFile.write(data, to: aside) }
         Logger.mediaCache.error("metadata_unreadable kept_aside=true")
         return nil
     }
@@ -254,11 +268,12 @@ actor MediaCache {
     /// belong to a different rendition.
     func reset(_ id: TrackID) throws {
         guard var track = openTracks[id.digest] else { return }
-        try track.handle.truncate(atOffset: 0)
+        // The metadata stops vouching for the bytes before they go.
         track.metadata.completed = MediaRangeSet()
         track.metadata.totalBytes = nil
         openTracks[id.digest] = track
         try persist(id.digest)
+        try track.handle.truncate(atOffset: 0)
     }
 
     // MARK: eviction
@@ -412,7 +427,7 @@ actor MediaCache {
     private func persist(_ digest: String) throws {
         guard let track = openTracks[digest] else { return }
         let url = try root().appendingPathComponent("\(digest).json")
-        try JSONEncoder().encode(track.metadata).write(to: url, options: .atomic)
+        try AtomicFile.write(JSONEncoder().encode(track.metadata), to: url)
     }
 
     private static func digest(_ value: String) -> String {

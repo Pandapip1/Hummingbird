@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import PlatformSupport
 
 /// A self-certifying instance identifier derived solely from its durable
 /// signing key. Encryption keys may rotate without changing this identity.
@@ -197,7 +198,7 @@ public final class AppSyncTrustStore: @unchecked Sendable {
 
     public init(observer: AppSyncPeer, fileURL: URL? = nil) throws {
         self.observer = observer; self.fileURL = fileURL
-        if let fileURL, let data = try? Data(contentsOf: fileURL) {
+        if let fileURL, let data = try AtomicFile.contents(of: fileURL) {
             let facts = try JSONDecoder().decode(Snapshot.self, from: data).facts
             factsByID = Dictionary(uniqueKeysWithValues: facts.map { ($0.id, $0) })
         } else { factsByID = [:] }
@@ -418,8 +419,7 @@ public final class AppSyncTrustStore: @unchecked Sendable {
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
-        try JSONEncoder().encode(Snapshot(facts: Array(facts.values)))
-            .write(to: fileURL, options: .atomic)
+        try AtomicFile.write(JSONEncoder().encode(Snapshot(facts: Array(facts.values))), to: fileURL)
     }
 }
 

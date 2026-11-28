@@ -1,4 +1,5 @@
 import Foundation
+import PlatformSupport
 
 public struct AppSyncLocalProfile: Sendable, Identifiable {
     public let id: UUID
@@ -30,7 +31,7 @@ public final class AppSyncProfileRegistry: @unchecked Sendable {
         fileURL = storageDirectory.appendingPathComponent(
             "profiles", isDirectory: true
         ).appendingPathComponent("profiles.json")
-        if let data = try? Data(contentsOf: fileURL) {
+        if let data = try AtomicFile.contents(of: fileURL) {
             let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
             descriptors = Dictionary(uniqueKeysWithValues: snapshot.profiles.map { ($0.id, $0) })
         } else {
@@ -115,6 +116,6 @@ public final class AppSyncProfileRegistry: @unchecked Sendable {
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         let profiles = value.values.sorted { $0.createdAt < $1.createdAt }
-        try JSONEncoder().encode(Snapshot(profiles: profiles)).write(to: fileURL, options: .atomic)
+        try AtomicFile.write(JSONEncoder().encode(Snapshot(profiles: profiles)), to: fileURL)
     }
 }

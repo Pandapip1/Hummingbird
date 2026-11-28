@@ -302,8 +302,10 @@ public final class CacheJournal: Sendable {
     // MARK: persistence
 
     /// Appends what changed to the partition files; compacts a file that is
-    /// mostly superseded frames. Best effort: no fsync, and a failure only
-    /// costs cached data. Skipped while protected data is unavailable.
+    /// mostly superseded frames. Every write is atomic (AtomicFile,
+    /// AppendLog): a failure, a full disk included, costs only what was being
+    /// written, never what was persisted before; it stays pending and is
+    /// tried again. Skipped while protected data is unavailable.
     public func persist() {
         guard availability.isProtectedDataAvailable else { return }
         state.withLock { state in
@@ -330,16 +332,15 @@ public final class CacheJournal: Sendable {
                 data.append(try CacheFrameFile.encode(frame, epoch: partition.epoch, profileID: profileID))
             }
             if rewrite {
-                try data.write(to: url, options: .atomic)
+                try AtomicFile.write(data, to: url, protection: .completeUntilFirstUserAuthentication)
                 // Background windows read and refill it while the device is locked;
                 // every frame is sealed, which is what keeps it private.
                 try availability.setProtection(.completeUntilFirstUserAuthentication, for: url)
                 partition.garbage = 0
             } else {
-                let handle = try FileHandle(forWritingTo: url)
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                try handle.write(contentsOf: data)
+                // Lands whole or is cut back off: a full disk never leaves
+                // half a frame for the next append to follow.
+                try AppendLog(url: url).append(data)
             }
             partition.pending = []
         } catch {

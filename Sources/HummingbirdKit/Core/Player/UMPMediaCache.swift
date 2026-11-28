@@ -135,7 +135,7 @@ actor UMPMediaCache {
     }
 
     private static func persist(_ index: Index, to url: URL) throws {
-        try JSONEncoder().encode(index).write(to: url, options: .atomic)
+        try AtomicFile.write(JSONEncoder().encode(index), to: url)
     }
 
     private static func createPreallocatedFile(at url: URL, size: Int64) throws {

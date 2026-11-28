@@ -90,7 +90,7 @@ public struct PerformanceReportStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let name = "\(kind)-\(Int(end.timeIntervalSince1970))-\(Int(begin.timeIntervalSince1970)).json"
         let url = directory.appendingPathComponent(name)
-        try json.write(to: url, options: .atomic)
+        try AtomicFile.write(json, to: url)
         try prune()
         return url
     }
@@ -138,7 +138,7 @@ public struct PerformanceReportStore: Sendable {
         )
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         let url = destination.appendingPathComponent("Hummingbird performance reports.json")
-        try data.write(to: url, options: .atomic)
+        try AtomicFile.write(data, to: url)
         return url
     }
 
@@ -244,7 +244,7 @@ public struct StallLog: Sendable {
         try? FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
-        try? data.write(to: fileURL, options: .atomic)
+        try? AtomicFile.write(data, to: fileURL)
     }
 
     private func bounded(_ records: [Record]) -> [Record] {

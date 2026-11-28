@@ -2,6 +2,7 @@ import ATAppSync
 import CSQLite
 import Foundation
 import os
+import PlatformSupport
 
 /// App persistence backed by one SQLite database (`storage.sqlite3`) in a
 /// data directory. Existing JSON stores are imported lazily, so upgrades
@@ -234,7 +235,7 @@ final class StorageBackend: @unchecked Sendable {
         let name = url.deletingPathExtension().lastPathComponent
         do {
             let sealed = try StorageSealing.sealer(for: name, in: atRest).seal(data, context: name)
-            try sealed.write(to: url, options: [.atomic])
+            try AtomicFile.write(sealed, to: url, protection: .completeUntilFirstUserAuthentication)
             try protectedData.setProtection(.completeUntilFirstUserAuthentication, for: url)
             return true
         } catch {
@@ -248,8 +249,10 @@ final class StorageBackend: @unchecked Sendable {
         switch StorageSealing.sealer(for: name, in: atRest).open(stored, context: name) {
         case .opened(let data), .legacyPlaintext(let data): return data
         case .damaged:
-            AtRestQuarantine.keep(stored, label: name, near: file)
-            try? FileManager.default.removeItem(at: file)
+            // Removed only once a copy is kept; otherwise left as it is.
+            if (try? AtRestQuarantine.keep(stored, label: name, near: file)) != nil {
+                try? FileManager.default.removeItem(at: file)
+            }
             return nil
         case .unavailable: return nil
         }
@@ -374,28 +377,39 @@ final class StorageDatabase: @unchecked Sendable {
     }
 
     /// Moves a value that didn't open out of the way, keeping it.
+    /// One transaction: a crash or a full disk part way leaves the value
+    /// where it was, never in neither place.
     private func quarantine(_ stored: Data, name: String) {
-        guard let handle else { return }
+        guard let handle, sqlite3_exec(handle, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return }
+        guard moveToQuarantine(stored, name: name), sqlite3_exec(handle, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+            sqlite3_exec(handle, "ROLLBACK", nil, nil, nil)
+            return
+        }
+        Logger.performance.error("storage_value_quarantined bytes=\(stored.count)")
+    }
+
+    private func moveToQuarantine(_ stored: Data, name: String) -> Bool {
+        guard let handle else { return false }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, "INSERT INTO quarantine(name, payload, quarantined) VALUES(?1, ?2, ?3)",
-                                 -1, &statement, nil) == SQLITE_OK, let statement else { return }
+                                 -1, &statement, nil) == SQLITE_OK, let statement else { return false }
         defer { sqlite3_finalize(statement) }
         let bound = sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK
             && stored.withUnsafeBytes { sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32($0.count), sqliteTransient) } == SQLITE_OK
             && sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970) == SQLITE_OK
-        guard bound, sqlite3_step(statement) == SQLITE_DONE else { return }
-        removeStored(name: name)
-        Logger.performance.error("storage_value_quarantined bytes=\(stored.count)")
+        guard bound, sqlite3_step(statement) == SQLITE_DONE else { return false }
+        return removeStored(name: name)
     }
 
-    private func removeStored(name: String) {
-        guard let handle else { return }
+    @discardableResult
+    private func removeStored(name: String) -> Bool {
+        guard let handle else { return false }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, "DELETE FROM storage WHERE name = ?1", -1, &statement, nil) == SQLITE_OK,
-              let statement else { return }
+              let statement else { return false }
         defer { sqlite3_finalize(statement) }
-        guard sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK else { return }
-        _ = sqlite3_step(statement)
+        guard sqlite3_bind_text(statement, 1, name, -1, sqliteTransient) == SQLITE_OK else { return false }
+        return sqlite3_step(statement) == SQLITE_DONE
     }
 
     private func saveStored(_ plaintext: Data, name: String) -> Bool {

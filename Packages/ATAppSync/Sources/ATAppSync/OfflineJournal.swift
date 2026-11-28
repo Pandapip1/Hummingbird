@@ -1,6 +1,7 @@
 import Crypto
 import Foundation
 import ATProtoKit
+import PlatformSupport
 
 /// Semantic application-facing names for durable replicated mutations.
 /// Signed journal batches remain an ATAppSync wire/storage detail.
@@ -521,7 +522,7 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         self.retention = retention
         self.sealer = sealer
         var reseal = false
-        if let data = try? Data(contentsOf: fileURL) {
+        if let data = try AtomicFile.contents(of: fileURL) {
             let read = try SealedJournalFile.read(data, sealer: sealer, file: fileURL, deviceID: deviceID)
             snapshot = read.snapshot
             reseal = read.needsReseal
@@ -530,8 +531,10 @@ public final class OfflineMutationJournal: @unchecked Sendable {
         }
         _ = snapshot.enforce(retention)
         knownEventIDs = Set(snapshot.events.map(\.id))
-        // Migrated (or salvaged): written back sealed now, once.
-        if reseal { try persist(snapshot) }
+        // Migrated (or salvaged): sealed on disk now. If that can't be
+        // written (a full disk), the file stays as it was, still readable,
+        // and the next write that lands seals it.
+        if reseal { try? persist(snapshot) }
     }
 
     @discardableResult

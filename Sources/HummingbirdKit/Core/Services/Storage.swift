@@ -241,7 +241,6 @@ final class StorageBackend: @unchecked Sendable {
     func remove(name: String) {
         lock.lock()
         defer { lock.unlock() }
-        openIfNeeded()
         database.remove(name: name)
         discardQueued(name: name)
         if let directory { try? FileManager.default.removeItem(at: directory.appendingPathComponent(name + ".json")) }
@@ -492,6 +491,7 @@ extension StorageDatabase {
     func remove(name: String) {
         lock.lock()
         defer { lock.unlock() }
+        openIfNeeded()
         removeStored(name: name)
     }
 }

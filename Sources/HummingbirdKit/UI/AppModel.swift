@@ -535,8 +535,10 @@ struct AppPersistenceSnapshot: Sendable {
         searchHistory: [], browserSession: nil
     )
 
-    /// Without a `profileID`, loads the profile `stores` last selected.
-    static func load(stores: AppDataStores, profileID: UUID? = nil) async -> Self {
+    /// Without a `profileID`, loads the profile `stores` last selected. Nil
+    /// when any of it can't be read now (before the first unlock): the app
+    /// must not start on an empty library and save that over the real one.
+    static func load(stores: AppDataStores, profileID: UUID? = nil) async -> Self? {
         await Task.detached(priority: .userInitiated) {
             let resolvedProfileID = profileID ?? stores.selectedLocalProfileID
             let prefix = resolvedProfileID.map {
@@ -550,32 +552,45 @@ struct AppPersistenceSnapshot: Sendable {
             let mayLoadLegacy = resolvedProfileID?.uuidString
                 == defaults.string(forKey: legacyOwnerKey)
             let storage = stores.storage
-            func load<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
-                storage.load(type, name: prefix + name)
-                    ?? (mayLoadLegacy ? storage.load(type, name: name) : nil)
-            }
-            return Self(
-                plugins: load([InstalledPlugin].self, "plugins") ?? [],
-                library: LibraryPersistenceSnapshot(
-                    subscriptions: load([Subscription].self, "subscriptions") ?? [],
-                    playlists: load([Playlist].self, "playlists") ?? [],
-                    watchLater: load([SavedVideo].self, "watch_later") ?? [],
-                    history: load([HistoryEntry].self, "history") ?? [],
-                    feedCache: load([String: [SavedVideo]].self, "feed_cache") ?? [:],
-                    homeCache: load([SavedVideo].self, "home_cache") ?? []
-                ),
-                legacyPlaybackQueue: storage.load(PersistedPlaybackQueue.self, name: prefix + "playback_queue")
-                    .map { LegacyPlaybackQueue(queue: $0, storeName: prefix + "playback_queue") }
-                    ?? (mayLoadLegacy ? storage.load(PersistedPlaybackQueue.self, name: "playback_queue")
-                        .map { LegacyPlaybackQueue(queue: $0, storeName: "playback_queue") } : nil),
-                searchHistory: load([String].self, "search_history") ?? [],
-                browserSession: resolvedProfileID.flatMap {
-                    storage.load(
-                        PersistedBrowserSession.self,
-                        name: "profile.\($0.uuidString.lowercased()).browser-session"
-                    )
+            struct Unavailable: Error {}
+            func stored<T: Decodable>(_ type: T.Type, named name: String) throws -> T? {
+                switch storage.read(type, name: name) {
+                case .value(let value): return value
+                case .missing: return nil
+                case .unavailable: throw Unavailable()
                 }
-            )
+            }
+            func load<T: Decodable>(_ type: T.Type, _ name: String) throws -> T? {
+                if let value = try stored(type, named: prefix + name) { return value }
+                return mayLoadLegacy ? try stored(type, named: name) : nil
+            }
+            do {
+                var legacyPlaybackQueue = try stored(PersistedPlaybackQueue.self, named: prefix + "playback_queue")
+                    .map { LegacyPlaybackQueue(queue: $0, storeName: prefix + "playback_queue") }
+                if legacyPlaybackQueue == nil, mayLoadLegacy {
+                    legacyPlaybackQueue = try stored(PersistedPlaybackQueue.self, named: "playback_queue")
+                        .map { LegacyPlaybackQueue(queue: $0, storeName: "playback_queue") }
+                }
+                return Self(
+                    plugins: try load([InstalledPlugin].self, "plugins") ?? [],
+                    library: LibraryPersistenceSnapshot(
+                        subscriptions: try load([Subscription].self, "subscriptions") ?? [],
+                        playlists: try load([Playlist].self, "playlists") ?? [],
+                        watchLater: try load([SavedVideo].self, "watch_later") ?? [],
+                        history: try load([HistoryEntry].self, "history") ?? [],
+                        feedCache: try load([String: [SavedVideo]].self, "feed_cache") ?? [:],
+                        homeCache: try load([SavedVideo].self, "home_cache") ?? []
+                    ),
+                    legacyPlaybackQueue: legacyPlaybackQueue,
+                    searchHistory: try load([String].self, "search_history") ?? [],
+                    browserSession: try resolvedProfileID.flatMap {
+                        try stored(PersistedBrowserSession.self,
+                                  named: "profile.\($0.uuidString.lowercased()).browser-session")
+                    }
+                )
+            } catch {
+                return nil
+            }
         }.value
     }
 }

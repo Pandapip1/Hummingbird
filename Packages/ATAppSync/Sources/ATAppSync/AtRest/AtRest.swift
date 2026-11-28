@@ -77,6 +77,28 @@ public struct AtRestSealer: Sendable {
     }
 }
 
+/// A stored value as read: there, not there, or there but unreadable now
+/// (the at-rest key or the file can't be read yet: before the first
+/// unlock, a locked keychain, an I/O error). `unavailable` is never
+/// "empty": whoever reads it must not save over what it couldn't read, and
+/// there is deliberately no way to fold it into an optional.
+public enum StoredRead<Value> {
+    case value(Value)
+    case missing
+    case unavailable
+
+    public func map<Other>(_ transform: (Value) throws -> Other) rethrows -> StoredRead<Other> {
+        switch self {
+        case .value(let value): .value(try transform(value))
+        case .missing: .missing
+        case .unavailable: .unavailable
+        }
+    }
+}
+
+extension StoredRead: Sendable where Value: Sendable {}
+extension StoredRead: Equatable where Value: Equatable {}
+
 public enum AtRestContent: Sendable, Equatable {
     case opened(Data)
     /// Written before sealing: readable as is, sealed on the next write.

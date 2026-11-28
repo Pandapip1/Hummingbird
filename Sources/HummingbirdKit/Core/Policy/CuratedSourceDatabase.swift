@@ -1,3 +1,4 @@
+import ATAppSync
 import Crypto
 import Foundation
 import os
@@ -142,7 +143,7 @@ struct CuratedSourceUpdater: Sendable {
 
     /// Re-applies the last accepted update, if it still verifies.
     func restore(into database: CuratedSourceDatabase) {
-        guard let stored = storage.load(Stored.self, name: storageName) else { return }
+        guard case .value(let stored) = storage.read(Stored.self, name: storageName) else { return }
         _ = try? database.applyUpdate(body: stored.body, signature: stored.signature, publicKey: publicKey)
     }
 

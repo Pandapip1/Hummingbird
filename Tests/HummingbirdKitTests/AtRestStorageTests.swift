@@ -93,3 +93,49 @@ final class AtRestStorageTests: XCTestCase {
     }
     #endif
 }
+
+/// A store that is there but can't be read now (before the first unlock, a
+/// locked keychain) is never read as empty: the app doesn't start on an
+/// empty library, so it can't save one over the real library.
+final class UnavailableStoreTests: XCTestCase {
+    func testTheAppDoesNotStartOnAnEmptyLibraryWhileItsStoreIsLocked() async throws {
+        let directory = makeTestDirectory("LockedLaunch")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let vault = LockableVault()
+        let preferences = makeTestPreferences(in: directory)
+        func stores() -> AppDataStores {
+            AppDataStores(dataDirectory: directory, cachesDirectory: directory.appendingPathComponent("Caches"),
+                          preferences: preferences, credentialStore: TestCredentialStore(),
+                          storage: Storage(directory: directory, protectedData: UnprotectedDataAvailability(),
+                                           atRest: AtRestKeyring(vault: vault)))
+        }
+        let first = stores()
+        first.storage.save(["kept"], name: "search_history")
+        await first.flush()
+
+        vault.locked = true
+        let snapshot = await AppPersistenceSnapshot.load(stores: stores())
+        XCTAssertNil(snapshot, "unreadable is not empty")
+
+        vault.locked = false
+        let unlocked = await AppPersistenceSnapshot.load(stores: stores())
+        XCTAssertEqual(unlocked?.searchHistory, ["kept"])
+    }
+
+    func testADamagedValueThatCantBeSetAsideIsNotMissing() throws {
+        let directory = makeTestDirectory("LockedLaunch")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("storage.sqlite3")
+        let database = StorageDatabase(url: file, protectedData: UnprotectedDataAvailability(), atRest: testAtRestKeyring)
+        guard case .missing = database.read(name: "nothing") else { return XCTFail("no row is missing") }
+        let vault = LockableVault()
+        let keyring = AtRestKeyring(vault: vault)
+        XCTAssertTrue(StorageDatabase(url: file, protectedData: UnprotectedDataAvailability(), atRest: keyring)
+            .save(Data("x".utf8), name: "value"))
+        vault.locked = true
+        guard case .unavailable = StorageDatabase(url: file, protectedData: UnprotectedDataAvailability(),
+                                                  atRest: AtRestKeyring(vault: vault)).read(name: "value") else {
+            return XCTFail("a key that can't be read is unavailable")
+        }
+    }
+}

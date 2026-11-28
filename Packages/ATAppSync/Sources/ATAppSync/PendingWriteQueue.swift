@@ -179,6 +179,34 @@ public final class PendingWriteQueue: Sendable {
     }
 
     /// The latest pending value for `key`, with its sequence.
+    /// The latest uncleared value for `key`, telling apart nothing queued
+    /// (`missing`, also for a value that is damaged: logged, kept in the
+    /// file) from a value that can't be opened now (`unavailable`): a store
+    /// reading through the queue must not take that for "nothing newer".
+    public func read(key: String) -> StoredRead<Data> {
+        state.withLock { state in
+            guard let write = Self.pendingUnlocked(state.records).last(where: { $0.key == key }),
+                  let payload = write.payload else { return .missing }
+            switch sealer.open(payload, context: write.key) {
+            case .opened(let data), .legacyPlaintext(let data): return .value(data)
+            case .damaged:
+                Self.log.error("pending_queue_value_unreadable")
+                return .missing
+            case .unavailable: return .unavailable
+            }
+        }
+    }
+
+    /// The sequence of the latest uncleared value for `key`, opened or not:
+    /// for clearing what a newer write supersedes, even while it can't be read.
+    public func latestSequence(key: String) -> UInt64? {
+        state.withLock { state in
+            Self.pendingUnlocked(state.records).last(where: { $0.key == key })?.sequence
+        }
+    }
+
+    /// `read(key:)` with its sequence; nil when nothing is queued or it
+    /// can't be opened now.
     public func latest(key: String) -> (sequence: UInt64, payload: Data)? {
         state.withLock { state in
             guard let write = Self.pendingUnlocked(state.records).last(where: { $0.key == key }),

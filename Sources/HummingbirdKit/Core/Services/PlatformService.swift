@@ -1,3 +1,4 @@
+import ATAppSync
 import Foundation
 import os
 
@@ -14,6 +15,9 @@ final class PlatformService {
     private var routeCache: [String: String] = [:]
     private var detailsCache: [String: CachedDetails]
     private var detailsCacheWasUsed = false
+    /// The stored cache couldn't be read (before the first unlock): this
+    /// process never saves over it.
+    private var detailsCacheUnreadable = false
     private var detailsCacheSaveTask: Task<Void, Never>?
     private let storage: Storage
     private let detailsCacheStorageName: String
@@ -28,10 +32,19 @@ final class PlatformService {
         // This cache can contain large plugin responses. Loading and decoding it
         // synchronously delayed iOS's first frame by several seconds.
         Task { [weak self] in
-            let loaded = await Task.detached(priority: .utility) { [storage] in
-                storage.load([String: CachedDetails].self, name: detailsCacheStorageName) ?? [:]
+            let read = await Task.detached(priority: .utility) { [storage] in
+                storage.read([String: CachedDetails].self, name: detailsCacheStorageName)
             }.value
-            guard let self, !self.detailsCacheWasUsed else { return }
+            guard let self else { return }
+            let loaded: [String: CachedDetails]
+            switch read {
+            case .value(let stored): loaded = stored
+            case .missing: loaded = [:]
+            case .unavailable:
+                self.detailsCacheUnreadable = true
+                return
+            }
+            guard !self.detailsCacheWasUsed else { return }
             let trimmed = Self.trimmedDetailsCache(loaded)
             self.detailsCache = trimmed
             if trimmed.count != loaded.count || trimmed.values.reduce(0, { $0 + $1.payload.count }) != loaded.values.reduce(0, { $0 + $1.payload.count }) {
@@ -113,11 +126,12 @@ final class PlatformService {
     /// Coalesce bursts of detail requests into one bounded background write.
     /// Previously every request rewrote and checkpointed the entire cache.
     private func scheduleDetailsCacheSave() {
+        guard !detailsCacheUnreadable else { return }
         detailsCacheSaveTask?.cancel()
         let cacheSnapshot = detailsCache
         detailsCacheSaveTask = Task {
             try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, !self.detailsCacheUnreadable else { return }
             await Task.detached(priority: .utility) {
                 self.storage.save(cacheSnapshot, name: self.detailsCacheStorageName)
             }.value

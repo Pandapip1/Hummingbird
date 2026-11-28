@@ -1,3 +1,4 @@
+import ATAppSync
 import Foundation
 import os
 import Observation
@@ -84,7 +85,7 @@ struct SyncedAgeRange: Codable, Hashable, Sendable {
 final class ProfileAgeRange {
     private(set) var record: SyncedAgeRange?
     @ObservationIgnored private var loaded = false
-    @ObservationIgnored private var loading: Task<SyncedAgeRange?, Never>?
+    @ObservationIgnored private var loading: Task<StoredRead<SyncedAgeRange>, Never>?
     private let storage: Storage
     private let storageName: String
     @ObservationIgnored private let profileChanges: ProfileChangeStore?
@@ -97,19 +98,28 @@ final class ProfileAgeRange {
         self.profileChanges = profileChanges
     }
 
-    /// The stored record, read from storage off the main actor once.
+    /// The stored record, read from storage off the main actor once. While
+    /// it can't be read (before the first unlock) the record in memory is
+    /// all there is: nothing is saved over the stored one, and the next call
+    /// reads it again; once read, anything newer from meanwhile is saved.
     func current() async -> SyncedAgeRange? {
         if loaded { return record }
         let task = loading ?? Task.detached(priority: .userInitiated) { [storage, storageName] in
-            storage.load(SyncedAgeRange.self, name: storageName)
+            storage.read(SyncedAgeRange.self, name: storageName)
         }
         loading = task
-        let stored = await task.value
+        let read = await task.value
         loading = nil
-        if !loaded {
-            record = Self.merged(record, stored)
-            loaded = true
+        guard !loaded else { return record }
+        let stored: SyncedAgeRange?
+        switch read {
+        case .value(let value): stored = value
+        case .missing: stored = nil
+        case .unavailable: return record
         }
+        record = Self.merged(record, stored)
+        loaded = true
+        if let record, record != stored { storage.save(record, name: storageName) }
         return record
     }
 
@@ -171,7 +181,8 @@ final class ProfileAgeRange {
         let winner = Self.merged(current, candidate)
         guard winner == candidate, candidate != current else { return }
         record = candidate
-        storage.save(candidate, name: storageName)
+        // Not read yet: saved once it is (`current`), merged with what is there.
+        if loaded { storage.save(candidate, name: storageName) }
         if announce { profileChanges?.put(.ageRange(candidate)) }
         onChange?()
     }

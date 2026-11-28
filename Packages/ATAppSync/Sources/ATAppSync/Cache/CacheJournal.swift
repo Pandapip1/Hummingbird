@@ -320,12 +320,12 @@ public final class CacheJournal: Sendable {
                                 availability: any ProtectedDataAvailability) {
         let url = directory.appendingPathComponent(fileName(partition.epoch.id))
         let live = partition.entities.count + partition.lists.count + partition.blobs.count
-        let compact = partition.garbage > 256 && partition.garbage > live
+        let compact = !partition.unreadable && partition.garbage > 256 && partition.garbage > live
         guard compact || !partition.pending.isEmpty else { return }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             // A missing file (removed meanwhile) is written whole.
-            let rewrite = compact || !FileManager.default.fileExists(atPath: url.path)
+            let rewrite = compact || (!partition.unreadable && !FileManager.default.fileExists(atPath: url.path))
             let frames = rewrite ? partition.snapshotFrames : partition.pending
             var data = Data()
             for frame in frames {
@@ -351,8 +351,17 @@ public final class CacheJournal: Sendable {
     private static func load(_ epoch: CacheEpoch, directory: URL, profileID: UUID) -> CachePartition {
         var partition = CachePartition(epoch: epoch)
         let url = directory.appendingPathComponent(fileName(epoch.id))
-        // Missing (never written, or removed): start empty.
-        guard let data = try? Data(contentsOf: url) else { return partition }
+        // Missing (never written, or removed): start empty. There but
+        // unreadable: start empty too, but never write over it.
+        let data: Data
+        do {
+            guard let contents = try AtomicFile.contents(of: url) else { return partition }
+            data = contents
+        } catch {
+            log.error("cache_partition_unreadable error=\(String(describing: error), privacy: .public)")
+            partition.unreadable = true
+            return partition
+        }
         let (frames, damaged) = CacheFrameFile.decode(data, epoch: epoch, profileID: profileID)
         for frame in frames { partition.replay(frame) }
         let dropped = partition.restoreIntegrity()

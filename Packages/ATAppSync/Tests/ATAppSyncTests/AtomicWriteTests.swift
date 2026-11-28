@@ -16,7 +16,7 @@ final class AtomicWriteTests: XCTestCase {
         let file = directory.appendingPathComponent("state.json")
         try AtomicFile.write(Data("version one".utf8), to: file)
         for budget in [0, 1, 6, 4_000] {
-            try AtomicFile.$simulatedSpace.withValue(.init(bytes: budget)) {
+            AtomicFile.$simulatedSpace.withValue(.init(bytes: budget)) {
                 XCTAssertThrowsError(try AtomicFile.write(Data(repeating: 2, count: 8_000), to: file)) { error in
                     XCTAssertEqual((error as? POSIXError)?.code, .ENOSPC)
                 }
@@ -49,7 +49,7 @@ final class AtomicWriteTests: XCTestCase {
         let file = try temporaryDirectory().appendingPathComponent("log")
         let log = try AppendLog(url: file)
         try log.append(Data("first\n".utf8))
-        try AtomicFile.$simulatedSpace.withValue(.init(bytes: 5)) {
+        AtomicFile.$simulatedSpace.withValue(.init(bytes: 5)) {
             XCTAssertThrowsError(try log.append(Data("second, torn by a full disk\n".utf8)))
         }
         XCTAssertEqual(try log.contents(), Data("first\n".utf8), "the torn part is gone at once")
@@ -90,7 +90,7 @@ final class AtomicWriteTests: XCTestCase {
         let file = try temporaryDirectory().appendingPathComponent("pending-writes.queue")
         let queue = PendingWriteQueue(fileURL: file, availability: FakeDevice(unlocked: false), sealer: testAtRestSealer)
         try queue.append(key: "before", payload: Data("kept".utf8))
-        try AtomicFile.$simulatedSpace.withValue(.init(bytes: 40)) {
+        AtomicFile.$simulatedSpace.withValue(.init(bytes: 40)) {
             XCTAssertThrowsError(try queue.append(key: "torn", payload: Data(repeating: 7, count: 4_096)))
         }
         try queue.append(key: "after", payload: Data("also kept".utf8))
@@ -105,7 +105,7 @@ final class AtomicWriteTests: XCTestCase {
         let journal = try OfflineMutationJournal(fileURL: file, sealer: testAtRestSealer)
         try journal.appendPut(collection: collection, key: RecordKey(rawValue: "a")!, value: .string("kept"))
         let before = try Data(contentsOf: file)
-        try AtomicFile.$simulatedSpace.withValue(.init(bytes: 100)) {
+        AtomicFile.$simulatedSpace.withValue(.init(bytes: 100)) {
             XCTAssertThrowsError(try journal.appendPut(collection: collection, key: RecordKey(rawValue: "b")!,
                                                        value: .string(String(repeating: "x", count: 4_096))))
         }

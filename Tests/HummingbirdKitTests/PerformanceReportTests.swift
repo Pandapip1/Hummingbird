@@ -41,6 +41,38 @@ final class PerformanceReportTests: XCTestCase {
         XCTAssertNotNil(reports.first?["payload"] as? [String: Any])
     }
 
+    /// A stack overflow's crash report nests one level per frame. Parsing and
+    /// re-serialising one 150 to 250 deep (the user's were 166 to 252)
+    /// overflowed the 512 KB stack of the thread running the export (SIGBUS),
+    /// and that crash left another such report. Deeper ones Foundation's parser
+    /// refuses, and the old export dropped them; they must be copied whole too.
+    func testExportCopiesACrashReportAsDeepAsTheUsersWithoutParsingIt() async throws {
+        try await exportsDeepReport(depth: 200)
+    }
+
+    func testExportCopiesAVeryDeepCrashReportWithoutParsingIt() async throws {
+        try await exportsDeepReport(depth: 2_000)
+    }
+
+    private func exportsDeepReport(depth: Int) async throws {
+        let store = PerformanceReportStore(cachesDirectory: makeTestStores().cachesDirectory)
+        var frame = #"{"address":1,"subFrames":[]}"#
+        for level in 0..<depth {
+            frame = #"{"address":\#(level),"binaryName":"Hummingbird","binaryUUID":"00000000-0000-0000-0000-000000000000","offsetIntoBinaryTextSegment":\#(level),"sampleCount":1,"subFrames":[\#(frame)]}"#
+        }
+        let payload = Data(#"{"crashDiagnostics":[{"callStackTree":{"callStacks":[{"callStackRootFrames":[\#(frame)]}]}}]}"#.utf8)
+        try store.write(payload, kind: "crash", begin: Date(timeIntervalSince1970: 1), end: Date(timeIntervalSince1970: 2))
+
+        let exported = try await store.exportBundle(to: makeTestDirectory())
+        let bundle = try Data(contentsOf: XCTUnwrap(exported))
+        XCTAssertNotNil(bundle.range(of: Data(#"{"file":"crash-2-1.json","payload":"#.utf8) + payload + Data("}".utf8)),
+                        "the payload is copied byte for byte")
+        XCTAssertTrue(bundle.starts(with: Data(#"{"reports":["#.utf8)))
+        XCTAssertTrue(bundle.suffix(14).elementsEqual(Data(#"],"stalls":[]}"#.utf8)))
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: XCTUnwrap(exported).deletingLastPathComponent().path)
+        XCTAssertEqual(leftovers, ["Hummingbird performance reports.json"], "no partial file is left behind")
+    }
+
     func testStallLogKeepsNewestRecordsWithinLimits() async throws {
         let stores = makeTestStores()
         let log = StallLog(cachesDirectory: stores.cachesDirectory, maximumRecords: 2, maximumAge: 60 * 60)

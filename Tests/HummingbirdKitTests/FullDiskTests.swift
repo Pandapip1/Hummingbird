@@ -1,6 +1,8 @@
 #if os(macOS)
 import ATAppSync
+import ATProtoKit
 import Foundation
+import PlatformSupport
 import XCTest
 @testable import HummingbirdKit
 
@@ -87,7 +89,8 @@ final class FullDiskTests: XCTestCase {
             let bytes = try await reopened.read(again, range: range)
             XCTAssertEqual(bytes?.count, range.count, "a range the cache claims must read back whole")
         }
-        XCTAssertEqual(try await reopened.read(again, range: 0..<65_536), first)
+        let start = try await reopened.read(again, range: 0..<65_536)
+        XCTAssertEqual(start, first)
     }
 
     func testTheSyncedCacheKeepsWhatItPersistedBefore() throws {
